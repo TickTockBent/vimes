@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { TranscriptTail, type TailOutput } from '@vimes/core';
+import { TranscriptTail, mapTranscriptOutputs, type TailOutput } from '@vimes/core';
 
 // Fixture-FILE tests live daemon-side (fs is allowed here; core stays pure).
 // Fixtures sit at the repo root: packages/daemon/src -> ../../../fixtures.
@@ -9,6 +9,9 @@ function readFixture(name: string): string {
   const fixtureUrl = new URL(`../../../fixtures/transcripts/${name}`, import.meta.url);
   return readFileSync(fileURLToPath(fixtureUrl), 'utf8');
 }
+
+const APP_SESSION_ID = 'aaaaaaaa-0000-4000-8000-000000000001';
+const JSONL_PATH = '/home/user/.claude/projects/encoded/synthetic.jsonl';
 
 function pushWhole(text: string, maxLineBytes?: number): TailOutput[] {
   return new TranscriptTail(maxLineBytes).push(text);
@@ -35,11 +38,43 @@ describe('TranscriptTail against golden fixtures (I8)', () => {
     });
   }
 
-  it('baseline.jsonl: exactly 1 rotation (initial) and 15 records', () => {
+  it('baseline.jsonl: exactly 1 rotation (initial) and 19 records', () => {
     const outputs = pushWhole(readFixture('baseline.jsonl'));
     expect(outputs.filter((o) => o.kind === 'rotation')).toHaveLength(1);
-    expect(outputs.filter((o) => o.kind === 'record')).toHaveLength(15);
+    expect(outputs.filter((o) => o.kind === 'record')).toHaveLength(19);
     expect(outputs.filter((o) => o.kind === 'quarantined')).toHaveLength(0);
+  });
+
+  it('baseline.jsonl: new 2.1.207 record types (attachment, queue-operation, '
+    + 'file-history-snapshot) carry no message field, so the mapper emits no '
+    + 'message/usage_block events for them — exact event-count coverage', () => {
+    const outputs = pushWhole(readFixture('baseline.jsonl'));
+    const records = outputs.filter(
+      (o): o is Extract<TailOutput, { kind: 'record' }> => o.kind === 'record',
+    );
+    const newTypeRecords = records.filter((r) => {
+      const json = r.json as { type?: unknown };
+      return (
+        json.type === 'attachment' ||
+        json.type === 'queue-operation' ||
+        json.type === 'file-history-snapshot'
+      );
+    });
+    // 1 queue-operation + 2 attachment + 1 file-history-snapshot, per the fixture README.
+    expect(newTypeRecords).toHaveLength(4);
+    for (const record of newTypeRecords) {
+      const json = record.json as { message?: unknown };
+      expect(json.message).toBeUndefined();
+    }
+
+    const events = mapTranscriptOutputs(APP_SESSION_ID, outputs, JSONL_PATH);
+    const messageEvents = events.filter((e) => e.type === 'message');
+    const usageBlockEvents = events.filter((e) => e.type === 'usage_block');
+    // 8 user + 7 assistant records still produce exactly 15 message events;
+    // the 4 new record-type lines contribute none. Only the one usage-bearing
+    // assistant record (line 6) produces a usage_block.
+    expect(messageEvents).toHaveLength(15);
+    expect(usageBlockEvents).toHaveLength(1);
   });
 
   it('rotation.jsonl: exactly 2 rotation outputs (initial + change)', () => {

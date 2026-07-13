@@ -92,10 +92,12 @@ hooks, skills, agent listings, MCP. A trivial spike prompt cascaded into an
 spawned sessions must set `settingSources` explicitly or every VIMES session
 inherits personal automation with unpredictable burn/side-effects. The PTY
 channel has no equivalent knob — it inherits everything by design (name this
-in D4's decision). **Lean (2026-07-13):** `settingSources: ['project']` for
-daemon-spawned SDK sessions (project config yes, personal hooks no) — verify
-the exact semantics of `'project'` before building on it; `[]` is the
-fallback. Wes prices this together with D4.
+in D4's decision). **Lean (2026-07-13, semantics verified in sdk.d.ts same evening):**
+`settingSources: ['project']` for daemon-spawned SDK sessions — typings
+confirm it loads only `.claude/settings.json` (no user tier, no personal
+hooks) and that `'project'` is REQUIRED for CLAUDE.md files to load, which
+worker sessions on a real repo want. `[]` remains the fallback for fully
+isolated runs. Wes prices this together with D4.
 
 ## D15 — PTY sessions produced no transcript JSONL ⚠ VERIFY *(trigger: slice 1 step 2 — blocks trusting the tailer)*
 
@@ -106,7 +108,13 @@ buffering, node-pty env/term interaction, different encoded-cwd, spike
 methodology). Rule 0.8 makes the JSONL tail the ONLY structured channel for
 PTY sessions — if real PTY sessions can run without a transcript file, the
 PTY structure story needs rethinking. **Dedicated uncontaminated spike before
-step 2 builds the tailer**; run at a fresh usage window. **Lean:** suspect
-methodology (exit handling) first; verify with a manually-driven terminal
-session before concluding platform behavior changed.
+step 2 builds the tailer.**
+**Narrowed 2026-07-13 evening:** Wes's real interactive session (dongfu)
+writes its transcript incrementally — live-append confirmed. Absence is
+therefore specific to our node-pty spawn context (4/4 across spike + a
+follow-up run). Prime suspect: inherited `CLAUDE*` env vars from the nested
+parent session (SDK sessions also run nested but write via a different path).
+**Lean:** step-2 spike runs the matrix — node-pty spawn with scrubbed env vs
+inherited env — and the PTY channel scrubs/controls its child env regardless
+(the design already pins env for OTLP).
 
