@@ -38,13 +38,14 @@ latency targets need slice-1 live probes.
 | happy-path-desktop | 12 | 1 | 12 | 0 | 0 | 792 |
 | flaky-mobile | 309 | 1 | 309 | 0 | 0 | 847 |
 | concurrent-clash | 9 | 2 | 8 | 0 | 0 | 842 |
-| cold-restart | 14 | 3 | 8 | 0 | 0 | 838 |
+| cold-restart | 18¹ | 4¹ | 8 | 0 | 0 | 1317¹ |
 | hostile-input | 14 | 1 | 14 | 3 | 60 | 943 |
 | budget-wall | 14 | 4 | 5 | 0 | 0 | 1298 |
 
 (`replay-window` = largest single-stream event count; `raw-bytes` = FakePty
 byte-channel total, exercised-never-parsed per rule 0.8; `snapshot-bytes` = sum
-of the three mid-log projection snapshots.)
+of the three mid-log projection snapshots. ¹ cold-restart re-observed same day
+after D13 added the spawning-at-crash session to the profile — was 14/3/838.)
 
 ## Budget table (`--report`)
 

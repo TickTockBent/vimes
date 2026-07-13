@@ -19,10 +19,12 @@ const ALL_PROJECTIONS: ReadonlyArray<Projection<unknown>> = [
   tasksProjection as Projection<unknown>,
 ];
 
-// cold-restart (spec §7.4, the flagship): host dies mid-run with 3 live sessions,
-// one needing attention. Restart rediscovers, marks 'interrupted', attention badge
-// intact (I5); dormant-resume chains lineage (I3/I4); snapshot taken BEFORE the
-// restart + tail boot equals from-empty replay (I6).
+// cold-restart (spec §7.4, the flagship): host dies mid-run with 3 live sessions
+// (one needing attention) plus a 4th still 'spawning' (never reached 'running'
+// before the crash). Restart rediscovers, marks all four 'interrupted' — D13's
+// spawning->interrupted edge covers the 4th — attention badge intact (I5);
+// dormant-resume chains lineage (I3/I4); snapshot taken BEFORE the restart +
+// tail boot equals from-empty replay (I6).
 export const coldRestart: ScenarioProfile = {
   name: 'cold-restart',
   run(world) {
@@ -40,6 +42,11 @@ export const coldRestart: ScenarioProfile = {
       { kind: 'gate', prompt: 'confirm prod deploy?' },
     ]);
 
+    // Delta is created but never spawned — session_created fires (liveness born
+    // 'spawning', per INITIAL_LIVENESS) and the host dies before anything drives
+    // it to 'running'. D13's edge exercises recovery of exactly this session.
+    const sessionDelta = world.registry.createSession({ channel: 'sdk', cwd: '/home/wes/d' });
+
     const attentionBeforeRestart = canonicalJson(
       world.projectionHost.sessionsState().sessions[sessionAlpha]!.needsAttention,
     );
@@ -53,7 +60,8 @@ export const coldRestart: ScenarioProfile = {
     // ——— the daemon dies ———
     const revived = restart(world);
 
-    // Recovery: the three running sessions become 'interrupted'; attention intact.
+    // Recovery: the three running sessions, plus the spawning-at-crash one,
+    // all become 'interrupted'; attention intact.
     recoveryRoutine(revived);
 
     const revivedSessions = revived.projectionHost.sessionsState().sessions;
@@ -71,6 +79,20 @@ export const coldRestart: ScenarioProfile = {
       throw new Error('cold-restart: orphan scan non-empty after recovery (I4)');
     }
 
+    // D13: the spawning-at-crash session recovers to 'interrupted' too, via the
+    // machine — no transition_rejected on its stream.
+    if (revivedSessions[sessionDelta]?.liveness !== 'interrupted') {
+      throw new Error(
+        `cold-restart: spawning-at-crash session ${sessionDelta} not interrupted after recovery (D13)`,
+      );
+    }
+    const deltaRejections = revived.store
+      .read(sessionDelta, 1)
+      .filter((record) => record.type === 'transition_rejected');
+    if (deltaRejections.length !== 0) {
+      throw new Error('cold-restart: spawning-at-crash recovery emitted transition_rejected (D13)');
+    }
+
     // Dormant-resume one interrupted session: interrupted -> spawning -> running,
     // same appSessionId, lineage a single chain (forkedFrom stays null; I3/I4).
     const resumeResult = revived.registry.resumeSession(sessionAlpha);
@@ -83,6 +105,21 @@ export const coldRestart: ScenarioProfile = {
     }
     if (resumedAlpha.forkedFrom !== null) {
       throw new Error('cold-restart: resume forked lineage (I3)');
+    }
+
+    // Chain the recovered D13 edge: interrupted -> spawning -> running for the
+    // session that was spawning at the moment of the crash, proving the
+    // recovered edge is not just legal but actually resumable end to end.
+    const deltaResumeResult = revived.registry.resumeSession(sessionDelta);
+    if (deltaResumeResult.refused) {
+      throw new Error('cold-restart: resume of the recovered spawning-at-crash session was refused');
+    }
+    const resumedDelta = revived.projectionHost.sessionsState().sessions[sessionDelta]!;
+    if (resumedDelta.liveness !== 'running') {
+      throw new Error('cold-restart: recovered spawning-at-crash session did not reach running (D13)');
+    }
+    if (resumedDelta.forkedFrom !== null) {
+      throw new Error('cold-restart: spawning-at-crash resume forked lineage (I3)');
     }
 
     // Flagship I6: pre-restart snapshot + post-restart tail == from-empty replay.

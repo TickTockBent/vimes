@@ -151,11 +151,10 @@ export function orphanScan(world: World): string[] {
 }
 
 // The post-restart scan: any session the log last left 'running' or 'spawning'
-// but which has no live process becomes 'interrupted', via the machine. Attention
-// state is untouched (only liveness_changed is emitted). NOTE: the D9 edge set has
-// no spawning->interrupted edge, so a 'spawning' session would surface a
-// transition_rejected here instead — see the step-4 report (the cold-restart
-// profile only leaves sessions 'running', so that branch is not exercised).
+// but which has no live process becomes 'interrupted', via the machine (D13
+// adds spawning->interrupted for exactly this case — a spawning session is
+// live in the spec's sense, so it recovers the same as a running one).
+// Attention state is untouched (only liveness_changed is emitted).
 export function recoveryRoutine(world: World): void {
   const ownedAppSessionIds = new Set(
     world.registry.listOwned().map((handle) => handle.appSessionId),
