@@ -20,6 +20,7 @@ const ALL_LIVENESS: Liveness[] = ['spawning', 'running', 'dormant', 'interrupted
 
 const DEFINED_EDGES: Array<[Liveness, Liveness]> = [
   ['spawning', 'running'],
+  ['spawning', 'interrupted'],
   ['spawning', 'dead'],
   ['running', 'dormant'],
   ['running', 'interrupted'],

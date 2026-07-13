@@ -99,4 +99,28 @@ describe('registry (I4 ownership, I11 refusal, I3 fork, recovery)', () => {
     expect(canonicalJson(recovered.needsAttention)).toBe(attentionBefore);
     expect(orphanScan(revived)).toEqual([]);
   });
+
+  it('recoveryRoutine marks a spawning-at-crash session interrupted, attention untouched (D13)', () => {
+    const world = createWorld();
+    // Created but never spawned: liveness is born 'spawning' (INITIAL_LIVENESS)
+    // and stays there until the host dies.
+    const appSessionId = world.registry.createSession({ channel: 'sdk', cwd: '/x' });
+
+    const before = world.projectionHost.sessionsState().sessions[appSessionId]!;
+    expect(before.liveness).toBe('spawning');
+    const attentionBefore = canonicalJson(before.needsAttention);
+
+    const revived = restart(world);
+    recoveryRoutine(revived);
+
+    const recovered = revived.projectionHost.sessionsState().sessions[appSessionId]!;
+    expect(recovered.liveness).toBe('interrupted');
+    expect(canonicalJson(recovered.needsAttention)).toBe(attentionBefore);
+    expect(orphanScan(revived)).toEqual([]);
+
+    const rejections = revived.store
+      .read(appSessionId, 1)
+      .filter((record) => record.type === 'transition_rejected');
+    expect(rejections).toEqual([]);
+  });
 });
