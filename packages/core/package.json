@@ -1,0 +1,21 @@
+{
+  "name": "@vimes/core",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing/storeConformance.d.ts",
+      "default": "./dist/testing/storeConformance.js"
+    }
+  },
+  "dependencies": {
+    "zod": "^3"
+  }
+}
