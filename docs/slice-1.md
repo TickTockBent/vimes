@@ -1,7 +1,10 @@
 # Slice 1 — Find the value: one real session on a phone (operational plan)
 
-*Skeleton designed 2026-07-13. Awaiting: infra items (§ prerequisites below)
-and Wes's go-ahead on the D4 spike (it burns real usage). Spec reference: §9
+*Skeleton designed 2026-07-13. Infra items provided by Wes same day:
+hostname **vimes.example.dev**; tunnel created by me, Access secured by Wes
+(**GitHub IdP** — fine, JWT validation is IdP-agnostic); D4 spike approved;
+n=1 project **Dongfu** (`~/projects/games/dongfu`); phone **Android**; D3
+decided (systemd on the host — see decisions.md). Spec reference: §9
 slice 1; §3.11 auth; findings A/E.*
 
 **Exit gate: human** — a full workday driven from the phone page against a

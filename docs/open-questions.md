@@ -15,12 +15,8 @@ Is "Vimes" the name? Proposed and un-objected through one red-pen round.
 **Lean (2026-07-13):** treat as provisionally settled; rename at will before
 0.1. Nothing should hard-code the name where a rename would hurt.
 
-## D3 — Deployment shape *(trigger: slice 1 — first real daemon deployment)*
-
-Bare-host under systemd vs Docker-with-mounts. The host must spawn `claude`,
-read `~/.claude`, and touch project dirs — all awkward through a container
-boundary. **Lean (2026-07-13):** bare-host systemd unit (stack doc §2 assumes
-it). Reopens if a dedicated dev container becomes the environment itself.
+<!-- D3 (deployment shape) moved to decisions.md 2026-07-13 — decided:
+     bare-host systemd on the host, vimes.example.dev, GitHub IdP. -->
 
 ## D4 — Channel billing buckets ⚠ *(trigger: slice 1 spike — blocks channel-choice defaults)*
 

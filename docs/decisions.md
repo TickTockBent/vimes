@@ -54,6 +54,19 @@ sketched in the horizon). This commits the slice 0 `EventRecord` schema; I6
 (replay equivalence) and I13 (persist-before-broadcast) are designed against
 inline bodies.
 
+## D3 — Deployment: bare-host systemd on the host
+
+*2026-07-13 (decided by Wes at slice 1 infra review; moved from
+open-questions.md).* The daemon runs on the host under a systemd unit,
+bound to `localhost:4600`, with cloudflared as the only route in — matching
+the box's existing per-app tunnel pattern (vscode/genesis/handoff). Docker was
+rejected because the host must spawn `claude`, read `~/.claude`, and touch
+project dirs, all awkward through a container boundary. Public hostname:
+**vimes.example.dev**, new `vimes` tunnel. Access uses **GitHub as IdP** for
+this slice (the daemon's JWT validation is IdP-agnostic — JWKS + aud only);
+the product-ization auth wrapper stays post-MVP. Reopens if a dedicated dev
+container becomes the environment itself.
+
 ## D13 — Recovery of `spawning`-at-crash sessions: add the `spawning→interrupted` edge
 
 *2026-07-13 (rule-0.1 finding in slice 0 step 4; decided by Wes same day;
