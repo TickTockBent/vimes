@@ -1,0 +1,73 @@
+# Decision record
+
+Settled design calls, with rationale. **Append-only**: a reversal is a new dated
+entry, not an edit. Numbering (`D#`) is preserved forever and continues the
+design spec's numbering — D1, D3–D8, and D10–D12 live in
+[open-questions.md](open-questions.md) until decided.
+
+Each entry:
+
+```
+## D# — <one-line title>
+
+*<YYYY-MM-DD>.* <What was decided, and why. Cite the evidence (harness probe,
+calibration run, spike result) and the open-question it closes. Note any
+assertion or pin this decision moves.>
+```
+
+## D2 — Process topology: one daemon + static UI bundle
+
+*2026-07-13 (resolved during design, red-pen round 1; migrated at kickoff).*
+One daemon process serves the API, the WS endpoint, and the built UI as static
+files. The split topology's only protection was sessions surviving web-layer
+restarts — but during slices 1–6 the code that churns is the registry and
+session-host logic itself, which forces restarts of the process-owning layer
+under either topology, and the web layer is static middleware that will never
+change independently. The real mitigation is `interrupted` + one-tap resume,
+promoted to daily UX (spec §4 beat 7). Registry stays transport-agnostic
+(in-memory for harness, WS for prod). Boundary: revisit only if daemon restarts
+hurt despite the recovery polish — then extract PTY/SDK ownership into a
+supervisor process (a refactor, not a rewrite, thanks to the transport-agnostic
+registry).
+
+## D9 — Ack semantics: liveness × attention split
+
+*2026-07-13 (resolved during design, finding D; migrated at kickoff).* Session
+state is two orthogonal dimensions, not one machine: *liveness* (process
+reality: `spawning → running → dormant | interrupted | dead`) and *attention*
+(`needsAttention` + `seenAt`). Viewing a session sets `seenAt` — acknowledging
+the notification, stopping re-alerts. **Only a deliberate action clears
+`needsAttention`** — responding to the gate, dismissing explicitly, the run
+resuming. A glance never silently clears "needs you," and attention state
+survives restarts (I5). The old `waiting`/`idle` labels survive only as derived
+UI badges.
+
+## D12 — Event log body storage: message bodies inline
+
+*2026-07-13 (signed off by Wes at slice 0 kickoff; moved from
+open-questions.md).* Message bodies are stored **inline** in the event log,
+with projection snapshots keeping boot flat. Transcript-refs were rejected
+because they would make replay depend on Anthropic's transcript files
+surviving, which rule 0.6 refuses. Cost accepted: log growth (multi-GB/year at
+heavy use), revisited with real growth data post-MVP (archival/compaction
+sketched in the horizon). This commits the slice 0 `EventRecord` schema; I6
+(replay equivalence) and I13 (persist-before-broadcast) are designed against
+inline bodies.
+
+## D13 — Recovery of `spawning`-at-crash sessions: add the `spawning→interrupted` edge
+
+*2026-07-13 (rule-0.1 finding in slice 0 step 4; decided by Wes same day;
+moved from open-questions.md).* The step-4 recovery design ("sessions the log
+last left `running` or `spawning` with no live process become `interrupted`")
+conflicted with the D9 edge set, which gave `spawning` only `→running` and
+`→dead`. The implementing agent routed recovery through the machine and
+reported the conflict rather than patching it; without a fix, a
+`spawning`-at-crash session stays `spawning` forever. **Decision: add
+`spawning→interrupted` to the liveness edge set.** A spawning session is live
+in the spec's sense (§3.10: host restart → live sessions → `interrupted`), and
+`interrupted`'s one-tap recovery degrades gracefully to re-spawn when no
+transcript was written before the crash. The rejected alternative —
+recovery touches only `running`, `spawning`-at-crash goes to `dead` — silently
+discards the user's intent to have a session. Moves: `LIVENESS_EDGES` in
+sessionMachine, the slice-0.md edge list, and the cold-restart profile grows a
+spawning-at-crash session so the recovered edge is exercised, not just legal.

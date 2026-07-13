@@ -1,0 +1,24 @@
+{
+  "name": "vimes",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc -b",
+    "ci": "bash scripts/ci-gate.sh"
+  },
+  "devDependencies": {
+    "typescript": "^5",
+    "vitest": "^3",
+    "@types/node": "^24"
+  },
+  "allowScripts": {
+    "better-sqlite3@12.11.1": true
+  }
+}
