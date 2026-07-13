@@ -87,7 +87,60 @@ native install scripts by default — repo setup and CI must approve them
 (`npm approve-scripts better-sqlite3 node-pty`) or installs silently skip the
 native build. Baked into slice 0 step 1.
 
-Remaining slice-ordered queue: D4 billing buckets + SDK resume-surface check (slice 1); D7
+### 2026-07-13 — Slice-1 step-0 spikes: D4 billing bucket, SDK surface, fixture shape
+
+**Method:** Claude Code CLI 2.1.207, SDK 0.3.207, isolated scratch project.
+`/usage` TUI captured programmatically via node-pty (ANSI-stripped), readings
+around identical tiny workloads per channel, two rounds. Raw captures +
+scripts + typings citations in the spike job dir (see checkpoint).
+
+**D4 headline: on this Max account, SDK `query()` and PTY interactive burn the
+SAME meters** — 5-hour window + weekly caps. No non-interactive monthly credit
+movement on either channel (usage-credits feature present but OFF). Kill
+criterion's billing branch not triggered.
+
+| Reading | Trigger | 5h window | Week all | Week Fable |
+|---|---|---|---|---|
+| R0 | baseline (pre-spike; Wes's other work already running) | 89% | 66% | 73% |
+| R1+R2 | SDK round (cascade, see below) + PTY round | 95% | 66% | 74% |
+| R3 | SDK round, isolated (`settingSources: []`) | 96% | 67% | 74% |
+| R4 | PTY round | 96% | 67% | 74% |
+| R5 | PTY round (cascade recurred) | 97% ("USAGE CRITICAL" banner) | — | — |
+
+**Finding → D14 (settingSources inheritance):** an SDK `query()` with default
+`settingSources` inherits the user's ambient `~/.claude/settings.json` — R1's
+"reply ok" became an 8-turn, 6,351-output / 812k-cache-read cascade via Wes's
+usage-warning Stop hook (its systemd-run / file-write attempts were all
+denied — safe, but the burn was real). `settingSources: []` produced the
+clean 4-message exchange. PTY has no such knob (inherits everything, by
+design). Burn accounting: total spike burn exceeded plan solely due to this
+cascade — which is itself D4-relevant data.
+
+**Finding → D15 (PTY transcript absence):** three PTY-hosted spike sessions
+(incl. one clean, patient run, clearly billed) produced NO transcript .jsonl
+anywhere the spike could find. Unexplained; not chased at critical usage.
+Rule 0.8 makes the JSONL tail the ONLY structure source for PTY sessions —
+verify-row before the tailer is trusted (step 2 blocker).
+
+**SDK surface (typings + live tests, citations in spike notes):**
+`listSessions()`; `resume` option — **live-verified append-to-same-file, no
+fork, no new file** (I3 groundwork); `forkSession` (option + standalone fn);
+streaming input via `AsyncIterable` prompt / `Query.streamInput()`; `interrupt()`
+(streaming mode required); **`canUseTool` callback is a clean promise-based
+gate surface** ({title, displayName, requestId} — directly awaitable against
+a phone round-trip). CLI: `-n/--name` confirmed (feeds D7). Naming mismatch:
+CLI `--permission-mode manual` vs SDK type `default` — fragile-adapter note.
+
+**Fixture shape vs 2.1.207 (SDK-channel transcripts only, per D15):** additive
+except one breaking difference — real user records carry `message.content` as
+an ARRAY of blocks, fixture has a bare string. Also whole record types absent
+from fixtures (`attachment` — majority of lines in one real transcript —
+`queue-operation`, `file-history-snapshot`, …); live SDK stream types never
+appear in persisted JSONL (it's a strict subset). Action: fixture refresh
+task queued (fix user content shape, add representative new record types,
+re-stamp 2.1.207).
+
+Remaining slice-ordered queue: D7
 `claude -n` correlation + push delivery timing + iOS PWA re-auth bounce
 (slice 2); D8 usage endpoint capture (slice 5); D5 streaming-input injection
 (slice 6). Results land here dated, with method; decisions they force move to
