@@ -236,11 +236,23 @@ export function createDaemon(deps: DaemonDeps): Daemon {
 
   httpServer.on('upgrade', (request, socket, head) => {
     void (async () => {
+      // I14: auth verification stays FIRST — zero bytes without a valid JWT,
+      // regardless of the requested path.
       const token = readAccessTokenFromRequest(request);
       const result = await verifier.verify(token);
       if (!result.ok) {
         emitAuthRejected({ path: request.url ?? '', reason: result.reason });
         writeUpgradeAuthFailure(socket, result.reason);
+        return;
+      }
+      // Only the exact `/ws` pathname (query string ignored) proceeds to the
+      // WS hub; anything else gets a minimal raw 404 and the socket is torn
+      // down. This runs AFTER auth so unauthed probes never learn the shape
+      // of the routing (they always see 401/503, never 404).
+      const pathname = new URL(request.url ?? '', 'http://localhost').pathname;
+      if (pathname !== '/ws') {
+        socket.write('HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+        socket.destroy();
         return;
       }
       wsHub.handleUpgrade(request, socket, head);

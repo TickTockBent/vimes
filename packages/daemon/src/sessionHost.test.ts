@@ -5,6 +5,7 @@ import {
   MemoryEventStore,
   SteppingClock,
   gateFired,
+  gateFiredPayloadSchema,
   livenessChanged,
   readAllStreamsGrouped,
   replayFromEmpty,
@@ -260,6 +261,11 @@ describe('SessionHost — SDK channel', () => {
         prompt: 'Claude wants to run ls',
         requestId: 'req-42',
       });
+      // rule 0.7: the widened core schema (packages/core/src/events.ts) must
+      // accept the daemon's real wire payload, requestId included.
+      const gateSchemaResult = gateFiredPayloadSchema.safeParse(streamRecords[gateIndex]!.payload);
+      expect(gateSchemaResult.success).toBe(true);
+      expect(gateSchemaResult.success && gateSchemaResult.data.requestId).toBe('req-42');
 
       const answer = host.answerGate(appSessionId, 'req-42', 'allow');
       expect(answer).toEqual({ ok: true });
