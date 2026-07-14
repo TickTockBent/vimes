@@ -19,6 +19,7 @@ import type { DaemonConfig } from './config.js';
 import {
   SessionHost,
   scrubClaudeEnv,
+  truncateGatePrompt,
   type PtyLike,
   type PtySpawnFactory,
   type SdkQueryFactory,
@@ -222,8 +223,13 @@ describe('SessionHost — SDK channel', () => {
       host.sendMessage(appSessionId, 'hello');
       await waitFor(() => types(store, appSessionId).includes('usage_block'));
 
-      const messageRecord = records(store, appSessionId).find((record) => record.type === 'message')!;
-      expect((messageRecord.payload as { role: string }).role).toBe('assistant');
+      // The user turn is echoed first (Change 1), then the assistant reply.
+      const messageRecords = records(store, appSessionId).filter((record) => record.type === 'message');
+      expect((messageRecords[0]!.payload as { role: string; content: unknown }).role).toBe('user');
+      expect((messageRecords[0]!.payload as { content: unknown }).content).toBe('hello');
+      const messageRecord = messageRecords.find(
+        (record) => (record.payload as { role: string }).role === 'assistant',
+      )!;
       expect((messageRecord.payload as { content: unknown }).content).toEqual([
         { type: 'text', text: 'echo: hello' },
       ]);
@@ -386,6 +392,189 @@ describe('SessionHost — SDK channel', () => {
   });
 });
 
+// ── send: echo, auto-resume, refusals ────────────────────────────────────────
+
+describe('SessionHost — send: user echo + auto-resume', () => {
+  it('echoes the user message into the log BEFORE the SDK stream receives it (Change 1)', async () => {
+    const clock = new SteppingClock('2026-01-01T00:00:00.000Z', 1000);
+    const ids = new CountingIdSource();
+    const store = new MemoryEventStore({ clock, ids });
+    const router = new EventRouter(store);
+
+    let appSessionId = '';
+    // At the moment the SDK stream pulls the user turn, snapshot the message-event
+    // roles already in the log — the echo must be there first.
+    const messageRolesAtReceipt: string[][] = [];
+    const factory: SdkQueryFactory = ({ prompt }) => {
+      const generator = (async function* (): AsyncGenerator<SdkStreamMessage> {
+        yield { type: 'system', subtype: 'init', session_id: 'claude-1' };
+        for await (const _userMessage of prompt) {
+          void _userMessage;
+          messageRolesAtReceipt.push(
+            store
+              .read(appSessionId, 1)
+              .filter((record) => record.type === 'message')
+              .map((record) => (record.payload as { role: string }).role),
+          );
+        }
+      })();
+      return Object.assign(generator, {
+        close(): void {
+          void generator.return(undefined);
+        },
+      });
+    };
+    const host = new SessionHost({ store, router, clock, ids, config: buildConfig(), sdkQueryFactory: factory });
+    try {
+      const spawn = host.spawnSession({ channel: 'sdk', cwd: '/p' });
+      appSessionId = 'appSessionId' in spawn ? spawn.appSessionId : '';
+      await waitFor(() => store.head(appSessionId) >= 2); // created, running
+
+      host.sendMessage(appSessionId, 'hello');
+      await waitFor(() => messageRolesAtReceipt.length === 1);
+      expect(messageRolesAtReceipt[0]).toEqual(['user']);
+
+      const echo = records(store, appSessionId).find((record) => record.type === 'message')!;
+      expect(echo.payload).toEqual({ appSessionId, role: 'user', content: 'hello' });
+    } finally {
+      host.stop();
+    }
+  });
+
+  it('send to a dormant session auto-resumes (I3), then resume→running→user-echo→delivery (Change 2)', async () => {
+    const barrier = makeBarrier();
+    const { factory, calls } = makeSdkFactory(async function* ({ prompt, options }) {
+      if (options.resume === undefined) {
+        yield { type: 'system', subtype: 'init', session_id: 'claude-1' };
+        yield { type: 'result', subtype: 'success' };
+      } else {
+        yield { type: 'system', subtype: 'init', session_id: 'claude-1' };
+        for await (const userMessage of prompt) {
+          yield {
+            type: 'assistant',
+            message: { role: 'assistant', content: [{ type: 'text', text: `echo: ${userMessage.message.content}` }] },
+          };
+        }
+        await barrier.promise;
+      }
+    });
+    const { host, store } = makeHarness({ sdkQueryFactory: factory });
+    try {
+      const spawn = host.spawnSession({ channel: 'sdk', cwd: '/home/wes/dongfu' });
+      const appSessionId = 'appSessionId' in spawn ? spawn.appSessionId : '';
+      await waitFor(() => sessionOf(store, appSessionId)?.liveness === 'dormant');
+
+      const result = host.sendMessage(appSessionId, 'next turn');
+      expect(result).toEqual({ ok: true });
+
+      // Resumed with the last mapped claudeSessionId from the recorded cwd (I3).
+      await waitFor(() => calls.length === 2);
+      expect(calls[1]!.resume).toBe('claude-1');
+      expect(calls[1]!.cwd).toBe('/home/wes/dongfu');
+
+      await waitFor(() =>
+        records(store, appSessionId).some(
+          (record) => record.type === 'message' && (record.payload as { role: string }).role === 'assistant',
+        ),
+      );
+      // Full liveness path: initial run→dormant, then resume spawning→running.
+      const livenessTos = records(store, appSessionId)
+        .filter((record) => record.type === 'liveness_changed')
+        .map((record) => (record.payload as { to: string }).to);
+      expect(livenessTos).toEqual(['running', 'dormant', 'spawning', 'running']);
+
+      // Echo lands before the assistant reply, and after the resume's running.
+      const messageRecords = records(store, appSessionId).filter((record) => record.type === 'message');
+      expect((messageRecords[0]!.payload as { role: string; content: unknown })).toMatchObject({
+        role: 'user',
+        content: 'next turn',
+      });
+      expect((messageRecords[1]!.payload as { role: string }).role).toBe('assistant');
+      const secondRunning = records(store, appSessionId)
+        .filter((record) => record.type === 'liveness_changed' && (record.payload as { to: string }).to === 'running')
+        .at(-1)!;
+      expect(messageRecords[0]!.seq).toBeGreaterThan(secondRunning.seq);
+    } finally {
+      barrier.release();
+      host.stop();
+    }
+  });
+
+  it('send to a dead session is refused (session-dead); unknown session refused (Change 2)', () => {
+    const clock = new SteppingClock('2026-01-01T00:00:00.000Z', 1000);
+    const ids = new CountingIdSource();
+    const store = new MemoryEventStore({ clock, ids });
+    const router = new EventRouter(store);
+    router.emit([
+      sessionCreated({ appSessionId: 'app-dead', channel: 'sdk', cwd: '/p', name: null, forkedFrom: null, taskRef: null }),
+    ]);
+    router.emit([livenessChanged({ appSessionId: 'app-dead', to: 'running', cause: 'spawned' })]);
+    router.emit([livenessChanged({ appSessionId: 'app-dead', to: 'dead', cause: 'killed' })]);
+
+    const host = new SessionHost({ store, router, clock, ids, config: buildConfig() });
+    expect(host.sendMessage('app-dead', 'hi')).toEqual({ refused: true, reason: 'session-dead' });
+    expect(host.sendMessage('no-such-session', 'hi')).toEqual({ refused: true, reason: 'unknown-session' });
+    // No resume attempted for a dead session: it stays dead.
+    expect(sessionOf(store, 'app-dead')?.liveness).toBe('dead');
+  });
+});
+
+// ── gate prompt (Change 3) ────────────────────────────────────────────────────
+
+describe('SessionHost — gate prompt', () => {
+  it('truncateGatePrompt: keeps ≤160 verbatim, truncates longer to 160 with an ellipsis', () => {
+    const short = 'Bash: {"command":"ls"}';
+    expect(truncateGatePrompt(short)).toBe(short);
+    const exactly160 = 'a'.repeat(160);
+    expect(truncateGatePrompt(exactly160)).toBe(exactly160);
+    const long = 'a'.repeat(500);
+    const truncated = truncateGatePrompt(long);
+    expect(truncated.length).toBe(160);
+    expect(truncated.endsWith('…')).toBe(true);
+    expect(truncated.slice(0, 159)).toBe('a'.repeat(159));
+  });
+
+  it('gate prompt: short toolName + input JSON is kept verbatim when title absent', async () => {
+    const { factory } = makeSdkFactory(async function* ({ options }) {
+      yield { type: 'system', subtype: 'init', session_id: 'claude-1' };
+      void options.canUseTool('Bash', { command: 'ls' }, { requestId: 'req-1' });
+      yield { type: 'result', subtype: 'success' };
+    });
+    const { host, store } = makeHarness({ sdkQueryFactory: factory });
+    try {
+      const spawn = host.spawnSession({ channel: 'sdk', cwd: '/p' });
+      const appSessionId = 'appSessionId' in spawn ? spawn.appSessionId : '';
+      await waitFor(() => types(store, appSessionId).includes('gate_fired'));
+      const gate = records(store, appSessionId).find((record) => record.type === 'gate_fired')!;
+      expect((gate.payload as { prompt: string }).prompt).toBe('Bash: {"command":"ls"}');
+    } finally {
+      host.stop();
+    }
+  });
+
+  it('gate prompt: long toolName + input JSON is truncated to 160 chars when title absent', async () => {
+    const bigContent = 'x'.repeat(500);
+    const { factory } = makeSdkFactory(async function* ({ options }) {
+      yield { type: 'system', subtype: 'init', session_id: 'claude-1' };
+      void options.canUseTool('Write', { file_path: '/a.txt', content: bigContent }, { requestId: 'req-1' });
+      yield { type: 'result', subtype: 'success' };
+    });
+    const { host, store } = makeHarness({ sdkQueryFactory: factory });
+    try {
+      const spawn = host.spawnSession({ channel: 'sdk', cwd: '/p' });
+      const appSessionId = 'appSessionId' in spawn ? spawn.appSessionId : '';
+      await waitFor(() => types(store, appSessionId).includes('gate_fired'));
+      const gate = records(store, appSessionId).find((record) => record.type === 'gate_fired')!;
+      const prompt = (gate.payload as { prompt: string }).prompt;
+      expect(prompt.startsWith('Write: ')).toBe(true);
+      expect(prompt.length).toBe(160);
+      expect(prompt.endsWith('…')).toBe(true);
+    } finally {
+      host.stop();
+    }
+  });
+});
+
 // ── PTY channel ──────────────────────────────────────────────────────────────
 
 describe('SessionHost — PTY channel', () => {
@@ -413,14 +602,44 @@ describe('SessionHost — PTY channel', () => {
     expect(scrubbed).toEqual({ PATH: '/usr/bin' });
   });
 
-  it('keystrokes: sendMessage writes text + carriage return to the pty', () => {
-    const fakePty = makeFakePty();
-    const { host } = makeHarness({ ptySpawnFactory: fakePty.factory });
+  it('keystrokes: sendMessage echoes the user message BEFORE writing text + carriage return', () => {
+    const clock = new SteppingClock('2026-01-01T00:00:00.000Z', 1000);
+    const ids = new CountingIdSource();
+    const store = new MemoryEventStore({ clock, ids });
+    const router = new EventRouter(store);
+
+    let appSessionId = '';
+    // The pty write records the log's message events AT WRITE TIME — proving the
+    // echo landed before the keystrokes.
+    const messageRolesAtWriteTime: string[][] = [];
+    const writes: string[] = [];
+    const factory: PtySpawnFactory = () => ({
+      write: (data) => {
+        writes.push(data);
+        messageRolesAtWriteTime.push(
+          store
+            .read(appSessionId, 1)
+            .filter((record) => record.type === 'message')
+            .map((record) => (record.payload as { role: string }).role),
+        );
+      },
+      kill: () => {},
+      onData: () => {},
+      onExit: () => {},
+    });
+    const host = new SessionHost({ store, router, clock, ids, config: buildConfig(), ptySpawnFactory: factory });
     try {
       const spawn = host.spawnSession({ channel: 'pty', cwd: '/p' });
-      const appSessionId = 'appSessionId' in spawn ? spawn.appSessionId : '';
+      appSessionId = 'appSessionId' in spawn ? spawn.appSessionId : '';
       host.sendMessage(appSessionId, 'ls -la');
-      expect(fakePty.writes).toEqual(['ls -la\r']);
+
+      expect(writes).toEqual(['ls -la\r']);
+      // At the moment the keystrokes were written, the user echo already existed.
+      expect(messageRolesAtWriteTime).toEqual([['user']]);
+      const echo = store
+        .read(appSessionId, 1)
+        .find((record) => record.type === 'message')!;
+      expect(echo.payload).toEqual({ appSessionId, role: 'user', content: 'ls -la' });
     } finally {
       host.stop();
     }

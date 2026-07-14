@@ -247,7 +247,10 @@ describe('WsHub protocol v0 over a live daemon', () => {
 
       await client.waitForMessageCount(3);
       expect(client.messages).toEqual([
-        { op: 'refused', refusedOp: 'send', reason: 'no-live-process' },
+        // send now shares resume's truthful reason for a session that does not
+        // exist (send to a dormant/interrupted session auto-resumes, so the
+        // distinct refusals are unknown-session / session-dead / spawning-in-flight).
+        { op: 'refused', refusedOp: 'send', reason: 'unknown-session' },
         { op: 'refused', refusedOp: 'gate_response', reason: 'unknown-gate' },
         { op: 'refused', refusedOp: 'resume', reason: 'unknown-session' },
       ]);
