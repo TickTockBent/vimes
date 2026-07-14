@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, reactive, ref } from 'vue';
 import { useVimesStore } from '../stores/vimesStore.js';
 import { deriveGateCards } from '../lib/gateCard.js';
-import { extractTextBlocks } from '../lib/messageContent.js';
+import { extractContentBlocks, type ContentBlockView } from '../lib/messageContent.js';
+import { collapseConsecutiveUsageEvents } from '../lib/usageCollapse.js';
 import GateCard from '../components/GateCard.vue';
 import type { EventRecord } from '../lib/types.js';
 
@@ -44,8 +45,8 @@ function roleOf(event: EventRecord): string {
   return isRecord(event.payload) && typeof event.payload.role === 'string' ? event.payload.role : 'unknown';
 }
 
-function textLinesOf(event: EventRecord): string[] {
-  return isRecord(event.payload) ? extractTextBlocks(event.payload.content) : [];
+function contentBlocksOf(event: EventRecord): ContentBlockView[] {
+  return isRecord(event.payload) ? extractContentBlocks(event.payload.content) : [];
 }
 
 function usageSummary(event: EventRecord): string {
@@ -59,6 +60,35 @@ function usageSummary(event: EventRecord): string {
     }
   }
   return 'usage updated';
+}
+
+// D17 (docs/open-questions.md): a turn emits one usage_block per SDK
+// assistant message, so identical snapshots repeat within a turn. Every
+// event still lands in the store untouched (rule 0.7) — this is a
+// presentation-only filter deciding which usage_block events get a
+// rendered line.
+const visibleUsageEventIds = computed(() => new Set(collapseConsecutiveUsageEvents(events.value).map((event) => event.eventId)));
+
+// tool_result previews are collapsed by default; tapping one reveals it.
+// Keyed by `${eventId}:${blockIndex}` since one message event can carry
+// more than one tool_result block.
+const expandedToolResults = reactive(new Set<string>());
+
+function toolResultKey(event: EventRecord, blockIndex: number): string {
+  return `${event.eventId}:${blockIndex}`;
+}
+
+function isToolResultExpanded(event: EventRecord, blockIndex: number): boolean {
+  return expandedToolResults.has(toolResultKey(event, blockIndex));
+}
+
+function toggleToolResult(event: EventRecord, blockIndex: number): void {
+  const key = toolResultKey(event, blockIndex);
+  if (expandedToolResults.has(key)) {
+    expandedToolResults.delete(key);
+  } else {
+    expandedToolResults.add(key);
+  }
 }
 
 function submitMessage(): void {
@@ -94,20 +124,60 @@ function resume(): void {
 
     <main class="flex-1 space-y-2 p-3">
       <template v-for="event in events" :key="event.eventId">
-        <div v-if="event.type === 'message'" class="flex" :class="roleOf(event) === 'user' ? 'justify-end' : 'justify-start'">
-          <div
-            class="max-w-[85%] rounded-lg px-3 py-2 text-sm whitespace-pre-wrap"
-            :class="
-              roleOf(event) === 'user'
-                ? 'bg-sky-600 text-white'
-                : 'bg-slate-100 text-slate-900 dark:bg-slate-800 dark:text-slate-100'
-            "
-          >
-            <p v-for="(line, index) in textLinesOf(event)" :key="index">{{ line }}</p>
-          </div>
-        </div>
+        <template v-if="event.type === 'message'">
+          <template v-for="(block, blockIndex) in contentBlocksOf(event)" :key="`${event.eventId}-${blockIndex}`">
+            <p
+              v-if="block.kind === 'thinking'"
+              class="text-center text-xs italic text-slate-400 dark:text-slate-500"
+            >
+              · thinking ·
+            </p>
 
-        <p v-else-if="event.type === 'usage_block'" class="text-center text-xs text-slate-400 dark:text-slate-500">
+            <p
+              v-else-if="block.kind === 'tool'"
+              class="truncate text-center font-mono text-xs text-slate-400 dark:text-slate-500"
+            >
+              ⚙ {{ block.name }} {{ block.inputPreview }}
+            </p>
+
+            <div v-else-if="block.kind === 'toolResult'" class="text-center text-xs text-slate-400 dark:text-slate-500">
+              <button
+                v-if="!isToolResultExpanded(event, blockIndex)"
+                type="button"
+                class="underline decoration-dotted"
+                @click="toggleToolResult(event, blockIndex)"
+              >
+                ↳ result (tap to expand)
+              </button>
+              <button
+                v-else
+                type="button"
+                class="whitespace-pre-wrap text-left underline decoration-dotted"
+                @click="toggleToolResult(event, blockIndex)"
+              >
+                ↳ {{ block.preview }}
+              </button>
+            </div>
+
+            <div v-else-if="block.kind === 'text'" class="flex" :class="roleOf(event) === 'user' ? 'justify-end' : 'justify-start'">
+              <div
+                class="max-w-[85%] rounded-lg px-3 py-2 text-sm whitespace-pre-wrap"
+                :class="
+                  roleOf(event) === 'user'
+                    ? 'bg-sky-600 text-white'
+                    : 'bg-slate-100 text-slate-900 dark:bg-slate-800 dark:text-slate-100'
+                "
+              >
+                {{ block.text }}
+              </div>
+            </div>
+          </template>
+        </template>
+
+        <p
+          v-else-if="event.type === 'usage_block' && visibleUsageEventIds.has(event.eventId)"
+          class="text-center text-xs text-slate-400 dark:text-slate-500"
+        >
           {{ usageSummary(event) }}
         </p>
 

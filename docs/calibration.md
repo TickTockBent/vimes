@@ -47,6 +47,18 @@ byte-channel total, exercised-never-parsed per rule 0.8; `snapshot-bytes` = sum
 of the three mid-log projection snapshots. ¹ cold-restart re-observed same day
 after D13 added the spawning-at-crash session to the profile — was 14/3/838.)
 
+### 2026-07-14 — first real gate round-trip (smoke S5/S6, live daemon)
+
+Real SDK session on Dongfu through the deployed daemon + Access + browser:
+spawn → converse (thinking/tool_use/tool_result turn) → Write-gate fired →
+answered ALLOW from the UI → file created. Event-log evidence (session
+17293cfd): `gate_fired` seq 29 → `notification_trigger` seq 30 (**adjacent —
+the I5 batch rule holding in production**) → `attention_cleared` seq 31 with
+cause `gate_answered`. Also observed: one turn = several assistant messages
+each with an identical usage snapshot (→ D17); default spawned model
+`claude-opus-4-8-1m`; gate prompt payload carried just the tool name
+("Write") — canUseTool `title` apparently absent; enrichment candidate.
+
 ## Budget table (`--report`)
 
 Design-intent targets from spec §8, listed so nothing gets pinned from memory.

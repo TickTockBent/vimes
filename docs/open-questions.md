@@ -99,6 +99,18 @@ hooks) and that `'project'` is REQUIRED for CLAUDE.md files to load, which
 worker sessions on a real repo want. `[]` remains the fallback for fully
 isolated runs. Wes prices this together with D4.
 
+## D17 — usage_block granularity: one per SDK assistant message *(trigger: slice 4/5 — cache stats and meter consumers)*
+
+Observed in the first real smoke session (2026-07-14): one turn = several SDK
+assistant messages (thinking, tool_use, final text), EACH carrying a usage
+snapshot; the host emits a `usage_block` per message, so identical snapshots
+repeat within a turn. The log is honest (rule 0.7 — that IS what the SDK
+delivered), but naive summation by slice-4/5 consumers would double-count.
+**Lean (2026-07-14):** keep the log as-is; consumers dedupe per API turn
+(usage snapshots within one turn are identical → collapse on equality or on
+message id); UI collapses consecutive identical usage lines (cosmetic,
+landing in slice 1).
+
 <!-- D15 (PTY transcript absence) moved to decisions.md 2026-07-13 —
      resolved: inherited CLAUDE* env suppresses transcripts; PTY channel
      scrubs env; tailer trusted on that basis. -->
