@@ -1,4 +1,11 @@
-# Slice 1 — testing runbook (drafted 2026-07-13 evening; finalize after steps 1–3 land)
+# Slice 1 — testing runbook
+
+> **Status end of 2026-07-13:** steps 0–3 built, verified, committed (182
+> tests green). Daemon DEPLOYED fail-closed: `vimes.service` active,
+> 503 confirmed locally and through the tunnel. §2 below is done except the
+> env values; tomorrow starts at §1 (Wes's Access app), then §3 smoke.
+> Gate-D still owed: D4 (channel default — lean: SDK) and D14
+> (settingSources — lean: ['project'], running as PREVIEW default).
 
 Tomorrow's session: wire Access, deploy, smoke-test, first phone loop. The
 **exit gate** (a full workday driven from the phone) is a separate later day —
