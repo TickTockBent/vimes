@@ -2,7 +2,11 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <!-- interactive-widget=resizes-content (Chrome Android >=108): the layout
+         viewport shrinks when the on-screen keyboard opens, so the sticky
+         composer footer stays above it. Older/other browsers fall back to
+         the visualViewport-driven offset in StreamView.vue. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
     <meta name="color-scheme" content="light dark" />
     <title>vimes</title>
   </head>

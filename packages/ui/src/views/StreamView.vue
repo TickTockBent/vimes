@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue';
 import { useVimesStore } from '../stores/vimesStore.js';
 import { deriveGateCards } from '../lib/gateCard.js';
 import { extractContentBlocks, type ContentBlockView } from '../lib/messageContent.js';
 import { collapseConsecutiveUsageEvents } from '../lib/usageCollapse.js';
+import { clampTextareaHeight, type TextareaMetrics } from '../lib/textareaGrow.js';
+import { initialKeyboardOffsetState, reduceKeyboardOffset, type KeyboardOffsetState } from '../lib/keyboardOffset.js';
 import GateCard from '../components/GateCard.vue';
 import type { EventRecord } from '../lib/types.js';
 
@@ -12,9 +14,77 @@ defineEmits<{ back: [] }>();
 
 const store = useVimesStore();
 const draft = ref('');
+const composerRef = ref<HTMLTextAreaElement | null>(null);
+
+// Defect 2: auto-growing composer. 1 row min, ~5 rows max before internal
+// scrolling — see packages/ui/src/lib/textareaGrow.ts for the pure clamp math.
+const TEXTAREA_MIN_ROWS = 1;
+const TEXTAREA_MAX_ROWS = 5;
+
+function textareaMetrics(el: HTMLTextAreaElement): TextareaMetrics {
+  const computed = window.getComputedStyle(el);
+  const lineHeightPx = parseFloat(computed.lineHeight) || 20;
+  const verticalChromePx =
+    parseFloat(computed.paddingTop || '0') +
+    parseFloat(computed.paddingBottom || '0') +
+    parseFloat(computed.borderTopWidth || '0') +
+    parseFloat(computed.borderBottomWidth || '0');
+  return { lineHeightPx, verticalChromePx, minRows: TEXTAREA_MIN_ROWS, maxRows: TEXTAREA_MAX_ROWS };
+}
+
+function autoGrowComposer(): void {
+  const el = composerRef.value;
+  if (el === null) {
+    return;
+  }
+  el.style.height = 'auto'; // collapse first so scrollHeight reflects natural content height, not the prior clamp
+  const clamp = clampTextareaHeight(el.scrollHeight, textareaMetrics(el));
+  el.style.height = `${clamp.heightPx}px`;
+  el.style.overflowY = clamp.overflowing ? 'auto' : 'hidden';
+}
+
+// Defect 1 fallback: window.visualViewport-driven keyboard offset — see
+// packages/ui/src/lib/keyboardOffset.ts for the pure reducer. index.html's
+// `interactive-widget=resizes-content` handles this on Chrome Android >=108
+// already (offset stays 0 there); this covers everything else.
+const keyboardOffsetState = ref<KeyboardOffsetState>(initialKeyboardOffsetState);
+const keyboardOffsetPx = computed(() => keyboardOffsetState.value.offsetPx);
+
+function handleVisualViewportChange(): void {
+  const visualViewport = window.visualViewport;
+  if (!visualViewport) {
+    return;
+  }
+  const wasOpen = keyboardOffsetState.value.offsetPx > 0;
+  keyboardOffsetState.value = reduceKeyboardOffset(keyboardOffsetState.value, {
+    type: 'visualViewportChange',
+    layoutViewportHeightPx: window.innerHeight,
+    visualViewportHeightPx: visualViewport.height,
+    visualViewportOffsetTopPx: visualViewport.offsetTop,
+  });
+  const nowOpen = keyboardOffsetState.value.offsetPx > 0;
+  // Keyboard just opened while the composer is focused: the stream's tail
+  // (and the composer riding above the keyboard) can end up out of view —
+  // pull it back to the bottom.
+  if (!wasOpen && nowOpen && document.activeElement === composerRef.value) {
+    window.scrollTo({ top: document.documentElement.scrollHeight });
+  }
+}
 
 onMounted(() => {
   store.subscribe(props.appSessionId);
+  void nextTick(autoGrowComposer);
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', handleVisualViewportChange);
+    window.visualViewport.addEventListener('scroll', handleVisualViewportChange);
+  }
+});
+
+onUnmounted(() => {
+  if (window.visualViewport) {
+    window.visualViewport.removeEventListener('resize', handleVisualViewportChange);
+    window.visualViewport.removeEventListener('scroll', handleVisualViewportChange);
+  }
 });
 
 const events = computed<EventRecord[]>(() =>
@@ -98,6 +168,7 @@ function submitMessage(): void {
   }
   store.sendMessage(props.appSessionId, text);
   draft.value = '';
+  void nextTick(autoGrowComposer); // collapse back to minRows now that draft is empty
 }
 
 function respond(card: { appSessionId: string; requestId: string }, response: 'allow' | 'deny'): void {
@@ -196,7 +267,10 @@ function resume(): void {
       </template>
     </main>
 
-    <footer class="sticky bottom-0 flex flex-col gap-2 border-t border-slate-200 bg-white p-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] dark:border-slate-800 dark:bg-slate-950">
+    <footer
+      class="keyboard-safe-footer sticky bottom-0 flex flex-col gap-2 border-t border-slate-200 bg-white p-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] dark:border-slate-800 dark:bg-slate-950"
+      :style="{ '--keyboard-offset': `${keyboardOffsetPx}px` }"
+    >
       <button
         v-if="canResume"
         type="button"
@@ -205,16 +279,18 @@ function resume(): void {
       >
         Resume
       </button>
-      <form class="flex gap-2" @submit.prevent="submitMessage">
-        <input
+      <form class="flex min-w-0 items-end gap-2" @submit.prevent="submitMessage">
+        <textarea
+          ref="composerRef"
           v-model="draft"
-          type="text"
+          rows="1"
           placeholder="Message…"
-          class="min-h-[44px] flex-1 rounded-md border border-slate-300 px-3 text-sm dark:border-slate-700 dark:bg-slate-900"
+          class="max-h-40 min-h-[44px] min-w-0 flex-1 resize-none overflow-y-hidden rounded-md border border-slate-300 px-3 py-2.5 text-sm leading-5 dark:border-slate-700 dark:bg-slate-900"
+          @input="autoGrowComposer"
         />
         <button
           type="submit"
-          class="min-h-[44px] min-w-[44px] rounded-md bg-sky-600 px-4 font-semibold text-white active:bg-sky-700 disabled:opacity-50"
+          class="min-h-[44px] min-w-[44px] shrink-0 rounded-md bg-sky-600 px-4 font-semibold text-white active:bg-sky-700 disabled:opacity-50"
           :disabled="draft.trim().length === 0"
         >
           Send
