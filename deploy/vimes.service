@@ -1,0 +1,17 @@
+[Unit]
+Description=VIMES daemon (agent-first remote IDE session host)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ticktockbent
+EnvironmentFile=/etc/vimes/env
+ExecStart=/home/ticktockbent/.nvm/versions/node/v24.18.0/bin/node /home/ticktockbent/projects/infrastructure/vimes/packages/daemon/dist/main.js
+WorkingDirectory=/home/ticktockbent/projects/infrastructure/vimes
+Restart=on-failure
+RestartSec=5s
+# The daemon binds 127.0.0.1 only (D3); cloudflared-vimes is the sole route in.
+
+[Install]
+WantedBy=multi-user.target

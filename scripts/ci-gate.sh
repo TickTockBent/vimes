@@ -22,6 +22,13 @@ npm run typecheck
 echo "ci-gate: unit tests"
 npm test
 
+# --- ui build (step 3) -------------------------------------------------------
+# vue-tsc typechecks the .vue SFCs root tsc -b can't see, then vite bundles to
+# packages/ui/dist (served by the daemon via VIMES_STATIC_DIR). Build failure
+# fails the gate.
+echo "ci-gate: ui build"
+npm run build -w @vimes/ui
+
 # --- double-run determinism gate (step 4) -----------------------------------
 # Run each scenario profile twice, byte-compare the two canonicalJson artifacts
 # (event-log dump + projection serializations + counters). Typecheck above has
