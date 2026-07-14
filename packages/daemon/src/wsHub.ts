@@ -1,9 +1,11 @@
 import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
+import { resolve, sep } from 'node:path';
 import { WebSocketServer, WebSocket, type RawData } from 'ws';
 import { z } from 'zod';
 import type { EventRecord, EventStore } from '@vimes/core';
 import { EventRouter } from '@vimes/core';
+import type { SessionHost } from './sessionHost.js';
 
 // The WS layer over EventRouter (slice-1.md protocol v0). One socket multiplexes
 // every stream. Reads come via REST; live events and (later) writes ride the WS.
@@ -35,6 +37,13 @@ const resumeEnvelopeSchema = z.object({
   op: z.literal('resume'),
   appSessionId: z.string(),
 });
+// v0.1 (step 2): the UI must be able to create a session.
+const spawnEnvelopeSchema = z.object({
+  op: z.literal('spawn'),
+  channel: z.enum(['sdk', 'pty']),
+  cwd: z.string().min(1),
+  name: z.string().optional(),
+});
 
 const controlEnvelopeSchema = z.discriminatedUnion('op', [
   subscribeEnvelopeSchema,
@@ -42,9 +51,21 @@ const controlEnvelopeSchema = z.discriminatedUnion('op', [
   sendEnvelopeSchema,
   gateResponseEnvelopeSchema,
   resumeEnvelopeSchema,
+  spawnEnvelopeSchema,
 ]);
 
-const NOT_IMPLEMENTED_OPS = new Set(['send', 'gate_response', 'resume']);
+// A resolved cwd must sit within one of the resolved allowlisted roots. Empty
+// allowlist = refuse all (path-traversal discipline).
+function isWithinProjectRoots(cwd: string, projectRoots: readonly string[]): boolean {
+  const candidate = resolve(cwd);
+  for (const root of projectRoots) {
+    const resolvedRoot = resolve(root);
+    if (candidate === resolvedRoot || candidate.startsWith(resolvedRoot + sep)) {
+      return true;
+    }
+  }
+  return false;
+}
 
 interface HubConnection {
   socket: WebSocket;
@@ -72,6 +93,11 @@ export interface WsHubDeps {
   // Test seam (finding E): read a socket's buffered bytes. Overridable so tests
   // can simulate a saturated socket without pushing real megabytes.
   bufferedAmountOf?: (socket: WebSocket) => number;
+  // The session host receiving spawn/send/gate_response/resume. Absent → those
+  // ops refuse as not-implemented (step-1 posture preserved).
+  sessionHost?: SessionHost;
+  // Absolute allowlisted roots a spawn cwd must sit within; empty = refuse all.
+  projectRoots?: readonly string[];
 }
 
 export class WsHub {
@@ -79,6 +105,8 @@ export class WsHub {
   private readonly store: EventStore;
   private readonly bufferedLimitBytes: number;
   private readonly bufferedAmountOf: (socket: WebSocket) => number;
+  private readonly sessionHost: SessionHost | undefined;
+  private readonly projectRoots: readonly string[];
   private readonly webSocketServer: WebSocketServer;
   private readonly connections = new Set<HubConnection>();
 
@@ -87,6 +115,8 @@ export class WsHub {
     this.store = deps.store;
     this.bufferedLimitBytes = deps.bufferedLimitBytes;
     this.bufferedAmountOf = deps.bufferedAmountOf ?? ((socket) => socket.bufferedAmount);
+    this.sessionHost = deps.sessionHost;
+    this.projectRoots = deps.projectRoots ?? [];
     this.webSocketServer = new WebSocketServer({ noServer: true });
   }
 
@@ -169,13 +199,75 @@ export class WsHub {
         }
         return;
       }
-      default:
-        // send / gate_response / resume — shapes valid, behavior is step 2.
-        if (NOT_IMPLEMENTED_OPS.has(control.op)) {
-          this.sendControl(connection, { op: 'refused', refusedOp: control.op, reason: 'not-implemented' });
+      case 'spawn':
+        this.handleSpawn(connection, control.channel, control.cwd, control.name);
+        return;
+      case 'send': {
+        const host = this.sessionHost;
+        if (host === undefined) {
+          this.refuse(connection, 'send', 'not-implemented');
+          return;
+        }
+        const result = host.sendMessage(control.appSessionId, control.text);
+        if ('refused' in result) {
+          this.refuse(connection, 'send', result.reason);
         }
         return;
+      }
+      case 'gate_response': {
+        const host = this.sessionHost;
+        if (host === undefined) {
+          this.refuse(connection, 'gate_response', 'not-implemented');
+          return;
+        }
+        const result = host.answerGate(control.appSessionId, control.requestId, control.response);
+        if ('refused' in result) {
+          this.refuse(connection, 'gate_response', result.reason);
+        }
+        return;
+      }
+      case 'resume': {
+        const host = this.sessionHost;
+        if (host === undefined) {
+          this.refuse(connection, 'resume', 'not-implemented');
+          return;
+        }
+        const result = host.resumeSession(control.appSessionId);
+        if ('refused' in result) {
+          this.refuse(connection, 'resume', result.reason);
+        }
+        return;
+      }
     }
+  }
+
+  private handleSpawn(
+    connection: HubConnection,
+    channel: 'sdk' | 'pty',
+    cwd: string,
+    name: string | undefined,
+  ): void {
+    const host = this.sessionHost;
+    if (host === undefined) {
+      this.refuse(connection, 'spawn', 'not-implemented');
+      return;
+    }
+    // Path-traversal discipline: refuse any cwd outside the configured roots
+    // BEFORE a process is asked for (empty allowlist refuses all).
+    if (!isWithinProjectRoots(cwd, this.projectRoots)) {
+      this.refuse(connection, 'spawn', 'cwd-outside-project-roots');
+      return;
+    }
+    const result = host.spawnSession({ channel, cwd, name });
+    if ('refused' in result) {
+      this.refuse(connection, 'spawn', result.reason);
+      return;
+    }
+    this.sendControl(connection, { op: 'spawned', appSessionId: result.appSessionId });
+  }
+
+  private refuse(connection: HubConnection, refusedOp: string, reason: string): void {
+    this.sendControl(connection, { op: 'refused', refusedOp, reason });
   }
 
   private handleSubscribe(connection: HubConnection, stream: string, lastSeq: number): void {

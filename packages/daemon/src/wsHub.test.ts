@@ -7,6 +7,14 @@ import { CountingIdSource, SteppingClock, canonicalJson, type EventRecord } from
 import type { AccessVerifier } from './auth.js';
 import { createDaemon, type Daemon } from './app.js';
 import type { DaemonConfig } from './config.js';
+import type { PtyLike, PtySpawnFactory } from './sessionHost.js';
+
+// A fake PTY that satisfies the seam without spawning anything real (no Claude in
+// CI). Its transcript would come only from the tailer, unused here.
+function makeFakePty(): PtyLike {
+  return { write: () => {}, kill: () => {}, onData: () => {}, onExit: () => {} };
+}
+const fakePtySpawnFactory: PtySpawnFactory = () => makeFakePty();
 
 const temporaryDirectory = mkdtempSync(join(tmpdir(), 'vimes-wshub-'));
 let databaseFileCounter = 0;
@@ -19,7 +27,7 @@ function nextDatabasePath(): string {
   return join(temporaryDirectory, `wshub-${databaseFileCounter}.db`);
 }
 
-function buildConfig(): DaemonConfig {
+function buildConfig(overrides: Partial<DaemonConfig> = {}): DaemonConfig {
   return {
     port: 0,
     dbPath: nextDatabasePath(),
@@ -29,6 +37,9 @@ function buildConfig(): DaemonConfig {
     staticDir: undefined,
     wsBufferedLimitBytes: 4_194_304,
     bindHost: '127.0.0.1',
+    sdkSettingSources: ['project'],
+    projectRoots: [],
+    ...overrides,
   };
 }
 
@@ -196,22 +207,70 @@ describe('WsHub protocol v0 over a live daemon', () => {
     }
   });
 
-  it('send / gate_response / resume are refused as not-implemented (shapes land, rule 0.5)', async () => {
-    const daemon = await startDaemon();
+  it('send / gate_response / resume against an unknown session are refused with a reason (host wired, step 2)', async () => {
+    // The host is now wired in createDaemon, so these ops are IMPLEMENTED. Against
+    // a session that does not exist they refuse cleanly (never spawn anything).
+    const daemon = await startDaemon({ projectsRoot: temporaryDirectory });
     const client = new WsTestClient(daemon.port, ANY_TOKEN);
     try {
       await client.opened();
 
-      client.send({ op: 'send', appSessionId: 'app-1', text: 'hello' });
-      client.send({ op: 'gate_response', appSessionId: 'app-1', requestId: 'req-1', response: { allow: true } });
-      client.send({ op: 'resume', appSessionId: 'app-1' });
+      client.send({ op: 'send', appSessionId: 'app-unknown', text: 'hello' });
+      client.send({ op: 'gate_response', appSessionId: 'app-unknown', requestId: 'req-1', response: 'allow' });
+      client.send({ op: 'resume', appSessionId: 'app-unknown' });
 
       await client.waitForMessageCount(3);
       expect(client.messages).toEqual([
-        { op: 'refused', refusedOp: 'send', reason: 'not-implemented' },
-        { op: 'refused', refusedOp: 'gate_response', reason: 'not-implemented' },
-        { op: 'refused', refusedOp: 'resume', reason: 'not-implemented' },
+        { op: 'refused', refusedOp: 'send', reason: 'no-live-process' },
+        { op: 'refused', refusedOp: 'gate_response', reason: 'unknown-gate' },
+        { op: 'refused', refusedOp: 'resume', reason: 'unknown-session' },
       ]);
+    } finally {
+      client.close();
+      await daemon.stop();
+    }
+  });
+
+  it('spawn: a cwd within the project roots creates a session and replies { op: spawned }', async () => {
+    const daemon = await startDaemon({
+      config: buildConfig({ projectRoots: [temporaryDirectory] }),
+      ptySpawnFactory: fakePtySpawnFactory,
+      projectsRoot: temporaryDirectory,
+    });
+    const client = new WsTestClient(daemon.port, ANY_TOKEN);
+    try {
+      await client.opened();
+      client.send({ op: 'spawn', channel: 'pty', cwd: temporaryDirectory, name: 'via-ws' });
+
+      await client.waitForMessageCount(1);
+      const reply = client.messages[0]!;
+      expect(reply.op).toBe('spawned');
+      expect(typeof reply.appSessionId).toBe('string');
+      expect(daemon.sessionHost.isLive(reply.appSessionId as string)).toBe(true);
+    } finally {
+      client.close();
+      await daemon.stop();
+    }
+  });
+
+  it('spawn: a cwd outside the project roots is refused (path-traversal discipline)', async () => {
+    const daemon = await startDaemon({
+      config: buildConfig({ projectRoots: [temporaryDirectory] }),
+      ptySpawnFactory: fakePtySpawnFactory,
+      projectsRoot: temporaryDirectory,
+    });
+    const client = new WsTestClient(daemon.port, ANY_TOKEN);
+    try {
+      await client.opened();
+      client.send({ op: 'spawn', channel: 'pty', cwd: '/etc', name: 'nope' });
+
+      await client.waitForMessageCount(1);
+      expect(client.messages[0]).toEqual({
+        op: 'refused',
+        refusedOp: 'spawn',
+        reason: 'cwd-outside-project-roots',
+      });
+      expect(daemon.sessionHost.liveProcessCount()).toBe(0);
     } finally {
       client.close();
       await daemon.stop();

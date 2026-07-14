@@ -19,6 +19,7 @@
     "@types/node": "^24"
   },
   "allowScripts": {
-    "better-sqlite3@12.11.1": true
+    "better-sqlite3@12.11.1": true,
+    "node-pty@1.1.0": true
   }
 }

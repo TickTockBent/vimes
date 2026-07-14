@@ -31,6 +31,8 @@ function buildConfig(overrides: Partial<DaemonConfig>): DaemonConfig {
     staticDir: undefined,
     wsBufferedLimitBytes: 4_194_304,
     bindHost: '127.0.0.1',
+    sdkSettingSources: ['project'],
+    projectRoots: [],
     ...overrides,
   };
 }

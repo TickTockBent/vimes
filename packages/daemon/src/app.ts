@@ -30,6 +30,12 @@ import {
   type EmitAuthRejected,
 } from './auth.js';
 import { WsHub, type WsHubDeps } from './wsHub.js';
+import {
+  SessionHost,
+  type PtySpawnFactory,
+  type SdkQueryFactory,
+} from './sessionHost.js';
+import { JsonlTailer } from './tailer.js';
 import type { DaemonConfig } from './config.js';
 
 const DAEMON_PROJECTIONS: ReadonlyArray<Projection<unknown>> = [
@@ -51,6 +57,13 @@ export interface DaemonDeps {
   // Test seam (finding E): override how a socket's buffered byte count is read so
   // the backpressure drop can be exercised without pushing real megabytes.
   wsBufferedAmountOf?: WsHubDeps['bufferedAmountOf'];
+  // Session-host process factories — injected in CI (real Claude never runs in
+  // the harness); default to the real SDK query / node-pty spawn in production.
+  sdkQueryFactory?: SdkQueryFactory;
+  ptySpawnFactory?: PtySpawnFactory;
+  // Override the transcript projects root + chokidar options (tests).
+  projectsRoot?: string;
+  tailerWatchOptions?: ConstructorParameters<typeof JsonlTailer>[0]['watchOptions'];
 }
 
 export interface Daemon {
@@ -59,6 +72,7 @@ export interface Daemon {
   readonly router: EventRouter;
   readonly snapshotStore: SqliteSnapshotStore;
   readonly wsHub: WsHub;
+  readonly sessionHost: SessionHost;
   readonly authConfigured: boolean;
   readonly port: number;
   serializeProjection(projectionId: string): string | null;
@@ -191,12 +205,33 @@ export function createDaemon(deps: DaemonDeps): Daemon {
 
   app.notFound((context) => context.text('not found', 404));
 
+  // Session host + JSONL tailer own every Claude process (rule 0.3). Factories
+  // default to the real SDK/node-pty; CI injects fakes.
+  const sessionHost = new SessionHost({
+    store,
+    router,
+    clock,
+    ids,
+    config,
+    sdkQueryFactory: deps.sdkQueryFactory,
+    ptySpawnFactory: deps.ptySpawnFactory,
+    projectsRoot: deps.projectsRoot,
+  });
+  const tailer = new JsonlTailer({
+    router,
+    projectsRoot: deps.projectsRoot,
+    watchOptions: deps.tailerWatchOptions,
+  });
+  sessionHost.attachTailer(tailer);
+
   const httpServer = createAdaptorServer({ fetch: app.fetch }) as Server;
   const wsHub = new WsHub({
     router,
     store,
     bufferedLimitBytes: config.wsBufferedLimitBytes,
     bufferedAmountOf: deps.wsBufferedAmountOf,
+    sessionHost,
+    projectRoots: config.projectRoots,
   });
 
   httpServer.on('upgrade', (request, socket, head) => {
@@ -227,6 +262,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     router,
     snapshotStore,
     wsHub,
+    sessionHost,
     authConfigured,
     get port(): number {
       const address = httpServer.address();
@@ -244,6 +280,9 @@ export function createDaemon(deps: DaemonDeps): Daemon {
           resolveStart();
         });
       });
+      // host_started + boot recovery: any session the log left running/spawning
+      // with no live process becomes interrupted (§3.10, D13).
+      sessionHost.start();
       snapshotTimer = setInterval(() => {
         try {
           saveAllSnapshots();
@@ -260,6 +299,11 @@ export function createDaemon(deps: DaemonDeps): Daemon {
         clearInterval(snapshotTimer);
         snapshotTimer = null;
       }
+      // host_stopped + kill children (they die with the daemon, §3.10) and stop
+      // watching transcripts BEFORE the final snapshot, so the log/watchers are
+      // quiescent when the db closes.
+      sessionHost.stop();
+      await tailer.close();
       // Order (graceful shutdown): save snapshots → close WS clients → close db.
       try {
         saveAllSnapshots();
