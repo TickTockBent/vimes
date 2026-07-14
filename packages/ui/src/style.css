@@ -1,0 +1,12 @@
+@import "tailwindcss";
+
+/* Mobile-first baseline: no horizontal scroll, dark-scheme friendly via
+   Tailwind's dark: variant (prefers-color-scheme by default in v4). */
+html,
+body {
+  overscroll-behavior-y: contain;
+}
+
+body {
+  overflow-x: hidden;
+}

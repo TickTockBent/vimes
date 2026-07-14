@@ -1,0 +1,57 @@
+import type { AttentionReason, Liveness, SessionRecord } from './types.js';
+
+export interface SessionRow {
+  appSessionId: string;
+  label: string;
+  channel: 'sdk' | 'pty';
+  cwdTail: string;
+  liveness: Liveness;
+  livenessLabel: string;
+  livenessColorClass: string;
+  attention: { visible: true; reason: AttentionReason; label: string } | { visible: false };
+}
+
+// Distinct colors per liveness state; interrupted is amber (scope requirement:
+// "distinct colors, interrupted amber").
+const LIVENESS_STYLE: Readonly<Record<Liveness, { label: string; colorClass: string }>> = {
+  spawning: { label: 'spawning', colorClass: 'bg-sky-500 text-white' },
+  running: { label: 'running', colorClass: 'bg-emerald-500 text-white' },
+  dormant: { label: 'dormant', colorClass: 'bg-slate-400 text-white' },
+  interrupted: { label: 'interrupted', colorClass: 'bg-amber-500 text-white' },
+  dead: { label: 'dead', colorClass: 'bg-rose-600 text-white' },
+};
+
+const ATTENTION_LABEL: Readonly<Record<AttentionReason, string>> = {
+  gate: 'needs a decision',
+  question: 'asked a question',
+  completed: 'finished a run',
+  stale: 'went quiet',
+  quarantined: 'hit a quarantined line',
+};
+
+function cwdTail(cwd: string): string {
+  const segments = cwd.split('/').filter((segment) => segment.length > 0);
+  return segments.length > 0 ? segments[segments.length - 1]! : cwd;
+}
+
+export function deriveSessionRow(session: SessionRecord): SessionRow {
+  const style = LIVENESS_STYLE[session.liveness];
+  const idPrefix = session.appSessionId.slice(0, 8);
+  return {
+    appSessionId: session.appSessionId,
+    label: session.name ?? idPrefix,
+    channel: session.channel,
+    cwdTail: cwdTail(session.cwd),
+    liveness: session.liveness,
+    livenessLabel: style.label,
+    livenessColorClass: style.colorClass,
+    attention:
+      session.needsAttention === null
+        ? { visible: false }
+        : {
+            visible: true,
+            reason: session.needsAttention.reason,
+            label: ATTENTION_LABEL[session.needsAttention.reason],
+          },
+  };
+}
