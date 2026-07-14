@@ -9,10 +9,15 @@
     ".": "./dist/index.js"
   },
   "dependencies": {
+    "@hono/node-server": "^2.0.8",
     "@vimes/core": "*",
-    "better-sqlite3": "^12"
+    "better-sqlite3": "^12",
+    "hono": "^4.12.30",
+    "jose": "^6.2.3",
+    "ws": "^8.21.0"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7"
+    "@types/better-sqlite3": "^7",
+    "@types/ws": "^8.18.1"
   }
 }
