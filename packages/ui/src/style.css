@@ -10,3 +10,12 @@ body {
 body {
   overflow-x: hidden;
 }
+
+/* Defect 1 fallback (mobile ergonomics): --keyboard-offset is written from
+   StreamView.vue via window.visualViewport (packages/ui/src/lib/
+   keyboardOffset.ts) on browsers that don't honor index.html's
+   `interactive-widget=resizes-content`. Default 0px is a no-op there. */
+.keyboard-safe-footer {
+  transform: translateY(calc(-1 * var(--keyboard-offset, 0px)));
+  transition: transform 100ms ease-out;
+}

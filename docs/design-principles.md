@@ -69,6 +69,16 @@ principle before recommending. Seeded at kickoff from the spec's ground rules
    sibling: the PTY terminal next to the SDK stream, direct file paths next to
    the upload dialog. The day the abstraction fails, work continues.
 
+## Established in use (added as they're banked)
+
+8. **Tunnel to any depth; live at the top.** *(Wes, 2026-07-14, first live
+   smoke night.)* The user must be able to drop to any layer — orchestration
+   → task board → dispatcher → live session → raw PTY — when needed, but the
+   product is judged by how rarely that's necessary. Consequence: every layer
+   must be independently solid (the layer you tunnel into is load-bearing
+   exactly when things are going wrong), and no layer may assume a
+   supervising human at the layer above.
+
 ## Standing consequences worth restating
 
 - **Security is core, not product** (finding A): the PTY endpoint is RCE as
