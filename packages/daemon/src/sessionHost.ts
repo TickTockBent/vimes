@@ -154,6 +154,17 @@ export function scrubClaudeEnv(sourceEnv: NodeJS.ProcessEnv): Record<string, str
   return scrubbed;
 }
 
+// Cap a gate prompt at 160 chars. Over the cap, keep the first 159 and append a
+// single-char ellipsis so the total is exactly 160 (truncation only — no
+// content-aware scrubbing).
+const GATE_PROMPT_MAX = 160;
+export function truncateGatePrompt(text: string): string {
+  if (text.length <= GATE_PROMPT_MAX) {
+    return text;
+  }
+  return `${text.slice(0, GATE_PROMPT_MAX - 1)}…`;
+}
+
 export class SessionHost {
   private readonly store: EventStore;
   private readonly router: EventRouter;
@@ -247,18 +258,61 @@ export class SessionHost {
 
   // ── send a turn ──────────────────────────────────────────────────────────
   sendMessage(appSessionId: string, text: string): SendResult {
-    const live = this.liveProcesses.get(appSessionId);
+    let live = this.liveProcesses.get(appSessionId);
     if (live === undefined) {
-      return { refused: true, reason: 'no-live-process' };
+      // No live process: a dormant or interrupted session auto-resumes before
+      // the turn is delivered (Wes: clicking resume to send is annoying). The
+      // explicit `resume` op still exists for resuming without sending.
+      const session = this.currentSessions()[appSessionId];
+      if (session === undefined) {
+        return { refused: true, reason: 'unknown-session' };
+      }
+      const liveness = session.liveness;
+      if (liveness === 'dead') {
+        return { refused: true, reason: 'session-dead' };
+      }
+      if (liveness === 'spawning') {
+        // A spawn/resume is already in flight — no live process yet to accept
+        // the turn. Truthful, distinct refusal (do not silently resume again).
+        return { refused: true, reason: 'spawning-in-flight' };
+      }
+      if (liveness !== 'dormant' && liveness !== 'interrupted') {
+        // 'running' with no live process is an inconsistent state we do not
+        // resume from; report it truthfully rather than double-spawning.
+        return { refused: true, reason: 'no-live-process' };
+      }
+      // dormant | interrupted -> resume (same path as resumeSession: I3 from the
+      // recorded cwd + last mapped claudeSessionId, I11 registry check unchanged).
+      const resumeResult = this.resumeSession(appSessionId);
+      if ('refused' in resumeResult) {
+        return { refused: true, reason: resumeResult.reason };
+      }
+      live = this.liveProcesses.get(appSessionId);
+      if (live === undefined) {
+        return { refused: true, reason: 'no-live-process' };
+      }
     }
+    this.deliverMessage(live, text);
+    return { ok: true };
+  }
+
+  // Echo the user's turn into the event log as a message(role:'user') BEFORE it
+  // reaches the SDK stream / PTY (D12 wants human turns inline; replay history is
+  // otherwise missing the human half). For the SDK channel the SDK does NOT
+  // currently echo user-role messages back in streaming-input mode (observed gap,
+  // rule 0.7) — so there is no dedupe here. If a future SDK version starts
+  // echoing user messages, that is a fixture-refresh moment, and dedupe lands
+  // then; we do not build speculative dedupe now.
+  private deliverMessage(live: LiveProcess, text: string): void {
+    this.router.emit([messageEvent({ appSessionId: live.appSessionId, role: 'user', content: text })]);
     if (live.channel === 'sdk') {
       live.sdkInput?.push({ type: 'user', message: { role: 'user', content: text }, parent_tool_use_id: null });
     } else {
       // PTY keystrokes: the text plus a carriage return (rule 0.8 — a raw write,
-      // never a parse).
+      // never a parse; this events the input we already hold as structure, never
+      // the PTY output).
       live.pty?.write(`${text}\r`);
     }
-    return { ok: true };
   }
 
   // ── answer a gate ──────────────────────────────────────────────────────────
@@ -430,7 +484,14 @@ export class SessionHost {
     options: { requestId: string; title?: string },
   ): Promise<SdkPermissionResult> {
     const requestId = options.requestId;
-    const prompt = typeof options.title === 'string' && options.title.length > 0 ? options.title : toolName;
+    // Richer gate prompt: prefer the SDK-provided title; when absent fall back to
+    // the tool name plus its input JSON, truncated to 160 chars with an ellipsis.
+    // No special scrubbing — truncation only (message contents already flow
+    // inline per D12).
+    const prompt =
+      typeof options.title === 'string' && options.title.length > 0
+        ? options.title
+        : truncateGatePrompt(`${toolName}: ${JSON.stringify(input)}`);
     // gate_fired carries requestId in its payload (widened schema, rule 0.7):
     // the raw event delivered over WS keeps it — the phone needs it to answer
     // this exact gate. The sessions projection ignores requestId (correct).
