@@ -66,7 +66,14 @@ export const transitionRejectedPayloadSchema = z.object({
   cause: z.string(),
 });
 
-export const gateFiredPayloadSchema = z.object({ appSessionId: z.string(), prompt: z.string() });
+// requestId is optional (not required): harness profiles emit gate_fired
+// without it, while the daemon's real SDK gate carries it so the phone can
+// answer this exact gate (sessionHost.ts's handleGate).
+export const gateFiredPayloadSchema = z.object({
+  appSessionId: z.string(),
+  prompt: z.string(),
+  requestId: z.string().optional(),
+});
 export const questionAskedPayloadSchema = z.object({ appSessionId: z.string(), prompt: z.string() });
 export const runCompletedPayloadSchema = z.object({ appSessionId: z.string() });
 export const watchdogStalePayloadSchema = z.object({ appSessionId: z.string() });

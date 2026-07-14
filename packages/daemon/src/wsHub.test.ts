@@ -79,7 +79,7 @@ class WsTestClient {
   closeCode: number | undefined;
 
   constructor(port: number, token: string) {
-    this.socket = new WebSocket(`ws://127.0.0.1:${port}`, {
+    this.socket = new WebSocket(`ws://127.0.0.1:${port}/ws`, {
       headers: { 'cf-access-jwt-assertion': token },
     });
     this.socket.on('message', (rawData: RawData) => {
@@ -116,6 +116,32 @@ class WsTestClient {
   close(): void {
     this.socket.close();
   }
+}
+
+interface RawUpgradeProbeResult {
+  opened: boolean;
+  statusCode: number | undefined;
+}
+
+// A bare upgrade probe (no protocol client behavior) — used to observe the
+// raw HTTP status of a rejected upgrade rather than a live WS connection.
+function probeRawUpgrade(port: number, path: string, token: string): Promise<RawUpgradeProbeResult> {
+  return new Promise((resolvePromise) => {
+    const socket = new WebSocket(`ws://127.0.0.1:${port}${path}`, {
+      headers: { 'cf-access-jwt-assertion': token },
+    });
+    socket.on('open', () => {
+      socket.close();
+      resolvePromise({ opened: true, statusCode: 101 });
+    });
+    socket.on('unexpected-response', (_request, response) => {
+      resolvePromise({ opened: false, statusCode: response.statusCode });
+      response.destroy();
+    });
+    socket.on('error', () => {
+      resolvePromise({ opened: false, statusCode: undefined });
+    });
+  });
 }
 
 afterAll(() => {
@@ -309,6 +335,18 @@ describe('WsHub protocol v0 over a live daemon', () => {
 
       client.close();
       await waitUntil(() => daemon.wsHub.activeSubscriptionCount() === 0);
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  it('authed upgrade to any path other than /ws is rejected 404 and never reaches the hub', async () => {
+    const daemon = await startDaemon();
+    try {
+      const result = await probeRawUpgrade(daemon.port, '/notws', ANY_TOKEN);
+      expect(result.opened).toBe(false);
+      expect(result.statusCode).toBe(404);
+      expect(daemon.wsHub.activeSubscriptionCount()).toBe(0);
     } finally {
       await daemon.stop();
     }

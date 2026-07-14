@@ -118,10 +118,13 @@ interface UpgradeProbeResult {
   statusCode: number | undefined;
 }
 
-function probeWsUpgrade(port: number, token: string | undefined): Promise<UpgradeProbeResult> {
+// path defaults to '/ws' — the only pathname the daemon's upgrade handler
+// accepts past auth (packages/daemon/src/app.ts). Callers probing the
+// auth-first ordering against a different path pass it explicitly.
+function probeWsUpgrade(port: number, token: string | undefined, path = '/ws'): Promise<UpgradeProbeResult> {
   return new Promise((resolvePromise) => {
     const headers = token === undefined ? {} : { 'cf-access-jwt-assertion': token };
-    const socket = new WebSocket(`ws://127.0.0.1:${port}`, { headers });
+    const socket = new WebSocket(`ws://127.0.0.1:${port}${path}`, { headers });
     socket.on('open', () => {
       socket.close();
       resolvePromise({ opened: true, statusCode: 101 });
@@ -205,6 +208,21 @@ describe('I14 auth matrix — real verifier over a locally-minted JWKS', () => {
       } finally {
         await daemon.stop();
       }
+    }
+  });
+
+  it('unauthed upgrade to a non-/ws path still gets 401, never 404 (auth runs before the path check)', async () => {
+    const daemon = await startDaemon(buildConfig({}), createLocalAccessVerifier({ jwks: jwksForVerifier, aud: AUDIENCE }));
+    try {
+      const before = authRejectedRecords(daemon).length;
+      const result = await probeWsUpgrade(daemon.port, undefined, '/notws');
+      expect(result.opened).toBe(false);
+      expect(result.statusCode).toBe(401);
+      const rejected = authRejectedRecords(daemon);
+      expect(rejected.length).toBe(before + 1);
+      expect(rejected.at(-1)!.reason).toBe('missing-token');
+    } finally {
+      await daemon.stop();
     }
   });
 

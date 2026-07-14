@@ -1,11 +1,11 @@
 import { createRequire } from 'node:module';
 import {
-  EVENT_TYPES,
   EventRouter,
   INITIAL_LIVENESS,
   attentionCleared,
   canTransition,
   claudeSessionMapped,
+  gateFired,
   hostStarted,
   hostStopped,
   livenessChanged,
@@ -19,7 +19,6 @@ import {
   usageBlock,
   withNotificationTrigger,
   type Clock,
-  type EventInput,
   type EventStore,
   type IdSource,
   type Liveness,
@@ -432,15 +431,10 @@ export class SessionHost {
   ): Promise<SdkPermissionResult> {
     const requestId = options.requestId;
     const prompt = typeof options.title === 'string' && options.title.length > 0 ? options.title : toolName;
-    // gate_fired carries requestId in its payload. The core schema (loose parse
-    // in the projection) strips it, but the raw event delivered over WS keeps it
-    // — the phone needs it to answer this exact gate. Built by hand because the
-    // typed constructor's payload type omits requestId.
-    const gateEvent: EventInput = {
-      stream: appSessionId,
-      type: EVENT_TYPES.gateFired,
-      payload: { appSessionId, prompt, requestId },
-    };
+    // gate_fired carries requestId in its payload (widened schema, rule 0.7):
+    // the raw event delivered over WS keeps it — the phone needs it to answer
+    // this exact gate. The sessions projection ignores requestId (correct).
+    const gateEvent = gateFired({ appSessionId, prompt, requestId });
     this.router.emit(withNotificationTrigger(gateEvent));
     return new Promise<SdkPermissionResult>((resolve) => {
       this.pendingGates.set(requestId, { appSessionId, input, resolve });
