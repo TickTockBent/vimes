@@ -99,22 +99,7 @@ hooks) and that `'project'` is REQUIRED for CLAUDE.md files to load, which
 worker sessions on a real repo want. `[]` remains the fallback for fully
 isolated runs. Wes prices this together with D4.
 
-## D15 — PTY sessions produced no transcript JSONL ⚠ VERIFY *(trigger: slice 1 step 2 — blocks trusting the tailer)*
-
-**Observation, 2026-07-13 (slice-1 spike, 3/3 PTY runs incl. one clean
-patient run, clearly billed):** no `~/.claude/projects/.../*.jsonl` appeared
-for any PTY-hosted spike session. Unexplained (candidates: write-on-exit
-buffering, node-pty env/term interaction, different encoded-cwd, spike
-methodology). Rule 0.8 makes the JSONL tail the ONLY structured channel for
-PTY sessions — if real PTY sessions can run without a transcript file, the
-PTY structure story needs rethinking. **Dedicated uncontaminated spike before
-step 2 builds the tailer.**
-**Narrowed 2026-07-13 evening:** Wes's real interactive session (dongfu)
-writes its transcript incrementally — live-append confirmed. Absence is
-therefore specific to our node-pty spawn context (4/4 across spike + a
-follow-up run). Prime suspect: inherited `CLAUDE*` env vars from the nested
-parent session (SDK sessions also run nested but write via a different path).
-**Lean:** step-2 spike runs the matrix — node-pty spawn with scrubbed env vs
-inherited env — and the PTY channel scrubs/controls its child env regardless
-(the design already pins env for OTLP).
+<!-- D15 (PTY transcript absence) moved to decisions.md 2026-07-13 —
+     resolved: inherited CLAUDE* env suppresses transcripts; PTY channel
+     scrubs env; tailer trusted on that basis. -->
 

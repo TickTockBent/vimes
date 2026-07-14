@@ -3,14 +3,15 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
+import { randomUUID } from 'node:crypto';
 import {
-  CountingIdSource,
   SteppingClock,
   gateFired,
   livenessChanged,
   meterSample,
   sessionCreated,
   withNotificationTrigger,
+  type IdSource,
   type MeterRecord,
 } from '@vimes/core';
 import type { AccessVerifier } from './auth.js';
@@ -39,16 +40,23 @@ function buildConfig(dbPath: string): DaemonConfig {
     staticDir: undefined,
     wsBufferedLimitBytes: 4_194_304,
     bindHost: '127.0.0.1',
+    sdkSettingSources: ['project'],
+    projectRoots: [],
   };
 }
 
+// Each daemon over the same file must mint globally-unique eventIds — the host
+// now appends host_started/host_stopped on every boot, so two boots that shared a
+// deterministic counter would collide. Production uses randomUUID for exactly
+// this reason; the test mirrors it. (Projection bodies carry no eventId, so the
+// byte-identical restart claim is unaffected.)
+const uniqueIdSource: IdSource = { uuid: () => randomUUID() };
+
 function startDaemon(dbPath: string): Promise<Daemon> {
-  // Each daemon over the same file gets its own persistent id/clock; seq
-  // continuity is recovered from the db, eventIds stay unique per source.
   const daemon = createDaemon({
     config: buildConfig(dbPath),
     clock: new SteppingClock('2026-01-01T00:00:00.000Z', 1000),
-    ids: new CountingIdSource(),
+    ids: uniqueIdSource,
     verifier: permissiveVerifier,
   });
   return daemon.start().then(() => daemon);
@@ -106,11 +114,16 @@ describe('daemon boot — snapshot+tail cold start over a real sqlite file', () 
       firstDaemon.router.emit(withNotificationTrigger(gateFired({ appSessionId: 'app-1', prompt: 'approve edit?' })));
       firstDaemon.router.emit([meterSample(sampleMeter(120))]);
       firstDaemon.router.emit([meterSample(sampleMeter(340))]);
+      // Drive the session dormant before stop: a session the log left *live* is
+      // legitimately marked `interrupted` by boot recovery (§3.10) on the second
+      // run, which would (correctly) break the byte-identical restart. A dormant
+      // session is the right fixture for the snapshot+tail cold-start claim.
+      firstDaemon.router.emit([livenessChanged({ appSessionId: 'app-1', to: 'dormant', cause: 'run-complete' })]);
 
       bodiesBeforeRestart = await fetchAllProjections(firstDaemon);
       // Sanity: the sessions projection actually reflects the emitted events.
       expect(bodiesBeforeRestart.sessions).toContain('"app-1"');
-      expect(bodiesBeforeRestart.sessions).toContain('"liveness":"running"');
+      expect(bodiesBeforeRestart.sessions).toContain('"liveness":"dormant"');
       expect(bodiesBeforeRestart.meters).toContain('340');
     } finally {
       await firstDaemon.stop();

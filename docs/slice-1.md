@@ -98,8 +98,14 @@ shape and re-stamps or refreshes); `@anthropic-ai/claude-agent-sdk` published
   `{op:'send', appSessionId, text}` / `{op:'gate_response', appSessionId,
   requestId, response}` / `{op:'resume', appSessionId}`; server→client
   `{op:'subscribed', stream, head}` / `{op:'event', event}` /
-  `{op:'refused', ...}` / `{op:'error', ...}`. One WS multiplexes all
-  streams. Reads via REST (`GET /api/projections/sessions`); writes and live
+  `{op:'refused', refusedOp, reason}` / `{op:'error', reason}` (amended at
+  step-1 review: the original two-`op` refused shape was impossible JSON).
+  One WS multiplexes all streams. **v0.1 (step 2)** adds `{op:'spawn',
+  channel, cwd, name?}` → `{op:'spawned', appSessionId}` — the UI must be
+  able to create a session. Step-1 note: projection state is derived on
+  demand via snapshot+tail (no live wildcard fold — the core router is
+  per-stream by design); revisit only if a consumer needs sub-second
+  projection pushes. Reads via REST (`GET /api/projections/sessions`); writes and live
   events via WS. Backpressure (finding E): `bufferedAmount` >
   ⟨tune 4 MB PREVIEW⟩ at send time → close the socket; the client reconnects
   and resubscribes with lastSeq — same replay path as any disconnect.

@@ -1,5 +1,5 @@
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
 // Env-driven daemon configuration. The bind host is deliberately NOT an env knob
 // (D3): the daemon binds 127.0.0.1 only, with cloudflared as the sole route in.
@@ -12,6 +12,13 @@ export interface DaemonConfig {
   staticDir: string | undefined;
   wsBufferedLimitBytes: number;
   bindHost: string;
+  // settingSources passed to SDK query() for daemon-spawned sessions (D14 finding).
+  // ⟨tune PREVIEW — D14 awaiting pricing⟩ default ['project']: loads .claude/settings.json
+  // + CLAUDE.md, NOT the user tier / personal hooks that cascaded burn in the spike.
+  sdkSettingSources: string[];
+  // Absolute project roots a spawn cwd must sit within. Colon-separated env,
+  // default empty = refuse ALL spawns (path-traversal discipline).
+  projectRoots: string[];
 }
 
 const DEFAULT_PORT = 4600;
@@ -29,6 +36,31 @@ function expandHome(path: string): string {
     return join(homedir(), path.slice(2));
   }
   return path;
+}
+
+// ['project'] default per D14. A comma-separated env overrides; blank entries dropped.
+const DEFAULT_SDK_SETTING_SOURCES: readonly string[] = ['project'];
+
+function parseSettingSources(rawValue: string | undefined): string[] {
+  if (rawValue === undefined) {
+    return [...DEFAULT_SDK_SETTING_SOURCES];
+  }
+  return rawValue
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+}
+
+// Colon-separated absolute roots; blank entries dropped, ~ expanded, each resolved.
+function parseProjectRoots(rawValue: string | undefined): string[] {
+  if (rawValue === undefined || rawValue === '') {
+    return [];
+  }
+  return rawValue
+    .split(':')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0)
+    .map((entry) => resolve(expandHome(entry)));
 }
 
 function parsePositiveInteger(rawValue: string, variableName: string): number {
@@ -60,5 +92,7 @@ export function loadConfigFromEnv(env: NodeJS.ProcessEnv = process.env): DaemonC
         ? DEFAULT_WS_BUFFERED_LIMIT_BYTES
         : parsePositiveInteger(rawBufferedLimit, 'VIMES_WS_BUFFERED_LIMIT'),
     bindHost: HARDCODED_BIND_HOST,
+    sdkSettingSources: parseSettingSources(env.VIMES_SDK_SETTING_SOURCES),
+    projectRoots: parseProjectRoots(env.VIMES_PROJECT_ROOTS),
   };
 }

@@ -2,8 +2,8 @@
 
 Settled design calls, with rationale. **Append-only**: a reversal is a new dated
 entry, not an edit. Numbering (`D#`) is preserved forever and continues the
-design spec's numbering — D1, D3–D8, and D10–D12 live in
-[open-questions.md](open-questions.md) until decided.
+design spec's numbering — still-open questions (D1, D4–D8, D10–D11, D14 at
+last update) live in [open-questions.md](open-questions.md) until decided.
 
 Each entry:
 
@@ -54,19 +54,6 @@ sketched in the horizon). This commits the slice 0 `EventRecord` schema; I6
 (replay equivalence) and I13 (persist-before-broadcast) are designed against
 inline bodies.
 
-## D3 — Deployment: bare-host systemd on the host
-
-*2026-07-13 (decided by Wes at slice 1 infra review; moved from
-open-questions.md).* The daemon runs on the host under a systemd unit,
-bound to `localhost:4600`, with cloudflared as the only route in — matching
-the box's existing per-app tunnel pattern (vscode/genesis/handoff). Docker was
-rejected because the host must spawn `claude`, read `~/.claude`, and touch
-project dirs, all awkward through a container boundary. Public hostname:
-**vimes.example.dev**, new `vimes` tunnel. Access uses **GitHub as IdP** for
-this slice (the daemon's JWT validation is IdP-agnostic — JWKS + aud only);
-the product-ization auth wrapper stays post-MVP. Reopens if a dedicated dev
-container becomes the environment itself.
-
 ## D13 — Recovery of `spawning`-at-crash sessions: add the `spawning→interrupted` edge
 
 *2026-07-13 (rule-0.1 finding in slice 0 step 4; decided by Wes same day;
@@ -84,3 +71,41 @@ recovery touches only `running`, `spawning`-at-crash goes to `dead` — silently
 discards the user's intent to have a session. Moves: `LIVENESS_EDGES` in
 sessionMachine, the slice-0.md edge list, and the cold-restart profile grows a
 spawning-at-crash session so the recovered edge is exercised, not just legal.
+## D3 — Deployment: bare-host systemd on the host
+
+*2026-07-13 (decided by Wes at slice 1 infra review; moved from
+open-questions.md).* The daemon runs on the host under a systemd unit,
+bound to `localhost:4600`, with cloudflared as the only route in — matching
+the box's existing per-app tunnel pattern (vscode/genesis/handoff). Docker was
+rejected because the host must spawn `claude`, read `~/.claude`, and touch
+project dirs, all awkward through a container boundary. Public hostname:
+**vimes.example.dev**, new `vimes` tunnel. Access uses **GitHub as IdP** for
+this slice (the daemon's JWT validation is IdP-agnostic — JWKS + aud only);
+the product-ization auth wrapper stays post-MVP. Reopens if a dedicated dev
+container becomes the environment itself.
+
+## D15 — PTY transcript absence: caused by inherited CLAUDE* env; channel scrubs
+
+*2026-07-13 (opened as a slice-1 spike finding; resolved by the step-2 matrix
+spike same day; moved from open-questions.md).* A node-pty-spawned `claude`
+writes NO transcript JSONL when it inherits a parent Claude session's env;
+with every `/^CLAUDE/` key deleted, the same driven session writes a normal
+transcript (27 KB, proper records). Matrix: inherited env → encoded dir but
+no .jsonl (4/4 earlier failures explained); scrubbed env → transcript
+present. **Decision: the PTY channel spawns with a scrubbed env (delete all
+`/^CLAUDE/` keys), and the JSONL tailer is trusted for PTY sessions on that
+basis.** The scrub function is the isolation boundary; revisit if a future
+Claude Code version changes nested-session detection (rule 0.6).
+
+## D16 — Tailer backstop poll: chokidar confirmed dropping trailing appends
+
+*2026-07-13 (rule-0.1 finding in slice-1 step 2; mitigation reviewed and
+accepted same day).* chokidar (native inotify AND polling modes) reproducibly
+drops the trailing append of a rapid write burst on this box — the exact
+"chokidar missing appends" risk slice-1.md named as a would-be finding.
+**Decision: `JsonlTailer` runs an internal file-size poll backstop
+(⟨tune 100 ms PREVIEW⟩) alongside chokidar** (kept for low-latency
+discovery); correctness never depends on chokidar alone. The poll interval is
+a ⟨tune⟩ — pinned after real-session observation against the JSONL-tail-
+latency budget (< 300 ms intent, spec §8).
+
