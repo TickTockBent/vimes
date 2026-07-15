@@ -1,11 +1,35 @@
 # Slice 1 — testing runbook
 
-> **Status end of 2026-07-13:** steps 0–3 built, verified, committed (182
-> tests green). Daemon DEPLOYED fail-closed: `vimes.service` active,
-> 503 confirmed locally and through the tunnel. §2 below is done except the
-> env values; tomorrow starts at §1 (Wes's Access app), then §3 smoke.
-> Gate-D still owed: D4 (channel default — lean: SDK) and D14
-> (settingSources — lean: ['project'], running as PREVIEW default).
+> **Status end of 2026-07-14 (first smoke night):** Access live (GitHub IdP,
+> the org team), daemon auth=configured, **S1–S8 PASS** (see results
+> below). S9/S10 deferred to next session. Gate-D still owed: D4 (channel
+> default — lean: SDK) and D14 (settingSources — lean: ['project'], running
+> as PREVIEW default). 220 tests green at `9210c0c`+.
+
+## Smoke results — 2026-07-14 evening (desktop + Android phone, live tunnel)
+
+| # | Result | Evidence / notes |
+|---|---|---|
+| S1 | **PASS** | unauth → 302 to the org Access login, aud matches; zero product bytes |
+| S2 | **PASS** | local no-JWT and garbage-JWT → 401 from the daemon's own I14 wall |
+| S3 | **PASS** | GitHub login → session list |
+| S4 | **PASS** | WS clean; no spurious auth_rejected |
+| S5 | **PASS** | Dongfu sessions spawned/conversed; transcripts append live |
+| S6 | **PASS ×2** | Write gates answered from desktop AND phone; log shows gate_fired→notification_trigger ADJACENT (I5 batch rule live) → attention_cleared(gate_answered); gate-test.txt + gate-test-2.md real |
+| S7 | **PASS** | daemon restarted mid-generation: interrupted(recovery-no-process) → resume → same appSessionId, single mapping entry (no fork), cgroup shows exactly 1 owned child post-resume; "continue" completed the run (gate-test-3.md, 5.4 KB) |
+| S8 | **PASS** (after fixes) | phone loop usable; 3 ergonomics defects found+fixed same night (keyboard overlay, non-growing composer, gate-card overflow) |
+| S9 | deferred | next session |
+| S10 | deferred | next session (capture transcript-dir listing as I3/I11 evidence) |
+
+**Bonus observation (Wes):** the same session open on phone AND desktop
+updates live in both — multi-client fan-out on one stream working in
+production (the concurrent-clash profile's first half, observed live).
+
+**Fixes shipped during smoke (all gated + committed):** prompt echo into the
+event log; auto-resume-on-send; gate prompts carry tool+input (160-char cap);
+thinking/tool/tool_result rendering; consecutive-usage collapse (D17); the
+three mobile ergonomics fixes. New open question: D17 (usage_block
+granularity/double-counting for slice-4/5 consumers).
 
 Tomorrow's session: wire Access, deploy, smoke-test, first phone loop. The
 **exit gate** (a full workday driven from the phone) is a separate later day —
