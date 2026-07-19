@@ -234,6 +234,9 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     router,
     projectsRoot: deps.projectsRoot,
     watchOptions: deps.tailerWatchOptions,
+    // D10 attention guard: an external-custody stream never carries attention
+    // setters — the tailer strips them at the emitter using the host's custody set.
+    isExternalCustody: (appSessionId) => sessionHost.isExternalCustody(appSessionId),
   });
   sessionHost.attachTailer(tailer);
 

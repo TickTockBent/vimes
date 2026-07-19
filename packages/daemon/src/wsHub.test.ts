@@ -358,3 +358,56 @@ describe('WsHub protocol v0 over a live daemon', () => {
     }
   });
 });
+
+// ── protocol v0.2 session ops (D9/D10) over the wire ──────────────────────────
+describe('WsHub protocol v0.2 session ops', () => {
+  it('discover replies {op:"discovered", count} (empty project roots → 0)', async () => {
+    const daemon = await startDaemon();
+    const client = new WsTestClient(daemon.port, ANY_TOKEN);
+    try {
+      await client.opened();
+      client.send({ op: 'discover' });
+      await client.waitForMessageCount(1);
+      expect(client.messages[0]).toEqual({ op: 'discovered', count: 0 });
+    } finally {
+      client.close();
+      await daemon.stop();
+    }
+  });
+
+  it('kill / seen / clear_attention / adopt on an unknown session refuse (routed to the host)', async () => {
+    const daemon = await startDaemon();
+    const client = new WsTestClient(daemon.port, ANY_TOKEN);
+    try {
+      await client.opened();
+      client.send({ op: 'kill', appSessionId: 'nope' });
+      client.send({ op: 'seen', appSessionId: 'nope' });
+      client.send({ op: 'clear_attention', appSessionId: 'nope' });
+      client.send({ op: 'adopt', appSessionId: 'nope' });
+      await client.waitForMessageCount(4);
+      expect(client.messages).toEqual([
+        { op: 'refused', refusedOp: 'kill', reason: 'unknown-session' },
+        { op: 'refused', refusedOp: 'seen', reason: 'unknown-session' },
+        { op: 'refused', refusedOp: 'clear_attention', reason: 'unknown-session' },
+        { op: 'refused', refusedOp: 'adopt', reason: 'unknown-session' },
+      ]);
+    } finally {
+      client.close();
+      await daemon.stop();
+    }
+  });
+
+  it('rename with an empty name is rejected at the envelope boundary (zod min length)', async () => {
+    const daemon = await startDaemon();
+    const client = new WsTestClient(daemon.port, ANY_TOKEN);
+    try {
+      await client.opened();
+      client.send({ op: 'rename', appSessionId: 'x', name: '' });
+      await client.waitForMessageCount(1);
+      expect(client.messages[0]).toEqual({ op: 'error', reason: 'invalid-envelope' });
+    } finally {
+      client.close();
+      await daemon.stop();
+    }
+  });
+});

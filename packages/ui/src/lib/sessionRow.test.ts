@@ -75,4 +75,29 @@ describe('deriveSessionRow', () => {
     expect(row.livenessLabel).toBe('interrupted');
     expect(row.attention).toEqual({ visible: true, reason: 'stale', label: 'went quiet' });
   });
+
+  // D10 custody + action availability.
+  it('defaults to host custody (no badge, no adopt) when custody is absent', () => {
+    const row = deriveSessionRow(makeSession({ custody: undefined }));
+    expect(row.custody).toBe('host');
+    expect(row.mirrored).toBe(false);
+    expect(row.canAdopt).toBe(false);
+    expect(row.canRename).toBe(true);
+  });
+
+  it('a mirrored (external) session gets the mirrored flag + adopt, and is never killable', () => {
+    const row = deriveSessionRow(makeSession({ custody: 'external', liveness: 'interrupted' }));
+    expect(row.mirrored).toBe(true);
+    expect(row.canAdopt).toBe(true);
+    expect(row.canKill).toBe(false); // we do not own the process
+    expect(row.canRename).toBe(true); // renaming a mirror is fine
+  });
+
+  it('a host session is killable only while it has a live process (running / spawning)', () => {
+    expect(deriveSessionRow(makeSession({ custody: 'host', liveness: 'running' })).canKill).toBe(true);
+    expect(deriveSessionRow(makeSession({ custody: 'host', liveness: 'spawning' })).canKill).toBe(true);
+    expect(deriveSessionRow(makeSession({ custody: 'host', liveness: 'dormant' })).canKill).toBe(false);
+    expect(deriveSessionRow(makeSession({ custody: 'host', liveness: 'interrupted' })).canKill).toBe(false);
+    expect(deriveSessionRow(makeSession({ custody: 'host', liveness: 'dead' })).canKill).toBe(false);
+  });
 });

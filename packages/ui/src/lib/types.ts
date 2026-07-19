@@ -5,6 +5,7 @@
 
 export type Liveness = 'spawning' | 'running' | 'dormant' | 'interrupted' | 'dead';
 export type AttentionReason = 'gate' | 'question' | 'completed' | 'stale' | 'quarantined';
+export type Custody = 'host' | 'external';
 
 export interface SessionRecord {
   appSessionId: string;
@@ -14,6 +15,10 @@ export interface SessionRecord {
   needsAttention: { reason: AttentionReason; since: string } | null;
   name: string | null;
   createdAt: string;
+  // D10: 'external' = a mirrored (read-only) terminal-started/historical session;
+  // 'host' = VIMES-owned. Optional here so a projection predating the field (or a
+  // hand-built test record) reads as host-owned via deriveSessionRow.
+  custody?: Custody;
 }
 
 export interface EventRecord {

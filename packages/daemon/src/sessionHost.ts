@@ -13,8 +13,12 @@ import {
   message as messageEvent,
   readAllStreamsGrouped,
   replayFromEmpty,
+  resyncMarker,
   runCompleted,
+  seen as seenEvent,
+  sessionAdopted,
   sessionCreated,
+  sessionRenamed,
   sessionsProjection,
   transitionRejected,
   usageBlock,
@@ -37,6 +41,7 @@ import {
 } from './sessionSettings.js';
 import type { HookAuthResult, HookHost, HookIngestResult } from './hookIngress.js';
 import type { PreflightProbe, PreflightResult } from './runtimeChecks.js';
+import { scanForExternalTranscripts } from './discovery.js';
 
 // ─── The session host: owns every Claude process (rule 0.3) ──────────────────
 //
@@ -119,6 +124,9 @@ export interface SessionTailer {
   watchSession(session: { appSessionId: string; cwd: string }): void;
   markSdkJsonl(jsonlPath: string): void;
   unwatchSession(appSessionId: string): void;
+  // D10: mirror a KNOWN external transcript file from its current EOF (live-only;
+  // no history backfill). Idempotent — a file already mirrored is a no-op.
+  mirrorExternalFile(mirror: { appSessionId: string; jsonlPath: string }): void;
 }
 
 // ── Results ──────────────────────────────────────────────────────────────────
@@ -126,6 +134,11 @@ export type SpawnResult = { appSessionId: string } | { refused: true; reason: st
 export type ResumeResult = { appSessionId: string } | { refused: true; reason: string };
 export type SendResult = { ok: true } | { refused: true; reason: string };
 export type AnswerResult = { ok: true } | { refused: true; reason: string };
+export type KillResult = { ok: true } | { refused: true; reason: string };
+export type AdoptResult = { ok: true } | { refused: true; reason: string };
+export type RenameResult = { ok: true } | { refused: true; reason: string };
+export type SeenResult = { ok: true } | { refused: true; reason: string };
+export type ClearAttentionResult = { ok: true } | { refused: true; reason: string };
 
 // ── Adapter interface (D18) ──────────────────────────────────────────────────
 export interface AdapterCapabilities {
@@ -523,6 +536,11 @@ export class SessionHost implements HookHost {
   private preflightCache: { result: PreflightResult; atMs: number } | undefined;
   private tailer: SessionTailer | undefined;
   private stopping = false;
+  // D10 attention-guard cache: appSessionIds currently in external custody. The
+  // projection is the source of truth for custody; this in-memory set is an O(1)
+  // lookup the tailer consults to strip attention setters. Populated at boot from
+  // the projection + on discovery; an entry is dropped on adoption.
+  private readonly externalSessions = new Set<string>();
 
   constructor(deps: SessionHostDeps) {
     this.store = deps.store;
@@ -560,6 +578,11 @@ export class SessionHost implements HookHost {
     this.stopping = false;
     this.router.emit([hostStarted()]);
     this.runRecovery();
+    // D10: rebuild the external-custody set from the log and re-mirror those
+    // transcripts (a mirror is live-only state, lost across restart), THEN scan
+    // for any new terminal-started transcripts (spec §3.2).
+    this.rehydrateExternalCustody();
+    this.discoverExternalSessions();
   }
 
   stop(): void {
@@ -587,6 +610,13 @@ export class SessionHost implements HookHost {
 
   rawBytesReceived(appSessionId: string): number {
     return this.rawByteCounts.get(appSessionId) ?? 0;
+  }
+
+  // D10: whether a session is mirrored (external custody). The tailer consults
+  // this to strip attention setters from an external stream (the emitter-side
+  // guard). O(1) — see the externalSessions field.
+  isExternalCustody(appSessionId: string): boolean {
+    return this.externalSessions.has(appSessionId);
   }
 
   // Declared adapter capabilities per channel (D18 — surfaced for the UI/tests).
@@ -628,6 +658,12 @@ export class SessionHost implements HookHost {
 
   // ── send a turn ──────────────────────────────────────────────────────────
   sendMessage(appSessionId: string, text: string): SendResult {
+    // D10: the host NEVER writes to a mirrored session. Refuse before the
+    // auto-resume path (which would otherwise adopt + resume it) — a mirror is
+    // adopted only by explicit action or the resume op, never by a stray send.
+    if (this.currentSessions()[appSessionId]?.custody === 'external') {
+      return { refused: true, reason: 'external-custody' };
+    }
     let live = this.liveProcesses.get(appSessionId);
     if (live === undefined) {
       // No live process: a dormant or interrupted session auto-resumes before
@@ -676,6 +712,11 @@ export class SessionHost implements HookHost {
   // Wired through the adapter's respondInteraction (D18 gate contract). Attention
   // is a host/projection concern, so the host emits attention_cleared on the ack.
   answerGate(appSessionId: string, requestId: string, response: unknown): AnswerResult {
+    // D10: a mirrored session has no host-owned gate surface — refuse (defensive:
+    // an external session never has a pending gate anyway).
+    if (this.currentSessions()[appSessionId]?.custody === 'external') {
+      return { refused: true, reason: 'external-custody' };
+    }
     const ack = this.sdkAdapter.respondInteraction(requestId, response);
     if ('refused' in ack) {
       return { refused: true, reason: ack.reason };
@@ -699,6 +740,12 @@ export class SessionHost implements HookHost {
     if (session === undefined) {
       return { refused: true, reason: 'unknown-session' };
     }
+    // D10: resuming a mirrored session adopts it FIRST (via:'resume'), then falls
+    // through to the normal I3 resume path — custody flips to host before any
+    // process starts, so the session is now VIMES-owned.
+    if (session.custody === 'external') {
+      this.emitAdopted(appSessionId, 'resume');
+    }
     const preflight = this.checkPreflight();
     if (!preflight.ok) {
       this.router.emit([
@@ -718,6 +765,133 @@ export class SessionHost implements HookHost {
     const lastClaudeSessionId = session.claudeSessionIds.at(-1)?.id;
     this.startProcess(appSessionId, session.channel, session.cwd, lastClaudeSessionId);
     return { appSessionId };
+  }
+
+  // ── kill (protocol v0.2) ────────────────────────────────────────────────────
+  // Software kills a process only on explicit human command (the codor stall-flag
+  // stance). Terminates the owned live process; liveness follows to dormant.
+  killSession(appSessionId: string): KillResult {
+    const session = this.currentSessions()[appSessionId];
+    if (session === undefined) {
+      return { refused: true, reason: 'unknown-session' };
+    }
+    if (session.custody === 'external') {
+      // We do not own the process — refuse (D10).
+      return { refused: true, reason: 'external-custody' };
+    }
+    const live = this.liveProcesses.get(appSessionId);
+    if (live === undefined) {
+      return { refused: true, reason: 'no-live-process' };
+    }
+    live.adapter.kill(live); // SIGTERM the child (pty.kill) / close the SDK query.
+    this.releaseLiveProcess(live);
+    // Drive liveness to dormant explicitly (deterministic; the adapter's own exit
+    // path would also reach dormant, but its cause would be channel-specific).
+    this.driveToDormant(appSessionId, 'killed');
+    return { ok: true };
+  }
+
+  // ── adopt (protocol v0.2, D10) ──────────────────────────────────────────────
+  // Explicit custody transfer of a mirrored session to the host (now
+  // resumable/killable). Liveness is untouched — the session stays where it is.
+  adoptSession(appSessionId: string): AdoptResult {
+    const session = this.currentSessions()[appSessionId];
+    if (session === undefined) {
+      return { refused: true, reason: 'unknown-session' };
+    }
+    if (session.custody !== 'external') {
+      return { refused: true, reason: 'not-external' };
+    }
+    this.emitAdopted(appSessionId, 'explicit');
+    return { ok: true };
+  }
+
+  // ── rename (protocol v0.2) ──────────────────────────────────────────────────
+  // Any custody — renaming a mirror is fine. The name is validated 1–120 chars at
+  // the WS boundary (zod); the host re-checks the bound so a direct caller cannot
+  // slip an empty/oversized name past.
+  renameSession(appSessionId: string, name: string): RenameResult {
+    if (this.currentSessions()[appSessionId] === undefined) {
+      return { refused: true, reason: 'unknown-session' };
+    }
+    if (name.length === 0 || name.length > 120) {
+      return { refused: true, reason: 'invalid-name' };
+    }
+    this.router.emit([sessionRenamed({ appSessionId, name })]);
+    return { ok: true };
+  }
+
+  // ── seen (protocol v0.2, D9) ────────────────────────────────────────────────
+  // Viewing a session acks its notification (sets seenAt; never clears attention).
+  // Any custody — you can see a mirror.
+  markSeen(appSessionId: string): SeenResult {
+    if (this.currentSessions()[appSessionId] === undefined) {
+      return { refused: true, reason: 'unknown-session' };
+    }
+    this.router.emit([seenEvent({ appSessionId })]);
+    return { ok: true };
+  }
+
+  // ── clear attention (protocol v0.2, D9) ─────────────────────────────────────
+  // An explicit dismiss — the only clear path besides a gate answer / resume.
+  clearAttention(appSessionId: string): ClearAttentionResult {
+    if (this.currentSessions()[appSessionId] === undefined) {
+      return { refused: true, reason: 'unknown-session' };
+    }
+    this.router.emit([attentionCleared({ appSessionId, cause: 'dismissed' })]);
+    return { ok: true };
+  }
+
+  // ── discovery (protocol v0.2, D10, spec §3.2) ───────────────────────────────
+  // On-demand scan of the configured project roots' transcript dirs. Each foreign
+  // transcript mints a mirrored external session (session_created custody:external
+  // → liveness interrupted → claude_session_mapped → resync_marker) and registers
+  // the file with the tailer from current EOF. Idempotent: a file already mapped
+  // to a known session is skipped, so a re-scan never duplicates a session.
+  discoverExternalSessions(): number {
+    const sessions = this.currentSessions();
+    const knownJsonlPaths = new Set<string>();
+    const knownClaudeSessionIds = new Set<string>();
+    for (const session of Object.values(sessions)) {
+      for (const mapping of session.claudeSessionIds) {
+        knownJsonlPaths.add(mapping.jsonlPath);
+        knownClaudeSessionIds.add(mapping.id);
+      }
+    }
+    const discovered = scanForExternalTranscripts({
+      projectRoots: this.config.projectRoots,
+      projectsRoot: this.projectsRoot,
+      knownJsonlPaths,
+      knownClaudeSessionIds,
+    });
+    for (const transcript of discovered) {
+      const appSessionId = this.ids.uuid();
+      // spawning → interrupted is a legal edge; interrupted is the resumable
+      // no-live-process state (mirrors boot recovery). spawning → dormant is NOT
+      // a legal edge, so the mirrored session lands in 'interrupted'.
+      this.router.emit([
+        sessionCreated({
+          appSessionId,
+          channel: 'pty',
+          cwd: transcript.cwd,
+          name: null,
+          forkedFrom: null,
+          taskRef: null,
+          provider: CLAUDE_PROVIDER,
+          custody: 'external',
+        }),
+        livenessChanged({ appSessionId, to: 'interrupted', cause: 'discovered-external' }),
+        claudeSessionMapped({
+          appSessionId,
+          claudeSessionId: transcript.claudeSessionId,
+          jsonlPath: transcript.jsonlPath,
+        }),
+        resyncMarker({ appSessionId, reason: 'pre-adoption-history' }),
+      ]);
+      this.externalSessions.add(appSessionId);
+      this.tailer?.mirrorExternalFile({ appSessionId, jsonlPath: transcript.jsonlPath });
+    }
+    return discovered.length;
   }
 
   // ── hook ingress surface (HookHost) ─────────────────────────────────────────
@@ -842,6 +1016,31 @@ export class SessionHost implements HookHost {
       // becomes interrupted (attention untouched — only liveness is emitted).
       if ((liveness === 'running' || liveness === 'spawning') && !this.liveProcesses.has(appSessionId)) {
         this.emitGuardedLiveness(appSessionId, 'interrupted', 'recovery-no-process');
+      }
+    }
+  }
+
+  // D10: emit session_adopted and drop the external-custody guard entry. The
+  // projection flips custody→host on the event; the set mirrors that for the
+  // tailer's O(1) attention guard.
+  private emitAdopted(appSessionId: string, via: 'explicit' | 'resume'): void {
+    this.router.emit([sessionAdopted({ appSessionId, via })]);
+    this.externalSessions.delete(appSessionId);
+  }
+
+  // D10: at boot, rebuild the external-custody set from the log (custody survives
+  // restart; the in-memory set does not) and re-establish each mirror from EOF (a
+  // mirror is live-only tailer state, also lost across restart).
+  private rehydrateExternalCustody(): void {
+    const sessions = this.currentSessions();
+    for (const [appSessionId, session] of Object.entries(sessions)) {
+      if (session.custody !== 'external') {
+        continue;
+      }
+      this.externalSessions.add(appSessionId);
+      const lastMapping = session.claudeSessionIds.at(-1);
+      if (lastMapping !== undefined) {
+        this.tailer?.mirrorExternalFile({ appSessionId, jsonlPath: lastMapping.jsonlPath });
       }
     }
   }

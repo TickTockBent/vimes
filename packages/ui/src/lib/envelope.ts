@@ -11,14 +11,22 @@ export type ClientEnvelope =
   | { op: 'send'; appSessionId: string; text: string }
   | { op: 'gate_response'; appSessionId: string; requestId: string; response: 'allow' | 'deny' }
   | { op: 'resume'; appSessionId: string }
-  | { op: 'spawn'; channel: 'sdk' | 'pty'; cwd: string; name?: string };
+  | { op: 'spawn'; channel: 'sdk' | 'pty'; cwd: string; name?: string }
+  // v0.2 (D9/D10) session ops.
+  | { op: 'seen'; appSessionId: string }
+  | { op: 'clear_attention'; appSessionId: string }
+  | { op: 'kill'; appSessionId: string }
+  | { op: 'rename'; appSessionId: string; name: string }
+  | { op: 'adopt'; appSessionId: string }
+  | { op: 'discover' };
 
 export type ServerEnvelope =
   | { op: 'subscribed'; stream: string; head: number }
   | { op: 'event'; event: EventRecord }
   | { op: 'refused'; refusedOp: string; reason: string }
   | { op: 'error'; reason: string }
-  | { op: 'spawned'; appSessionId: string };
+  | { op: 'spawned'; appSessionId: string }
+  | { op: 'discovered'; count: number };
 
 export function serializeClientEnvelope(envelope: ClientEnvelope): string {
   return JSON.stringify(envelope);
@@ -69,6 +77,8 @@ export function parseServerEnvelope(raw: string): ServerEnvelope | null {
       return typeof parsed.reason === 'string' ? { op: 'error', reason: parsed.reason } : null;
     case 'spawned':
       return typeof parsed.appSessionId === 'string' ? { op: 'spawned', appSessionId: parsed.appSessionId } : null;
+    case 'discovered':
+      return typeof parsed.count === 'number' ? { op: 'discovered', count: parsed.count } : null;
     default:
       return null;
   }

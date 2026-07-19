@@ -7,10 +7,33 @@ import {
   EventRouter,
   MemoryEventStore,
   SteppingClock,
+  gateFired,
+  message,
+  usageBlock,
   type EventRecord,
 } from '@vimes/core';
-import { JsonlTailer } from './tailer.js';
+import { JsonlTailer, dropAttentionSettersForExternal } from './tailer.js';
 import { transcriptDirFor } from './transcriptPaths.js';
+
+// D10 attention guard (the wall a future consumer would hit): an external-custody
+// stream never carries attention setters. mapTranscriptOutputs does not produce
+// setters today, so the guard is proven at the unit level here.
+describe('dropAttentionSettersForExternal (D10 attention guard)', () => {
+  it('strips attention-setting events for an external session; passes others', () => {
+    const events = [
+      message({ appSessionId: 'ext-1', role: 'assistant', content: 'hi' }),
+      usageBlock({ appSessionId: 'ext-1', usage: { output_tokens: 1 } }),
+      gateFired({ appSessionId: 'ext-1', prompt: 'a future consumer tries to summon the human' }),
+    ];
+    const guarded = dropAttentionSettersForExternal(events, true);
+    expect(guarded.map((event) => event.type)).toEqual(['message', 'usage_block']);
+  });
+
+  it('is a pass-through for a host (non-external) session', () => {
+    const events = [gateFired({ appSessionId: 'host-1', prompt: 'legitimate gate' })];
+    expect(dropAttentionSettersForExternal(events, false)).toBe(events);
+  });
+});
 
 // Real fs + real chokidar. The tailer's internal size-poll (set fast here) makes
 // append delivery deterministic — chokidar alone drops the trailing append of a

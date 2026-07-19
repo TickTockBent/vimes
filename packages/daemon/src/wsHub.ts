@@ -44,6 +44,23 @@ const spawnEnvelopeSchema = z.object({
   cwd: z.string().min(1),
   name: z.string().optional(),
 });
+// v0.2 (step 2, D9/D10): session ops. seen/clear_attention (attention flow);
+// kill/rename (host ops); adopt/discover (custody).
+const seenEnvelopeSchema = z.object({ op: z.literal('seen'), appSessionId: z.string() });
+const clearAttentionEnvelopeSchema = z.object({
+  op: z.literal('clear_attention'),
+  appSessionId: z.string(),
+});
+const killEnvelopeSchema = z.object({ op: z.literal('kill'), appSessionId: z.string() });
+const renameEnvelopeSchema = z.object({
+  op: z.literal('rename'),
+  appSessionId: z.string(),
+  // 1–120 chars, non-empty (trimmed) — validated here so the host never sees a
+  // malformed name; the host re-checks the bound as a backstop.
+  name: z.string().min(1).max(120),
+});
+const adoptEnvelopeSchema = z.object({ op: z.literal('adopt'), appSessionId: z.string() });
+const discoverEnvelopeSchema = z.object({ op: z.literal('discover') });
 
 const controlEnvelopeSchema = z.discriminatedUnion('op', [
   subscribeEnvelopeSchema,
@@ -52,6 +69,12 @@ const controlEnvelopeSchema = z.discriminatedUnion('op', [
   gateResponseEnvelopeSchema,
   resumeEnvelopeSchema,
   spawnEnvelopeSchema,
+  seenEnvelopeSchema,
+  clearAttentionEnvelopeSchema,
+  killEnvelopeSchema,
+  renameEnvelopeSchema,
+  adoptEnvelopeSchema,
+  discoverEnvelopeSchema,
 ]);
 
 // A resolved cwd must sit within one of the resolved allowlisted roots. Empty
@@ -236,6 +259,76 @@ export class WsHub {
         if ('refused' in result) {
           this.refuse(connection, 'resume', result.reason);
         }
+        return;
+      }
+      case 'seen': {
+        const host = this.sessionHost;
+        if (host === undefined) {
+          this.refuse(connection, 'seen', 'not-implemented');
+          return;
+        }
+        const result = host.markSeen(control.appSessionId);
+        if ('refused' in result) {
+          this.refuse(connection, 'seen', result.reason);
+        }
+        return;
+      }
+      case 'clear_attention': {
+        const host = this.sessionHost;
+        if (host === undefined) {
+          this.refuse(connection, 'clear_attention', 'not-implemented');
+          return;
+        }
+        const result = host.clearAttention(control.appSessionId);
+        if ('refused' in result) {
+          this.refuse(connection, 'clear_attention', result.reason);
+        }
+        return;
+      }
+      case 'kill': {
+        const host = this.sessionHost;
+        if (host === undefined) {
+          this.refuse(connection, 'kill', 'not-implemented');
+          return;
+        }
+        const result = host.killSession(control.appSessionId);
+        if ('refused' in result) {
+          this.refuse(connection, 'kill', result.reason);
+        }
+        return;
+      }
+      case 'rename': {
+        const host = this.sessionHost;
+        if (host === undefined) {
+          this.refuse(connection, 'rename', 'not-implemented');
+          return;
+        }
+        const result = host.renameSession(control.appSessionId, control.name);
+        if ('refused' in result) {
+          this.refuse(connection, 'rename', result.reason);
+        }
+        return;
+      }
+      case 'adopt': {
+        const host = this.sessionHost;
+        if (host === undefined) {
+          this.refuse(connection, 'adopt', 'not-implemented');
+          return;
+        }
+        const result = host.adoptSession(control.appSessionId);
+        if ('refused' in result) {
+          this.refuse(connection, 'adopt', result.reason);
+        }
+        return;
+      }
+      case 'discover': {
+        const host = this.sessionHost;
+        if (host === undefined) {
+          this.refuse(connection, 'discover', 'not-implemented');
+          return;
+        }
+        const count = host.discoverExternalSessions();
+        this.sendControl(connection, { op: 'discovered', count });
         return;
       }
     }

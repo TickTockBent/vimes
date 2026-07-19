@@ -2,12 +2,31 @@ import { closeSync, openSync, readSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { watch, type FSWatcher, type ChokidarOptions } from 'chokidar';
 import {
+  ATTENTION_SETTER_TYPES,
   EventRouter,
   TranscriptTail,
   mapTranscriptOutputs,
+  type EventInput,
 } from '@vimes/core';
 import { defaultProjectsRoot, transcriptDirFor } from './transcriptPaths.js';
 import type { SessionTailer } from './sessionHost.js';
+
+// D10 attention guard: mirrored (external-custody) sessions NEVER emit
+// attention-setting events — the host does not own the process, so it must not
+// summon the human on its behalf (the slice-2 turn-attribution rule). Enforced at
+// THIS emitter (the tailer is the only path producing events on an external
+// stream). mapTranscriptOutputs does not currently produce setters, so this is a
+// wall a future consumer would hit — kept and tested as an invariant, not a
+// live filter. Exported pure so the guard is unit-testable in isolation.
+export function dropAttentionSettersForExternal(
+  events: EventInput[],
+  isExternal: boolean,
+): EventInput[] {
+  if (!isExternal) {
+    return events;
+  }
+  return events.filter((event) => !ATTENTION_SETTER_TYPES.has(event.type));
+}
 
 // ─── The JSONL tailer: the structured channel for PTY sessions (rule 0.8) ────
 //
@@ -43,6 +62,11 @@ export interface JsonlTailerDeps {
   // below: chokidar drops the trailing append of a rapid burst on this box, so
   // event delivery alone is not trustworthy; the poll guarantees eventual reads.
   pollIntervalMs?: number;
+  // D10 custody lookup: whether a session is mirrored (external custody). Used to
+  // strip any attention-setting event before emission (the wall above). Default
+  // treats every session as host-owned (no external sessions), so non-discovery
+  // wiring is unaffected.
+  isExternalCustody?: (appSessionId: string) => boolean;
 }
 
 const DEFAULT_POLL_INTERVAL_MS = 100;
@@ -56,6 +80,7 @@ export class JsonlTailer implements SessionTailer {
   private readonly skipPaths = new Set<string>();
   private readonly fileStates = new Map<string, FileTailState>();
   private readonly pollIntervalMs: number;
+  private readonly isExternalCustody: (appSessionId: string) => boolean;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
   private closed = false;
 
@@ -63,6 +88,7 @@ export class JsonlTailer implements SessionTailer {
     this.router = deps.router;
     this.projectsRoot = deps.projectsRoot ?? defaultProjectsRoot();
     this.pollIntervalMs = deps.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+    this.isExternalCustody = deps.isExternalCustody ?? (() => false);
     this.watcher = watch([], {
       persistent: true,
       ignoreInitial: false,
@@ -86,6 +112,38 @@ export class JsonlTailer implements SessionTailer {
     // Date.now(): runtime correlation state, never entered into the event log —
     // determinism-exempt daemon boundary.
     this.ptySessions.set(session.appSessionId, { appSessionId: session.appSessionId, dir, spawnedAtMs: Date.now() });
+    const priorRefcount = this.dirRefcount.get(dir) ?? 0;
+    this.dirRefcount.set(dir, priorRefcount + 1);
+    if (priorRefcount === 0) {
+      this.watcher.add(dir);
+    }
+    this.ensurePolling();
+  }
+
+  // D10: mirror a KNOWN external transcript file from its current EOF. Unlike
+  // watchSession (which correlates PTY files by newest-after-spawn), the file is
+  // identified up front, so its FileTailState is seeded directly with the current
+  // size as the offset — only appends written AFTER this call surface (live-only;
+  // history predating the log is signalled by the resync marker, not replayed).
+  // Idempotent: a file already tracked is left untouched.
+  mirrorExternalFile(mirror: { appSessionId: string; jsonlPath: string }): void {
+    if (this.closed || this.fileStates.has(mirror.jsonlPath)) {
+      return;
+    }
+    let sizeBytes = 0;
+    try {
+      sizeBytes = statSync(mirror.jsonlPath).size;
+    } catch {
+      // The file does not exist yet — seed at offset 0 so a future append (once
+      // the file appears) is read from its start; still live-only for this file.
+      sizeBytes = 0;
+    }
+    this.fileStates.set(mirror.jsonlPath, {
+      appSessionId: mirror.appSessionId,
+      offset: sizeBytes,
+      tail: new TranscriptTail(),
+    });
+    const dir = dirname(mirror.jsonlPath);
     const priorRefcount = this.dirRefcount.get(dir) ?? 0;
     this.dirRefcount.set(dir, priorRefcount + 1);
     if (priorRefcount === 0) {
@@ -191,7 +249,9 @@ export class JsonlTailer implements SessionTailer {
       return;
     }
     const outputs = state.tail.push(appended);
-    const events = mapTranscriptOutputs(state.appSessionId, outputs, path);
+    const mapped = mapTranscriptOutputs(state.appSessionId, outputs, path);
+    // D10 guard: an external-custody stream never carries attention setters.
+    const events = dropAttentionSettersForExternal(mapped, this.isExternalCustody(state.appSessionId));
     if (events.length > 0) {
       this.router.emit(events);
     }
