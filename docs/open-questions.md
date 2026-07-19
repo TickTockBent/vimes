@@ -52,6 +52,16 @@ transcript, making it usable as the correlation key between a PTY child and its
 JSONL file? **Lean (2026-07-13):** yes, use the name record; fallback is
 newest-file-after-spawn-timestamp with single-spawn serialization per project
 dir. Correlation logic isolated in one module either way (risk register).
+**Lean revised (2026-07-19, jinn-decompose §2.1):** redesign the spike
+**hooks-first** — a per-session settings file at spawn registers a
+`SessionStart` hook whose relay command carries `appSessionId`; the payload
+carries Claude's session id. Deterministic correlation, plus a push-delivered
+lifecycle channel (Stop/StopFailure/PreToolUse) consistent with rule 0.8.
+`-n` demotes to fallback. Spike must also answer: per-session settings vs
+the project's own `.claude/settings.json` — merge or shadow? (The dev box
+has real hook configs; one test answers it.) Hook payload schemas are a new
+rule-0.6 fragile surface (golden fixtures, risk-register row at next doc
+pass).
 
 ## D8 — Usage endpoint adapter ⚠ *(trigger: slice 5 spike)*
 
@@ -67,6 +77,14 @@ How deep does the IDE integrate sessions it didn't spawn? **Lean
 resume" — when the session goes dormant, resuming through the IDE brings it
 under host ownership. The `resync` marker (spec §3.2) exists solely for these
 sessions' pre-adoption history.
+**Lean upgraded with mechanism (2026-07-19, codor-decompose §2.2 — the
+custody trio):** *join* = mirrored member, daemon never writes, inbound
+deliveries queue FIFO while custody is external; *adopt* = explicit transfer
+OR the `SessionEnd` hook as the sanctioned automatic adoption point (TUI
+exits → daemon adopts → drains the queued FIFO); detection via the session's
+own env (`CLAUDE_SESSION_ID`) first — which also enables agent
+self-registration — newest-file fallback second. Slots into the D7
+hooks channel; resolve D10 with this shape at slice 2 design.
 
 ## D11 — Migration convention *(trigger: the first real schema migration)*
 
@@ -110,6 +128,14 @@ delivered), but naive summation by slice-4/5 consumers would double-count.
 (usage snapshots within one turn are identical → collapse on equality or on
 message id); UI collapses consecutive identical usage lines (cosmetic,
 landing in slice 1).
+**Corroborated + sharpened (2026-07-19, jinn-decompose §2.8):** Jinn hit the
+same landmine independently — `--effort high` emits two assistant JSONL
+lines with the SAME `message.id` and identical usage; their accounting
+carries a "dedupe by message.id" fix. **The dedupe key is `message.id`**,
+not payload equality (equality is the weaker proxy we guessed). Binding on
+the slice-5 usage adapter from its first line; the host's `usage_block`
+payload should carry `message.id` through so consumers can key on it —
+check whether it already does before slice 4/5.
 
 <!-- D15 (PTY transcript absence) moved to decisions.md 2026-07-13 —
      resolved: inherited CLAUDE* env suppresses transcripts; PTY channel
