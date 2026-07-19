@@ -1,4 +1,4 @@
-import type { AttentionReason, Liveness, SessionRecord } from './types.js';
+import type { AttentionReason, Custody, Liveness, SessionRecord } from './types.js';
 
 export interface SessionRow {
   appSessionId: string;
@@ -9,6 +9,13 @@ export interface SessionRow {
   livenessLabel: string;
   livenessColorClass: string;
   attention: { visible: true; reason: AttentionReason; label: string } | { visible: false };
+  // D10 custody + action availability (the list surfaces different actions per
+  // custody). `mirrored` drives the badge; the can* flags gate the row's buttons.
+  custody: Custody;
+  mirrored: boolean;
+  canAdopt: boolean;
+  canKill: boolean;
+  canRename: boolean;
 }
 
 // Distinct colors per liveness state; interrupted is amber (scope requirement:
@@ -37,6 +44,9 @@ function cwdTail(cwd: string): string {
 export function deriveSessionRow(session: SessionRecord): SessionRow {
   const style = LIVENESS_STYLE[session.liveness];
   const idPrefix = session.appSessionId.slice(0, 8);
+  // Default 'host' when custody is absent (projection predating the field).
+  const custody: Custody = session.custody ?? 'host';
+  const mirrored = custody === 'external';
   return {
     appSessionId: session.appSessionId,
     label: session.name ?? idPrefix,
@@ -53,5 +63,12 @@ export function deriveSessionRow(session: SessionRecord): SessionRow {
             reason: session.needsAttention.reason,
             label: ATTENTION_LABEL[session.needsAttention.reason],
           },
+    custody,
+    mirrored,
+    // Adopt is offered only on mirrored rows. Kill needs a host-owned live
+    // process (running or still spawning). Rename is allowed on any custody.
+    canAdopt: mirrored,
+    canKill: !mirrored && (session.liveness === 'running' || session.liveness === 'spawning'),
+    canRename: true,
   };
 }

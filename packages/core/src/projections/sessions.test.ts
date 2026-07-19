@@ -14,9 +14,12 @@ import {
   message,
   notificationTrigger,
   questionAsked,
+  resyncMarker,
   runCompleted,
   seen,
+  sessionAdopted,
   sessionCreated,
+  sessionRenamed,
   taskQuarantined,
   transitionRejected,
   ttlTierObserved,
@@ -103,6 +106,77 @@ describe('sessions projection — session_created', () => {
       ],
     ]);
     expect(state.sessions[APP_SESSION_ID]!.provider).toBe('openai-subscription');
+  });
+});
+
+// D10 custody: default, adoption flip, rename, resync no-op, old-log tolerance.
+describe('sessions projection — custody (D10)', () => {
+  it('defaults custody to host when session_created omits it (old logs tolerate)', () => {
+    const state = stateFromLog([[createInput()]]);
+    expect(state.sessions[APP_SESSION_ID]!.custody).toBe('host');
+  });
+
+  it('carries an explicit external custody through (discovery mint)', () => {
+    const state = stateFromLog([
+      [
+        sessionCreated({
+          appSessionId: APP_SESSION_ID,
+          channel: 'pty',
+          cwd: '/p',
+          name: null,
+          forkedFrom: null,
+          taskRef: null,
+          custody: 'external',
+        }),
+      ],
+    ]);
+    expect(state.sessions[APP_SESSION_ID]!.custody).toBe('external');
+  });
+
+  it('session_adopted flips custody external → host (liveness untouched)', () => {
+    const state = stateFromLog([
+      [
+        sessionCreated({
+          appSessionId: APP_SESSION_ID,
+          channel: 'pty',
+          cwd: '/p',
+          name: null,
+          forkedFrom: null,
+          taskRef: null,
+          custody: 'external',
+        }),
+      ],
+      [livenessChanged({ appSessionId: APP_SESSION_ID, to: 'interrupted', cause: 'discovered-external' })],
+      [sessionAdopted({ appSessionId: APP_SESSION_ID, via: 'explicit' })],
+    ]);
+    const record = state.sessions[APP_SESSION_ID]!;
+    expect(record.custody).toBe('host');
+    expect(record.liveness).toBe('interrupted'); // adoption never touches liveness
+  });
+
+  it('session_renamed updates the name (any custody)', () => {
+    const state = stateFromLog([
+      [createInput()],
+      [sessionRenamed({ appSessionId: APP_SESSION_ID, name: 'renamed session' })],
+    ]);
+    expect(state.sessions[APP_SESSION_ID]!.name).toBe('renamed session');
+  });
+
+  it('resync_marker is a projection no-op (touches no field)', () => {
+    const withoutMarker = stateFromLog([[createInput()]]).sessions[APP_SESSION_ID]!;
+    const withMarker = stateFromLog([
+      [createInput()],
+      [resyncMarker({ appSessionId: APP_SESSION_ID, reason: 'pre-adoption-history' })],
+    ]).sessions[APP_SESSION_ID]!;
+    expect(withMarker).toEqual(withoutMarker);
+  });
+
+  it('adopted/renamed for an unknown session are no-ops', () => {
+    const state = stateFromLog([
+      [sessionAdopted({ appSessionId: 'ghost', via: 'resume' })],
+      [sessionRenamed({ appSessionId: 'ghost', name: 'x' })],
+    ]);
+    expect(state.sessions.ghost).toBeUndefined();
   });
 });
 

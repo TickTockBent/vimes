@@ -31,6 +31,9 @@ const SESSIONS_AFFECTING_TYPES = new Set([
   'task_quarantined',
   'seen',
   'attention_cleared',
+  // v0.2 (D10): custody/name transitions move the home list too.
+  'session_adopted',
+  'session_renamed',
 ]);
 
 interface StreamState {
@@ -153,6 +156,13 @@ export const useVimesStore = defineStore('vimes', () => {
         }
         return;
       }
+      case 'discovered': {
+        // A discover scan may have minted new mirrored sessions — refresh the
+        // home list so they appear (the resulting session_created events on
+        // unsubscribed streams would not otherwise trigger a refresh).
+        scheduleSessionsRefresh();
+        return;
+      }
     }
   }
 
@@ -248,6 +258,33 @@ export const useVimesStore = defineStore('vimes', () => {
     sendEnvelope({ op: 'resume', appSessionId });
   }
 
+  // v0.2 session ops (D9/D10). Fire-and-forget: the resulting events on the
+  // subscribed stream (and the throttled sessions refresh) reflect the outcome;
+  // a failure surfaces as a `refused` envelope in lastRefusal.
+  function markSeen(appSessionId: string): void {
+    sendEnvelope({ op: 'seen', appSessionId });
+  }
+
+  function clearAttention(appSessionId: string): void {
+    sendEnvelope({ op: 'clear_attention', appSessionId });
+  }
+
+  function killSession(appSessionId: string): void {
+    sendEnvelope({ op: 'kill', appSessionId });
+  }
+
+  function renameSession(appSessionId: string, name: string): void {
+    sendEnvelope({ op: 'rename', appSessionId, name });
+  }
+
+  function adoptSession(appSessionId: string): void {
+    sendEnvelope({ op: 'adopt', appSessionId });
+  }
+
+  function discover(): void {
+    sendEnvelope({ op: 'discover' });
+  }
+
   // Fires `onSpawned` the next time a `spawned` envelope arrives. The minimal
   // page only ever has one spawn in flight at a time, so a simple FIFO queue
   // (drained in full on each `spawned`) is sufficient — a documented
@@ -276,5 +313,11 @@ export const useVimesStore = defineStore('vimes', () => {
     resumeSession,
     spawnSession,
     dismissRefusal,
+    markSeen,
+    clearAttention,
+    killSession,
+    renameSession,
+    adoptSession,
+    discover,
   };
 });

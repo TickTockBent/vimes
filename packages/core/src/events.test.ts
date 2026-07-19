@@ -6,8 +6,14 @@ import {
   gateFiredPayloadSchema,
   hookEventPayloadSchema,
   hookSessionStart,
+  resyncMarker,
+  resyncMarkerPayloadSchema,
   runtimeDriftObserved,
   runtimeDriftObservedPayloadSchema,
+  sessionAdopted,
+  sessionAdoptedPayloadSchema,
+  sessionRenamed,
+  sessionRenamedPayloadSchema,
 } from './events.js';
 
 // gate_fired's schema widened (rule 0.7) to match wire reality: the daemon's
@@ -72,6 +78,44 @@ describe('hook ingress vocabulary (B)', () => {
       expect(input.stream).toBe('app-1');
     }
     expect(HOOK_EVENT_CONSTRUCTORS.NotAHook).toBeUndefined();
+  });
+});
+
+// Slice-2 custody vocabulary (D10). Each constructor emits on the session stream.
+describe('custody vocabulary (D10)', () => {
+  it('sessionAdopted constructs on the session stream with via', () => {
+    const explicit = sessionAdopted({ appSessionId: 'app-1', via: 'explicit' });
+    expect(explicit).toEqual({
+      stream: 'app-1',
+      type: 'session_adopted',
+      payload: { appSessionId: 'app-1', via: 'explicit' },
+    });
+    expect(sessionAdoptedPayloadSchema.safeParse(explicit.payload).success).toBe(true);
+    const viaResume = sessionAdopted({ appSessionId: 'app-1', via: 'resume' });
+    expect(sessionAdoptedPayloadSchema.safeParse(viaResume.payload).success).toBe(true);
+    // An out-of-vocabulary `via` is rejected by the schema.
+    expect(sessionAdoptedPayloadSchema.safeParse({ appSessionId: 'app-1', via: 'sneaky' }).success).toBe(false);
+  });
+
+  it('sessionRenamed constructs on the session stream with the name', () => {
+    const input = sessionRenamed({ appSessionId: 'app-1', name: 'dongfu build' });
+    expect(input).toEqual({
+      stream: 'app-1',
+      type: 'session_renamed',
+      payload: { appSessionId: 'app-1', name: 'dongfu build' },
+    });
+    expect(sessionRenamedPayloadSchema.safeParse(input.payload).success).toBe(true);
+  });
+
+  it('resyncMarker constructs on the session stream with the sanctioned reason', () => {
+    const input = resyncMarker({ appSessionId: 'app-1', reason: 'pre-adoption-history' });
+    expect(input).toEqual({
+      stream: 'app-1',
+      type: 'resync_marker',
+      payload: { appSessionId: 'app-1', reason: 'pre-adoption-history' },
+    });
+    expect(resyncMarkerPayloadSchema.safeParse(input.payload).success).toBe(true);
+    expect(resyncMarkerPayloadSchema.safeParse({ appSessionId: 'app-1', reason: 'other' }).success).toBe(false);
   });
 });
 

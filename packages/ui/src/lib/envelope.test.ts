@@ -11,6 +11,15 @@ describe('serializeClientEnvelope', () => {
     const json = serializeClientEnvelope({ op: 'spawn', channel: 'pty', cwd: '/tmp/x' });
     expect(JSON.parse(json)).toEqual({ op: 'spawn', channel: 'pty', cwd: '/tmp/x' });
   });
+
+  it('serializes the v0.2 session ops', () => {
+    expect(JSON.parse(serializeClientEnvelope({ op: 'seen', appSessionId: 'a' }))).toEqual({ op: 'seen', appSessionId: 'a' });
+    expect(JSON.parse(serializeClientEnvelope({ op: 'clear_attention', appSessionId: 'a' }))).toEqual({ op: 'clear_attention', appSessionId: 'a' });
+    expect(JSON.parse(serializeClientEnvelope({ op: 'kill', appSessionId: 'a' }))).toEqual({ op: 'kill', appSessionId: 'a' });
+    expect(JSON.parse(serializeClientEnvelope({ op: 'rename', appSessionId: 'a', name: 'n' }))).toEqual({ op: 'rename', appSessionId: 'a', name: 'n' });
+    expect(JSON.parse(serializeClientEnvelope({ op: 'adopt', appSessionId: 'a' }))).toEqual({ op: 'adopt', appSessionId: 'a' });
+    expect(JSON.parse(serializeClientEnvelope({ op: 'discover' }))).toEqual({ op: 'discover' });
+  });
 });
 
 describe('parseServerEnvelope', () => {
@@ -38,6 +47,13 @@ describe('parseServerEnvelope', () => {
   it('parses a spawned envelope', () => {
     const envelope = parseServerEnvelope(JSON.stringify({ op: 'spawned', appSessionId: 'app-9' }));
     expect(envelope).toEqual({ op: 'spawned', appSessionId: 'app-9' });
+  });
+
+  it('parses a discovered envelope carrying a count', () => {
+    const envelope = parseServerEnvelope(JSON.stringify({ op: 'discovered', count: 3 }));
+    expect(envelope).toEqual({ op: 'discovered', count: 3 });
+    // A missing/wrong-typed count falls through to null (tolerant parse).
+    expect(parseServerEnvelope(JSON.stringify({ op: 'discovered' }))).toBeNull();
   });
 
   it('tolerates malformed JSON without throwing', () => {

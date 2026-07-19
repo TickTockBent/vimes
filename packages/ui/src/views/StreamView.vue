@@ -6,6 +6,7 @@ import { extractContentBlocks, type ContentBlockView } from '../lib/messageConte
 import { collapseConsecutiveUsageEvents } from '../lib/usageCollapse.js';
 import { clampTextareaHeight, type TextareaMetrics } from '../lib/textareaGrow.js';
 import { initialKeyboardOffsetState, reduceKeyboardOffset, type KeyboardOffsetState } from '../lib/keyboardOffset.js';
+import { shouldSendSeenOnMount, shouldSendSeenOnVisibility } from '../lib/seenOnView.js';
 import GateCard from '../components/GateCard.vue';
 import type { EventRecord } from '../lib/types.js';
 
@@ -71,8 +72,20 @@ function handleVisualViewportChange(): void {
   }
 }
 
+// D9: viewing acks the notification. Send `seen` on mount and whenever the page
+// becomes visible again (a glance while hidden must not ack — see seenOnView.ts).
+function handleVisibilityChange(): void {
+  if (shouldSendSeenOnVisibility(document.visibilityState)) {
+    store.markSeen(props.appSessionId);
+  }
+}
+
 onMounted(() => {
   store.subscribe(props.appSessionId);
+  if (shouldSendSeenOnMount()) {
+    store.markSeen(props.appSessionId);
+  }
+  document.addEventListener('visibilitychange', handleVisibilityChange);
   void nextTick(autoGrowComposer);
   if (window.visualViewport) {
     window.visualViewport.addEventListener('resize', handleVisualViewportChange);
@@ -81,6 +94,7 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  document.removeEventListener('visibilitychange', handleVisibilityChange);
   if (window.visualViewport) {
     window.visualViewport.removeEventListener('resize', handleVisualViewportChange);
     window.visualViewport.removeEventListener('scroll', handleVisualViewportChange);
@@ -97,6 +111,21 @@ const canResume = computed(
     session.value !== undefined &&
     (session.value.liveness === 'dormant' || session.value.liveness === 'interrupted'),
 );
+// D10: a mirrored (external-custody) session is read-only — the composer is
+// disabled and an explanatory hint stands in for the send box, so the refusal is
+// never the user's first discovery of the rule.
+const mirrored = computed(() => session.value?.custody === 'external');
+// D9: attention badge in the header — a glance never clears it; only the explicit
+// dismiss tap does (→ clear_attention).
+const attention = computed(() => session.value?.needsAttention ?? null);
+
+function dismissAttention(): void {
+  store.clearAttention(props.appSessionId);
+}
+
+function adopt(): void {
+  store.adoptSession(props.appSessionId);
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -191,6 +220,21 @@ function resume(): void {
         ←
       </button>
       <span class="truncate font-medium">{{ session?.name ?? props.appSessionId.slice(0, 8) }}</span>
+      <span
+        v-if="mirrored"
+        class="shrink-0 rounded-full bg-violet-100 px-2 py-0.5 text-xs font-semibold text-violet-800 dark:bg-violet-900/50 dark:text-violet-200"
+      >
+        mirrored
+      </span>
+      <span class="flex-1" />
+      <button
+        v-if="attention"
+        type="button"
+        class="shrink-0 rounded-full bg-orange-100 px-3 py-1 text-xs font-semibold text-orange-800 active:bg-orange-200 dark:bg-orange-900/50 dark:text-orange-200"
+        @click="dismissAttention"
+      >
+        {{ attention.reason }} · dismiss
+      </button>
     </header>
 
     <main class="flex-1 space-y-2 p-3">
@@ -271,15 +315,28 @@ function resume(): void {
       class="keyboard-safe-footer sticky bottom-0 flex flex-col gap-2 border-t border-slate-200 bg-white p-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] dark:border-slate-800 dark:bg-slate-950"
       :style="{ '--keyboard-offset': `${keyboardOffsetPx}px` }"
     >
+      <div
+        v-if="mirrored"
+        class="flex flex-col gap-2 rounded-md bg-slate-100 p-3 text-sm text-slate-600 dark:bg-slate-900 dark:text-slate-300"
+      >
+        <span>This is a mirrored terminal session — read-only. Adopt it to send messages or resume.</span>
+        <button
+          type="button"
+          class="min-h-[44px] rounded-md bg-violet-600 font-semibold text-white active:bg-violet-700"
+          @click="adopt"
+        >
+          Adopt session
+        </button>
+      </div>
       <button
-        v-if="canResume"
+        v-if="!mirrored && canResume"
         type="button"
         class="min-h-[44px] rounded-md bg-amber-500 font-semibold text-white active:bg-amber-600"
         @click="resume"
       >
         Resume
       </button>
-      <form class="flex min-w-0 items-end gap-2" @submit.prevent="submitMessage">
+      <form v-if="!mirrored" class="flex min-w-0 items-end gap-2" @submit.prevent="submitMessage">
         <textarea
           ref="composerRef"
           v-model="draft"

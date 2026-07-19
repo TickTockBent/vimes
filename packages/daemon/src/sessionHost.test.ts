@@ -7,6 +7,7 @@ import {
   EventRouter,
   MemoryEventStore,
   SteppingClock,
+  claudeSessionMapped,
   gateFired,
   gateFiredPayloadSchema,
   livenessChanged,
@@ -978,6 +979,182 @@ describe('SessionHost — settings injection + hook custody (C, D7)', () => {
       expect(host.ingestHook(appSessionId, { hook_event_name: 'NotARealHook' })).toEqual({ status: 'unknown-event' });
     } finally {
       barrier.release();
+      host.stop();
+    }
+  });
+});
+
+// ── D10 custody: refusals, adoption, kill, rename, seen/clear ─────────────────
+
+describe('SessionHost — custody refusals, adoption, session ops (D10 / v0.2)', () => {
+  // Each case seeds a mirrored external session directly in the log (as discovery
+  // would) and builds a host over that store — custody is read from the
+  // projection, so refusals/adoption work without running the discovery scan.
+
+  it('send / gate / kill on a mirrored session are refused external-custody', () => {
+    const clock = new SteppingClock('2026-01-01T00:00:00.000Z', 1000);
+    const ids = new CountingIdSource();
+    const store = new MemoryEventStore({ clock, ids });
+    const router = new EventRouter(store);
+    router.emit([
+      sessionCreated({ appSessionId: 'ext-1', channel: 'pty', cwd: '/p', name: null, forkedFrom: null, taskRef: null, custody: 'external' }),
+      livenessChanged({ appSessionId: 'ext-1', to: 'interrupted', cause: 'discovered-external' }),
+    ]);
+    const host = new SessionHost({ store, router, clock, ids, config: buildConfig() });
+    try {
+      expect(host.sendMessage('ext-1', 'hi')).toEqual({ refused: true, reason: 'external-custody' });
+      expect(host.answerGate('ext-1', 'req-x', 'allow')).toEqual({ refused: true, reason: 'external-custody' });
+      expect(host.killSession('ext-1')).toEqual({ refused: true, reason: 'external-custody' });
+      // No auto-resume was attempted: the session stays interrupted, no new process.
+      expect(sessionOf(store, 'ext-1')?.liveness).toBe('interrupted');
+      expect(host.liveProcessCount()).toBe(0);
+    } finally {
+      host.stop();
+    }
+  });
+
+  it('explicit adopt flips custody to host (via:explicit); liveness untouched; re-adopt refused not-external', () => {
+    const clock = new SteppingClock('2026-01-01T00:00:00.000Z', 1000);
+    const ids = new CountingIdSource();
+    const store = new MemoryEventStore({ clock, ids });
+    const router = new EventRouter(store);
+    router.emit([
+      sessionCreated({ appSessionId: 'ext-2', channel: 'pty', cwd: '/p', name: null, forkedFrom: null, taskRef: null, custody: 'external' }),
+      livenessChanged({ appSessionId: 'ext-2', to: 'interrupted', cause: 'discovered-external' }),
+    ]);
+    const host = new SessionHost({ store, router, clock, ids, config: buildConfig() });
+    try {
+      expect(host.adoptSession('ext-2')).toEqual({ ok: true });
+      const adopted = records(store, 'ext-2').find((record) => record.type === 'session_adopted')!;
+      expect(adopted.payload).toEqual({ appSessionId: 'ext-2', via: 'explicit' });
+      expect(sessionOf(store, 'ext-2')?.custody).toBe('host');
+      expect(sessionOf(store, 'ext-2')?.liveness).toBe('interrupted');
+      // Adopting a host session is refused.
+      expect(host.adoptSession('ext-2')).toEqual({ refused: true, reason: 'not-external' });
+      expect(host.adoptSession('no-such')).toEqual({ refused: true, reason: 'unknown-session' });
+    } finally {
+      host.stop();
+    }
+  });
+
+  it('adopt-via-resume: resume of an external session emits session_adopted(via:resume) THEN the I3 resume path', async () => {
+    const barrier = makeBarrier();
+    const { factory, calls } = makeSdkFactory(async function* () {
+      yield { type: 'system', subtype: 'init', session_id: 'claude-resumed' };
+      await barrier.promise;
+    });
+    const clock = new SteppingClock('2026-01-01T00:00:00.000Z', 1000);
+    const ids = new CountingIdSource();
+    const store = new MemoryEventStore({ clock, ids });
+    const router = new EventRouter(store);
+    router.emit([
+      sessionCreated({ appSessionId: 'ext-3', channel: 'sdk', cwd: '/home/wes/dongfu', name: null, forkedFrom: null, taskRef: null, custody: 'external' }),
+      livenessChanged({ appSessionId: 'ext-3', to: 'interrupted', cause: 'discovered-external' }),
+      claudeSessionMapped({ appSessionId: 'ext-3', claudeSessionId: 'claude-ext', jsonlPath: '/fake/claude-ext.jsonl' }),
+    ]);
+    const host = new SessionHost({ store, router, clock, ids, config: buildConfig(), sdkQueryFactory: factory, projectsRoot: '/fake-projects' });
+    try {
+      const resume = host.resumeSession('ext-3');
+      expect(resume).toEqual({ appSessionId: 'ext-3' });
+      // Resume carried the mapped id from the recorded cwd (I3).
+      await waitFor(() => calls.length === 1);
+      expect(calls[0]!.resume).toBe('claude-ext');
+      expect(calls[0]!.cwd).toBe('/home/wes/dongfu');
+      await waitFor(() => sessionOf(store, 'ext-3')?.liveness === 'running');
+
+      // Exact order of the custody + liveness spine on resume.
+      const spine = records(store, 'ext-3')
+        .filter((record) => record.type === 'session_adopted' || record.type === 'liveness_changed')
+        .map((record) =>
+          record.type === 'session_adopted'
+            ? `adopted:${(record.payload as { via: string }).via}`
+            : `live:${(record.payload as { to: string }).to}`,
+        );
+      expect(spine).toEqual(['live:interrupted', 'adopted:resume', 'live:spawning', 'live:running']);
+      expect(sessionOf(store, 'ext-3')?.custody).toBe('host');
+    } finally {
+      barrier.release();
+      host.stop();
+    }
+  });
+
+  it('kill happy path: SIGTERM reaches the child and liveness follows to dormant', async () => {
+    const fakePty = makeFakePty();
+    const { host, store } = makeHarness({ ptySpawnFactory: fakePty.factory });
+    const spawn = host.spawnSession({ channel: 'pty', cwd: '/p' });
+    const appSessionId = 'appSessionId' in spawn ? spawn.appSessionId : '';
+    await waitFor(() => host.isLive(appSessionId));
+
+    expect(host.killSession(appSessionId)).toEqual({ ok: true });
+    expect(fakePty.killed()).toBe(true);
+    await waitFor(() => sessionOf(store, appSessionId)?.liveness === 'dormant');
+    expect(host.isLive(appSessionId)).toBe(false);
+    const dormant = records(store, appSessionId)
+      .filter((record) => record.type === 'liveness_changed' && (record.payload as { to: string }).to === 'dormant')
+      .at(-1)!;
+    expect((dormant.payload as { cause: string }).cause).toBe('killed');
+    host.stop();
+  });
+
+  it('kill on a dormant (no live process) session is refused no-live-process', () => {
+    const clock = new SteppingClock('2026-01-01T00:00:00.000Z', 1000);
+    const ids = new CountingIdSource();
+    const store = new MemoryEventStore({ clock, ids });
+    const router = new EventRouter(store);
+    router.emit([
+      sessionCreated({ appSessionId: 'dorm-1', channel: 'sdk', cwd: '/p', name: null, forkedFrom: null, taskRef: null }),
+      livenessChanged({ appSessionId: 'dorm-1', to: 'running', cause: 'spawned' }),
+      livenessChanged({ appSessionId: 'dorm-1', to: 'dormant', cause: 'done' }),
+    ]);
+    const host = new SessionHost({ store, router, clock, ids, config: buildConfig() });
+    expect(host.killSession('dorm-1')).toEqual({ refused: true, reason: 'no-live-process' });
+    expect(host.killSession('ghost')).toEqual({ refused: true, reason: 'unknown-session' });
+  });
+
+  it('rename: valid name emits session_renamed (any custody); empty/oversized refused', () => {
+    const clock = new SteppingClock('2026-01-01T00:00:00.000Z', 1000);
+    const ids = new CountingIdSource();
+    const store = new MemoryEventStore({ clock, ids });
+    const router = new EventRouter(store);
+    router.emit([
+      sessionCreated({ appSessionId: 'ext-4', channel: 'pty', cwd: '/p', name: null, forkedFrom: null, taskRef: null, custody: 'external' }),
+    ]);
+    const host = new SessionHost({ store, router, clock, ids, config: buildConfig() });
+    try {
+      expect(host.renameSession('ext-4', 'a mirrored rename')).toEqual({ ok: true });
+      expect(sessionOf(store, 'ext-4')?.name).toBe('a mirrored rename');
+      expect(host.renameSession('ext-4', '')).toEqual({ refused: true, reason: 'invalid-name' });
+      expect(host.renameSession('ext-4', 'x'.repeat(121))).toEqual({ refused: true, reason: 'invalid-name' });
+      expect(host.renameSession('ghost', 'ok')).toEqual({ refused: true, reason: 'unknown-session' });
+    } finally {
+      host.stop();
+    }
+  });
+
+  it('seen / clear_attention round-trip: seen sets seenAt (attention intact); clear dismisses', () => {
+    const clock = new SteppingClock('2026-01-01T00:00:00.000Z', 1000);
+    const ids = new CountingIdSource();
+    const store = new MemoryEventStore({ clock, ids });
+    const router = new EventRouter(store);
+    router.emit([
+      sessionCreated({ appSessionId: 'att-1', channel: 'sdk', cwd: '/p', name: null, forkedFrom: null, taskRef: null }),
+    ]);
+    router.emit(withNotificationTrigger(gateFired({ appSessionId: 'att-1', prompt: 'approve?' })));
+    const host = new SessionHost({ store, router, clock, ids, config: buildConfig() });
+    try {
+      expect(host.markSeen('att-1')).toEqual({ ok: true });
+      const afterSeen = sessionOf(store, 'att-1')!;
+      expect(afterSeen.seenAt).not.toBeNull();
+      expect(afterSeen.needsAttention?.reason).toBe('gate'); // a glance never clears
+
+      expect(host.clearAttention('att-1')).toEqual({ ok: true });
+      const cleared = records(store, 'att-1').find((record) => record.type === 'attention_cleared')!;
+      expect((cleared.payload as { cause: string }).cause).toBe('dismissed');
+      expect(sessionOf(store, 'att-1')?.needsAttention).toBeNull();
+
+      expect(host.markSeen('ghost')).toEqual({ refused: true, reason: 'unknown-session' });
+      expect(host.clearAttention('ghost')).toEqual({ refused: true, reason: 'unknown-session' });
+    } finally {
       host.stop();
     }
   });

@@ -37,6 +37,14 @@ export const sessionRecordSchema = z.object({
   // tolerated: nothing validates a snapshot's records against this schema on
   // load, and the next snapshot save self-heals.
   provider: z.string(),
+  // D10: custody of the session's Claude process. 'host' — VIMES spawned it and
+  // owns the process (writable, killable, resumable). 'external' — a
+  // terminal-started/historical session VIMES only mirrors read-only via the
+  // tailer; the host never writes to it and attention setters never fire for it,
+  // until it is adopted (explicit or resume-through-VIMES). Defaulted to 'host'
+  // at the projection when session_created omits it, so old logs/snapshots
+  // tolerate — same neutrality posture as provider.
+  custody: z.enum(['host', 'external']),
 });
 export type SessionRecord = z.infer<typeof sessionRecordSchema>;
 

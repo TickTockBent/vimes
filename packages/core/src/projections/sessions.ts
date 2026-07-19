@@ -9,7 +9,9 @@ import {
   claudeSessionMappedPayloadSchema,
   livenessChangedPayloadSchema,
   seenPayloadSchema,
+  sessionAdoptedPayloadSchema,
   sessionCreatedPayloadSchema,
+  sessionRenamedPayloadSchema,
   taskQuarantinedPayloadSchema,
   ttlTierObservedPayloadSchema,
 } from '../events.js';
@@ -72,6 +74,9 @@ export const sessionsProjection: Projection<SessionsState> = {
           // E1/D18: default 'claude-code' when the payload omits provider, so old
           // session_created events (predating the field) project without breaking.
           provider: payload.provider ?? 'claude-code',
+          // D10: default 'host' when the payload omits custody, so old
+          // session_created events project as host-owned; discovery sets 'external'.
+          custody: payload.custody ?? 'host',
         };
         return { sessions: { ...state.sessions, [payload.appSessionId]: bornSession } };
       }
@@ -174,9 +179,34 @@ export const sessionsProjection: Projection<SessionsState> = {
         }));
       }
 
+      case EVENT_TYPES.sessionAdopted: {
+        const parsed = sessionAdoptedPayloadSchema.safeParse(event.payload);
+        if (!parsed.success) {
+          return state;
+        }
+        // D10: adoption flips custody to 'host' — the session is now VIMES-owned
+        // (writable/killable/resumable). Liveness is untouched (a separate axis).
+        return withSession(state, parsed.data.appSessionId, (session) => ({
+          ...session,
+          custody: 'host',
+        }));
+      }
+
+      case EVENT_TYPES.sessionRenamed: {
+        const parsed = sessionRenamedPayloadSchema.safeParse(event.payload);
+        if (!parsed.success) {
+          return state;
+        }
+        return withSession(state, parsed.data.appSessionId, (session) => ({
+          ...session,
+          name: parsed.data.name,
+        }));
+      }
+
       // transition_rejected, notification_trigger, message, usage_block,
-      // line_quarantined, host_started, host_stopped, and any unknown type do
-      // not change a SessionRecord.
+      // line_quarantined, host_started, host_stopped, resync_marker (a
+      // client-facing signal only), and any unknown type do not change a
+      // SessionRecord.
       default:
         return state;
     }

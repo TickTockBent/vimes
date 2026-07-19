@@ -40,6 +40,14 @@ export const EVENT_TYPES = {
   hookSessionEnd: 'hook_session_end',
   // Slice-2 runtime-drift (E4): boot-time CLI version observation, warn-only.
   runtimeDriftObserved: 'runtime_drift_observed',
+  // Slice-2 custody vocabulary (D10). session_adopted flips custody host; the
+  // `via` distinguishes explicit adoption from resume-through-VIMES.
+  // session_renamed updates the display name (any custody). resync_marker is a
+  // client-facing signal that a mirrored session's stream history predates the
+  // event log (spec §3.2) — a projection no-op.
+  sessionAdopted: 'session_adopted',
+  sessionRenamed: 'session_renamed',
+  resyncMarker: 'resync_marker',
 } as const;
 
 export const SYSTEM_STREAM = 'system';
@@ -64,6 +72,10 @@ export const sessionCreatedPayloadSchema = z.object({
   // D18 (E1): optional provider; the sessions projection defaults 'claude-code'
   // when absent, so old logs (session_created without this field) tolerate.
   provider: z.string().optional(),
+  // D10: optional custody; the sessions projection defaults 'host' when absent,
+  // so old session_created events (predating the field) project as host-owned.
+  // Discovery mints external sessions by setting this to 'external'.
+  custody: z.enum(['host', 'external']).optional(),
 });
 
 export const livenessChangedPayloadSchema = z.object({
@@ -176,6 +188,23 @@ export const runtimeDriftObservedPayloadSchema = z
   .passthrough();
 export type RuntimeDriftObservedPayload = z.infer<typeof runtimeDriftObservedPayloadSchema>;
 
+// D10 custody-transition payloads. session_adopted flips custody to 'host'; `via`
+// records whether adoption was an explicit action or a resume-through-VIMES.
+export const sessionAdoptedPayloadSchema = z.object({
+  appSessionId: z.string(),
+  via: z.enum(['explicit', 'resume']),
+});
+export const sessionRenamedPayloadSchema = z.object({
+  appSessionId: z.string(),
+  name: z.string(),
+});
+// The single sanctioned resync reason (spec §3.2): a mirrored session whose
+// early transcript predates the event log. Loose-tolerant of a future reason.
+export const resyncMarkerPayloadSchema = z.object({
+  appSessionId: z.string(),
+  reason: z.enum(['pre-adoption-history']),
+});
+
 // meter_threshold_crossed lives on the 'usage' stream; pct is the observed
 // used/limit percentage at the crossing (0..100+). dispatch_refused lives on the
 // 'tasks' stream; reason names why the dispatcher stub declined.
@@ -216,6 +245,9 @@ export const EVENT_PAYLOAD_SCHEMAS = {
   [EVENT_TYPES.hookPreToolUse]: hookEventPayloadSchema,
   [EVENT_TYPES.hookSessionEnd]: hookEventPayloadSchema,
   [EVENT_TYPES.runtimeDriftObserved]: runtimeDriftObservedPayloadSchema,
+  [EVENT_TYPES.sessionAdopted]: sessionAdoptedPayloadSchema,
+  [EVENT_TYPES.sessionRenamed]: sessionRenamedPayloadSchema,
+  [EVENT_TYPES.resyncMarker]: resyncMarkerPayloadSchema,
 } as const;
 
 export type SessionCreatedPayload = z.infer<typeof sessionCreatedPayloadSchema>;
@@ -237,6 +269,9 @@ export type UsageBlockPayload = z.infer<typeof usageBlockPayloadSchema>;
 export type LineQuarantinedPayload = z.infer<typeof lineQuarantinedPayloadSchema>;
 export type MeterThresholdCrossedPayload = z.infer<typeof meterThresholdCrossedPayloadSchema>;
 export type DispatchRefusedPayload = z.infer<typeof dispatchRefusedPayloadSchema>;
+export type SessionAdoptedPayload = z.infer<typeof sessionAdoptedPayloadSchema>;
+export type SessionRenamedPayload = z.infer<typeof sessionRenamedPayloadSchema>;
+export type ResyncMarkerPayload = z.infer<typeof resyncMarkerPayloadSchema>;
 
 // Discriminated union over the vocabulary — the domain-event value space.
 export type DomainEvent =
@@ -266,7 +301,10 @@ export type DomainEvent =
   | { type: typeof EVENT_TYPES.hookStopFailure; payload: HookEventPayload }
   | { type: typeof EVENT_TYPES.hookPreToolUse; payload: HookEventPayload }
   | { type: typeof EVENT_TYPES.hookSessionEnd; payload: HookEventPayload }
-  | { type: typeof EVENT_TYPES.runtimeDriftObserved; payload: RuntimeDriftObservedPayload };
+  | { type: typeof EVENT_TYPES.runtimeDriftObserved; payload: RuntimeDriftObservedPayload }
+  | { type: typeof EVENT_TYPES.sessionAdopted; payload: SessionAdoptedPayload }
+  | { type: typeof EVENT_TYPES.sessionRenamed; payload: SessionRenamedPayload }
+  | { type: typeof EVENT_TYPES.resyncMarker; payload: ResyncMarkerPayload };
 
 // Maps each attention-setting event type to the needsAttention reason it sets.
 const ATTENTION_SETTER_REASON: Readonly<Record<string, AttentionReason>> = {
@@ -371,6 +409,16 @@ export function hookSessionEnd(payload: HookEventPayload): EventInput {
 // System-scoped (E4): boot-time observation, not tied to a session.
 export function runtimeDriftObserved(payload: RuntimeDriftObservedPayload): EventInput {
   return { stream: SYSTEM_STREAM, type: EVENT_TYPES.runtimeDriftObserved, payload };
+}
+// D10 custody transitions — each on the session's stream.
+export function sessionAdopted(payload: SessionAdoptedPayload): EventInput {
+  return { stream: payload.appSessionId, type: EVENT_TYPES.sessionAdopted, payload };
+}
+export function sessionRenamed(payload: SessionRenamedPayload): EventInput {
+  return { stream: payload.appSessionId, type: EVENT_TYPES.sessionRenamed, payload };
+}
+export function resyncMarker(payload: ResyncMarkerPayload): EventInput {
+  return { stream: payload.appSessionId, type: EVENT_TYPES.resyncMarker, payload };
 }
 
 // The observed Claude `hook_event_name` → VIMES constructor map (fragile-adapter

@@ -2,6 +2,12 @@
 import { computed, ref } from 'vue';
 import { useVimesStore } from '../stores/vimesStore.js';
 import { deriveSessionRow } from '../lib/sessionRow.js';
+import {
+  initialKillConfirmState,
+  isConfirmingKill,
+  reduceKillConfirm,
+  type KillConfirmState,
+} from '../lib/killConfirm.js';
 
 const emit = defineEmits<{ open: [appSessionId: string] }>();
 const store = useVimesStore();
@@ -10,6 +16,12 @@ const LAST_CWD_KEY = 'vimes:lastCwd';
 const cwd = ref(localStorage.getItem(LAST_CWD_KEY) ?? '');
 const channel = ref<'sdk' | 'pty'>('sdk');
 const spawning = ref(false);
+
+// Confirm-tap-again state for kill (no browser confirm(), D-scope).
+const killConfirm = ref<KillConfirmState>(initialKillConfirmState);
+// The row currently being renamed inline, and its draft text.
+const renamingId = ref<string | null>(null);
+const renameDraft = ref('');
 
 const rows = computed(() =>
   Object.values(store.sessions)
@@ -30,23 +42,83 @@ function spawn(): void {
     emit('open', appSessionId);
   });
 }
+
+function tapKill(appSessionId: string): void {
+  const result = reduceKillConfirm(killConfirm.value, { type: 'tap', appSessionId });
+  killConfirm.value = result.state;
+  if (result.fire) {
+    store.killSession(appSessionId);
+  }
+}
+
+function killLabel(appSessionId: string): string {
+  return isConfirmingKill(killConfirm.value, appSessionId) ? 'Tap again to kill' : 'Kill';
+}
+
+function adopt(appSessionId: string): void {
+  store.adoptSession(appSessionId);
+}
+
+function startRename(appSessionId: string, currentLabel: string): void {
+  renamingId.value = appSessionId;
+  renameDraft.value = currentLabel;
+}
+
+function commitRename(appSessionId: string): void {
+  const name = renameDraft.value.trim();
+  if (name.length > 0 && name.length <= 120) {
+    store.renameSession(appSessionId, name);
+  }
+  renamingId.value = null;
+  renameDraft.value = '';
+}
+
+function cancelRename(): void {
+  renamingId.value = null;
+  renameDraft.value = '';
+}
+
+function refreshDiscover(): void {
+  store.discover();
+}
 </script>
 
 <template>
   <div class="mx-auto flex max-w-lg flex-col gap-4 p-4">
-    <h1 class="text-lg font-semibold">Sessions</h1>
+    <div class="flex items-center justify-between">
+      <h1 class="text-lg font-semibold">Sessions</h1>
+      <button
+        type="button"
+        class="min-h-[44px] rounded-md border border-slate-300 px-3 text-sm font-medium active:bg-slate-100 dark:border-slate-700 dark:active:bg-slate-900"
+        @click="refreshDiscover"
+      >
+        ↻ Discover
+      </button>
+    </div>
 
     <ul class="flex flex-col gap-2">
-      <li v-for="row in rows" :key="row.appSessionId">
+      <li
+        v-for="row in rows"
+        :key="row.appSessionId"
+        class="flex flex-col gap-2 rounded-lg border border-slate-200 p-3 dark:border-slate-800"
+      >
         <button
           type="button"
-          class="flex min-h-[44px] w-full flex-col gap-1 rounded-lg border border-slate-200 p-3 text-left active:bg-slate-100 dark:border-slate-800 dark:active:bg-slate-900"
+          class="flex min-h-[44px] w-full flex-col gap-1 text-left"
           @click="emit('open', row.appSessionId)"
         >
           <div class="flex items-center justify-between gap-2">
             <span class="truncate font-medium">{{ row.label }}</span>
-            <span class="shrink-0 rounded-full px-2 py-0.5 text-xs font-semibold" :class="row.livenessColorClass">
-              {{ row.livenessLabel }}
+            <span class="flex shrink-0 items-center gap-1">
+              <span
+                v-if="row.mirrored"
+                class="rounded-full bg-violet-100 px-2 py-0.5 text-xs font-semibold text-violet-800 dark:bg-violet-900/50 dark:text-violet-200"
+              >
+                mirrored
+              </span>
+              <span class="rounded-full px-2 py-0.5 text-xs font-semibold" :class="row.livenessColorClass">
+                {{ row.livenessLabel }}
+              </span>
             </span>
           </div>
           <div class="flex items-center justify-between gap-2 text-sm text-slate-500 dark:text-slate-400">
@@ -59,9 +131,54 @@ function spawn(): void {
             </span>
           </div>
         </button>
+
+        <div v-if="renamingId === row.appSessionId" class="flex items-center gap-2">
+          <input
+            v-model="renameDraft"
+            type="text"
+            maxlength="120"
+            class="min-h-[36px] min-w-0 flex-1 rounded-md border border-slate-300 px-2 text-sm dark:border-slate-700 dark:bg-slate-900"
+            @keyup.enter="commitRename(row.appSessionId)"
+            @keyup.esc="cancelRename"
+          />
+          <button type="button" class="min-h-[36px] rounded-md bg-sky-600 px-3 text-sm font-semibold text-white active:bg-sky-700" @click="commitRename(row.appSessionId)">
+            Save
+          </button>
+          <button type="button" class="min-h-[36px] rounded-md px-2 text-sm text-slate-500 active:bg-slate-100 dark:active:bg-slate-900" @click="cancelRename">
+            Cancel
+          </button>
+        </div>
+
+        <div v-else class="flex items-center gap-2 text-sm">
+          <button
+            v-if="row.canAdopt"
+            type="button"
+            class="min-h-[36px] rounded-md bg-violet-600 px-3 font-semibold text-white active:bg-violet-700"
+            @click="adopt(row.appSessionId)"
+          >
+            Adopt
+          </button>
+          <button
+            v-if="row.canKill"
+            type="button"
+            class="min-h-[36px] rounded-md px-3 font-semibold active:bg-rose-100 dark:active:bg-rose-900/40"
+            :class="isConfirmingKill(killConfirm, row.appSessionId) ? 'bg-rose-600 text-white' : 'border border-rose-300 text-rose-700 dark:border-rose-800 dark:text-rose-300'"
+            @click="tapKill(row.appSessionId)"
+          >
+            {{ killLabel(row.appSessionId) }}
+          </button>
+          <button
+            v-if="row.canRename"
+            type="button"
+            class="min-h-[36px] rounded-md border border-slate-300 px-3 text-slate-600 active:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:active:bg-slate-900"
+            @click="startRename(row.appSessionId, row.label)"
+          >
+            Rename
+          </button>
+        </div>
       </li>
       <li v-if="rows.length === 0" class="p-3 text-center text-sm text-slate-500 dark:text-slate-400">
-        No sessions yet — spawn one below.
+        No sessions yet — spawn one below, or Discover terminal-started ones.
       </li>
     </ul>
 
