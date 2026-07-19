@@ -109,3 +109,24 @@ discovery); correctness never depends on chokidar alone. The poll interval is
 a ⟨tune⟩ — pinned after real-session observation against the JSONL-tail-
 latency budget (< 300 ms intent, spec §8).
 
+## D18 — Multi-provider posture: interfaces shaped for many, machinery built for one
+
+*2026-07-19 (Wes's call at the decomposition review).* Product-horizon VIMES
+should let users attach other providers (OpenAI subscription, OpenRouter,
+local models); MVP stays Claude-native to hold scope. The decomposition
+series prices the abstraction cost precisely (Jinn's ~7,900-line engines
+directory; ATA's per-provider quirks; Codor's registry — declined 4×), so
+the resolution is **corner-avoidance without machinery**:
+(a) `SessionRecord` reserves a `provider` field (default `'claude-code'`) —
+rule 0.5 schema reservation; new payloads added from here get the same
+neutrality review; (b) the session host formalizes as a
+**capabilities-declared adapter interface** (codor-decompose §2.5) with
+exactly two MVP implementations (Claude-SDK, Claude-PTY) — which also makes
+the Agent-SDK dependence a Claude-adapter internal, not an architectural
+commitment; (c) **boundary rule (inward 0.6):** provider-specifics live only
+inside adapters; nothing outside an adapter names a provider's concepts.
+Explicitly NOT built until a second provider is scheduled: adapter registry,
+provider config surface, any second adapter. Items (a)–(c) apply through
+the normal slice gates (a lands with the next schema-touching step; b and c
+at slice-2 design).
+
