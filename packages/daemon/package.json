@@ -17,10 +17,12 @@
     "hono": "^4.12.30",
     "jose": "^6.2.3",
     "node-pty": "^1.1",
+    "web-push": "^3.6.7",
     "ws": "^8.21.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7",
+    "@types/web-push": "^3.6.4",
     "@types/ws": "^8.18.1"
   }
 }

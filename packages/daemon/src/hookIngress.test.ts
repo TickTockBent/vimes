@@ -52,6 +52,7 @@ function buildConfig(overrides: Partial<DaemonConfig> = {}): DaemonConfig {
     bindHost: '127.0.0.1',
     sdkSettingSources: ['project'],
     projectRoots: [projectRoot],
+    pushSubject: 'mailto:test@example.invalid',
     ...overrides,
   };
 }

@@ -6,6 +6,14 @@ import { z } from 'zod';
 import type { EventRecord, EventStore } from '@vimes/core';
 import { EventRouter } from '@vimes/core';
 import type { SessionHost } from './sessionHost.js';
+import { isValidPushSubscription, type PushSubscriptionRecord } from './pushService.js';
+
+// The narrow push-subscription sink the hub needs (PushSubscriptions implements
+// it). Keeps the hub decoupled from the sqlite cache class.
+export interface PushSubscriptionSink {
+  save(subscription: PushSubscriptionRecord): void;
+  remove(endpoint: string): void;
+}
 
 // The WS layer over EventRouter (slice-1.md protocol v0). One socket multiplexes
 // every stream. Reads come via REST; live events and (later) writes ride the WS.
@@ -61,6 +69,20 @@ const renameEnvelopeSchema = z.object({
 });
 const adoptEnvelopeSchema = z.object({ op: z.literal('adopt'), appSessionId: z.string() });
 const discoverEnvelopeSchema = z.object({ op: z.literal('discover') });
+// v0.3 (step 3): push subscription ops. Validated LOOSE (rule 0.6) — the
+// subscription shape is the browser's Push API object; endpoint + keys are
+// required, everything else rides through. A subscription that survives the
+// envelope is still URL-checked in the handler before it is persisted.
+const pushSubscribeEnvelopeSchema = z.object({
+  op: z.literal('push_subscribe'),
+  subscription: z
+    .object({ endpoint: z.string(), keys: z.object({}).passthrough() })
+    .passthrough(),
+});
+const pushUnsubscribeEnvelopeSchema = z.object({
+  op: z.literal('push_unsubscribe'),
+  endpoint: z.string().min(1),
+});
 
 const controlEnvelopeSchema = z.discriminatedUnion('op', [
   subscribeEnvelopeSchema,
@@ -75,6 +97,8 @@ const controlEnvelopeSchema = z.discriminatedUnion('op', [
   renameEnvelopeSchema,
   adoptEnvelopeSchema,
   discoverEnvelopeSchema,
+  pushSubscribeEnvelopeSchema,
+  pushUnsubscribeEnvelopeSchema,
 ]);
 
 // A resolved cwd must sit within one of the resolved allowlisted roots. Empty
@@ -121,6 +145,9 @@ export interface WsHubDeps {
   sessionHost?: SessionHost;
   // Absolute allowlisted roots a spawn cwd must sit within; empty = refuse all.
   projectRoots?: readonly string[];
+  // The push subscription cache (step 3). Absent → push_subscribe/unsubscribe
+  // refuse as not-implemented.
+  pushSubscriptions?: PushSubscriptionSink;
 }
 
 export class WsHub {
@@ -130,6 +157,7 @@ export class WsHub {
   private readonly bufferedAmountOf: (socket: WebSocket) => number;
   private readonly sessionHost: SessionHost | undefined;
   private readonly projectRoots: readonly string[];
+  private readonly pushSubscriptions: PushSubscriptionSink | undefined;
   private readonly webSocketServer: WebSocketServer;
   private readonly connections = new Set<HubConnection>();
 
@@ -140,6 +168,7 @@ export class WsHub {
     this.bufferedAmountOf = deps.bufferedAmountOf ?? ((socket) => socket.bufferedAmount);
     this.sessionHost = deps.sessionHost;
     this.projectRoots = deps.projectRoots ?? [];
+    this.pushSubscriptions = deps.pushSubscriptions;
     this.webSocketServer = new WebSocketServer({ noServer: true });
   }
 
@@ -329,6 +358,30 @@ export class WsHub {
         }
         const count = host.discoverExternalSessions();
         this.sendControl(connection, { op: 'discovered', count });
+        return;
+      }
+      case 'push_subscribe': {
+        const store = this.pushSubscriptions;
+        if (store === undefined) {
+          this.refuse(connection, 'push_subscribe', 'not-implemented');
+          return;
+        }
+        // Loose URL/keys check beyond the envelope shape (rule 0.6). A bad
+        // subscription is refused; the connection survives (hostile-input posture).
+        if (!isValidPushSubscription(control.subscription)) {
+          this.refuse(connection, 'push_subscribe', 'invalid-subscription');
+          return;
+        }
+        store.save(control.subscription as PushSubscriptionRecord);
+        return;
+      }
+      case 'push_unsubscribe': {
+        const store = this.pushSubscriptions;
+        if (store === undefined) {
+          this.refuse(connection, 'push_unsubscribe', 'not-implemented');
+          return;
+        }
+        store.remove(control.endpoint);
         return;
       }
     }

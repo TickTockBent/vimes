@@ -242,6 +242,11 @@ export interface SessionHostDeps {
   // CI (which never authenticates) is unaffected. Synchronous by contract:
   // spawnSession/resumeSession are synchronous.
   preflightProbe?: PreflightProbe;
+  // Step 3: invoked with the appSessionId right after each session_created emit
+  // (spawn + discovery). The push pipeline uses it to register a per-stream
+  // subscription for the new session (the router fans out per stream). A pure
+  // notification seam — the host owns nothing of the pipeline.
+  onSessionCreated?: (appSessionId: string) => void;
 }
 
 // Delete every CLAUDE* key (covers CLAUDECODE) from a copy of the parent env; keep
@@ -521,6 +526,7 @@ export class SessionHost implements HookHost {
   private readonly config: DaemonConfig;
   private readonly projectsRoot: string;
   private readonly preflightProbe: PreflightProbe;
+  private readonly onSessionCreated: ((appSessionId: string) => void) | undefined;
 
   private readonly sdkAdapter: ClaudeSdkAdapter;
   private readonly ptyAdapter: ClaudePtyAdapter;
@@ -550,6 +556,7 @@ export class SessionHost implements HookHost {
     this.config = deps.config;
     this.projectsRoot = deps.projectsRoot ?? defaultProjectsRoot();
     this.preflightProbe = deps.preflightProbe ?? (() => ({ ok: true }));
+    this.onSessionCreated = deps.onSessionCreated;
 
     const services: AdapterServices = {
       emit: (events) => this.router.emit(events),
@@ -652,6 +659,7 @@ export class SessionHost implements HookHost {
         provider: CLAUDE_PROVIDER,
       }),
     ]);
+    this.onSessionCreated?.(appSessionId);
     this.startProcess(appSessionId, options.channel, options.cwd, undefined);
     return { appSessionId };
   }
@@ -889,6 +897,7 @@ export class SessionHost implements HookHost {
         resyncMarker({ appSessionId, reason: 'pre-adoption-history' }),
       ]);
       this.externalSessions.add(appSessionId);
+      this.onSessionCreated?.(appSessionId);
       this.tailer?.mirrorExternalFile({ appSessionId, jsonlPath: transcript.jsonlPath });
     }
     return discovered.length;

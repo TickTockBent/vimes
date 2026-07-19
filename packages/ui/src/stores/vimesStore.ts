@@ -2,6 +2,8 @@ import { defineStore } from 'pinia';
 import { reactive, ref } from 'vue';
 import { parseServerEnvelope, serializeClientEnvelope, type ClientEnvelope, type ServerEnvelope } from '../lib/envelope.js';
 import type { EventRecord, SessionRecord } from '../lib/types.js';
+import { derivePushState, type PushUiState } from '../lib/pushState.js';
+import { decideReconnectAction, shouldProbeHealth, type HealthProbeOutcome } from '../lib/reconnectDecision.js';
 
 // The single shared WS connection (docs/slice-1.md step-3 scope): one socket
 // multiplexes every subscribed stream; per-stream lastSeq is tracked so a
@@ -53,12 +55,18 @@ export const useVimesStore = defineStore('vimes', () => {
   const answeringRequestIds = reactive(new Set<string>());
 
   const streamsByAppSessionId = reactive<Record<string, StreamState>>({});
+  // Push notification bell state (spec §3.8). 'off' until refreshPushState() reads
+  // the real browser capability + permission + subscription.
+  const pushState = ref<PushUiState>('off');
 
   let socket: WebSocket | null = null;
   let backoffMs = MIN_BACKOFF_MS;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   let manuallyClosed = false;
   let everConnected = false;
+  // Consecutive WS connection failures — after RECONNECT_PROBE_THRESHOLD we probe
+  // /api/health to tell an Access re-auth bounce from plain network trouble.
+  let consecutiveWsFailures = 0;
   const subscribedStreams = new Set<string>();
   const pendingResubscribeAcks = new Set<string>();
   const spawnedListeners: Array<(appSessionId: string) => void> = [];
@@ -175,6 +183,7 @@ export const useVimesStore = defineStore('vimes', () => {
     socketInstance.addEventListener('open', () => {
       everConnected = true;
       backoffMs = MIN_BACKOFF_MS;
+      consecutiveWsFailures = 0;
       connectionStatus.value = 'open';
       if (subscribedStreams.size > 0) {
         catchingUp.value = true;
@@ -205,6 +214,11 @@ export const useVimesStore = defineStore('vimes', () => {
       if (manuallyClosed) {
         return;
       }
+      consecutiveWsFailures += 1;
+      // Access-expiry bounce: after enough consecutive failures, probe /api/health.
+      // If Access is intercepting (redirect/opaque/non-OK), a full-page reload runs
+      // the login flow; on return the store resubscribes with per-stream lastSeq.
+      void maybeBounceThroughReauth();
       connectionStatus.value = 'reconnecting';
       reconnectTimer = setTimeout(() => {
         reconnectTimer = null;
@@ -218,10 +232,127 @@ export const useVimesStore = defineStore('vimes', () => {
     });
   }
 
+  // ── Access-expiry re-auth bounce ──────────────────────────────────────────
+  async function maybeBounceThroughReauth(): Promise<void> {
+    if (!shouldProbeHealth(consecutiveWsFailures)) {
+      return;
+    }
+    let outcome: HealthProbeOutcome;
+    try {
+      const response = await fetch('/api/health', { credentials: 'same-origin' });
+      outcome = {
+        fetchFailed: false,
+        ok: response.ok,
+        redirected: response.redirected,
+        type: response.type,
+        status: response.status,
+      };
+    } catch {
+      outcome = { fetchFailed: true };
+    }
+    if (decideReconnectAction(outcome) === 'reload') {
+      window.location.reload();
+    }
+  }
+
+  // ── Web push (spec §3.8 — enabling is ALWAYS a deliberate tap, never auto) ──
+  function pushSupported(): boolean {
+    return (
+      typeof window !== 'undefined' &&
+      'Notification' in window &&
+      'serviceWorker' in navigator &&
+      'PushManager' in window
+    );
+  }
+
+  function currentPermission(): 'default' | 'granted' | 'denied' {
+    return 'Notification' in window ? (Notification.permission as 'default' | 'granted' | 'denied') : 'default';
+  }
+
+  async function activeSubscription(): Promise<PushSubscription | null> {
+    if (!pushSupported()) {
+      return null;
+    }
+    const registration = await navigator.serviceWorker.ready;
+    return registration.pushManager.getSubscription();
+  }
+
+  async function refreshPushState(): Promise<void> {
+    const supported = pushSupported();
+    const subscribed = supported ? (await activeSubscription()) !== null : false;
+    pushState.value = derivePushState({ supported, permission: currentPermission(), subscribed });
+  }
+
+  // Decode the base64url VAPID public key to the applicationServerKey byte array.
+  function urlBase64ToUint8Array(base64UrlString: string): Uint8Array<ArrayBuffer> {
+    const padding = '='.repeat((4 - (base64UrlString.length % 4)) % 4);
+    const base64 = (base64UrlString + padding).replace(/-/g, '+').replace(/_/g, '/');
+    const rawData = atob(base64);
+    // Build over an explicit ArrayBuffer so the array is a valid applicationServerKey
+    // BufferSource (not a SharedArrayBuffer-backed view).
+    const bytes = new Uint8Array(new ArrayBuffer(rawData.length));
+    for (let index = 0; index < rawData.length; index += 1) {
+      bytes[index] = rawData.charCodeAt(index);
+    }
+    return bytes;
+  }
+
+  async function fetchVapidPublicKey(): Promise<string> {
+    const response = await fetch('/api/push/vapid-public-key', { credentials: 'same-origin' });
+    const body = (await response.json()) as { publicKey: string };
+    return body.publicKey;
+  }
+
+  // Deliberate enable: request permission, subscribe via pushManager with the
+  // VAPID key, then register the subscription with the daemon.
+  async function enablePush(): Promise<void> {
+    if (!pushSupported()) {
+      return;
+    }
+    const permission = await Notification.requestPermission();
+    if (permission !== 'granted') {
+      await refreshPushState();
+      return;
+    }
+    const registration = await navigator.serviceWorker.ready;
+    const existing = await registration.pushManager.getSubscription();
+    const subscription =
+      existing ??
+      (await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(await fetchVapidPublicKey()),
+      }));
+    sendEnvelope({ op: 'push_subscribe', subscription: subscription.toJSON() });
+    await refreshPushState();
+  }
+
+  async function disablePush(): Promise<void> {
+    if (!pushSupported()) {
+      return;
+    }
+    const subscription = await activeSubscription();
+    if (subscription !== null) {
+      sendEnvelope({ op: 'push_unsubscribe', endpoint: subscription.endpoint });
+      await subscription.unsubscribe();
+    }
+    await refreshPushState();
+  }
+
+  // The bell's single action: off → enable, on → disable. Unsupported/denied are
+  // inert (the caller checks isBellActionable).
+  function togglePush(): void {
+    if (pushState.value === 'on') {
+      void disablePush();
+    } else if (pushState.value === 'off') {
+      void enablePush();
+    }
+  }
+
   function init(): void {
     if (socket !== null || reconnectTimer !== null) {
       return;
     }
+    void refreshPushState();
     void refreshSessions();
     connect();
   }
@@ -319,5 +450,8 @@ export const useVimesStore = defineStore('vimes', () => {
     renameSession,
     adoptSession,
     discover,
+    pushState,
+    togglePush,
+    refreshPushState,
   };
 });

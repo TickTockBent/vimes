@@ -40,6 +40,9 @@ import { JsonlTailer } from './tailer.js';
 import { createHookIngress, type HookIngress } from './hookIngress.js';
 import type { CliVersionProbe, PreflightProbe } from './runtimeChecks.js';
 import type { DaemonConfig } from './config.js';
+import { PushSubscriptions } from './pushSubscriptions.js';
+import { PushPipeline } from './pushPipeline.js';
+import { createWebPushSender, loadOrCreateVapidKeys, type PushSender } from './pushService.js';
 
 const DAEMON_PROJECTIONS: ReadonlyArray<Projection<unknown>> = [
   sessionsProjection as Projection<unknown>,
@@ -74,6 +77,11 @@ export interface DaemonDeps {
   // integration tests never invoke the real CLI); main.ts injects the real
   // `claude --version` probe. Present → drift is observed at boot, warn-only.
   cliVersionProbe?: CliVersionProbe;
+  // Push sender (step 3). Absent → the real web-push sender (VAPID keys from the
+  // data dir). CI injects a fake recorder — a real push service NEVER runs in the
+  // harness. VAPID keys are still generated/loaded either way (local crypto), so
+  // the public-key endpoint works in tests.
+  pushSender?: PushSender;
 }
 
 export interface Daemon {
@@ -84,6 +92,8 @@ export interface Daemon {
   readonly wsHub: WsHub;
   readonly sessionHost: SessionHost;
   readonly hookIngress: HookIngress;
+  readonly pushPipeline: PushPipeline;
+  readonly pushSubscriptions: PushSubscriptions;
   readonly authConfigured: boolean;
   readonly port: number;
   readonly hookPort: number;
@@ -197,6 +207,11 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     return context.body(serialized, 200, { 'content-type': 'application/json; charset=utf-8' });
   });
 
+  // The VAPID public key the PWA needs to subscribe. Behind the same auth wall as
+  // everything on the product port; it is public-by-design (only the private key,
+  // held mode-600 in the data dir, is a secret).
+  app.get('/api/push/vapid-public-key', (context) => context.json({ publicKey: vapidKeys.publicKey }));
+
   if (config.staticDir !== undefined) {
     const staticDir = config.staticDir;
     app.get('*', async (context) => {
@@ -217,6 +232,15 @@ export function createDaemon(deps: DaemonDeps): Daemon {
 
   app.notFound((context) => context.text('not found', 404));
 
+  // Push (step 3). VAPID keys are generated once and reused from the data dir
+  // (local crypto — safe in CI); the sender defaults to real web-push, CI injects
+  // a fake. The pipeline turns notification_trigger events into deliveries.
+  const vapidKeys = loadOrCreateVapidKeys(config.dataDir);
+  const pushSubscriptions = new PushSubscriptions({ path: config.dbPath, clock });
+  const pushSender: PushSender =
+    deps.pushSender ?? createWebPushSender({ vapid: vapidKeys, subject: config.pushSubject });
+  const pushPipeline = new PushPipeline({ router, store, sender: pushSender, subscriptions: pushSubscriptions });
+
   // Session host + JSONL tailer own every Claude process (rule 0.3). Factories
   // default to the real SDK/node-pty; CI injects fakes.
   const sessionHost = new SessionHost({
@@ -229,6 +253,8 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     ptySpawnFactory: deps.ptySpawnFactory,
     projectsRoot: deps.projectsRoot,
     preflightProbe: deps.preflightProbe,
+    // Register each new session's stream with the push pipeline (per-stream fanout).
+    onSessionCreated: (appSessionId) => pushPipeline.watch(appSessionId),
   });
   const tailer = new JsonlTailer({
     router,
@@ -259,6 +285,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     bufferedAmountOf: deps.wsBufferedAmountOf,
     sessionHost,
     projectRoots: config.projectRoots,
+    pushSubscriptions,
   });
 
   httpServer.on('upgrade', (request, socket, head) => {
@@ -303,6 +330,8 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     wsHub,
     sessionHost,
     hookIngress,
+    pushPipeline,
+    pushSubscriptions,
     authConfigured,
     get port(): number {
       const address = httpServer.address();
@@ -340,6 +369,10 @@ export function createDaemon(deps: DaemonDeps): Daemon {
       // host_started + boot recovery: any session the log left running/spawning
       // with no live process becomes interrupted (§3.10, D13).
       sessionHost.start();
+      // Push pipeline: subscribe to every session stream now in the log (survives
+      // restart; a later resume→gate on one of them will push). New sessions
+      // register via the host's onSessionCreated callback.
+      pushPipeline.start();
       snapshotTimer = setInterval(() => {
         try {
           saveAllSnapshots();
@@ -361,6 +394,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
       // quiescent when the db closes. The hook ingress closes first so no late
       // POST can emit after shutdown begins.
       await hookIngress.stop();
+      pushPipeline.stop();
       sessionHost.stop();
       await tailer.close();
       // Order (graceful shutdown): save snapshots → close WS clients → close db.
@@ -378,6 +412,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
       });
       store.dispose();
       snapshotStore.dispose();
+      pushSubscriptions.dispose();
     },
   };
 }
