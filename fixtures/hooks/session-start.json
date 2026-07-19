@@ -1,0 +1,8 @@
+{
+  "session_id": "604736ae-5f31-4af4-b77d-58edd55c5788",
+  "transcript_path": "/home/user/.claude/projects/<encoded-cwd>/604736ae-5f31-4af4-b77d-58edd55c5788.jsonl",
+  "cwd": "/home/user/project",
+  "hook_event_name": "SessionStart",
+  "source": "startup",
+  "model": "claude-opus-4-8[1m]"
+}

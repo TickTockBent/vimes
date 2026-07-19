@@ -59,6 +59,40 @@ each with an identical usage snapshot (→ D17); default spawned model
 `claude-opus-4-8-1m`; gate prompt payload carried just the tool name
 ("Write") — canUseTool `title` apparently absent; enrichment candidate.
 
+### 2026-07-19 — Slice-2 step-0a hooks spike (CLI 2.1.215 — box auto-updated from 2.1.207 mid-slice)
+
+**Q1 — injection is MERGE, both channels.** Surface: SDK `Options.settings`
+(file path or object, "flag settings" tier) + `settingSources`; CLI
+`--settings` + `--setting-sources`. A per-session settings file's hooks fire
+ALONGSIDE the project's own `.claude/settings.json` hooks for the same event
+(verified SessionStart + Stop, PTY and SDK). **D14's project-tier promise
+holds under injection.**
+
+**Q2 — D7 correlation complete and deterministic.** Hook payload `session_id`
+=== transcript filename === SDK-reported id, every run; the relay URL's
+embedded appSessionId token survives untouched; PTY hook subprocesses also
+carry `CLAUDE_CODE_SESSION_ID` in env (second confirmation channel — note:
+D10's lean said `CLAUDE_SESSION_ID`, observed truth is `CLAUDE_CODE_`
+prefix). Hook contract: JSON payload on stdin, bash execution, `CLAUDE*` env
+present. Spawn→first-POST latency ~470–550 ms both channels.
+
+**Q3 — golden payload fixtures** captured for SessionStart / Stop /
+SessionEnd / PreToolUse (sanitized, `fixtures/hooks/`, stamped 2.1.215).
+`StopFailure` unobtainable at spike budget — fixture gap noted for slice 5.
+
+**Q4 —** SessionEnd fires on TUI `/exit` with `reason: "prompt_input_exit"`
+(distinguishable — D10's adoption trigger is real); a project's OWN settings
+hooks fire for uninjected sessions (the foreign-session adoption path works).
+
+**Version-drift rider:** the box auto-updated the CLI 2.1.207→2.1.215 during
+the slice. Fresh-transcript field check: ADDITIVE only (new top-level
+`requestId` on assistant records); tail/mapper unaffected; full fixture
+re-stamp deferred to the next release gate. This is live evidence for the
+ATA runtime-lockfile item (tracker) — the platform updates under us without
+asking.
+
+Burn: 5 tiny invocations, low thousands of tokens. Process baseline clean.
+
 ## Budget table (`--report`)
 
 Design-intent targets from spec §8, listed so nothing gets pinned from memory.
