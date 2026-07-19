@@ -30,7 +30,10 @@ function nextDatabasePath(): string {
 function buildConfig(overrides: Partial<DaemonConfig> = {}): DaemonConfig {
   return {
     port: 0,
+    hookPort: 0,
     dbPath: nextDatabasePath(),
+    dataDir: temporaryDirectory,
+    expectedCliVersion: undefined,
     snapshotIntervalMs: 60_000,
     accessTeamDomain: undefined,
     accessAud: undefined,

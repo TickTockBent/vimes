@@ -44,21 +44,8 @@ adapter for authoritative percentages and reset times. **Lean (2026-07-13):**
 do it; meters degrade to JSONL+OTel sources when it breaks. Reopens (happily)
 if Anthropic ships the requested official endpoint.
 
-## D10 — Terminal-started session attach depth *(trigger: slice 2 — session surface design)*
-
-How deep does the IDE integrate sessions it didn't spawn? **Lean
-(2026-07-13):** read-only-live (JSONL tail) for MVP, plus "adopt on next
-resume" — when the session goes dormant, resuming through the IDE brings it
-under host ownership. The `resync` marker (spec §3.2) exists solely for these
-sessions' pre-adoption history.
-**Lean upgraded with mechanism (2026-07-19, codor-decompose §2.2 — the
-custody trio):** *join* = mirrored member, daemon never writes, inbound
-deliveries queue FIFO while custody is external; *adopt* = explicit transfer
-OR the `SessionEnd` hook as the sanctioned automatic adoption point (TUI
-exits → daemon adopts → drains the queued FIFO); detection via the session's
-own env (`CLAUDE_SESSION_ID`) first — which also enables agent
-self-registration — newest-file fallback second. Slots into the D7
-hooks channel; resolve D10 with this shape at slice 2 design.
+<!-- D10 moved to decisions.md 2026-07-19 — decided: mirrored custody,
+     adopt on resume or SessionEnd; attention never fires for mirrored. -->
 
 ## D11 — Migration convention *(trigger: the first real schema migration)*
 

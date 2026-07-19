@@ -80,6 +80,30 @@ describe('sessions projection — session_created', () => {
     const state = stateFromLog([[gateFired({ appSessionId: 'ghost', prompt: 'x' })]]);
     expect(state.sessions.ghost).toBeUndefined();
   });
+
+  // E1/D18: provider defaults 'claude-code' when session_created omits it (old
+  // logs tolerate); an explicit provider passes through untouched.
+  it('defaults provider to claude-code when the session_created payload omits it', () => {
+    const state = stateFromLog([[createInput()]]);
+    expect(state.sessions[APP_SESSION_ID]!.provider).toBe('claude-code');
+  });
+
+  it('carries an explicit provider through unchanged (fresh session_created)', () => {
+    const state = stateFromLog([
+      [
+        sessionCreated({
+          appSessionId: APP_SESSION_ID,
+          channel: 'sdk',
+          cwd: '/p',
+          name: null,
+          forkedFrom: null,
+          taskRef: null,
+          provider: 'openai-subscription',
+        }),
+      ],
+    ]);
+    expect(state.sessions[APP_SESSION_ID]!.provider).toBe('openai-subscription');
+  });
 });
 
 describe('sessions projection — I5 attention conservation', () => {

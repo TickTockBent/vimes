@@ -34,13 +34,16 @@ the assumption ledger + guardrails adoptions (separate Wes-calls, tracker).
 
 ## Architecture (binding)
 
-- **Hook ingress:** hooks POST from local claude processes to
-  `127.0.0.1:4600/hooks/<appSessionId>` — this path is EXEMPT from the
-  Access-JWT wall (it never traverses the tunnel) and instead requires a
-  **per-spawn secret** baked into the relay command at settings-injection
-  time (`Authorization: Bearer <secret>`; constant-time compare; unknown
-  session or bad secret → 401 + `auth_rejected`, zero bytes — I14 extends to
-  this ingress). Hook payloads are rule-0.6 fragile: loose zod (unknown
+- **Hook ingress** *(amended at step-1 build — stronger than drafted)*: a
+  **separate listener** on `127.0.0.1:⟨VIMES_HOOK_PORT, 4601⟩` serving ONLY
+  `POST /hooks/<appSessionId>`. The tunnel routes only to 4600, so the
+  Access-wall exemption is structural, not header-based; the main server
+  404s `/hooks` outright (asserted). Auth: **per-spawn secret**
+  (`Authorization: Bearer`; constant-time digest compare; secret outlives
+  the process until re-spawn/shutdown so post-exit `SessionEnd` still
+  authenticates — the D10 adoption trigger needs it). Unknown session or
+  bad secret → 401 + `auth_rejected`, zero bytes — I14 extends to this
+  ingress. Hook payloads are rule-0.6 fragile: loose zod (unknown
   fields tolerated), golden payload fixtures pinned per CLI version,
   risk-register row. The ingress emits vocabulary events:
   `hook_session_start` {claudeSessionId, ...} (→ `claude_session_mapped` —

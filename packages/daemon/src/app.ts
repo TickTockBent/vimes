@@ -8,6 +8,7 @@ import {
   EventRouter,
   bootFromSnapshot,
   readAllStreamsGrouped,
+  runtimeDriftObserved,
   snapshotAfter,
   metersProjection,
   sessionsProjection,
@@ -36,6 +37,8 @@ import {
   type SdkQueryFactory,
 } from './sessionHost.js';
 import { JsonlTailer } from './tailer.js';
+import { createHookIngress, type HookIngress } from './hookIngress.js';
+import type { CliVersionProbe, PreflightProbe } from './runtimeChecks.js';
 import type { DaemonConfig } from './config.js';
 
 const DAEMON_PROJECTIONS: ReadonlyArray<Projection<unknown>> = [
@@ -64,6 +67,13 @@ export interface DaemonDeps {
   // Override the transcript projects root + chokidar options (tests).
   projectsRoot?: string;
   tailerWatchOptions?: ConstructorParameters<typeof JsonlTailer>[0]['watchOptions'];
+  // Spawn preflight (E3). Absent → the SessionHost's permissive default (CI never
+  // authenticates); main.ts injects the real credential probe.
+  preflightProbe?: PreflightProbe;
+  // Runtime version probe (E4). Absent → the boot version check is SKIPPED (so
+  // integration tests never invoke the real CLI); main.ts injects the real
+  // `claude --version` probe. Present → drift is observed at boot, warn-only.
+  cliVersionProbe?: CliVersionProbe;
 }
 
 export interface Daemon {
@@ -73,8 +83,10 @@ export interface Daemon {
   readonly snapshotStore: SqliteSnapshotStore;
   readonly wsHub: WsHub;
   readonly sessionHost: SessionHost;
+  readonly hookIngress: HookIngress;
   readonly authConfigured: boolean;
   readonly port: number;
+  readonly hookPort: number;
   serializeProjection(projectionId: string): string | null;
   start(): Promise<void>;
   stop(): Promise<void>;
@@ -216,6 +228,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     sdkQueryFactory: deps.sdkQueryFactory,
     ptySpawnFactory: deps.ptySpawnFactory,
     projectsRoot: deps.projectsRoot,
+    preflightProbe: deps.preflightProbe,
   });
   const tailer = new JsonlTailer({
     router,
@@ -223,6 +236,17 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     watchOptions: deps.tailerWatchOptions,
   });
   sessionHost.attachTailer(tailer);
+
+  // Hook ingress: a SEPARATE listener on config.hookPort (127.0.0.1 only). The
+  // tunnel routes ONLY to config.port, so this is structurally unreachable from
+  // outside — the designed I14 exemption (deliverable A). Its auth is the
+  // per-spawn secret custody the session host owns.
+  const hookIngress = createHookIngress({
+    host: sessionHost,
+    router,
+    hookPort: config.hookPort,
+    bindHost: config.bindHost,
+  });
 
   const httpServer = createAdaptorServer({ fetch: app.fetch }) as Server;
   const wsHub = new WsHub({
@@ -275,10 +299,14 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     snapshotStore,
     wsHub,
     sessionHost,
+    hookIngress,
     authConfigured,
     get port(): number {
       const address = httpServer.address();
       return address !== null && typeof address === 'object' ? (address as AddressInfo).port : config.port;
+    },
+    get hookPort(): number {
+      return hookIngress.port;
     },
     serializeProjection,
 
@@ -292,6 +320,20 @@ export function createDaemon(deps: DaemonDeps): Daemon {
           resolveStart();
         });
       });
+      await hookIngress.start();
+      // Runtime version check (E4), warn-only, never gates. Only when a probe is
+      // injected (main.ts in prod) — integration tests never invoke the CLI.
+      if (deps.cliVersionProbe !== undefined) {
+        const observed = await deps.cliVersionProbe();
+        const expected = config.expectedCliVersion ?? null;
+        if (expected === null || observed !== expected) {
+          router.emit([runtimeDriftObserved({ expected, observed })]);
+          // eslint-disable-next-line no-console
+          console.warn(
+            `vimes-daemon: CLI runtime drift — expected=${expected ?? '(unpinned)'} observed=${observed ?? '(unknown)'}`,
+          );
+        }
+      }
       // host_started + boot recovery: any session the log left running/spawning
       // with no live process becomes interrupted (§3.10, D13).
       sessionHost.start();
@@ -313,7 +355,9 @@ export function createDaemon(deps: DaemonDeps): Daemon {
       }
       // host_stopped + kill children (they die with the daemon, §3.10) and stop
       // watching transcripts BEFORE the final snapshot, so the log/watchers are
-      // quiescent when the db closes.
+      // quiescent when the db closes. The hook ingress closes first so no late
+      // POST can emit after shutdown begins.
+      await hookIngress.stop();
       sessionHost.stop();
       await tailer.close();
       // Order (graceful shutdown): save snapshots → close WS clients → close db.

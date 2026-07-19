@@ -33,14 +33,14 @@ the right doc, no action due yet), **pending** (waits for its slice/trigger).
 | `rate_limit_event` from SDK stream into meters/attention (ata 1) | slice 5 | pending (already observed live on this box in the D4 spike) |
 | Auto-resume at reset w/ full staleness matrix; policy by session class (ata 2) | slice 5–6 | pending |
 | Turn attribution: injected vs terminal-native (jinn 5) | slices 2–3 attention model | pending |
-| Provider preflight + authenticated-not-just-installed (ata 8, jinn 4) | slice 2–3 spawn path | pending |
+| Provider preflight + authenticated-not-just-installed (ata 8, jinn 4) | slice 2 step 1 | in build |
 | Attention reason enum additions: `rate-limited`, `brake`, spawn-failure (jinn 2.2, codor 2.3) | schema reservation (rule 0.5) | pending — **Wes call** |
 | One-source-of-record rule: content=tail, lifecycle=hooks/stream, nothing ingested twice (codor 8) | ground-rule/spec note | pending — **Wes call** (constitution territory) |
 | MCP surface: process_register/list/stop; briefing-as-tool; heartbeat+bootstrap check-in; reviewer-close structural; `report_completion` typed (ata 3/5/6/7, jinn 8) | slice 6 design | pending |
 | Cascade guard + brakes layer (held delivery, one-tap release) (ata 4, codor 3) | slice 7 | pending |
 | Per-spawner budget scope; per-worker scoped credentials (jinn 6, codor 6) | slices 5–7 design | pending |
 | Graph-ready stage-runner interface (jinn 7) | slice 6 design | pending |
-| CLI-version lockfile checked at boot (ata 9) | slice 2 step 1 (promoted — box auto-updated 207→215 mid-slice) | **applied** (warn-only) |
+| CLI-version lockfile checked at boot (ata 9) | slice 2 step 1 (promoted — box auto-updated 207→215 mid-slice) | in build (warn-only, Wes-approved) |
 | Assumption ledger (`harn`-shaped) + can-fail regression rule (codor 1) | repo process, pre Vimes-builds-Vimes | pending — **Wes call** (process adoption) |
 | Guardrails doc + critical test tier + sandbox-projects-only (ata 11) | repo process | pending — **Wes call** |
 | MCP server = thin client of daemon API, never second store writer (ata 10) | spec note | pending — **Wes call** (rule-shaped) |

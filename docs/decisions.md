@@ -173,3 +173,22 @@ only as a footnote. Hook payload schemas are a rule-0.6 fragile surface:
 golden fixtures at `fixtures/hooks/` (2.1.215), loose ingest, risk-register
 row at the next doc pass.
 
+## D10 — Terminal-started sessions: mirrored custody, adopt on resume or SessionEnd
+
+*2026-07-19 (resolved at slice-2 design per the skeleton Wes greenlit;
+mechanism from codor-decompose §2.2; spike Q4 evidence same day; moved from
+open-questions.md).* Sessions VIMES didn't spawn are **mirrored**: listed
+from on-demand discovery, read-only-live via the tailer, `custody:
+'external'`, the daemon never writes to them, and **attention setters never
+fire for mirrored sessions** (the slice-2 turn-attribution rule). Adoption —
+custody transfer to the host — happens by explicit action, by
+resume-through-VIMES, or automatically via the `SessionEnd` hook where a
+project's own settings carry the VIMES relay (spike-verified: SessionEnd
+fires on TUI `/exit` with distinguishable `reason:"prompt_input_exit"`;
+uninjected sessions fire project-level hooks). Pre-adoption history replays
+under the `resync` marker (spec §3.2). Correction from observed truth: the
+self-registration env var is `CLAUDE_CODE_SESSION_ID` (not
+`CLAUDE_SESSION_ID` as the decomp lean had it). Deliveries-queued-while-
+external (the codor FIFO) is deferred until VIMES has deliveries to queue —
+schema note only, machinery waits for its consumer (rule 0.5).
+

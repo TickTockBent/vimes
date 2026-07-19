@@ -2,6 +2,7 @@ import { createRequire } from 'node:module';
 import {
   EventRouter,
   INITIAL_LIVENESS,
+  HOOK_EVENT_CONSTRUCTORS,
   attentionCleared,
   canTransition,
   claudeSessionMapped,
@@ -19,6 +20,7 @@ import {
   usageBlock,
   withNotificationTrigger,
   type Clock,
+  type EventInput,
   type EventStore,
   type IdSource,
   type Liveness,
@@ -26,13 +28,28 @@ import {
 } from '@vimes/core';
 import type { DaemonConfig } from './config.js';
 import { defaultProjectsRoot, transcriptFileFor } from './transcriptPaths.js';
+import {
+  buildSessionSettings,
+  mintSpawnSecret,
+  removeSessionSettings,
+  secretMatchesDigest,
+  writeSessionSettings,
+} from './sessionSettings.js';
+import type { HookAuthResult, HookHost, HookIngestResult } from './hookIngress.js';
+import type { PreflightProbe, PreflightResult } from './runtimeChecks.js';
 
 // ─── The session host: owns every Claude process (rule 0.3) ──────────────────
 //
-// Deterministic control logic; every I/O boundary (the SDK query and the pty
-// spawn) is an injected factory. CI ALWAYS injects fakes — real Claude never
-// runs in the harness (spec §7). PTY structure comes ONLY from the tailer
-// (rule 0.8): raw bytes here are counted, never parsed.
+// Deterministic control logic; every I/O boundary (the SDK query, the pty spawn,
+// the settings-file write, the preflight probe) is an injected factory/seam. CI
+// ALWAYS injects fakes — real Claude never runs in the harness (spec §7). PTY
+// structure comes ONLY from the tailer (rule 0.8): raw bytes here are counted,
+// never parsed.
+//
+// D18: the two channels are formalized as capabilities-declared `SessionAdapter`
+// implementations (ClaudeSdkAdapter, ClaudePtyAdapter). The host owns
+// orchestration (registry, liveness, attention, correlation, hook custody); the
+// adapters own the channel-specific process I/O and the gate resolution contract.
 
 // ── SDK seam (fragile-adapter boundary, rule 0.6) ────────────────────────────
 export type SdkPermissionResult =
@@ -56,13 +73,16 @@ export interface SdkStreamMessage {
   type: string;
   subtype?: string;
   session_id?: string;
-  message?: { role?: unknown; content?: unknown; usage?: unknown };
+  message?: { role?: unknown; content?: unknown; usage?: unknown; id?: unknown };
   [key: string]: unknown;
 }
 
 export interface SdkQueryOptions {
   cwd: string;
   resume?: string;
+  // Per-session settings file path (C). Passed to Options.settings so the SDK
+  // loads the injected hook relays alongside the project tier (D14 MERGE).
+  settings?: string;
   settingSources: string[];
   canUseTool: SdkCanUseTool;
 }
@@ -107,6 +127,92 @@ export type ResumeResult = { appSessionId: string } | { refused: true; reason: s
 export type SendResult = { ok: true } | { refused: true; reason: string };
 export type AnswerResult = { ok: true } | { refused: true; reason: string };
 
+// ── Adapter interface (D18) ──────────────────────────────────────────────────
+export interface AdapterCapabilities {
+  resume: boolean;
+  gates: 'runtime' | 'none';
+  settingsIsolation: boolean;
+  structuredStream: boolean;
+}
+
+export const CLAUDE_SDK_CAPABILITIES: AdapterCapabilities = {
+  resume: true,
+  gates: 'runtime',
+  settingsIsolation: true,
+  structuredStream: true,
+};
+
+export const CLAUDE_PTY_CAPABILITIES: AdapterCapabilities = {
+  resume: true,
+  gates: 'none',
+  settingsIsolation: false,
+  structuredStream: false,
+};
+
+// The provider hosting every MVP session (D18 boundary rule: named ONLY here, at
+// the composition point — nothing downstream names a provider's concepts).
+const CLAUDE_PROVIDER = 'claude-code';
+
+interface AdapterSpawnContext {
+  appSessionId: string;
+  cwd: string;
+  resume: string | undefined;
+  settingsPath: string | undefined;
+}
+
+export type InteractionAck = { ok: true; appSessionId: string } | { refused: true; reason: string };
+
+export interface SessionAdapter {
+  readonly capabilities: AdapterCapabilities;
+  // Create the process and wire its callbacks; return the live record. The host
+  // registers it and emits `running` BEFORE calling activate() (stream/tailer
+  // start), preserving the observed emission order.
+  spawn(context: AdapterSpawnContext): LiveProcess;
+  activate(live: LiveProcess): void;
+  deliver(live: LiveProcess, text: string): void;
+  // The gate contract: resolve the pending interaction on the adapter's ack.
+  respondInteraction(requestId: string, answer: unknown): InteractionAck;
+  interrupt?(live: LiveProcess): void;
+  kill(live: LiveProcess): void;
+}
+
+// Services the host exposes to its adapters (emission, tailer, registry, byte
+// accounting, correlation, dormancy) — the inward boundary keeping domain logic
+// host-owned while the adapters own channel I/O.
+interface AdapterServices {
+  emit(events: EventInput[]): void;
+  readonly config: DaemonConfig;
+  readonly projectsRoot: string;
+  getTailer(): SessionTailer | undefined;
+  markSdkJsonl(jsonlPath: string): void;
+  countRawBytes(appSessionId: string, byteLength: number): void;
+  emitMappingIfNew(appSessionId: string, claudeSessionId: string, jsonlPath: string): void;
+  driveToDormant(appSessionId: string, cause: string): void;
+  releaseLiveProcess(live: LiveProcess): void;
+  isStopping(): boolean;
+}
+
+interface LiveProcess {
+  appSessionId: string;
+  channel: 'sdk' | 'pty';
+  cwd: string;
+  adapter: SessionAdapter;
+  // Per-spawn settings file, removed on process exit (C).
+  settingsPath?: string;
+  // sdk-specific
+  sdkInput?: AsyncMessageQueue<SdkUserMessage>;
+  sdkHandle?: SdkQueryHandle;
+  sawResult?: boolean;
+  // pty-specific
+  pty?: PtyLike;
+}
+
+interface PendingGate {
+  appSessionId: string;
+  input: Record<string, unknown>;
+  resolve: (result: SdkPermissionResult) => void;
+}
+
 export interface SessionHostDeps {
   store: EventStore;
   router: EventRouter;
@@ -118,23 +224,11 @@ export interface SessionHostDeps {
   // Where Claude Code writes transcripts; overridable for tests. Prod default
   // is ~/.claude/projects.
   projectsRoot?: string;
-}
-
-interface LiveProcess {
-  appSessionId: string;
-  channel: 'sdk' | 'pty';
-  cwd: string;
-  sdkInput?: AsyncMessageQueue<SdkUserMessage>;
-  sdkHandle?: SdkQueryHandle;
-  sawResult?: boolean;
-  lastMappedClaudeSessionId?: string;
-  pty?: PtyLike;
-}
-
-interface PendingGate {
-  appSessionId: string;
-  input: Record<string, unknown>;
-  resolve: (result: SdkPermissionResult) => void;
+  // Spawn preflight (E3). Default is a permissive no-op — the REAL credential
+  // probe is injected at composition (app.ts), like the process factories, so
+  // CI (which never authenticates) is unaffected. Synchronous by contract:
+  // spawnSession/resumeSession are synchronous.
+  preflightProbe?: PreflightProbe;
 }
 
 // Delete every CLAUDE* key (covers CLAUDECODE) from a copy of the parent env; keep
@@ -165,19 +259,268 @@ export function truncateGatePrompt(text: string): string {
   return `${text.slice(0, GATE_PROMPT_MAX - 1)}…`;
 }
 
-export class SessionHost {
+// Preflight cache TTL — a spawn burst re-uses one probe result (E3). Short, so a
+// credential change is picked up promptly.
+const PREFLIGHT_CACHE_TTL_MS = 5_000;
+
+// ── ClaudeSdkAdapter ─────────────────────────────────────────────────────────
+class ClaudeSdkAdapter implements SessionAdapter {
+  readonly capabilities = CLAUDE_SDK_CAPABILITIES;
+  private readonly pendingGates = new Map<string, PendingGate>();
+
+  constructor(
+    private readonly factory: SdkQueryFactory,
+    private readonly services: AdapterServices,
+  ) {}
+
+  spawn(context: AdapterSpawnContext): LiveProcess {
+    const input = new AsyncMessageQueue<SdkUserMessage>();
+    const handle = this.factory({
+      prompt: input,
+      options: {
+        cwd: context.cwd,
+        resume: context.resume,
+        settings: context.settingsPath,
+        settingSources: this.services.config.sdkSettingSources,
+        canUseTool: (toolName, toolInput, options) =>
+          this.handleGate(context.appSessionId, toolName, toolInput, options),
+      },
+    });
+    return {
+      appSessionId: context.appSessionId,
+      channel: 'sdk',
+      cwd: context.cwd,
+      adapter: this,
+      sdkInput: input,
+      sdkHandle: handle,
+      sawResult: false,
+    };
+  }
+
+  activate(live: LiveProcess): void {
+    void this.consumeSdk(live);
+  }
+
+  deliver(live: LiveProcess, text: string): void {
+    live.sdkInput?.push({ type: 'user', message: { role: 'user', content: text }, parent_tool_use_id: null });
+  }
+
+  respondInteraction(requestId: string, answer: unknown): InteractionAck {
+    const pending = this.pendingGates.get(requestId);
+    if (pending === undefined) {
+      return { refused: true, reason: 'unknown-gate' };
+    }
+    this.pendingGates.delete(requestId);
+    // Fail-closed: anything other than the explicit 'allow' string denies.
+    const result: SdkPermissionResult =
+      answer === 'allow'
+        ? { behavior: 'allow', updatedInput: pending.input }
+        : { behavior: 'deny', message: 'denied from VIMES' };
+    pending.resolve(result);
+    return { ok: true, appSessionId: pending.appSessionId };
+  }
+
+  kill(live: LiveProcess): void {
+    live.sdkInput?.close();
+    try {
+      live.sdkHandle?.close?.();
+    } catch {
+      // A query already gone is fine — we are tearing everything down.
+    }
+  }
+
+  // Clear any unresolved gate promises (daemon shutdown).
+  reset(): void {
+    this.pendingGates.clear();
+  }
+
+  private async consumeSdk(live: LiveProcess): Promise<void> {
+    try {
+      for await (const rawMessage of live.sdkHandle as SdkQueryHandle) {
+        if (this.handleSdkMessage(live, rawMessage)) {
+          break;
+        }
+      }
+    } catch {
+      // Stream error → fall through to wind-down (the finally block).
+    } finally {
+      this.windDown(live);
+    }
+  }
+
+  private handleSdkMessage(live: LiveProcess, sdkMessage: SdkStreamMessage): boolean {
+    const appSessionId = live.appSessionId;
+
+    if (sdkMessage.type === 'system' && sdkMessage.subtype === 'init') {
+      const claudeSessionId = typeof sdkMessage.session_id === 'string' ? sdkMessage.session_id : undefined;
+      if (claudeSessionId !== undefined) {
+        const jsonlPath = transcriptFileFor(this.services.projectsRoot, live.cwd, claudeSessionId);
+        // I1 + D7 dedupe: emit a mapping ONLY for an id not already known (the
+        // hook SessionStart path also emits mappings; the shared known-set makes
+        // both idempotent). Always mark the SDK jsonl so the tailer skips it.
+        this.services.emitMappingIfNew(appSessionId, claudeSessionId, jsonlPath);
+        this.services.markSdkJsonl(jsonlPath);
+      }
+      return false;
+    }
+
+    if (sdkMessage.type === 'assistant' || sdkMessage.type === 'user') {
+      const body = sdkMessage.message;
+      if (body !== undefined && body !== null) {
+        const role = typeof body.role === 'string' ? body.role : sdkMessage.type;
+        // Content stored INLINE (D12).
+        this.services.emit([messageEvent({ appSessionId, role, content: body.content ?? null })]);
+        if (body.usage !== null && typeof body.usage === 'object') {
+          // D17 (E2): thread the assistant message id so a later consumer can
+          // dedupe the several identical usage snapshots one turn emits.
+          const messageId = typeof body.id === 'string' ? body.id : undefined;
+          this.services.emit([
+            usageBlock(
+              messageId === undefined
+                ? { appSessionId, usage: body.usage as Record<string, unknown> }
+                : { appSessionId, usage: body.usage as Record<string, unknown>, messageId },
+            ),
+          ]);
+        }
+      }
+      return false;
+    }
+
+    if (sdkMessage.type === 'result') {
+      live.sawResult = true;
+      this.services.emit(withNotificationTrigger(runCompleted({ appSessionId })));
+      this.services.driveToDormant(appSessionId, 'run-complete');
+      return true;
+    }
+
+    return false;
+  }
+
+  private windDown(live: LiveProcess): void {
+    this.services.releaseLiveProcess(live);
+    if (!this.services.isStopping() && live.sawResult !== true) {
+      // Stream ended without a result — reconcile liveness to dormant.
+      this.services.driveToDormant(live.appSessionId, 'sdk-stream-ended');
+    }
+    live.sdkInput?.close();
+    try {
+      live.sdkHandle?.close?.();
+    } catch {
+      // ignore
+    }
+  }
+
+  private handleGate(
+    appSessionId: string,
+    toolName: string,
+    input: Record<string, unknown>,
+    options: { requestId: string; title?: string },
+  ): Promise<SdkPermissionResult> {
+    const requestId = options.requestId;
+    // Richer gate prompt: prefer the SDK-provided title; when absent fall back to
+    // the tool name plus its input JSON, truncated to 160 chars with an ellipsis.
+    const prompt =
+      typeof options.title === 'string' && options.title.length > 0
+        ? options.title
+        : truncateGatePrompt(`${toolName}: ${JSON.stringify(input)}`);
+    const gateEvent = gateFired({ appSessionId, prompt, requestId });
+    this.services.emit(withNotificationTrigger(gateEvent));
+    return new Promise<SdkPermissionResult>((resolve) => {
+      this.pendingGates.set(requestId, { appSessionId, input, resolve });
+    });
+  }
+}
+
+// ── ClaudePtyAdapter ─────────────────────────────────────────────────────────
+class ClaudePtyAdapter implements SessionAdapter {
+  readonly capabilities = CLAUDE_PTY_CAPABILITIES;
+
+  constructor(
+    private readonly factory: PtySpawnFactory,
+    private readonly services: AdapterServices,
+  ) {}
+
+  spawn(context: AdapterSpawnContext): LiveProcess {
+    // D15: the PTY child spawns with a scrubbed env (no CLAUDE* keys).
+    const environment = scrubClaudeEnv(process.env);
+    const args: string[] = [];
+    if (context.settingsPath !== undefined) {
+      args.push('--settings', context.settingsPath);
+    }
+    if (context.resume !== undefined) {
+      args.push('--resume', context.resume);
+    }
+    const handle = this.factory('claude', args, {
+      cwd: context.cwd,
+      env: environment,
+      name: context.appSessionId,
+    });
+    const live: LiveProcess = {
+      appSessionId: context.appSessionId,
+      channel: 'pty',
+      cwd: context.cwd,
+      adapter: this,
+      pty: handle,
+    };
+    handle.onData((data) => this.services.countRawBytes(context.appSessionId, Buffer.byteLength(data, 'utf8')));
+    handle.onExit(() => this.onExit(live));
+    return live;
+  }
+
+  activate(live: LiveProcess): void {
+    // The tailer is the ONLY structured channel for PTY (rule 0.8).
+    this.services.getTailer()?.watchSession({ appSessionId: live.appSessionId, cwd: live.cwd });
+  }
+
+  deliver(live: LiveProcess, text: string): void {
+    // PTY keystrokes: the text plus a carriage return (rule 0.8 — a raw write,
+    // never a parse).
+    live.pty?.write(`${text}\r`);
+  }
+
+  respondInteraction(): InteractionAck {
+    // gates: 'none' — the PTY channel has no runtime gate surface.
+    return { refused: true, reason: 'no-runtime-gates' };
+  }
+
+  kill(live: LiveProcess): void {
+    try {
+      live.pty?.kill();
+    } catch {
+      // A pty already gone is fine.
+    }
+  }
+
+  private onExit(live: LiveProcess): void {
+    this.services.releaseLiveProcess(live);
+    this.services.getTailer()?.unwatchSession(live.appSessionId);
+    if (!this.services.isStopping()) {
+      this.services.driveToDormant(live.appSessionId, 'pty-exit');
+    }
+  }
+}
+
+export class SessionHost implements HookHost {
   private readonly store: EventStore;
   private readonly router: EventRouter;
   private readonly clock: Clock;
   private readonly ids: IdSource;
   private readonly config: DaemonConfig;
-  private readonly sdkQueryFactory: SdkQueryFactory;
-  private readonly ptySpawnFactory: PtySpawnFactory;
   private readonly projectsRoot: string;
+  private readonly preflightProbe: PreflightProbe;
+
+  private readonly sdkAdapter: ClaudeSdkAdapter;
+  private readonly ptyAdapter: ClaudePtyAdapter;
 
   private readonly liveProcesses = new Map<string, LiveProcess>();
-  private readonly pendingGates = new Map<string, PendingGate>();
   private readonly rawByteCounts = new Map<string, number>();
+  // Per-spawn hook secret digests, keyed by appSessionId. Deliberately OUTLIVES
+  // the live-process record (survives to re-spawn / shutdown): a SessionEnd hook
+  // fires as the process tears down, after the live record is gone, and D10
+  // adoption depends on it authenticating. The settings FILE is still removed on
+  // exit (C); only the secret's acceptance window lingers.
+  private readonly spawnSecrets = new Map<string, Buffer>();
+  private preflightCache: { result: PreflightResult; atMs: number } | undefined;
   private tailer: SessionTailer | undefined;
   private stopping = false;
 
@@ -187,9 +530,25 @@ export class SessionHost {
     this.clock = deps.clock;
     this.ids = deps.ids;
     this.config = deps.config;
-    this.sdkQueryFactory = deps.sdkQueryFactory ?? defaultSdkQueryFactory;
-    this.ptySpawnFactory = deps.ptySpawnFactory ?? defaultPtySpawnFactory;
     this.projectsRoot = deps.projectsRoot ?? defaultProjectsRoot();
+    this.preflightProbe = deps.preflightProbe ?? (() => ({ ok: true }));
+
+    const services: AdapterServices = {
+      emit: (events) => this.router.emit(events),
+      config: this.config,
+      projectsRoot: this.projectsRoot,
+      getTailer: () => this.tailer,
+      markSdkJsonl: (jsonlPath) => this.tailer?.markSdkJsonl(jsonlPath),
+      countRawBytes: (appSessionId, byteLength) =>
+        this.rawByteCounts.set(appSessionId, this.rawBytesReceived(appSessionId) + byteLength),
+      emitMappingIfNew: (appSessionId, claudeSessionId, jsonlPath) =>
+        this.emitMappingIfNew(appSessionId, claudeSessionId, jsonlPath),
+      driveToDormant: (appSessionId, cause) => this.driveToDormant(appSessionId, cause),
+      releaseLiveProcess: (live) => this.releaseLiveProcess(live),
+      isStopping: () => this.stopping,
+    };
+    this.sdkAdapter = new ClaudeSdkAdapter(deps.sdkQueryFactory ?? defaultSdkQueryFactory, services);
+    this.ptyAdapter = new ClaudePtyAdapter(deps.ptySpawnFactory ?? defaultPtySpawnFactory, services);
   }
 
   attachTailer(tailer: SessionTailer): void {
@@ -206,23 +565,14 @@ export class SessionHost {
   stop(): void {
     this.stopping = true;
     for (const live of this.liveProcesses.values()) {
-      if (live.channel === 'pty') {
-        try {
-          live.pty?.kill();
-        } catch {
-          // A pty already gone is fine — we are tearing everything down.
-        }
-      } else {
-        live.sdkInput?.close();
-        try {
-          live.sdkHandle?.close?.();
-        } catch {
-          // ditto
-        }
+      live.adapter.kill(live);
+      if (live.settingsPath !== undefined) {
+        removeSessionSettings(live.settingsPath);
       }
     }
     this.liveProcesses.clear();
-    this.pendingGates.clear();
+    this.spawnSecrets.clear();
+    this.sdkAdapter.reset();
     this.router.emit([hostStopped()]);
   }
 
@@ -239,9 +589,28 @@ export class SessionHost {
     return this.rawByteCounts.get(appSessionId) ?? 0;
   }
 
+  // Declared adapter capabilities per channel (D18 — surfaced for the UI/tests).
+  capabilitiesFor(channel: 'sdk' | 'pty'): AdapterCapabilities {
+    return channel === 'sdk' ? this.sdkAdapter.capabilities : this.ptyAdapter.capabilities;
+  }
+
   // ── spawn ────────────────────────────────────────────────────────────────
   spawnSession(options: { channel: 'sdk' | 'pty'; cwd: string; name?: string }): SpawnResult {
     const appSessionId = this.ids.uuid();
+    const preflight = this.checkPreflight();
+    if (!preflight.ok) {
+      // Refuse before any session is created; a transition_rejected-style record
+      // marks the refusal (the projection ignores it — the session never exists).
+      this.router.emit([
+        transitionRejected({
+          appSessionId,
+          from: INITIAL_LIVENESS,
+          to: 'running',
+          cause: `preflight-failed:${preflight.reason}`,
+        }),
+      ]);
+      return { refused: true, reason: 'preflight-failed' };
+    }
     this.router.emit([
       sessionCreated({
         appSessionId,
@@ -250,6 +619,7 @@ export class SessionHost {
         name: options.name ?? null,
         forkedFrom: null,
         taskRef: null,
+        provider: CLAUDE_PROVIDER,
       }),
     ]);
     this.startProcess(appSessionId, options.channel, options.cwd, undefined);
@@ -281,8 +651,7 @@ export class SessionHost {
         // resume from; report it truthfully rather than double-spawning.
         return { refused: true, reason: 'no-live-process' };
       }
-      // dormant | interrupted -> resume (same path as resumeSession: I3 from the
-      // recorded cwd + last mapped claudeSessionId, I11 registry check unchanged).
+      // dormant | interrupted -> resume (same path as resumeSession).
       const resumeResult = this.resumeSession(appSessionId);
       if ('refused' in resumeResult) {
         return { refused: true, reason: resumeResult.reason };
@@ -297,37 +666,20 @@ export class SessionHost {
   }
 
   // Echo the user's turn into the event log as a message(role:'user') BEFORE it
-  // reaches the SDK stream / PTY (D12 wants human turns inline; replay history is
-  // otherwise missing the human half). For the SDK channel the SDK does NOT
-  // currently echo user-role messages back in streaming-input mode (observed gap,
-  // rule 0.7) — so there is no dedupe here. If a future SDK version starts
-  // echoing user messages, that is a fixture-refresh moment, and dedupe lands
-  // then; we do not build speculative dedupe now.
+  // reaches the SDK stream / PTY (D12 wants human turns inline).
   private deliverMessage(live: LiveProcess, text: string): void {
     this.router.emit([messageEvent({ appSessionId: live.appSessionId, role: 'user', content: text })]);
-    if (live.channel === 'sdk') {
-      live.sdkInput?.push({ type: 'user', message: { role: 'user', content: text }, parent_tool_use_id: null });
-    } else {
-      // PTY keystrokes: the text plus a carriage return (rule 0.8 — a raw write,
-      // never a parse; this events the input we already hold as structure, never
-      // the PTY output).
-      live.pty?.write(`${text}\r`);
-    }
+    live.adapter.deliver(live, text);
   }
 
   // ── answer a gate ──────────────────────────────────────────────────────────
+  // Wired through the adapter's respondInteraction (D18 gate contract). Attention
+  // is a host/projection concern, so the host emits attention_cleared on the ack.
   answerGate(appSessionId: string, requestId: string, response: unknown): AnswerResult {
-    const pending = this.pendingGates.get(requestId);
-    if (pending === undefined) {
-      return { refused: true, reason: 'unknown-gate' };
+    const ack = this.sdkAdapter.respondInteraction(requestId, response);
+    if ('refused' in ack) {
+      return { refused: true, reason: ack.reason };
     }
-    this.pendingGates.delete(requestId);
-    // Fail-closed: anything other than the explicit 'allow' string denies.
-    const result: SdkPermissionResult =
-      response === 'allow'
-        ? { behavior: 'allow', updatedInput: pending.input }
-        : { behavior: 'deny', message: 'denied from VIMES' };
-    pending.resolve(result);
     this.router.emit([attentionCleared({ appSessionId, cause: 'gate_answered' })]);
     return { ok: true };
   }
@@ -347,6 +699,18 @@ export class SessionHost {
     if (session === undefined) {
       return { refused: true, reason: 'unknown-session' };
     }
+    const preflight = this.checkPreflight();
+    if (!preflight.ok) {
+      this.router.emit([
+        transitionRejected({
+          appSessionId,
+          from: session.liveness,
+          to: 'spawning',
+          cause: `preflight-failed:${preflight.reason}`,
+        }),
+      ]);
+      return { refused: true, reason: 'preflight-failed' };
+    }
     // dormant | interrupted -> spawning (via the machine), then startProcess
     // drives spawning -> running. I3: resume from the RECORDED cwd + last mapped
     // claudeSessionId; no new appSessionId, no fork.
@@ -356,6 +720,32 @@ export class SessionHost {
     return { appSessionId };
   }
 
+  // ── hook ingress surface (HookHost) ─────────────────────────────────────────
+  verifyHookSecret(appSessionId: string, presentedSecret: string | undefined): HookAuthResult {
+    const digest = this.spawnSecrets.get(appSessionId);
+    if (digest === undefined) {
+      return 'unknown-session';
+    }
+    if (presentedSecret === undefined || presentedSecret.length === 0) {
+      return 'missing-secret';
+    }
+    return secretMatchesDigest(presentedSecret, digest) ? 'ok' : 'bad-secret';
+  }
+
+  ingestHook(appSessionId: string, body: Record<string, unknown>): HookIngestResult {
+    const hookEventName = typeof body.hook_event_name === 'string' ? body.hook_event_name : undefined;
+    const construct = hookEventName !== undefined ? HOOK_EVENT_CONSTRUCTORS[hookEventName] : undefined;
+    if (construct === undefined) {
+      return { status: 'unknown-event' };
+    }
+    // Stamp appSessionId from the URL onto the (loose) body; emit the hook event.
+    this.router.emit([construct({ ...body, appSessionId })]);
+    if (hookEventName === 'SessionStart') {
+      this.correlateFromHook(appSessionId, body);
+    }
+    return { status: 'emitted' };
+  }
+
   // ── internals ────────────────────────────────────────────────────────────
   private startProcess(
     appSessionId: string,
@@ -363,143 +753,85 @@ export class SessionHost {
     cwd: string,
     resume: string | undefined,
   ): void {
+    const adapter: SessionAdapter = channel === 'sdk' ? this.sdkAdapter : this.ptyAdapter;
+    const settingsPath = this.prepareHookChannel(appSessionId);
     const cause = resume === undefined ? 'spawn' : 'resume';
-    if (channel === 'sdk') {
-      const input = new AsyncMessageQueue<SdkUserMessage>();
-      const handle = this.sdkQueryFactory({
-        prompt: input,
-        options: {
-          cwd,
-          resume,
-          settingSources: this.config.sdkSettingSources,
-          canUseTool: (toolName, toolInput, options) =>
-            this.handleGate(appSessionId, toolName, toolInput, options),
-        },
-      });
-      const live: LiveProcess = { appSessionId, channel: 'sdk', cwd, sdkInput: input, sdkHandle: handle, sawResult: false };
-      this.liveProcesses.set(appSessionId, live);
-      this.emitGuardedLiveness(appSessionId, 'running', cause);
-      void this.consumeSdk(live);
-    } else {
-      const environment = scrubClaudeEnv(process.env);
-      const args = resume === undefined ? [] : ['--resume', resume];
-      const handle = this.ptySpawnFactory('claude', args, { cwd, env: environment, name: appSessionId });
-      const live: LiveProcess = { appSessionId, channel: 'pty', cwd, pty: handle };
-      this.liveProcesses.set(appSessionId, live);
-      handle.onData((data) => {
-        this.rawByteCounts.set(appSessionId, this.rawBytesReceived(appSessionId) + Buffer.byteLength(data, 'utf8'));
-      });
-      handle.onExit(() => this.onPtyExit(appSessionId));
-      this.emitGuardedLiveness(appSessionId, 'running', cause);
-      // The tailer is the ONLY structured channel for PTY (rule 0.8).
-      this.tailer?.watchSession({ appSessionId, cwd });
-    }
+    const live = adapter.spawn({ appSessionId, cwd, resume, settingsPath });
+    live.settingsPath = settingsPath;
+    this.liveProcesses.set(appSessionId, live);
+    this.emitGuardedLiveness(appSessionId, 'running', cause);
+    adapter.activate(live);
   }
 
-  private async consumeSdk(live: LiveProcess): Promise<void> {
+  // Mint a per-spawn secret, write the per-session settings file registering the
+  // five hook relays (C), and register the secret digest for the ingress. Best
+  // effort: an fs failure degrades to no injected settings (SDK-init correlation
+  // still works) rather than failing the spawn.
+  private prepareHookChannel(appSessionId: string): string | undefined {
     try {
-      for await (const rawMessage of live.sdkHandle as SdkQueryHandle) {
-        if (this.handleSdkMessage(live, rawMessage)) {
-          break;
-        }
-      }
+      const { secret, digest } = mintSpawnSecret();
+      const content = buildSessionSettings({ appSessionId, hookPort: this.config.hookPort, secret });
+      const settingsPath = writeSessionSettings(this.config.dataDir, appSessionId, content);
+      this.spawnSecrets.set(appSessionId, digest);
+      return settingsPath;
     } catch {
-      // Stream error → fall through to wind-down (the finally block).
-    } finally {
-      this.windDownSdk(live);
+      // No settings file — the session still spawns; the hook relay is simply
+      // absent for it. Never logs the secret.
+      return undefined;
     }
   }
 
-  private handleSdkMessage(live: LiveProcess, sdkMessage: SdkStreamMessage): boolean {
-    const appSessionId = live.appSessionId;
-
-    if (sdkMessage.type === 'system' && sdkMessage.subtype === 'init') {
-      const claudeSessionId = typeof sdkMessage.session_id === 'string' ? sdkMessage.session_id : undefined;
-      // I1: append a mapping ONLY when a NEW claudeSessionId is observed. A resume
-      // that lands the same id (the verified no-fork case) appends nothing.
-      if (claudeSessionId !== undefined && claudeSessionId !== live.lastMappedClaudeSessionId) {
-        const jsonlPath = transcriptFileFor(this.projectsRoot, live.cwd, claudeSessionId);
-        live.lastMappedClaudeSessionId = claudeSessionId;
-        this.router.emit([claudeSessionMapped({ appSessionId, claudeSessionId, jsonlPath })]);
-        // Dedupe: this SDK-channel file is served by the SDK stream — the tailer
-        // must skip it if it sits in a watched dir.
-        this.tailer?.markSdkJsonl(jsonlPath);
-      }
-      return false;
+  private checkPreflight(): PreflightResult {
+    const nowMs = Date.parse(this.clock.now());
+    if (this.preflightCache !== undefined && nowMs - this.preflightCache.atMs < PREFLIGHT_CACHE_TTL_MS) {
+      return this.preflightCache.result;
     }
-
-    if (sdkMessage.type === 'assistant' || sdkMessage.type === 'user') {
-      const body = sdkMessage.message;
-      if (body !== undefined && body !== null) {
-        const role = typeof body.role === 'string' ? body.role : sdkMessage.type;
-        // Content stored INLINE (D12).
-        this.router.emit([messageEvent({ appSessionId, role, content: body.content ?? null })]);
-        if (body.usage !== null && typeof body.usage === 'object') {
-          this.router.emit([usageBlock({ appSessionId, usage: body.usage as Record<string, unknown> })]);
-        }
-      }
-      return false;
-    }
-
-    if (sdkMessage.type === 'result') {
-      live.sawResult = true;
-      this.router.emit(withNotificationTrigger(runCompleted({ appSessionId })));
-      this.driveToDormant(appSessionId, 'run-complete');
-      return true;
-    }
-
-    return false;
+    const result = this.preflightProbe();
+    this.preflightCache = { result, atMs: nowMs };
+    return result;
   }
 
-  private windDownSdk(live: LiveProcess): void {
+  private correlateFromHook(appSessionId: string, body: Record<string, unknown>): void {
+    const claudeSessionId = typeof body.session_id === 'string' ? body.session_id : undefined;
+    if (claudeSessionId === undefined) {
+      return;
+    }
+    const session = this.currentSessions()[appSessionId];
+    if (session === undefined) {
+      return;
+    }
+    // Prefer the hook's own transcript_path (observed truth, rule 0.7); fall back
+    // to the encoded path if it is absent.
+    const transcriptPath =
+      typeof body.transcript_path === 'string' && body.transcript_path.length > 0
+        ? body.transcript_path
+        : transcriptFileFor(this.projectsRoot, session.cwd, claudeSessionId);
+    this.emitMappingIfNew(appSessionId, claudeSessionId, transcriptPath);
+  }
+
+  // Emit claude_session_mapped ONLY for a claudeSessionId not already mapped for
+  // this session (D7 dedupe — the SDK-init and hook-SessionStart paths both call
+  // here; the known-set is seeded from the log, so both are idempotent).
+  private emitMappingIfNew(appSessionId: string, claudeSessionId: string, jsonlPath: string): void {
+    const session = this.currentSessions()[appSessionId];
+    const known = new Set((session?.claudeSessionIds ?? []).map((entry) => entry.id));
+    if (known.has(claudeSessionId)) {
+      return;
+    }
+    this.router.emit([claudeSessionMapped({ appSessionId, claudeSessionId, jsonlPath })]);
+  }
+
+  // Registry cleanup on process exit: drop the live record (identity-guarded so a
+  // re-spawn is never clobbered) and remove the per-session settings file. The
+  // spawn secret is deliberately NOT cleared here (see spawnSecrets).
+  private releaseLiveProcess(live: LiveProcess): void {
     if (this.liveProcesses.get(live.appSessionId) === live) {
       this.liveProcesses.delete(live.appSessionId);
     }
-    if (!this.stopping && live.sawResult !== true) {
-      // Stream ended without a result — reconcile liveness to dormant.
-      this.driveToDormant(live.appSessionId, 'sdk-stream-ended');
+    if (live.settingsPath !== undefined) {
+      removeSessionSettings(live.settingsPath);
+      live.settingsPath = undefined;
     }
-    live.sdkInput?.close();
-    try {
-      live.sdkHandle?.close?.();
-    } catch {
-      // ignore
-    }
-  }
-
-  private onPtyExit(appSessionId: string): void {
-    if (this.liveProcesses.get(appSessionId)?.channel === 'pty') {
-      this.liveProcesses.delete(appSessionId);
-    }
-    this.tailer?.unwatchSession(appSessionId);
-    if (!this.stopping) {
-      this.driveToDormant(appSessionId, 'pty-exit');
-    }
-  }
-
-  private handleGate(
-    appSessionId: string,
-    toolName: string,
-    input: Record<string, unknown>,
-    options: { requestId: string; title?: string },
-  ): Promise<SdkPermissionResult> {
-    const requestId = options.requestId;
-    // Richer gate prompt: prefer the SDK-provided title; when absent fall back to
-    // the tool name plus its input JSON, truncated to 160 chars with an ellipsis.
-    // No special scrubbing — truncation only (message contents already flow
-    // inline per D12).
-    const prompt =
-      typeof options.title === 'string' && options.title.length > 0
-        ? options.title
-        : truncateGatePrompt(`${toolName}: ${JSON.stringify(input)}`);
-    // gate_fired carries requestId in its payload (widened schema, rule 0.7):
-    // the raw event delivered over WS keeps it — the phone needs it to answer
-    // this exact gate. The sessions projection ignores requestId (correct).
-    const gateEvent = gateFired({ appSessionId, prompt, requestId });
-    this.router.emit(withNotificationTrigger(gateEvent));
-    return new Promise<SdkPermissionResult>((resolve) => {
-      this.pendingGates.set(requestId, { appSessionId, input, resolve });
-    });
   }
 
   private runRecovery(): void {
@@ -514,14 +846,13 @@ export class SessionHost {
     }
   }
 
-  // Read current session facts by folding the log (source of truth, I13). Slice-1
-  // scale (n=1) makes an on-demand replay comfortably cheap.
+  // Read current session facts by folding the log (source of truth, I13).
   private currentSessions(): Record<string, SessionRecord> {
     return replayFromEmpty(sessionsProjection, readAllStreamsGrouped(this.store)).sessions;
   }
 
   // Guarded liveness emission (rule 0.3): legal edge → liveness_changed, else
-  // transition_rejected. Mirrors core's harness emitter against the live log.
+  // transition_rejected.
   private emitGuardedLiveness(appSessionId: string, to: Liveness, cause: string): void {
     const from: Liveness = this.currentSessions()[appSessionId]?.liveness ?? INITIAL_LIVENESS;
     if (canTransition(from, to)) {
@@ -531,8 +862,7 @@ export class SessionHost {
     }
   }
 
-  // running -> dormant is the only legal path here; anything else is left alone
-  // (avoids emitting a spurious transition_rejected on an already-terminal state).
+  // running -> dormant is the only legal path here; anything else is left alone.
   private driveToDormant(appSessionId: string, cause: string): void {
     if (this.currentSessions()[appSessionId]?.liveness === 'running') {
       this.router.emit([livenessChanged({ appSessionId, to: 'dormant', cause })]);
@@ -606,6 +936,7 @@ const defaultSdkQueryFactory: SdkQueryFactory = ({ prompt, options }) => {
       options: {
         cwd: options.cwd,
         resume: options.resume,
+        settings: options.settings,
         settingSources: options.settingSources,
         canUseTool: options.canUseTool,
         // Spike (b): canUseTool only fires under permissionMode 'default'.
