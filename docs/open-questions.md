@@ -18,18 +18,7 @@ Is "Vimes" the name? Proposed and un-objected through one red-pen round.
 <!-- D3 (deployment shape) moved to decisions.md 2026-07-13 — decided:
      bare-host systemd on the host, vimes.example.dev, GitHub IdP. -->
 
-## D4 — Channel billing buckets ⚠ *(trigger: slice 1 spike — blocks channel-choice defaults)*
-
-Which meter do IDE-spawned SDK sessions burn: the interactive 5-hour window or
-the $100/mo non-interactive credit? Spike: spawn one SDK-hosted and one
-PTY-hosted session, run identical small workloads, observe which meters move
-via /usage before/after. If non-interactive → PTY-hosted becomes the
-daily-driver default, SDK reserved for task/orchestration runs (which *want*
-the isolated credit); if interactive → SDK default everywhere, PTY stays the
-escape hatch. **Lean (2026-07-13):** none — genuinely unknown; the dual-channel
-host survives either answer, only the *defaults* depend on it. Kill-criterion
-adjacency: if SDK burns credit *and* PTY-hosted interactive proves unviable,
-slice 1 halts for a topology decision record.
+<!-- D4 moved to decisions.md 2026-07-19 — decided: SDK-hosted default everywhere, PTY escape hatch -->
 
 ## D5 — Course-correction mechanism ⚠ *(trigger: slice 6 spike)*
 
@@ -101,21 +90,7 @@ consumer). Moves to decisions.md when that first migration lands.
 <!-- D13 (spawning-at-crash recovery) moved to decisions.md 2026-07-13 —
      decided: add the spawning→interrupted edge. -->
 
-## D14 — SDK session settings isolation ⚠ FINDING *(trigger: slice 1 step 2 — session-host build)*
-
-**Rule-0.1 finding, 2026-07-13 (slice-1 spike).** SDK `query()` with default
-`settingSources` inherits the user's ambient `~/.claude/settings.json` —
-hooks, skills, agent listings, MCP. A trivial spike prompt cascaded into an
-8-turn 6.3k-output-token exchange via Wes's usage-warning Stop hook. Daemon-
-spawned sessions must set `settingSources` explicitly or every VIMES session
-inherits personal automation with unpredictable burn/side-effects. The PTY
-channel has no equivalent knob — it inherits everything by design (name this
-in D4's decision). **Lean (2026-07-13, semantics verified in sdk.d.ts same evening):**
-`settingSources: ['project']` for daemon-spawned SDK sessions — typings
-confirm it loads only `.claude/settings.json` (no user tier, no personal
-hooks) and that `'project'` is REQUIRED for CLAUDE.md files to load, which
-worker sessions on a real repo want. `[]` remains the fallback for fully
-isolated runs. Wes prices this together with D4.
+<!-- D14 moved to decisions.md 2026-07-19 — decided: settingSources ['project'], [] for isolated runs -->
 
 ## D17 — usage_block granularity: one per SDK assistant message *(trigger: slice 4/5 — cache stats and meter consumers)*
 

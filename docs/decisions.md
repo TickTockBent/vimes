@@ -130,3 +130,30 @@ provider config surface, any second adapter. Items (a)–(c) apply through
 the normal slice gates (a lands with the next schema-touching step; b and c
 at slice-2 design).
 
+## D4 — Channel default: SDK-hosted everywhere; PTY is the escape hatch
+
+*2026-07-19 (approved by Wes; spiked 2026-07-13, moved from
+open-questions.md).* On the Max account, SDK `query()` and PTY interactive
+sessions burn the SAME meters — 5-hour window + weekly caps; the monthly
+usage-credits bucket is present but OFF, so nothing can drain it (spike
+readings R0–R5, calibration.md). With billing equal, the SDK channel wins on
+merit: `canUseTool` is a clean awaitable gate surface (proven in live smoke),
+resume is live-verified append-no-fork (I3), and settings isolation is
+controllable (D14) — a knob the PTY channel structurally lacks (it inherits
+everything; named property of that channel). **Default: SDK-hosted for all
+VIMES-spawned sessions; PTY remains the escape hatch** (pillar 7) and the
+TUI-features channel. Reopens deliberately, not by surprise, if usage-credits
+is ever turned on to give task/orchestration runs an isolated budget — that
+flip requires a re-spike (rule 0.7).
+
+## D14 — SDK session settings isolation: settingSources ['project']
+
+*2026-07-19 (approved by Wes; finding + spike 2026-07-13, moved from
+open-questions.md).* Daemon-spawned SDK sessions set `settingSources:
+['project']` — project `.claude/settings.json` and CLAUDE.md load (typings
+confirm 'project' is REQUIRED for CLAUDE.md); the user tier never loads, so
+personal automation (the usage-warning Stop-hook cascade that turned a
+one-word spike prompt into a 6.3k-output-token exchange) cannot leak into
+VIMES sessions. `[]` remains available for fully isolated runs (config).
+The ⟨tune PREVIEW⟩ marker on the config default retires with this record.
+
