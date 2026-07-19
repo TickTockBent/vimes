@@ -1,0 +1,15 @@
+{
+  "session_id": "6f028647-b831-46a3-9e1b-8e3a53e9d1ab",
+  "transcript_path": "/home/user/.claude/projects/<encoded-cwd>/6f028647-b831-46a3-9e1b-8e3a53e9d1ab.jsonl",
+  "cwd": "/home/user/project",
+  "prompt_id": "49c0fea6-d66d-4152-aea2-85aff705af31",
+  "permission_mode": "default",
+  "effort": {
+    "level": "high"
+  },
+  "hook_event_name": "Stop",
+  "stop_hook_active": false,
+  "last_assistant_message": "sdkpong",
+  "background_tasks": [],
+  "session_crons": []
+}

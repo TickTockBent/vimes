@@ -1,0 +1,17 @@
+{
+  "session_id": "604736ae-5f31-4af4-b77d-58edd55c5788",
+  "transcript_path": "/home/user/.claude/projects/<encoded-cwd>/604736ae-5f31-4af4-b77d-58edd55c5788.jsonl",
+  "cwd": "/home/user/project",
+  "prompt_id": "2f336e5d-6dbb-4d3f-86f5-9775803a8e2c",
+  "permission_mode": "bypassPermissions",
+  "effort": {
+    "level": "high"
+  },
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "echo hooks-spike-marker",
+    "description": "Echo marker string"
+  },
+  "tool_use_id": "toolu_01P7McumxvLoGKrwEYuUgT1s"
+}
