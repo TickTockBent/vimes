@@ -9,5 +9,7 @@
     "moduleResolution": "Bundler",
     "types": ["vite/client"]
   },
-  "include": ["src"]
+  "include": ["src"],
+  "// exclude": "sw.ts targets the webworker lib and is compiled by vite-plugin-pwa (injectManifest), not by vue-tsc/tsc -b.",
+  "exclude": ["src/sw.ts"]
 }

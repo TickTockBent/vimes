@@ -45,6 +45,7 @@ function buildConfig(dbPath: string): DaemonConfig {
     bindHost: '127.0.0.1',
     sdkSettingSources: ['project'],
     projectRoots: [],
+    pushSubject: 'mailto:test@example.invalid',
   };
 }
 

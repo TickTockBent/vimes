@@ -32,6 +32,10 @@ export interface DaemonConfig {
   // probes `claude --version`; a mismatch OR an unpinned expectation emits
   // runtime_drift_observed + a console warn. NEVER gates a spawn (E4).
   expectedCliVersion: string | undefined;
+  // VAPID `subject` (a mailto: or https: URL) sent with every web-push request
+  // (VIMES_PUSH_SUBJECT). The default is a placeholder — a real operator sets a
+  // reachable mailto so push services can contact them. Never a secret.
+  pushSubject: string;
 }
 
 const DEFAULT_PORT = 4600;
@@ -41,6 +45,9 @@ const DEFAULT_SNAPSHOT_INTERVAL_MS = 60_000;
 const DEFAULT_WS_BUFFERED_LIMIT_BYTES = 4_194_304;
 // Tunnel-only ingress (D3): never bind a routable interface.
 const HARDCODED_BIND_HOST = '127.0.0.1';
+// Placeholder VAPID subject — a real deployment sets VIMES_PUSH_SUBJECT to a
+// reachable mailto. `.invalid` is reserved (RFC 2606) so it can never resolve.
+const DEFAULT_PUSH_SUBJECT = 'mailto:vimes@example.invalid';
 
 function expandHome(path: string): string {
   if (path === '~') {
@@ -117,5 +124,9 @@ export function loadConfigFromEnv(env: NodeJS.ProcessEnv = process.env): DaemonC
     bindHost: HARDCODED_BIND_HOST,
     sdkSettingSources: parseSettingSources(env.VIMES_SDK_SETTING_SOURCES),
     projectRoots: parseProjectRoots(env.VIMES_PROJECT_ROOTS),
+    pushSubject:
+      env.VIMES_PUSH_SUBJECT === undefined || env.VIMES_PUSH_SUBJECT === ''
+        ? DEFAULT_PUSH_SUBJECT
+        : env.VIMES_PUSH_SUBJECT,
   };
 }

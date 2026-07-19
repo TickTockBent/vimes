@@ -48,6 +48,13 @@ export const EVENT_TYPES = {
   sessionAdopted: 'session_adopted',
   sessionRenamed: 'session_renamed',
   resyncMarker: 'resync_marker',
+  // Slice-2 push vocabulary (step 3). A delivery attempt outcome per subscription,
+  // system-scoped. PRIVACY (log-is-forever): the subscription endpoint/keys NEVER
+  // appear here — only the appSessionId, the attention reason that triggered the
+  // push, and (on failure) the HTTP status. `reason` mirrors the notification
+  // trigger's attention reason so a consumer can tell WHY the push was sent.
+  pushSent: 'push_sent',
+  pushFailed: 'push_failed',
 } as const;
 
 export const SYSTEM_STREAM = 'system';
@@ -205,6 +212,20 @@ export const resyncMarkerPayloadSchema = z.object({
   reason: z.enum(['pre-adoption-history']),
 });
 
+// Push delivery outcomes (system-scoped). `reason` is the attention reason that
+// triggered the push (parallels notification_trigger). push_failed adds the HTTP
+// statusCode when the push service returned one (404/410 → the daemon prunes the
+// dead subscription). NO endpoint or key material is ever carried here.
+export const pushSentPayloadSchema = z.object({
+  appSessionId: z.string(),
+  reason: attentionReasonSchema,
+});
+export const pushFailedPayloadSchema = z.object({
+  appSessionId: z.string(),
+  reason: attentionReasonSchema,
+  statusCode: z.number().optional(),
+});
+
 // meter_threshold_crossed lives on the 'usage' stream; pct is the observed
 // used/limit percentage at the crossing (0..100+). dispatch_refused lives on the
 // 'tasks' stream; reason names why the dispatcher stub declined.
@@ -248,6 +269,8 @@ export const EVENT_PAYLOAD_SCHEMAS = {
   [EVENT_TYPES.sessionAdopted]: sessionAdoptedPayloadSchema,
   [EVENT_TYPES.sessionRenamed]: sessionRenamedPayloadSchema,
   [EVENT_TYPES.resyncMarker]: resyncMarkerPayloadSchema,
+  [EVENT_TYPES.pushSent]: pushSentPayloadSchema,
+  [EVENT_TYPES.pushFailed]: pushFailedPayloadSchema,
 } as const;
 
 export type SessionCreatedPayload = z.infer<typeof sessionCreatedPayloadSchema>;
@@ -272,6 +295,8 @@ export type DispatchRefusedPayload = z.infer<typeof dispatchRefusedPayloadSchema
 export type SessionAdoptedPayload = z.infer<typeof sessionAdoptedPayloadSchema>;
 export type SessionRenamedPayload = z.infer<typeof sessionRenamedPayloadSchema>;
 export type ResyncMarkerPayload = z.infer<typeof resyncMarkerPayloadSchema>;
+export type PushSentPayload = z.infer<typeof pushSentPayloadSchema>;
+export type PushFailedPayload = z.infer<typeof pushFailedPayloadSchema>;
 
 // Discriminated union over the vocabulary — the domain-event value space.
 export type DomainEvent =
@@ -304,7 +329,9 @@ export type DomainEvent =
   | { type: typeof EVENT_TYPES.runtimeDriftObserved; payload: RuntimeDriftObservedPayload }
   | { type: typeof EVENT_TYPES.sessionAdopted; payload: SessionAdoptedPayload }
   | { type: typeof EVENT_TYPES.sessionRenamed; payload: SessionRenamedPayload }
-  | { type: typeof EVENT_TYPES.resyncMarker; payload: ResyncMarkerPayload };
+  | { type: typeof EVENT_TYPES.resyncMarker; payload: ResyncMarkerPayload }
+  | { type: typeof EVENT_TYPES.pushSent; payload: PushSentPayload }
+  | { type: typeof EVENT_TYPES.pushFailed; payload: PushFailedPayload };
 
 // Maps each attention-setting event type to the needsAttention reason it sets.
 const ATTENTION_SETTER_REASON: Readonly<Record<string, AttentionReason>> = {
@@ -409,6 +436,13 @@ export function hookSessionEnd(payload: HookEventPayload): EventInput {
 // System-scoped (E4): boot-time observation, not tied to a session.
 export function runtimeDriftObserved(payload: RuntimeDriftObservedPayload): EventInput {
   return { stream: SYSTEM_STREAM, type: EVENT_TYPES.runtimeDriftObserved, payload };
+}
+// Push delivery outcomes (system-scoped). Endpoints are never in the payload.
+export function pushSent(payload: PushSentPayload): EventInput {
+  return { stream: SYSTEM_STREAM, type: EVENT_TYPES.pushSent, payload };
+}
+export function pushFailed(payload: PushFailedPayload): EventInput {
+  return { stream: SYSTEM_STREAM, type: EVENT_TYPES.pushFailed, payload };
 }
 // D10 custody transitions — each on the session's stream.
 export function sessionAdopted(payload: SessionAdoptedPayload): EventInput {

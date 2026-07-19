@@ -59,6 +59,20 @@ export {
 } from './sessionSettings.js';
 export { JsonlTailer, type JsonlTailerDeps } from './tailer.js';
 export {
+  loadOrCreateVapidKeys,
+  createWebPushSender,
+  buildPushPayload,
+  reasonBody,
+  isValidPushSubscription,
+  vapidKeyPath,
+  type PushSender,
+  type PushSubscriptionRecord,
+  type PushPayload,
+  type VapidKeys,
+} from './pushService.js';
+export { PushSubscriptions } from './pushSubscriptions.js';
+export { PushPipeline, shouldSuppressPush, type PushPipelineDeps } from './pushPipeline.js';
+export {
   encodeCwdForProjects,
   transcriptDirFor,
   transcriptFileFor,

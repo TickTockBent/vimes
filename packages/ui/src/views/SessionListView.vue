@@ -8,6 +8,7 @@ import {
   reduceKillConfirm,
   type KillConfirmState,
 } from '../lib/killConfirm.js';
+import { isBellActionable, pushStateLabel } from '../lib/pushState.js';
 
 const emit = defineEmits<{ open: [appSessionId: string] }>();
 const store = useVimesStore();
@@ -81,20 +82,57 @@ function cancelRename(): void {
 function refreshDiscover(): void {
   store.discover();
 }
+
+// The bell's icon per push state (never auto-prompts — the tap IS the gesture).
+function bellIcon(): string {
+  switch (store.pushState) {
+    case 'on':
+      return '🔔';
+    case 'denied':
+      return '🔕';
+    case 'unsupported':
+      return '🚫';
+    default:
+      return '🔔';
+  }
+}
 </script>
 
 <template>
   <div class="mx-auto flex max-w-lg flex-col gap-4 p-4">
-    <div class="flex items-center justify-between">
+    <div class="flex items-center justify-between gap-2">
       <h1 class="text-lg font-semibold">Sessions</h1>
-      <button
-        type="button"
-        class="min-h-[44px] rounded-md border border-slate-300 px-3 text-sm font-medium active:bg-slate-100 dark:border-slate-700 dark:active:bg-slate-900"
-        @click="refreshDiscover"
-      >
-        ↻ Discover
-      </button>
+      <div class="flex items-center gap-2">
+        <button
+          type="button"
+          class="flex min-h-[44px] items-center gap-1 rounded-md border px-3 text-sm font-medium disabled:opacity-50"
+          :class="
+            store.pushState === 'on'
+              ? 'border-sky-400 text-sky-700 active:bg-sky-50 dark:border-sky-600 dark:text-sky-300 dark:active:bg-sky-950'
+              : 'border-slate-300 active:bg-slate-100 dark:border-slate-700 dark:active:bg-slate-900'
+          "
+          :disabled="!isBellActionable(store.pushState)"
+          :title="pushStateLabel(store.pushState)"
+          :aria-label="pushStateLabel(store.pushState)"
+          @click="store.togglePush()"
+        >
+          <span aria-hidden="true">{{ bellIcon() }}</span>
+        </button>
+        <button
+          type="button"
+          class="min-h-[44px] rounded-md border border-slate-300 px-3 text-sm font-medium active:bg-slate-100 dark:border-slate-700 dark:active:bg-slate-900"
+          @click="refreshDiscover"
+        >
+          ↻ Discover
+        </button>
+      </div>
     </div>
+    <p v-if="store.pushState === 'off'" class="-mt-2 text-xs text-slate-500 dark:text-slate-400">
+      Tap the bell to enable push notifications for gates and completions.
+    </p>
+    <p v-else-if="store.pushState === 'denied'" class="-mt-2 text-xs text-rose-500">
+      Notifications are blocked — re-enable them in your browser settings.
+    </p>
 
     <ul class="flex flex-col gap-2">
       <li

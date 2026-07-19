@@ -18,7 +18,11 @@ export type ClientEnvelope =
   | { op: 'kill'; appSessionId: string }
   | { op: 'rename'; appSessionId: string; name: string }
   | { op: 'adopt'; appSessionId: string }
-  | { op: 'discover' };
+  | { op: 'discover' }
+  // v0.3 (step 3) push subscription ops. `subscription` is the browser's Push API
+  // subscription (PushSubscription.toJSON()); the daemon validates it loose.
+  | { op: 'push_subscribe'; subscription: unknown }
+  | { op: 'push_unsubscribe'; endpoint: string };
 
 export type ServerEnvelope =
   | { op: 'subscribed'; stream: string; head: number }
