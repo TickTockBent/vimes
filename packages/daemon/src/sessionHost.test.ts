@@ -1,4 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   CountingIdSource,
   EventRouter,
@@ -15,8 +18,11 @@ import {
   type EventRecord,
   type SessionRecord,
 } from '@vimes/core';
+import { readFileSync } from 'node:fs';
 import type { DaemonConfig } from './config.js';
 import {
+  CLAUDE_PTY_CAPABILITIES,
+  CLAUDE_SDK_CAPABILITIES,
   SessionHost,
   scrubClaudeEnv,
   truncateGatePrompt,
@@ -27,13 +33,23 @@ import {
   type SdkStreamMessage,
   type SdkUserMessage,
 } from './sessionHost.js';
+import { sessionSettingsPath } from './sessionSettings.js';
+import type { PreflightProbe } from './runtimeChecks.js';
 
 // ── harness helpers ──────────────────────────────────────────────────────────
+
+// Per-session settings files land here (config.dataDir). Written on spawn,
+// removed on stop — a real writable dir keeps the mechanical side effect off cwd.
+const settingsTempDir = mkdtempSync(join(tmpdir(), 'vimes-sessionhost-'));
+afterAll(() => rmSync(settingsTempDir, { recursive: true, force: true }));
 
 function buildConfig(overrides: Partial<DaemonConfig> = {}): DaemonConfig {
   return {
     port: 0,
+    hookPort: 0,
     dbPath: ':memory:',
+    dataDir: settingsTempDir,
+    expectedCliVersion: undefined,
     snapshotIntervalMs: 60_000,
     accessTeamDomain: undefined,
     accessAud: undefined,
@@ -701,5 +717,268 @@ describe('SessionHost — boot recovery (§3.10 / D13)', () => {
     host.start();
 
     expect(sessionOf(store, 'app-dormant')?.liveness).toBe('dormant');
+  });
+});
+
+// ── D18 adapter capabilities ─────────────────────────────────────────────────
+
+describe('SessionHost — adapter capabilities (D18)', () => {
+  it('surfaces the declared capabilities per channel', () => {
+    const { host } = makeHarness({});
+    try {
+      expect(host.capabilitiesFor('sdk')).toEqual({
+        resume: true,
+        gates: 'runtime',
+        settingsIsolation: true,
+        structuredStream: true,
+      });
+      expect(host.capabilitiesFor('pty')).toEqual({
+        resume: true,
+        gates: 'none',
+        settingsIsolation: false,
+        structuredStream: false,
+      });
+      expect(host.capabilitiesFor('sdk')).toEqual(CLAUDE_SDK_CAPABILITIES);
+      expect(host.capabilitiesFor('pty')).toEqual(CLAUDE_PTY_CAPABILITIES);
+    } finally {
+      host.stop();
+    }
+  });
+});
+
+// ── E1 provider + E2 messageId ───────────────────────────────────────────────
+
+describe('SessionHost — provider + messageId riders', () => {
+  it('spawn stamps provider claude-code (session_created payload + projected record)', async () => {
+    const barrier = makeBarrier();
+    const { factory } = makeSdkFactory(async function* () {
+      yield { type: 'system', subtype: 'init', session_id: 'claude-1' };
+      await barrier.promise;
+    });
+    const { host, store } = makeHarness({ sdkQueryFactory: factory });
+    try {
+      const spawn = host.spawnSession({ channel: 'sdk', cwd: '/p' });
+      const appSessionId = 'appSessionId' in spawn ? spawn.appSessionId : '';
+      await waitFor(() => sessionOf(store, appSessionId) !== undefined);
+      expect(sessionOf(store, appSessionId)!.provider).toBe('claude-code');
+      const created = records(store, appSessionId).find((record) => record.type === 'session_created')!;
+      expect((created.payload as { provider: string }).provider).toBe('claude-code');
+    } finally {
+      barrier.release();
+      host.stop();
+    }
+  });
+
+  it('usage_block threads the SDK assistant message.id as messageId (D17)', async () => {
+    const { factory } = makeSdkFactory(async function* ({ prompt }) {
+      yield { type: 'system', subtype: 'init', session_id: 'claude-1' };
+      for await (const _userMessage of prompt) {
+        void _userMessage;
+        yield {
+          type: 'assistant',
+          message: {
+            role: 'assistant',
+            id: 'msg_0abc',
+            content: [{ type: 'text', text: 'hi' }],
+            usage: { output_tokens: 3 },
+          },
+        };
+      }
+    });
+    const { host, store } = makeHarness({ sdkQueryFactory: factory });
+    try {
+      const spawn = host.spawnSession({ channel: 'sdk', cwd: '/p' });
+      const appSessionId = 'appSessionId' in spawn ? spawn.appSessionId : '';
+      await waitFor(() => store.head(appSessionId) >= 2);
+      host.sendMessage(appSessionId, 'hello');
+      await waitFor(() => types(store, appSessionId).includes('usage_block'));
+      const usage = records(store, appSessionId).find((record) => record.type === 'usage_block')!;
+      expect((usage.payload as { messageId?: string }).messageId).toBe('msg_0abc');
+    } finally {
+      host.stop();
+    }
+  });
+
+  it('usage_block omits messageId when the SDK message carries no id', async () => {
+    const { factory } = makeSdkFactory(async function* ({ prompt }) {
+      yield { type: 'system', subtype: 'init', session_id: 'claude-1' };
+      for await (const _userMessage of prompt) {
+        void _userMessage;
+        yield { type: 'assistant', message: { role: 'assistant', content: 'hi', usage: { output_tokens: 3 } } };
+      }
+    });
+    const { host, store } = makeHarness({ sdkQueryFactory: factory });
+    try {
+      const spawn = host.spawnSession({ channel: 'sdk', cwd: '/p' });
+      const appSessionId = 'appSessionId' in spawn ? spawn.appSessionId : '';
+      await waitFor(() => store.head(appSessionId) >= 2);
+      host.sendMessage(appSessionId, 'hello');
+      await waitFor(() => types(store, appSessionId).includes('usage_block'));
+      const usage = records(store, appSessionId).find((record) => record.type === 'usage_block')!;
+      expect('messageId' in (usage.payload as Record<string, unknown>)).toBe(false);
+    } finally {
+      host.stop();
+    }
+  });
+});
+
+// ── E3 preflight ─────────────────────────────────────────────────────────────
+
+describe('SessionHost — spawn preflight (E3)', () => {
+  function makeHostWithPreflight(preflightProbe: PreflightProbe): { host: SessionHost; store: MemoryEventStore } {
+    const clock = new SteppingClock('2026-01-01T00:00:00.000Z', 1000);
+    const ids = new CountingIdSource();
+    const store = new MemoryEventStore({ clock, ids });
+    const router = new EventRouter(store);
+    const host = new SessionHost({ store, router, clock, ids, config: buildConfig(), preflightProbe });
+    return { host, store };
+  }
+
+  it('a failing preflight refuses the spawn, creates NO session, and emits a rejection record', () => {
+    const { host, store } = makeHostWithPreflight(() => ({ ok: false, reason: 'no-credentials' }));
+    try {
+      const result = host.spawnSession({ channel: 'sdk', cwd: '/p' });
+      expect(result).toEqual({ refused: true, reason: 'preflight-failed' });
+      const state = replayFromEmpty(sessionsProjection, readAllStreamsGrouped(store));
+      expect(Object.keys(state.sessions)).toHaveLength(0);
+      expect(host.liveProcessCount()).toBe(0);
+      const rejected = readAllStreamsGrouped(store).filter((record) => record.type === 'transition_rejected');
+      expect(rejected).toHaveLength(1);
+      expect((rejected[0]!.payload as { cause: string }).cause).toBe('preflight-failed:no-credentials');
+    } finally {
+      host.stop();
+    }
+  });
+
+  it('a passing preflight allows the spawn', async () => {
+    const barrier = makeBarrier();
+    const { factory } = makeSdkFactory(async function* () {
+      yield { type: 'system', subtype: 'init', session_id: 'claude-1' };
+      await barrier.promise;
+    });
+    const clock = new SteppingClock('2026-01-01T00:00:00.000Z', 1000);
+    const ids = new CountingIdSource();
+    const store = new MemoryEventStore({ clock, ids });
+    const router = new EventRouter(store);
+    const host = new SessionHost({
+      store,
+      router,
+      clock,
+      ids,
+      config: buildConfig(),
+      sdkQueryFactory: factory,
+      preflightProbe: () => ({ ok: true }),
+    });
+    try {
+      const spawn = host.spawnSession({ channel: 'sdk', cwd: '/p' });
+      expect('appSessionId' in spawn).toBe(true);
+    } finally {
+      barrier.release();
+      host.stop();
+    }
+  });
+});
+
+// ── C settings injection + hook custody + D7 correlation ─────────────────────
+
+describe('SessionHost — settings injection + hook custody (C, D7)', () => {
+  it('spawn writes a per-session settings file (five hooks + relay); exit removes it; secret verifies', async () => {
+    const fakePty = makeFakePty();
+    const { host } = makeHarness({ ptySpawnFactory: fakePty.factory });
+    const spawn = host.spawnSession({ channel: 'pty', cwd: '/p' });
+    const appSessionId = 'appSessionId' in spawn ? spawn.appSessionId : '';
+    const path = sessionSettingsPath(settingsTempDir, appSessionId);
+    const parsed = JSON.parse(readFileSync(path, 'utf8')) as {
+      hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
+    };
+    expect(Object.keys(parsed.hooks).sort()).toEqual(
+      ['PreToolUse', 'SessionEnd', 'SessionStart', 'Stop', 'StopFailure'].sort(),
+    );
+    const relay = parsed.hooks.SessionStart![0]!.hooks[0]!.command;
+    expect(relay).toContain(`/hooks/${appSessionId}`);
+    const secret = /Bearer ([^"\s]+)/.exec(relay)![1]!;
+
+    // The registered secret authenticates constant-time; wrong / unknown reject.
+    expect(host.verifyHookSecret(appSessionId, secret)).toBe('ok');
+    expect(host.verifyHookSecret(appSessionId, 'wrong-secret')).toBe('bad-secret');
+    expect(host.verifyHookSecret(appSessionId, undefined)).toBe('missing-secret');
+    expect(host.verifyHookSecret('no-such-session', secret)).toBe('unknown-session');
+
+    // Exit removes the settings file (best-effort file custody).
+    fakePty.fireExit(0);
+    await waitFor(() => {
+      try {
+        readFileSync(path, 'utf8');
+        return false;
+      } catch {
+        return true;
+      }
+    });
+    host.stop();
+  });
+
+  it('ingestHook emits the hook event (appSessionId stamped) and dedupes claude_session_mapped across channels (D7)', async () => {
+    const barrier = makeBarrier();
+    // The SDK init maps 'claude-sdk'; the hook posts map further ids.
+    const { factory } = makeSdkFactory(async function* () {
+      yield { type: 'system', subtype: 'init', session_id: 'claude-sdk' };
+      await barrier.promise;
+    });
+    const { host, store } = makeHarness({ sdkQueryFactory: factory });
+    try {
+      const spawn = host.spawnSession({ channel: 'sdk', cwd: '/home/wes/dongfu' });
+      const appSessionId = 'appSessionId' in spawn ? spawn.appSessionId : '';
+      await waitFor(() => (sessionOf(store, appSessionId)?.claudeSessionIds.length ?? 0) === 1);
+
+      // A hook SessionStart for a NEW id → new mapping; the event is emitted with
+      // appSessionId stamped and the observed transcript_path used verbatim.
+      expect(
+        host.ingestHook(appSessionId, {
+          hook_event_name: 'SessionStart',
+          session_id: 'claude-hook',
+          transcript_path: '/observed/claude-hook.jsonl',
+        }),
+      ).toEqual({ status: 'emitted' });
+      const hookStart = records(store, appSessionId).find((record) => record.type === 'hook_session_start')!;
+      expect((hookStart.payload as { appSessionId: string; session_id: string })).toMatchObject({
+        appSessionId,
+        session_id: 'claude-hook',
+      });
+
+      // Re-posting the SAME id → deduped (hook-path idempotent). And the SDK's own
+      // id posted via a hook → deduped (cross-path idempotent).
+      host.ingestHook(appSessionId, { hook_event_name: 'SessionStart', session_id: 'claude-hook' });
+      host.ingestHook(appSessionId, { hook_event_name: 'SessionStart', session_id: 'claude-sdk' });
+
+      const mappings = records(store, appSessionId).filter((record) => record.type === 'claude_session_mapped');
+      expect(mappings.map((record) => (record.payload as { claudeSessionId: string }).claudeSessionId)).toEqual([
+        'claude-sdk',
+        'claude-hook',
+      ]);
+      // The hook-path mapping used the observed transcript_path.
+      const hookMapping = mappings.find((record) => (record.payload as { claudeSessionId: string }).claudeSessionId === 'claude-hook')!;
+      expect((hookMapping.payload as { jsonlPath: string }).jsonlPath).toBe('/observed/claude-hook.jsonl');
+    } finally {
+      barrier.release();
+      host.stop();
+    }
+  });
+
+  it('ingestHook returns unknown-event for an unrecognized hook_event_name (no crash, no mapping)', async () => {
+    const barrier = makeBarrier();
+    const { factory } = makeSdkFactory(async function* () {
+      yield { type: 'system', subtype: 'init', session_id: 'claude-1' };
+      await barrier.promise;
+    });
+    const { host, store } = makeHarness({ sdkQueryFactory: factory });
+    try {
+      const spawn = host.spawnSession({ channel: 'sdk', cwd: '/p' });
+      const appSessionId = 'appSessionId' in spawn ? spawn.appSessionId : '';
+      await waitFor(() => sessionOf(store, appSessionId) !== undefined);
+      expect(host.ingestHook(appSessionId, { hook_event_name: 'NotARealHook' })).toEqual({ status: 'unknown-event' });
+    } finally {
+      barrier.release();
+      host.stop();
+    }
   });
 });

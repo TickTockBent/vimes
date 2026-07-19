@@ -30,6 +30,16 @@ export const EVENT_TYPES = {
   // profile): a meter crossing its threshold, and the dispatcher stub refusing.
   meterThresholdCrossed: 'meter_threshold_crossed',
   dispatchRefused: 'dispatch_refused',
+  // Slice-2 hook ingress vocabulary (B). One event per observed hook (fixtures/
+  // hooks, CLI 2.1.215); consumers beyond correlation arrive in later slices
+  // (rule 0.5 — schema now). Emitted on the session's stream.
+  hookSessionStart: 'hook_session_start',
+  hookStop: 'hook_stop',
+  hookStopFailure: 'hook_stop_failure',
+  hookPreToolUse: 'hook_pre_tool_use',
+  hookSessionEnd: 'hook_session_end',
+  // Slice-2 runtime-drift (E4): boot-time CLI version observation, warn-only.
+  runtimeDriftObserved: 'runtime_drift_observed',
 } as const;
 
 export const SYSTEM_STREAM = 'system';
@@ -51,6 +61,9 @@ export const sessionCreatedPayloadSchema = z.object({
   taskRef: z
     .object({ taskId: z.string(), stage: z.string() })
     .nullable(),
+  // D18 (E1): optional provider; the sessions projection defaults 'claude-code'
+  // when absent, so old logs (session_created without this field) tolerate.
+  provider: z.string().optional(),
 });
 
 export const livenessChangedPayloadSchema = z.object({
@@ -119,6 +132,10 @@ export const messagePayloadSchema = z.object({
 export const usageBlockPayloadSchema = z.object({
   appSessionId: z.string(),
   usage: z.object({}).passthrough(),
+  // D17 (E2): the SDK assistant message id this usage snapshot belongs to. One
+  // turn emits several assistant messages with identical usage; messageId lets a
+  // later consumer (slice 5) dedupe. Optional — harness/PTY paths omit it.
+  messageId: z.string().optional(),
 });
 
 export const lineQuarantinedPayloadSchema = z.object({
@@ -129,6 +146,35 @@ export const lineQuarantinedPayloadSchema = z.object({
 
 export const hostStartedPayloadSchema = z.object({}).passthrough();
 export const hostStoppedPayloadSchema = z.object({}).passthrough();
+
+// Hook ingress payloads (B). LOOSE by design (rule 0.6): the hook body is a
+// fragile external surface (golden fixtures @ fixtures/hooks, CLI 2.1.215) — the
+// named fields are the ones observed across the fixtures, everything else rides
+// through passthrough. `appSessionId` is stamped by the ingress from the URL;
+// the rest is the verbatim hook stdin body. All five hook events share this
+// shape; per-event fields (e.g. StopFailure's reason/resetsAt) arrive via
+// passthrough and are typed by their consumers when those land (later slices).
+export const hookEventPayloadSchema = z
+  .object({
+    appSessionId: z.string(),
+    hook_event_name: z.string().optional(),
+    session_id: z.string().optional(),
+    transcript_path: z.string().optional(),
+    cwd: z.string().optional(),
+  })
+  .passthrough();
+export type HookEventPayload = z.infer<typeof hookEventPayloadSchema>;
+
+// runtime_drift_observed (E4): observed CLI version at boot vs the (optional)
+// pinned expectation. Warn-only, never gates. `expected` is null when unpinned;
+// `observed` is null when the version probe could not read a version.
+export const runtimeDriftObservedPayloadSchema = z
+  .object({
+    expected: z.string().nullable(),
+    observed: z.string().nullable(),
+  })
+  .passthrough();
+export type RuntimeDriftObservedPayload = z.infer<typeof runtimeDriftObservedPayloadSchema>;
 
 // meter_threshold_crossed lives on the 'usage' stream; pct is the observed
 // used/limit percentage at the crossing (0..100+). dispatch_refused lives on the
@@ -164,6 +210,12 @@ export const EVENT_PAYLOAD_SCHEMAS = {
   [EVENT_TYPES.hostStopped]: hostStoppedPayloadSchema,
   [EVENT_TYPES.meterThresholdCrossed]: meterThresholdCrossedPayloadSchema,
   [EVENT_TYPES.dispatchRefused]: dispatchRefusedPayloadSchema,
+  [EVENT_TYPES.hookSessionStart]: hookEventPayloadSchema,
+  [EVENT_TYPES.hookStop]: hookEventPayloadSchema,
+  [EVENT_TYPES.hookStopFailure]: hookEventPayloadSchema,
+  [EVENT_TYPES.hookPreToolUse]: hookEventPayloadSchema,
+  [EVENT_TYPES.hookSessionEnd]: hookEventPayloadSchema,
+  [EVENT_TYPES.runtimeDriftObserved]: runtimeDriftObservedPayloadSchema,
 } as const;
 
 export type SessionCreatedPayload = z.infer<typeof sessionCreatedPayloadSchema>;
@@ -208,7 +260,13 @@ export type DomainEvent =
   | { type: typeof EVENT_TYPES.hostStarted; payload: Record<string, never> }
   | { type: typeof EVENT_TYPES.hostStopped; payload: Record<string, never> }
   | { type: typeof EVENT_TYPES.meterThresholdCrossed; payload: MeterThresholdCrossedPayload }
-  | { type: typeof EVENT_TYPES.dispatchRefused; payload: DispatchRefusedPayload };
+  | { type: typeof EVENT_TYPES.dispatchRefused; payload: DispatchRefusedPayload }
+  | { type: typeof EVENT_TYPES.hookSessionStart; payload: HookEventPayload }
+  | { type: typeof EVENT_TYPES.hookStop; payload: HookEventPayload }
+  | { type: typeof EVENT_TYPES.hookStopFailure; payload: HookEventPayload }
+  | { type: typeof EVENT_TYPES.hookPreToolUse; payload: HookEventPayload }
+  | { type: typeof EVENT_TYPES.hookSessionEnd; payload: HookEventPayload }
+  | { type: typeof EVENT_TYPES.runtimeDriftObserved; payload: RuntimeDriftObservedPayload };
 
 // Maps each attention-setting event type to the needsAttention reason it sets.
 const ATTENTION_SETTER_REASON: Readonly<Record<string, AttentionReason>> = {
@@ -292,6 +350,45 @@ export function meterThresholdCrossed(payload: MeterThresholdCrossedPayload): Ev
 export function dispatchRefused(payload: DispatchRefusedPayload): EventInput {
   return { stream: 'tasks', type: EVENT_TYPES.dispatchRefused, payload };
 }
+
+// Hook ingress constructors (B). Each emits on the session's stream; the ingress
+// has already stamped appSessionId onto the (loose) hook body.
+export function hookSessionStart(payload: HookEventPayload): EventInput {
+  return { stream: payload.appSessionId, type: EVENT_TYPES.hookSessionStart, payload };
+}
+export function hookStop(payload: HookEventPayload): EventInput {
+  return { stream: payload.appSessionId, type: EVENT_TYPES.hookStop, payload };
+}
+export function hookStopFailure(payload: HookEventPayload): EventInput {
+  return { stream: payload.appSessionId, type: EVENT_TYPES.hookStopFailure, payload };
+}
+export function hookPreToolUse(payload: HookEventPayload): EventInput {
+  return { stream: payload.appSessionId, type: EVENT_TYPES.hookPreToolUse, payload };
+}
+export function hookSessionEnd(payload: HookEventPayload): EventInput {
+  return { stream: payload.appSessionId, type: EVENT_TYPES.hookSessionEnd, payload };
+}
+// System-scoped (E4): boot-time observation, not tied to a session.
+export function runtimeDriftObserved(payload: RuntimeDriftObservedPayload): EventInput {
+  return { stream: SYSTEM_STREAM, type: EVENT_TYPES.runtimeDriftObserved, payload };
+}
+
+// The observed Claude `hook_event_name` → VIMES constructor map (fragile-adapter
+// boundary, rule 0.6 — the ONE place the CLI's event names are named). The
+// ingress uses this to route a validated hook body; an unrecognized name has no
+// entry and is quarantined by the caller rather than crashing.
+export const HOOK_EVENT_CONSTRUCTORS: Readonly<
+  Record<string, (payload: HookEventPayload) => EventInput>
+> = {
+  SessionStart: hookSessionStart,
+  Stop: hookStop,
+  StopFailure: hookStopFailure,
+  PreToolUse: hookPreToolUse,
+  SessionEnd: hookSessionEnd,
+};
+
+// The five hook event names registered in an injected per-session settings file.
+export const REGISTERED_HOOK_EVENT_NAMES: readonly string[] = Object.keys(HOOK_EVENT_CONSTRUCTORS);
 
 // The I5 batch rule (settled in step-2 review): an attention-setting event and
 // its notification_trigger land adjacently in ONE append batch. Returns the pair

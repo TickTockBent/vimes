@@ -1,7 +1,7 @@
 import { afterAll, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import Database from 'better-sqlite3';
 import { randomUUID } from 'node:crypto';
 import {
@@ -33,7 +33,10 @@ function nextDatabasePath(): string {
 function buildConfig(dbPath: string): DaemonConfig {
   return {
     port: 0,
+    hookPort: 0,
     dbPath,
+    dataDir: dirname(dbPath),
+    expectedCliVersion: undefined,
     snapshotIntervalMs: 60_000,
     accessTeamDomain: undefined,
     accessAud: undefined,

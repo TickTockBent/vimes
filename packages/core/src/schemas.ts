@@ -30,6 +30,13 @@ export const sessionRecordSchema = z.object({
   observedBillingBucket: z.enum(['interactive', 'non-interactive', 'unknown']),
   name: z.string().nullable(),
   createdAt: z.string(),
+  // D18 (E1): which provider hosts this session. MVP is Claude-only, so the
+  // sessions projection stamps 'claude-code' whenever session_created omits it;
+  // the field is reserved now so later payloads inherit the neutrality review.
+  // Old snapshots (cache-class, rebuilt from the log) may lack it at runtime —
+  // tolerated: nothing validates a snapshot's records against this schema on
+  // load, and the next snapshot save self-heals.
+  provider: z.string(),
 });
 export type SessionRecord = z.infer<typeof sessionRecordSchema>;
 

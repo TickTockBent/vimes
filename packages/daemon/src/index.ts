@@ -9,8 +9,14 @@ export { WsHub, type WsHubDeps } from './wsHub.js';
 export {
   SessionHost,
   scrubClaudeEnv,
+  truncateGatePrompt,
+  CLAUDE_SDK_CAPABILITIES,
+  CLAUDE_PTY_CAPABILITIES,
   type SessionHostDeps,
   type SessionTailer,
+  type SessionAdapter,
+  type AdapterCapabilities,
+  type InteractionAck,
   type SdkQueryFactory,
   type SdkQueryHandle,
   type SdkStreamMessage,
@@ -25,6 +31,32 @@ export {
   type SendResult,
   type AnswerResult,
 } from './sessionHost.js';
+export {
+  createHookIngress,
+  type HookIngress,
+  type HookIngressDeps,
+  type HookHost,
+  type HookAuthResult,
+  type HookIngestResult,
+} from './hookIngress.js';
+export {
+  createCredentialPreflightProbe,
+  createCliVersionProbe,
+  type PreflightProbe,
+  type PreflightResult,
+  type CliVersionProbe,
+} from './runtimeChecks.js';
+export {
+  buildSessionSettings,
+  hookRelayCommand,
+  mintSpawnSecret,
+  secretMatchesDigest,
+  sessionSettingsPath,
+  sessionSettingsDir,
+  writeSessionSettings,
+  removeSessionSettings,
+  type SpawnSecret,
+} from './sessionSettings.js';
 export { JsonlTailer, type JsonlTailerDeps } from './tailer.js';
 export {
   encodeCwdForProjects,

@@ -69,6 +69,9 @@ export const sessionsProjection: Projection<SessionsState> = {
           observedBillingBucket: 'unknown',
           name: payload.name,
           createdAt: event.ts,
+          // E1/D18: default 'claude-code' when the payload omits provider, so old
+          // session_created events (predating the field) project without breaking.
+          provider: payload.provider ?? 'claude-code',
         };
         return { sessions: { ...state.sessions, [payload.appSessionId]: bornSession } };
       }
