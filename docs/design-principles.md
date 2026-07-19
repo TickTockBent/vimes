@@ -79,6 +79,22 @@ principle before recommending. Seeded at kickoff from the spec's ground rules
    exactly when things are going wrong), and no layer may assume a
    supervising human at the layer above.
 
+## Instituted night-shift defaults — awaiting Wes ratification
+
+*(Added 2026-07-19 under "institute reasonable defaults, defer to me later."
+Each stands unless Wes objects; ratification converts the tag to a plain
+principle, objection reverts it and the dependent work.)*
+
+9. **One source of record per fact.** *(codor decomp §5.1; default
+   2026-07-19.)* Content facts come from the JSONL tail; lifecycle facts
+   from hooks/SDK stream; no fact is ingested from two sources without an
+   explicit dedupe boundary (the D7 mapping dedupe and the tailer's
+   SDK-file skip are the worked examples). Being accidentally *both* is the
+   only losing position.
+10. **The MCP server is a thin client of the daemon's API — never a second
+    writer to the store.** *(ata decomp §3.1; default 2026-07-19.)* Two
+    writers is how file locks happen. Binding on slice 6–7 design.
+
 ## Standing consequences worth restating
 
 - **Security is core, not product** (finding A): the PTY endpoint is RCE as

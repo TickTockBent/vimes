@@ -9,8 +9,10 @@ The operating record for the design. Each file has one job:
 | [open-questions.md](open-questions.md) | **What still needs a call.** Each entry carries its **trigger** (the slice/event that forces it) and the **current lean**. When decided it **moves** to decisions.md as a `D#`. Seeded with the spec's open decision records, keeping their `D#` numbers. |
 | [design-principles.md](design-principles.md) | **The design constitution** — the ground rules (0.x) and design pillars, seeded from the spec. Checked before recommending anything that touches their territory. |
 | [calibration.md](calibration.md) | **The measurement record** — pinned budgets and bands, probe/spike results, and the methods that produced them. Bands are pinned *with their assumptions*. Every ⟨tune⟩ number in the spec resolves here, and only here. |
+| [risk-register.md](risk-register.md) | **Delta register** (spun up 2026-07-19): external-surface rows added/changed since the spec froze. The founding table stays in spec §6. |
+| [design-directions.md](design-directions.md) | Planned/parked systems not yet scheduled into a slice (spun up 2026-07-19; first tenant: the D12 growth revisit). |
+| [decomposition/](decomposition/README.md) | Prior-art decomposition series + the unified carry-over tracker (what's applied vs pending). |
 | _architecture.md_ | *(spins up on need)* System-shaping structures the spec didn't fully pin. |
-| _design-directions.md_ | *(spins up on need)* Planned/parked systems not yet scheduled into a slice (first likely tenant: the game layer, §3.9). |
 | _slice-N.md_ | *(per slice)* A slice's signed-off design as an operational plan: scope, build order, assertion list. |
 
 Working rules that span the suite:

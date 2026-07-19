@@ -35,7 +35,7 @@ the right doc, no action due yet), **pending** (waits for its slice/trigger).
 | Turn attribution: injected vs terminal-native (jinn 5) | slices 2–3 attention model | pending |
 | Provider preflight + authenticated-not-just-installed (ata 8, jinn 4) | slice 2 step 1 | in build |
 | Attention reason enum additions: `rate-limited`, `brake`, spawn-failure (jinn 2.2, codor 2.3) | schema reservation (rule 0.5) | pending — **Wes call** |
-| One-source-of-record rule: content=tail, lifecycle=hooks/stream, nothing ingested twice (codor 8) | ground-rule/spec note | pending — **Wes call** (constitution territory) |
+| One-source-of-record rule (codor 8) | design-principles #9 | **default instituted 2026-07-19** — awaiting ratification |
 | MCP surface: process_register/list/stop; briefing-as-tool; heartbeat+bootstrap check-in; reviewer-close structural; `report_completion` typed (ata 3/5/6/7, jinn 8) | slice 6 design | pending |
 | Cascade guard + brakes layer (held delivery, one-tap release) (ata 4, codor 3) | slice 7 | pending |
 | Per-spawner budget scope; per-worker scoped credentials (jinn 6, codor 6) | slices 5–7 design | pending |
@@ -43,8 +43,8 @@ the right doc, no action due yet), **pending** (waits for its slice/trigger).
 | CLI-version lockfile checked at boot (ata 9) | slice 2 step 1 (promoted — box auto-updated 207→215 mid-slice) | in build (warn-only, Wes-approved) |
 | Assumption ledger (`harn`-shaped) + can-fail regression rule (codor 1) | repo process, pre Vimes-builds-Vimes | pending — **Wes call** (process adoption) |
 | Guardrails doc + critical test tier + sandbox-projects-only (ata 11) | repo process | pending — **Wes call** |
-| MCP server = thin client of daemon API, never second store writer (ata 10) | spec note | pending — **Wes call** (rule-shaped) |
-| Risk-register rows: hook payload drift; settings merge-vs-shadow (jinn 9) | spec §6 next doc pass | pending |
+| MCP server = thin client of daemon API (ata 10) | design-principles #10 | **default instituted 2026-07-19** — awaiting ratification |
+| Risk-register rows: hook payload drift; settings merge-vs-shadow (jinn 9) | docs/risk-register.md (delta model) | **applied** 2026-07-19 |
 | Env-inheritance invariant stated on spawn path (codor 7) | spawn-path design | pending |
 | Read codor's `adapters-cli-only-no-sdk` rationale (codor 9) | pre-slice-6 | pending |
 | Hygiene: exact-address proxy trust (codor 10; fail-closed already shipped) | daemon config | pending |
