@@ -157,3 +157,19 @@ one-word spike prompt into a 6.3k-output-token exchange) cannot leak into
 VIMES sessions. `[]` remains available for fully isolated runs (config).
 The ⟨tune PREVIEW⟩ marker on the config default retires with this record.
 
+## D7 — PTY↔JSONL correlation: hooks-first, deterministic
+
+*2026-07-19 (approved by Wes at the slice-2 Gate-D pause; spiked same day;
+moved from open-questions.md).* Correlation is delivered by the hooks
+channel: a per-session settings file injected at spawn registers a
+`SessionStart` hook whose relay URL carries `appSessionId`; the payload's
+`session_id` carries Claude's id. Spike evidence (calibration.md
+2026-07-19): payload id === transcript filename === SDK-reported id on every
+run, both channels; the URL token survives untouched; ~470–550 ms
+spawn→POST latency; injection MERGES with project settings (D14 promise
+holds); PTY hook subprocesses carry `CLAUDE_CODE_SESSION_ID` as a second
+confirmation channel. `claude -n` demotes to an unused fallback, retained
+only as a footnote. Hook payload schemas are a rule-0.6 fragile surface:
+golden fixtures at `fixtures/hooks/` (2.1.215), loose ingest, risk-register
+row at the next doc pass.
+

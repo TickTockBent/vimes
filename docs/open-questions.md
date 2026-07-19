@@ -34,23 +34,8 @@ cache-cold; cache is scoped to machine+directory). **Lean (2026-07-13):**
 per-task flag `isolation: shared-dir | worktree`, default ⟨tune shared-dir⟩
 with dispatcher-serialized write phases.
 
-## D7 — PTY↔JSONL correlation ⚠ *(trigger: slice 2 spike)*
-
-Does `claude -n <appSessionId>` reliably land a matchable name record in the
-transcript, making it usable as the correlation key between a PTY child and its
-JSONL file? **Lean (2026-07-13):** yes, use the name record; fallback is
-newest-file-after-spawn-timestamp with single-spawn serialization per project
-dir. Correlation logic isolated in one module either way (risk register).
-**Lean revised (2026-07-19, jinn-decompose §2.1):** redesign the spike
-**hooks-first** — a per-session settings file at spawn registers a
-`SessionStart` hook whose relay command carries `appSessionId`; the payload
-carries Claude's session id. Deterministic correlation, plus a push-delivered
-lifecycle channel (Stop/StopFailure/PreToolUse) consistent with rule 0.8.
-`-n` demotes to fallback. Spike must also answer: per-session settings vs
-the project's own `.claude/settings.json` — merge or shadow? (The dev box
-has real hook configs; one test answers it.) Hook payload schemas are a new
-rule-0.6 fragile surface (golden fixtures, risk-register row at next doc
-pass).
+<!-- D7 moved to decisions.md 2026-07-19 — decided: hooks-first correlation,
+     -n demoted to unused fallback. -->
 
 ## D8 — Usage endpoint adapter ⚠ *(trigger: slice 5 spike)*
 

@@ -25,7 +25,7 @@ the right doc, no action due yet), **pending** (waits for its slice/trigger).
 
 | Item (source) | Lands in | Status 2026-07-19 |
 |---|---|---|
-| D7 spike hooks-first; `-n` demoted (jinn 1) | slice 2 spike | **lean-updated** (D7) |
+| D7 spike hooks-first; `-n` demoted (jinn 1) | slice 2 spike | **applied** — D7 decided 2026-07-19, spike green |
 | Custody trio for terminal-started sessions (codor 2) | slice 2 + D10 | **lean-updated** (D10) |
 | JSONL usage dedupe **by `message.id`** (jinn 3) | slice 4/5 usage consumers | **lean-updated** (D17); note: current `usage_block` payload does NOT carry messageId — add before slice 4 |
 | Self-owned blob refs for D12 horizon (codor 4) | post-MVP revisit | **noted** (design-directions.md) |
@@ -40,7 +40,7 @@ the right doc, no action due yet), **pending** (waits for its slice/trigger).
 | Cascade guard + brakes layer (held delivery, one-tap release) (ata 4, codor 3) | slice 7 | pending |
 | Per-spawner budget scope; per-worker scoped credentials (jinn 6, codor 6) | slices 5–7 design | pending |
 | Graph-ready stage-runner interface (jinn 7) | slice 6 design | pending |
-| CLI-version lockfile checked at boot (ata 9) | release discipline | pending |
+| CLI-version lockfile checked at boot (ata 9) | slice 2 step 1 (promoted — box auto-updated 207→215 mid-slice) | **applied** (warn-only) |
 | Assumption ledger (`harn`-shaped) + can-fail regression rule (codor 1) | repo process, pre Vimes-builds-Vimes | pending — **Wes call** (process adoption) |
 | Guardrails doc + critical test tier + sandbox-projects-only (ata 11) | repo process | pending — **Wes call** |
 | MCP server = thin client of daemon API, never second store writer (ata 10) | spec note | pending — **Wes call** (rule-shaped) |
