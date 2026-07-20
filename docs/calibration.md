@@ -137,6 +137,31 @@ owns it).
   "pended" needs the same reset — audit the store's refused handler for other
   stuck-affordance cases while fixing.
 
+### 2026-07-20 — push pipeline, on-device (Gate-D measurement, DAEMON-SIDE pinned-able)
+
+First real gate-to-push measurement, live daemon + Access + Android PWA.
+Gate `15e2faf1` (a Bash/awk gate): `gate_fired` and `notification_trigger`
+at the SAME ms (15:53:09.372Z — I5 batch rule live), `push_sent` accepted by
+the push service at 15:53:09.478Z. **Daemon-side latency gate→push-accepted
+= 106 ms** — the ⟨tune 10s⟩ "gate-to-push-delivered" intent has ~100×
+headroom on our side; total gate-to-buzz is dominated by push-service/OS
+delivery, not the daemon. **Pipeline proven end-to-end** (Wes saw the bell).
+**Dead-subscription prune confirmed live:** a stale sub returned 410 Gone and
+was auto-pruned before the live send succeeded (subscriptions 2→1). Push
+subscription persistence + suppression path exercised without incident.
+
+**OBSERVED (Wes, 2026-07-20): LOCKED phone, gate-to-buzz "basically instant,
+same second easily" (sub-1 s).** This is the spike's flagged worst case
+(Android background-delivery throttling on a dozing device) and it delivered
+effectively immediately. **Slice-2 kill criterion (push unreliable on
+Android → halt) is NOT triggered — the pillar-5 promise lands.** Gate-D
+pin-readiness: the ⟨tune 10s gate-to-push-delivered⟩ and ⟨tune 60s
+gate-noticed⟩ intents both have enormous margin; the week-long exit gate now
+runs to confirm sustained reliability, not to discover feasibility. Bands
+pin after the week (a single instant reading proves the ceiling isn't a
+problem; the week defends against intermittent misses). Assumptions: single
+Android device, GitHub-IdP Access session valid, home tunnel, screen-locked.
+
 ## Budget table (`--report`)
 
 Design-intent targets from spec §8, listed so nothing gets pinned from memory.
