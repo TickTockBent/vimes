@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -9,6 +9,12 @@ import { CountingIdSource, SteppingClock } from '@vimes/core';
 import { createLocalAccessVerifier, createUnconfiguredVerifier, type AccessVerifier } from './auth.js';
 import { createDaemon, type Daemon } from './app.js';
 import type { DaemonConfig } from './config.js';
+
+// RIDER (calibration.md 2026-07-20 flakiness finding): the I14-matrix tests here
+// spin up real servers + JWKS + WS upgrades and time out at the default 5000ms
+// under CPU contention. Raise this FILE's per-test timeout to 30s (like the
+// slice-0 I2 sweep). Timeout only — no assertion is weakened.
+vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 });
 
 const AUDIENCE = 'vimes-access-app-aud-tag';
 const INDEX_HTML_MARKER = '<html>vimes-product-index</html>';

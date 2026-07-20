@@ -5,6 +5,7 @@ import StreamView from './views/StreamView.vue';
 import FileTreeView from './views/FileTreeView.vue';
 import EditorView from './views/EditorView.vue';
 import SearchPanel from './views/SearchPanel.vue';
+import TerminalView from './views/TerminalView.vue';
 import { useVimesStore } from './stores/vimesStore.js';
 
 const store = useVimesStore();
@@ -56,6 +57,7 @@ const editorTarget = computed<{ path: string; line?: number } | null>(() => {
 
 const showFileTree = computed(() => route.value.routePath === '/files' && editorTarget.value === null);
 const showSearch = computed(() => route.value.routePath === '/search');
+const showTerminal = computed(() => route.value.routePath === '/terminal');
 
 function navigateToSession(appSessionId: string): void {
   window.location.hash = `#/session/${encodeURIComponent(appSessionId)}`;
@@ -68,6 +70,9 @@ function navigateToFiles(): void {
 }
 function navigateToSearch(): void {
   window.location.hash = '#/search';
+}
+function navigateToTerminal(): void {
+  window.location.hash = '#/terminal';
 }
 function navigateToEditor(path: string, line?: number): void {
   const params = new URLSearchParams({ path });
@@ -122,12 +127,14 @@ const bannerText = computed(() => {
       @open="(payload) => navigateToEditor(payload.path, payload.line)"
       @back="navigateHome"
     />
+    <TerminalView v-else-if="showTerminal" @back="navigateHome" />
     <StreamView v-else-if="activeSessionId" :app-session-id="activeSessionId" @back="navigateHome" />
     <SessionListView
       v-else
       @open="navigateToSession"
       @open-files="navigateToFiles"
       @open-search="navigateToSearch"
+      @open-terminal="navigateToTerminal"
     />
   </div>
 </template>

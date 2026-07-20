@@ -14,6 +14,7 @@ const emit = defineEmits<{
   open: [appSessionId: string];
   openFiles: [];
   openSearch: [];
+  openTerminal: [];
 }>();
 const store = useVimesStore();
 
@@ -145,6 +146,14 @@ function bellIcon(): string {
           @click="emit('openSearch')"
         >
           🔍
+        </button>
+        <button
+          type="button"
+          class="min-h-[44px] rounded-md border border-slate-300 px-3 text-sm font-medium active:bg-slate-100 dark:border-slate-700 dark:active:bg-slate-900"
+          aria-label="Terminal"
+          @click="emit('openTerminal')"
+        >
+          ⌨️
         </button>
         <button
           type="button"

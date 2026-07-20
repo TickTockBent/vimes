@@ -26,7 +26,13 @@ export type ClientEnvelope =
   // v0.4 (slice 3) search ops (wsHub.ts searchEnvelopeSchema). Flags are loose;
   // an unknown flag rides through and is ignored by the rg arg builder (rule 0.6).
   | { op: 'search'; searchId: string; root: string; query: string; flags?: SearchFlags }
-  | { op: 'search_cancel'; searchId: string };
+  | { op: 'search_cancel'; searchId: string }
+  // v0.5 (slice 3 step 3) raw terminal control ops. Byte payloads ride BINARY WS
+  // frames (see terminalFraming.ts), never these envelopes (rule 0.8).
+  | { op: 'term_open'; cwd: string }
+  | { op: 'term_subscribe'; terminalId: string; offset: number }
+  | { op: 'term_resize'; terminalId: string; cols: number; rows: number }
+  | { op: 'term_close'; terminalId: string };
 
 export interface SearchFlags {
   caseInsensitive?: boolean;
@@ -53,7 +59,13 @@ export type ServerEnvelope =
   | { op: 'discovered'; count: number }
   | SearchResultEnvelope
   | { op: 'search_done'; searchId: string; stats: { matched: number; files: number; elapsedMs: number } }
-  | { op: 'search_error'; searchId: string; reason: string };
+  | { op: 'search_error'; searchId: string; reason: string }
+  // v0.5 raw terminal control frames (byte payloads arrive as BINARY frames, not
+  // here). term_lost is the honest "output dropped" signal; term_exit ends a shell.
+  | { op: 'term_opened'; terminalId: string }
+  | { op: 'term_subscribed'; terminalId: string; tag: number }
+  | { op: 'term_lost'; terminalId: string }
+  | { op: 'term_exit'; terminalId: string; exitCode: number };
 
 export function serializeClientEnvelope(envelope: ClientEnvelope): string {
   return JSON.stringify(envelope);
@@ -136,6 +148,18 @@ export function parseServerEnvelope(raw: string): ServerEnvelope | null {
     case 'search_error':
       return typeof parsed.searchId === 'string' && typeof parsed.reason === 'string'
         ? { op: 'search_error', searchId: parsed.searchId, reason: parsed.reason }
+        : null;
+    case 'term_opened':
+      return typeof parsed.terminalId === 'string' ? { op: 'term_opened', terminalId: parsed.terminalId } : null;
+    case 'term_subscribed':
+      return typeof parsed.terminalId === 'string' && typeof parsed.tag === 'number'
+        ? { op: 'term_subscribed', terminalId: parsed.terminalId, tag: parsed.tag }
+        : null;
+    case 'term_lost':
+      return typeof parsed.terminalId === 'string' ? { op: 'term_lost', terminalId: parsed.terminalId } : null;
+    case 'term_exit':
+      return typeof parsed.terminalId === 'string' && typeof parsed.exitCode === 'number'
+        ? { op: 'term_exit', terminalId: parsed.terminalId, exitCode: parsed.exitCode }
         : null;
     default:
       return null;

@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia';
 import { reactive, ref } from 'vue';
 import { parseServerEnvelope, serializeClientEnvelope, type ClientEnvelope, type ServerEnvelope } from '../lib/envelope.js';
+import { advanceOffset, deframeTerminalOutput, frameTerminalInputText } from '../lib/terminalFraming.js';
 import type { EventRecord, SessionRecord } from '../lib/types.js';
 import { derivePushState, type PushUiState } from '../lib/pushState.js';
 import { decideReconnectAction, shouldProbeHealth, type HealthProbeOutcome } from '../lib/reconnectDecision.js';
@@ -78,6 +79,22 @@ export const useVimesStore = defineStore('vimes', () => {
   const searchErrorReason = ref<string | null>(null);
   let activeSearchId: string | null = null;
   let searchCounter = 0;
+
+  // ── Raw terminal (slice 3 step 3) — ONE active terminal (the escape hatch) ──
+  // The daemon supports many terminals per connection; the mobile page drives a
+  // single one. Byte payloads ride BINARY WS frames, tagged per terminalFraming.ts.
+  type TerminalStatus = 'idle' | 'opening' | 'live' | 'exited' | 'error';
+  const terminalStatus = ref<TerminalStatus>('idle');
+  const terminalExitCode = ref<number | null>(null);
+  let terminalId: string | null = null;
+  let terminalTag: number | null = null;
+  let terminalOffset = 0; // bytes consumed — mirrors the daemon's totalBytesSeen (I9)
+  let terminalCwd: string | null = null;
+  // The view registers sinks so raw bytes stream straight into xterm without a
+  // reactive buffer (bytes are never stored in the projection — rule 0.8).
+  let terminalOutputSink: ((bytes: Uint8Array) => void) | null = null;
+  let terminalLostSink: (() => void) | null = null;
+  let terminalExitSink: ((exitCode: number) => void) | null = null;
 
   let socket: WebSocket | null = null;
   let backoffMs = MIN_BACKOFF_MS;
@@ -236,13 +253,61 @@ export const useVimesStore = defineStore('vimes', () => {
         searchStatus.value = 'error';
         return;
       }
+      case 'term_opened': {
+        terminalId = envelope.terminalId;
+        terminalOffset = 0;
+        // Subscribe immediately from the start so the shell's opening prompt (which
+        // may already be buffered) replays in full (I9).
+        sendEnvelope({ op: 'term_subscribe', terminalId, offset: terminalOffset });
+        return;
+      }
+      case 'term_subscribed': {
+        if (envelope.terminalId !== terminalId) {
+          return;
+        }
+        terminalTag = envelope.tag;
+        terminalStatus.value = 'live';
+        return;
+      }
+      case 'term_lost': {
+        if (envelope.terminalId !== terminalId) {
+          return;
+        }
+        // Honest signal: output was dropped (a disconnect longer than the ring
+        // window). The view shows the notice; live bytes resume after it.
+        terminalLostSink?.();
+        return;
+      }
+      case 'term_exit': {
+        if (envelope.terminalId !== terminalId) {
+          return;
+        }
+        terminalStatus.value = 'exited';
+        terminalExitCode.value = envelope.exitCode;
+        terminalExitSink?.(envelope.exitCode);
+        terminalId = null;
+        terminalTag = null;
+        return;
+      }
     }
+  }
+
+  // Route a server binary frame (raw terminal output) to the active terminal.
+  function handleTerminalBinary(frame: Uint8Array): void {
+    const deframed = deframeTerminalOutput(frame);
+    if (deframed === null || terminalTag === null || deframed.tag !== terminalTag) {
+      return; // empty / unknown tag — drop
+    }
+    terminalOffset = advanceOffset(terminalOffset, deframed.payload.length);
+    terminalOutputSink?.(deframed.payload);
   }
 
   function connect(): void {
     manuallyClosed = false;
     connectionStatus.value = everConnected ? 'reconnecting' : 'connecting';
     const socketInstance = new WebSocket(wsUrl());
+    // Terminal output rides binary frames; read them as ArrayBuffer synchronously.
+    socketInstance.binaryType = 'arraybuffer';
     socket = socketInstance;
 
     socketInstance.addEventListener('open', () => {
@@ -258,16 +323,26 @@ export const useVimesStore = defineStore('vimes', () => {
           sendEnvelope({ op: 'subscribe', stream: streamId, lastSeq: streamStateFor(streamId).lastSeq });
         }
       }
+      // A live terminal survives a WS reconnect server-side (§3.10): re-subscribe
+      // from the byte offset reached so far. The server re-assigns a byte-tag and
+      // replays from there — or sends term_lost if the gap exceeded the ring window.
+      if (terminalId !== null && (terminalStatus.value === 'live' || terminalStatus.value === 'opening')) {
+        sendEnvelope({ op: 'term_subscribe', terminalId, offset: terminalOffset });
+      }
       void refreshSessions();
     });
 
     socketInstance.addEventListener('message', (messageEvent) => {
-      if (typeof messageEvent.data !== 'string') {
-        return; // control envelopes are text frames; binary is out of scope here
+      if (typeof messageEvent.data === 'string') {
+        const envelope = parseServerEnvelope(messageEvent.data);
+        if (envelope !== null) {
+          applyServerEnvelope(envelope);
+        }
+        return;
       }
-      const envelope = parseServerEnvelope(messageEvent.data);
-      if (envelope !== null) {
-        applyServerEnvelope(envelope);
+      // Binary frame = raw terminal output bytes.
+      if (messageEvent.data instanceof ArrayBuffer) {
+        handleTerminalBinary(new Uint8Array(messageEvent.data));
       }
     });
 
@@ -533,6 +608,71 @@ export const useVimesStore = defineStore('vimes', () => {
     searchStatus.value = 'idle';
   }
 
+  // ── Terminal actions (slice 3 step 3) ──────────────────────────────────────
+  function sendBinaryFrame(frame: Uint8Array): void {
+    if (socket !== null && socket.readyState === WebSocket.OPEN) {
+      socket.send(frame);
+    }
+    // Offline: dropped (like every other op) — reconnect re-subscribes with the
+    // byte offset and replays; unsent keystrokes are not queued.
+  }
+
+  // The view registers its xterm sinks here (bytes stream straight through).
+  function setTerminalSinks(sinks: {
+    onOutput: (bytes: Uint8Array) => void;
+    onLost: () => void;
+    onExit: (exitCode: number) => void;
+  }): void {
+    terminalOutputSink = sinks.onOutput;
+    terminalLostSink = sinks.onLost;
+    terminalExitSink = sinks.onExit;
+  }
+
+  function clearTerminalSinks(): void {
+    terminalOutputSink = null;
+    terminalLostSink = null;
+    terminalExitSink = null;
+  }
+
+  // Open a shell at cwd (must be within the daemon's project roots / session cwds)
+  // and subscribe on term_opened.
+  function openTerminal(cwd: string): void {
+    terminalId = null;
+    terminalTag = null;
+    terminalOffset = 0;
+    terminalCwd = cwd;
+    terminalExitCode.value = null;
+    terminalStatus.value = 'opening';
+    sendEnvelope({ op: 'term_open', cwd });
+  }
+
+  function sendTerminalInput(text: string): void {
+    if (terminalTag === null) {
+      return;
+    }
+    sendBinaryFrame(frameTerminalInputText(terminalTag, text));
+  }
+
+  function resizeTerminal(cols: number, rows: number): void {
+    if (terminalId === null) {
+      return;
+    }
+    sendEnvelope({ op: 'term_resize', terminalId, cols, rows });
+  }
+
+  function closeTerminal(): void {
+    if (terminalId !== null) {
+      sendEnvelope({ op: 'term_close', terminalId });
+    }
+    terminalStatus.value = 'idle';
+    terminalId = null;
+    terminalTag = null;
+  }
+
+  function currentTerminalCwd(): string | null {
+    return terminalCwd;
+  }
+
   return {
     sessions,
     connectionStatus,
@@ -565,5 +705,15 @@ export const useVimesStore = defineStore('vimes', () => {
     startSearch,
     cancelSearch,
     clearSearch,
+    // Terminal (slice 3 step 3)
+    terminalStatus,
+    terminalExitCode,
+    setTerminalSinks,
+    clearTerminalSinks,
+    openTerminal,
+    sendTerminalInput,
+    resizeTerminal,
+    closeTerminal,
+    currentTerminalCwd,
   };
 });
