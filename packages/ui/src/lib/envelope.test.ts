@@ -12,6 +12,16 @@ describe('serializeClientEnvelope', () => {
     expect(JSON.parse(json)).toEqual({ op: 'spawn', channel: 'pty', cwd: '/tmp/x' });
   });
 
+  it('serializes the v0.4 search ops', () => {
+    expect(
+      JSON.parse(serializeClientEnvelope({ op: 'search', searchId: 's1', root: '/r', query: 'x', flags: { caseInsensitive: true } })),
+    ).toEqual({ op: 'search', searchId: 's1', root: '/r', query: 'x', flags: { caseInsensitive: true } });
+    expect(JSON.parse(serializeClientEnvelope({ op: 'search_cancel', searchId: 's1' }))).toEqual({
+      op: 'search_cancel',
+      searchId: 's1',
+    });
+  });
+
   it('serializes the v0.2 session ops', () => {
     expect(JSON.parse(serializeClientEnvelope({ op: 'seen', appSessionId: 'a' }))).toEqual({ op: 'seen', appSessionId: 'a' });
     expect(JSON.parse(serializeClientEnvelope({ op: 'clear_attention', appSessionId: 'a' }))).toEqual({ op: 'clear_attention', appSessionId: 'a' });
@@ -54,6 +64,20 @@ describe('parseServerEnvelope', () => {
     expect(envelope).toEqual({ op: 'discovered', count: 3 });
     // A missing/wrong-typed count falls through to null (tolerant parse).
     expect(parseServerEnvelope(JSON.stringify({ op: 'discovered' }))).toBeNull();
+  });
+
+  it('parses the search server ops', () => {
+    const result = { op: 'search_result', searchId: 's1', file: '/a.ts', line: 4, col: 2, submatches: [{ start: 2, end: 5, text: 'foo' }] };
+    expect(parseServerEnvelope(JSON.stringify(result))).toEqual(result);
+    const done = { op: 'search_done', searchId: 's1', stats: { matched: 3, files: 2, elapsedMs: 12 } };
+    expect(parseServerEnvelope(JSON.stringify(done))).toEqual(done);
+    expect(parseServerEnvelope(JSON.stringify({ op: 'search_error', searchId: 's1', reason: 'ripgrep-unavailable' }))).toEqual({
+      op: 'search_error',
+      searchId: 's1',
+      reason: 'ripgrep-unavailable',
+    });
+    // A malformed search_result (submatches not an array) falls through to null.
+    expect(parseServerEnvelope(JSON.stringify({ op: 'search_result', searchId: 's', file: '/a', line: 1, col: 0, submatches: 'no' }))).toBeNull();
   });
 
   it('tolerates malformed JSON without throwing', () => {
