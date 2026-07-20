@@ -79,11 +79,10 @@ principle before recommending. Seeded at kickoff from the spec's ground rules
    exactly when things are going wrong), and no layer may assume a
    supervising human at the layer above.
 
-## Instituted night-shift defaults — awaiting Wes ratification
+## Established in use (continued)
 
-*(Added 2026-07-19 under "institute reasonable defaults, defer to me later."
-Each stands unless Wes objects; ratification converts the tag to a plain
-principle, objection reverts it and the dependent work.)*
+*(9–10 instituted as night-shift defaults 2026-07-19; ratified by Wes
+2026-07-20.)*
 
 9. **One source of record per fact.** *(codor decomp §5.1; default
    2026-07-19.)* Content facts come from the JSONL tail; lifecycle facts

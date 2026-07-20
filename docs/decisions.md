@@ -192,3 +192,16 @@ self-registration env var is `CLAUDE_CODE_SESSION_ID` (not
 external (the codor FIFO) is deferred until VIMES has deliveries to queue —
 schema note only, machinery waits for its consumer (rule 0.5).
 
+
+## D19 — Slice-3 construction runs through the slice-2 gate week, deploys unrestricted
+
+*2026-07-20 (Wes's call at the morning review).* The slice-2 exit-gate week
+is a lived criterion on the notification loop; slice-3 workspace
+construction proceeds during it, with deploys as steps land — Wes owns the
+awareness cost ("if I see a UI bug I'm smart enough to check in here").
+Gate-evidence interpretation note: a missed gate attributable to a
+deploy/restart window is investigated before it counts against the exit
+criterion. Orchestrator self-restraint: no deploys during an active
+on-device measurement. Night-shift defaults 1–4 ratified same morning
+(design principles 9–10, attention-reason reservation, operational
+housekeeping).
