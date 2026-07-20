@@ -241,3 +241,20 @@ and its kill criterion can't be evaluated until it's on Wes's devices. (3)
 behind the tunnel); offline editing was never an MVP promise; keeps the SW
 install light on mobile-first. This is the first deliberate slice-3 deploy;
 subsequent deploys proceed per D19 (continuous, Wes owns awareness).
+
+## D22 — Slice-3 exit satisfied: CM6 editor replaces code-server; MVP (0–3) complete
+
+*2026-07-20 (Wes's kill-criterion verdict, live on his phone).* The slice-3
+kill criterion — "if CM6 mobile editing is not comfortably better than
+code-server-on-mobile, halt and reassess the editor layer" — is decisively
+NOT triggered: Wes reports the mobile editor "FAR easier to use," "miles
+better," principally because it isn't a cramped editor buried among IDE
+sidebars (the real-estate-to-content principle, now #11). All slice-3
+surfaces validated live: editor, files, search, terminal (desktop + mobile,
+the latter after the pty-sizing fix). Like D20, the exit gate's "one full
+week of daily use" ceremony reframes to "validated in real use + continuous
+daily use going forward" — the MVP is proven, not on probation. **MVP =
+slices 0–3 COMPLETE and deployed; 0.1-shippable.** Step-4 polish is now
+EARNED (the editor layer survived its kill criterion). Forward: the step-4
+polish backlog (slice-3.md) + the slice 4→7 path toward the orchestration
+north star; sequencing is Wes's call.

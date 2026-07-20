@@ -93,6 +93,15 @@ principle before recommending. Seeded at kickoff from the spec's ground rules
 10. **The MCP server is a thin client of the daemon's API — never a second
     writer to the store.** *(ata decomp §3.1; default 2026-07-19.)* Two
     writers is how file locks happen. Binding on slice 6–7 design.
+11. **Real estate to content, not chrome.** *(Wes, 2026-07-20; promoted from
+    design-direction after holding across the terminal AND editor on mobile.)*
+    In an agentic dev environment the human reviews and steers — they don't
+    need IDE furniture (file rails, tab strips, panels) competing for space.
+    Give screen real estate to the content: terminal, diff, editor, stream.
+    This is *why* vimes beat code-server on Wes's phone (both surfaces): no
+    chrome tax. It compounds hardest on mobile where columns are scarce, but
+    it governs the desktop layout too — the multi-pane desktop view earns its
+    panes by showing content, not by mimicking VSCode's furniture.
 
 ## Standing consequences worth restating
 
