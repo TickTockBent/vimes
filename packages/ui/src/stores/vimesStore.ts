@@ -3,6 +3,7 @@ import { reactive, ref } from 'vue';
 import { parseServerEnvelope, serializeClientEnvelope, type ClientEnvelope, type ServerEnvelope } from '../lib/envelope.js';
 import { advanceOffset, deframeTerminalOutput, frameTerminalInputText } from '../lib/terminalFraming.js';
 import { parseRootsPayload } from '../lib/treeNode.js';
+import type { TerminalListItem } from '../lib/terminalList.js';
 import type { EventRecord, SessionRecord } from '../lib/types.js';
 import { derivePushState, type PushUiState } from '../lib/pushState.js';
 import { decideReconnectAction, shouldProbeHealth, type HealthProbeOutcome } from '../lib/reconnectDecision.js';
@@ -91,6 +92,11 @@ export const useVimesStore = defineStore('vimes', () => {
   type TerminalStatus = 'idle' | 'opening' | 'live' | 'exited' | 'error';
   const terminalStatus = ref<TerminalStatus>('idle');
   const terminalExitCode = ref<number | null>(null);
+  // The live terminals list (GET /api/terminals) shown on the terminal landing —
+  // the visibility that makes persistent shells safe (terminal-lifecycle item).
+  // Fetched on the view's mount; terminalId is in-memory on the daemon, so this
+  // is how a fresh page load rediscovers shells left running to re-enter.
+  const terminals = ref<TerminalListItem[]>([]);
   let terminalId: string | null = null;
   let terminalTag: number | null = null;
   let terminalOffset = 0; // bytes consumed — mirrors the daemon's totalBytesSeen (I9)
@@ -158,6 +164,22 @@ export const useVimesStore = defineStore('vimes', () => {
     } catch {
       // Transient network hiccup — effectiveRoots() falls back to
       // deriveRoots(sessions) until a later fetch succeeds.
+    }
+  }
+
+  // Fetch the live terminals list (byte-free). Called on the terminal view's
+  // mount and after actions that change the set (enter/kill/resilient). A
+  // transient failure leaves the previous list in place.
+  async function fetchTerminals(): Promise<void> {
+    try {
+      const response = await fetch('/api/terminals', { credentials: 'same-origin' });
+      if (!response.ok) {
+        return;
+      }
+      const parsed = (await response.json()) as { terminals?: TerminalListItem[] };
+      terminals.value = Array.isArray(parsed.terminals) ? parsed.terminals : [];
+    } catch {
+      // Transient network hiccup — the next fetch (view remount) retries.
     }
   }
 
@@ -316,6 +338,8 @@ export const useVimesStore = defineStore('vimes', () => {
         terminalExitSink?.(envelope.exitCode);
         terminalId = null;
         terminalTag = null;
+        // The shell is gone — refresh the list so it drops off the landing.
+        void fetchTerminals();
         return;
       }
     }
@@ -707,6 +731,51 @@ export const useVimesStore = defineStore('vimes', () => {
     terminalTag = null;
   }
 
+  // Re-enter a still-alive shell from the terminals list. Unlike openTerminal this
+  // does NOT term_open (the shell exists) — it term_subscribes at offset 0 so the
+  // ring replays what it still holds (term_lost fires if the gap exceeded the
+  // window). A live-or-dead shell is never "resumed"; re-enter is re-subscribe.
+  function enterTerminal(existingTerminalId: string, cwd: string): void {
+    terminalId = existingTerminalId;
+    terminalTag = null;
+    terminalOffset = 0;
+    terminalCwd = cwd;
+    terminalExitCode.value = null;
+    terminalStatus.value = 'opening';
+    sendEnvelope({ op: 'term_subscribe', terminalId, offset: terminalOffset });
+  }
+
+  // Navigate-away: DETACH the view binding but LEAVE THE SHELL ALIVE (persistence,
+  // pillar 2 for terminals). No term_close — the daemon keeps the pty running; a
+  // later re-enter re-subscribes. This is the subtractive fix for the bug where
+  // leaving the terminal view killed the shell.
+  function detachTerminal(): void {
+    terminalStatus.value = 'idle';
+    terminalId = null;
+    terminalTag = null;
+    terminalOffset = 0;
+  }
+
+  // Toggle a listed terminal's resilient flag (reaper exemption). Optimistically
+  // reflect it locally so the checkmark responds immediately; the next
+  // fetchTerminals reconciles against the daemon's truth.
+  function setTerminalResilient(existingTerminalId: string, resilient: boolean): void {
+    sendEnvelope({ op: 'term_set_resilient', terminalId: existingTerminalId, resilient });
+    terminals.value = terminals.value.map((terminal) =>
+      terminal.terminalId === existingTerminalId ? { ...terminal, resilient } : terminal,
+    );
+  }
+
+  // One-tap kill from the list: close an arbitrary shell (not necessarily the one
+  // in view). If it is the in-view shell, clear the view binding too.
+  function killTerminal(existingTerminalId: string): void {
+    sendEnvelope({ op: 'term_close', terminalId: existingTerminalId });
+    if (existingTerminalId === terminalId) {
+      detachTerminal();
+    }
+    terminals.value = terminals.value.filter((terminal) => terminal.terminalId !== existingTerminalId);
+  }
+
   function currentTerminalCwd(): string | null {
     return terminalCwd;
   }
@@ -754,5 +823,12 @@ export const useVimesStore = defineStore('vimes', () => {
     resizeTerminal,
     closeTerminal,
     currentTerminalCwd,
+    // Terminal lifecycle (persistent, reapable, re-enterable)
+    terminals,
+    fetchTerminals,
+    enterTerminal,
+    detachTerminal,
+    setTerminalResilient,
+    killTerminal,
   };
 });

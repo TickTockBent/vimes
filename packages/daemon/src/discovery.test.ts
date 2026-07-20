@@ -54,6 +54,7 @@ function buildConfig(projectRoots: string[]): DaemonConfig {
     projectRoots,
     pushSubject: 'mailto:test@example.invalid',
     maxEditBytes: 5 * 1024 * 1024,
+    terminalIdleReapMs: 0,
   };
 }
 

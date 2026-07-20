@@ -44,6 +44,7 @@ function buildConfig(overrides: Partial<DaemonConfig> = {}): DaemonConfig {
     projectRoots: [],
     pushSubject: 'mailto:test@example.invalid',
     maxEditBytes: 5 * 1024 * 1024,
+    terminalIdleReapMs: 0,
     ...overrides,
   };
 }

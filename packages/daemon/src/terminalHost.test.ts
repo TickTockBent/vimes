@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { CountingIdSource } from '@vimes/core';
+import { CountingIdSource, type Clock } from '@vimes/core';
 import {
   TerminalHost,
+  terminalsToReap,
   type TerminalPtyFactory,
   type TerminalPtyLike,
   type TerminalSubscriber,
@@ -11,6 +12,19 @@ import type { RealpathProbe } from './filePaths.js';
 // Identity realpath — treats every path as existing and canonical, so
 // resolveWithinRoots does pure lexical containment (no real fs touched in CI).
 const identityRealpath: RealpathProbe = (path) => path;
+
+// A controllable clock: `now()` reads the current instant (no auto-advance,
+// unlike SteppingClock) so a test can pin lastActivityAt then jump the wall clock
+// forward to drive the inactivity reaper deterministically.
+function makeManualClock(startIso: string): { clock: Clock; advanceMs: (deltaMs: number) => void } {
+  let currentMs = Date.parse(startIso);
+  return {
+    clock: { now: () => new Date(currentMs).toISOString() },
+    advanceMs: (deltaMs) => {
+      currentMs += deltaMs;
+    },
+  };
+}
 
 function makeFakePty(): {
   factory: TerminalPtyFactory;
@@ -72,6 +86,7 @@ function makeHost(
 ): TerminalHost {
   return new TerminalHost({
     ids: new CountingIdSource(),
+    clock: { now: () => '2026-01-01T00:00:00.000Z' },
     getAllowedRoots: () => ['/work/project'],
     ptyFactory: fakePty.factory,
     realpath: identityRealpath,
@@ -285,5 +300,161 @@ describe('TerminalHost — reconnect byte conservation (I9 at the host seam)', (
     host.subscribe(terminalId, 0, reconnect); // offset 0 long evicted
     expect(reconnect.lostCount()).toBe(1);
     expect(reconnect.received()).toEqual(Array.from(new TextEncoder().encode('efgh')));
+  });
+});
+
+// ── terminalsToReap: the pure, deterministic inactivity predicate ─────────────
+describe('terminalsToReap (pure inactivity predicate)', () => {
+  const NOW = '2026-01-01T01:00:00.000Z'; // 1h past midnight
+  const WINDOW_MS = 60_000; // 1 minute
+
+  it('reaps a non-resilient terminal idle strictly LONGER than the window', () => {
+    const idle = [
+      { terminalId: 't-idle', lastActivityAt: '2026-01-01T00:58:00.000Z', resilient: false }, // 2min idle
+    ];
+    expect(terminalsToReap(idle, NOW, WINDOW_MS)).toEqual(['t-idle']);
+  });
+
+  it('does NOT reap an active terminal (idle less than the window)', () => {
+    const active = [
+      { terminalId: 't-active', lastActivityAt: '2026-01-01T00:59:30.000Z', resilient: false }, // 30s idle
+    ];
+    expect(terminalsToReap(active, NOW, WINDOW_MS)).toEqual([]);
+  });
+
+  it('exempts a resilient terminal even when idle far past the window', () => {
+    const keeper = [
+      { terminalId: 't-keeper', lastActivityAt: '2026-01-01T00:00:00.000Z', resilient: true }, // 1h idle
+    ];
+    expect(terminalsToReap(keeper, NOW, WINDOW_MS)).toEqual([]);
+  });
+
+  it('is a STRICT-greater boundary: idle exactly equal to the window is NOT reaped', () => {
+    const exactlyAtWindow = [
+      { terminalId: 't-edge', lastActivityAt: '2026-01-01T00:59:00.000Z', resilient: false }, // exactly 60s idle
+    ];
+    expect(terminalsToReap(exactlyAtWindow, NOW, WINDOW_MS)).toEqual([]);
+    // One millisecond past the window flips it to reapable.
+    const justPast = [
+      { terminalId: 't-edge', lastActivityAt: '2026-01-01T00:58:59.999Z', resilient: false },
+    ];
+    expect(terminalsToReap(justPast, NOW, WINDOW_MS)).toEqual(['t-edge']);
+  });
+
+  it('selects only the reapable subset across a mixed set (deterministic order)', () => {
+    const mixed = [
+      { terminalId: 't-idle-1', lastActivityAt: '2026-01-01T00:50:00.000Z', resilient: false }, // reap
+      { terminalId: 't-active', lastActivityAt: '2026-01-01T00:59:59.000Z', resilient: false }, // keep (active)
+      { terminalId: 't-keeper', lastActivityAt: '2026-01-01T00:00:00.000Z', resilient: true }, // keep (resilient)
+      { terminalId: 't-idle-2', lastActivityAt: '2026-01-01T00:30:00.000Z', resilient: false }, // reap
+    ];
+    expect(terminalsToReap(mixed, NOW, WINDOW_MS)).toEqual(['t-idle-1', 't-idle-2']);
+  });
+});
+
+// ── list / resilient / reapIdle / detach≠close on the host ────────────────────
+describe('TerminalHost — lifecycle (list, resilient, reap, detach)', () => {
+  it('listTerminals exposes the byte-free shape (id, cwd, lastActivityAt, resilient, subscriberCount) — never bytes', () => {
+    const fakePty = makeFakePty();
+    const { clock } = makeManualClock('2026-01-01T00:00:00.000Z');
+    const host = makeHost(fakePty, { clock });
+    const terminalId = (host.openTerminal({ cwd: '/work/project' }) as { terminalId: string }).terminalId;
+    const subscriber = makeSubscriber();
+    host.subscribe(terminalId, 0, subscriber);
+
+    const listed = host.listTerminals();
+    expect(listed).toHaveLength(1);
+    expect(listed[0]).toEqual({
+      terminalId,
+      cwd: '/work/project',
+      lastActivityAt: '2026-01-01T00:00:00.000Z',
+      resilient: false,
+      subscriberCount: 1,
+    });
+    // The listing carries no pty handle and no bytes (rule 0.8).
+    expect(Object.keys(listed[0]!).sort()).toEqual(
+      ['cwd', 'lastActivityAt', 'resilient', 'subscriberCount', 'terminalId'],
+    );
+  });
+
+  it('lastActivityAt advances on both input and output (inactivity, not age)', () => {
+    const fakePty = makeFakePty();
+    const { clock, advanceMs } = makeManualClock('2026-01-01T00:00:00.000Z');
+    const host = makeHost(fakePty, { clock });
+    const terminalId = (host.openTerminal({ cwd: '/work/project' }) as { terminalId: string }).terminalId;
+    expect(host.listTerminals()[0]!.lastActivityAt).toBe('2026-01-01T00:00:00.000Z');
+
+    advanceMs(10_000);
+    host.writeInput(terminalId, new Uint8Array([0x6c])); // input is activity
+    expect(host.listTerminals()[0]!.lastActivityAt).toBe('2026-01-01T00:00:10.000Z');
+
+    advanceMs(5_000);
+    fakePty.fireData('output'); // output is activity too
+    expect(host.listTerminals()[0]!.lastActivityAt).toBe('2026-01-01T00:00:15.000Z');
+  });
+
+  it('setResilient flips the flag (and refuses an unknown terminal)', () => {
+    const fakePty = makeFakePty();
+    const host = makeHost(fakePty);
+    const terminalId = (host.openTerminal({ cwd: '/work/project' }) as { terminalId: string }).terminalId;
+    expect(host.listTerminals()[0]!.resilient).toBe(false);
+    expect(host.setResilient(terminalId, true)).toEqual({ ok: true });
+    expect(host.listTerminals()[0]!.resilient).toBe(true);
+    expect(host.setResilient(terminalId, false)).toEqual({ ok: true });
+    expect(host.listTerminals()[0]!.resilient).toBe(false);
+    expect(host.setResilient('nope', true)).toEqual({ refused: true, reason: 'unknown-terminal' });
+  });
+
+  it('reapIdle kills only idle non-resilient shells, leaves active + resilient alive', () => {
+    const fakePty = makeFakePty();
+    const { clock, advanceMs } = makeManualClock('2026-01-01T00:00:00.000Z');
+    const host = makeHost(fakePty, { clock });
+
+    const idleId = (host.openTerminal({ cwd: '/work/project' }) as { terminalId: string }).terminalId;
+    const keeperId = (host.openTerminal({ cwd: '/work/project' }) as { terminalId: string }).terminalId;
+    host.setResilient(keeperId, true);
+
+    // 30 min pass; then ONE terminal sees activity so it is not idle.
+    advanceMs(30 * 60_000);
+    const activeId = (host.openTerminal({ cwd: '/work/project' }) as { terminalId: string }).terminalId;
+
+    // Another 45 min pass. idleId is 75min idle; activeId is 45min idle; keeper exempt.
+    advanceMs(45 * 60_000);
+    const reaped = host.reapIdle(clock.now(), 60 * 60_000); // 1h window
+    expect(reaped).toEqual([idleId]);
+    expect(host.hasTerminal(idleId)).toBe(false);
+    expect(host.hasTerminal(activeId)).toBe(true);
+    expect(host.hasTerminal(keeperId)).toBe(true);
+  });
+
+  it('reapIdle with a window of 0 disables reaping (kills nothing, even long-idle)', () => {
+    const fakePty = makeFakePty();
+    const { clock, advanceMs } = makeManualClock('2026-01-01T00:00:00.000Z');
+    const host = makeHost(fakePty, { clock });
+    const terminalId = (host.openTerminal({ cwd: '/work/project' }) as { terminalId: string }).terminalId;
+    advanceMs(10 * 60 * 60_000); // 10h idle
+    expect(host.reapIdle(clock.now(), 0)).toEqual([]);
+    expect(host.hasTerminal(terminalId)).toBe(true);
+  });
+
+  it('DETACH is not CLOSE: unsubscribe leaves the shell alive and still listed', () => {
+    const fakePty = makeFakePty();
+    const host = makeHost(fakePty);
+    const terminalId = (host.openTerminal({ cwd: '/work/project' }) as { terminalId: string }).terminalId;
+    const subscriber = makeSubscriber();
+    host.subscribe(terminalId, 0, subscriber);
+    expect(host.listTerminals()[0]!.subscriberCount).toBe(1);
+
+    // A connection detaching (navigate-away / disconnect) unsubscribes — the shell
+    // MUST survive (persistence). Only term_close / reaper / daemon exit kill it.
+    host.unsubscribe(terminalId, subscriber);
+    expect(fakePty.killed()).toBe(false);
+    expect(host.hasTerminal(terminalId)).toBe(true);
+    expect(host.listTerminals()[0]!.subscriberCount).toBe(0);
+
+    // Re-entering later re-subscribes the still-alive shell (no re-open needed).
+    const reentry = makeSubscriber();
+    expect(host.subscribe(terminalId, 0, reentry)).toEqual({ ok: true });
+    expect(host.listTerminals()[0]!.subscriberCount).toBe(1);
   });
 });

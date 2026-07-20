@@ -52,6 +52,13 @@ import { PushSubscriptions } from './pushSubscriptions.js';
 import { PushPipeline } from './pushPipeline.js';
 import { createWebPushSender, loadOrCreateVapidKeys, type PushSender } from './pushService.js';
 
+// How often the inactivity reaper wakes to check for idle terminals. This is the
+// detection CADENCE, not the tuned window: config.terminalIdleReapMs is the
+// behavior-shaping knob (how long idle before reaping). A fixed 60s cadence
+// bounds reap latency to at most a minute past the window — cheap and not a
+// calibrated band. Disabled entirely when the window is 0.
+const TERMINAL_REAP_CHECK_INTERVAL_MS = 60_000;
+
 const DAEMON_PROJECTIONS: ReadonlyArray<Projection<unknown>> = [
   sessionsProjection as Projection<unknown>,
   metersProjection as Projection<unknown>,
@@ -239,6 +246,14 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     maxEditBytes: config.maxEditBytes,
   });
 
+  // GET /api/terminals — the live terminal list (terminal-lifecycle backlog
+  // item). Behind the same auth wall as everything else on the product port and
+  // registered BEFORE the static catch-all. The byte-free listing lets a fresh
+  // page load (terminalId is in-memory only) rediscover the shells still running
+  // so they can be re-entered. `terminalHost` is created below; the closure only
+  // runs per request, long after construction.
+  app.get('/api/terminals', (context) => context.json({ terminals: terminalHost.listTerminals() }));
+
   if (config.staticDir !== undefined) {
     const staticDir = config.staticDir;
     app.get('*', async (context) => {
@@ -320,6 +335,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
   // open. The shell PTY factory defaults to the real node-pty; CI injects a fake.
   const terminalHost = new TerminalHost({
     ids,
+    clock,
     getAllowedRoots: () => [...config.projectRoots, ...sessionHost.liveSessionCwds()],
     ptyFactory: deps.terminalPtyFactory,
   });
@@ -370,6 +386,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
   };
 
   let snapshotTimer: ReturnType<typeof setInterval> | null = null;
+  let terminalReapTimer: ReturnType<typeof setInterval> | null = null;
 
   return {
     httpServer,
@@ -432,12 +449,31 @@ export function createDaemon(deps: DaemonDeps): Daemon {
         }
       }, config.snapshotIntervalMs);
       snapshotTimer.unref();
+      // Inactivity reaper (terminal-lifecycle backlog item). The DAEMON boundary
+      // owns the periodic timer (rule 0.3: not in the host's pure logic); it feeds
+      // the production clock + the configured window into terminalHost.reapIdle.
+      // A window of 0 disables reaping — the timer is never created. unref'd so it
+      // never keeps the process alive, and cleared on stop() so no handle leaks.
+      if (config.terminalIdleReapMs > 0) {
+        terminalReapTimer = setInterval(() => {
+          try {
+            terminalHost.reapIdle(clock.now(), config.terminalIdleReapMs);
+          } catch {
+            // A transient reap failure is non-fatal: the next tick retries.
+          }
+        }, TERMINAL_REAP_CHECK_INTERVAL_MS);
+        terminalReapTimer.unref();
+      }
     },
 
     async stop(): Promise<void> {
       if (snapshotTimer !== null) {
         clearInterval(snapshotTimer);
         snapshotTimer = null;
+      }
+      if (terminalReapTimer !== null) {
+        clearInterval(terminalReapTimer);
+        terminalReapTimer = null;
       }
       // host_stopped + kill children (they die with the daemon, §3.10) and stop
       // watching transcripts BEFORE the final snapshot, so the log/watchers are

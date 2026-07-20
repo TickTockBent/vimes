@@ -258,3 +258,43 @@ slices 0–3 COMPLETE and deployed; 0.1-shippable.** Step-4 polish is now
 EARNED (the editor layer survived its kill criterion). Forward: the step-4
 polish backlog (slice-3.md) + the slice 4→7 path toward the orchestration
 north star; sequencing is Wes's call.
+
+## D23 — Terminals are persistent by default; an inactivity reaper bounds accumulation (window unpinned)
+
+*2026-07-20 (Wes signed off on the design during the polish-pass approval;
+built on the night shift). Behavior-shaping → decision record (rule 0).* Raw
+PTY terminals change from close-on-navigate-away to **persistent by default**:
+leaving the terminal view DETACHES (tears down the xterm binding, keeps the
+shell's process tree alive), matching pillar 2 for terminals — reconnecting is
+not resuming. **Key architectural distinction:** terminals are **live-or-dead,
+never sleepable** — a shell's state is a live process tree (not serializable),
+unlike a session whose state is a replayable transcript. So "re-enter a
+terminal" means re-subscribe to a still-alive shell (the ring replays what it
+holds; `term_lost` if the gap exceeded the window), never "resume." A resumable
+Claude *conversation* belongs in a SESSION, not a terminal — the terminal stays
+the raw-shell escape hatch (pillar 7).
+
+Persistence is made safe by three things landing together, not persistence
+alone: (1) a **terminals list** on the landing screen (`GET /api/terminals`,
+byte-free per rule 0.8 — id/cwd/last-active/resilient/subscriber-count) giving
+visibility of every alive shell with tap-to-enter and one-tap kill, since
+`terminalId` is in-memory only and a page reload would otherwise orphan shells;
+(2) an **inactivity reaper** — a non-resilient shell idle (no input OR output)
+past a window is auto-killed; INACTIVITY-based, never age-based, so an active
+shell is never reaped; (3) a per-terminal **`resilient` flag** ("keep") that
+exempts a quiet-but-working shell (long compile/watch) or a deliberate keeper.
+
+**Gate-D honored — the window is NOT pinned.** `terminalIdleReapMs` defaults to
+`3_600_000` (⟨tune 1h PREVIEW⟩, `VIMES_TERMINAL_IDLE_REAP_MS`, `0` disables
+reaping entirely). The *design* (persistence + reaper + resilient + list) has
+Wes's sign-off; the *number* stays a placeholder pending calibrate→sign-off→pin
+(rule 0.2) — it earns its calibration when real idle-shell accumulation is
+observed. The reap decision is a pure deterministic core fn (`terminalsToReap`,
+Date.parse over injected ISO strings — no ambient clock); the periodic timer
+lives at the daemon boundary (rule 0.3), unref'd, cleared on stop, and never
+created when the window is 0. The check cadence (`TERMINAL_REAP_CHECK_INTERVAL_MS
+= 60_000`) is a plain constant, not a ⟨tune⟩ band — it only bounds detection
+latency to ≤1 min past the window; the window is the behavior-shaping knob.
+Evidence: 491 tests green on the orchestrator's own ci-gate run (+25 new),
+scenarios byte-identical, lazy-chunk gate PASS, `/api/terminals` added to the
+I14 auth matrix. UNDEPLOYED at record time (ships with the polish-pass restart).

@@ -1,5 +1,5 @@
 import { createRequire } from 'node:module';
-import { TerminalRingBuffer, DEFAULT_TERMINAL_BUFFER_BYTES, type IdSource } from '@vimes/core';
+import { TerminalRingBuffer, DEFAULT_TERMINAL_BUFFER_BYTES, type Clock, type IdSource } from '@vimes/core';
 import { resolveWithinRoots, type RealpathProbe, realpathProbe } from './filePaths.js';
 import { scrubClaudeEnv } from './sessionHost.js';
 
@@ -66,6 +66,17 @@ export type OpenTerminalResult = { terminalId: string } | { refused: true; reaso
 export type SubscribeResult = { ok: true } | { refused: true; reason: string };
 export type TerminalOpResult = { ok: true } | { refused: true; reason: string };
 
+// The safe, byte-free view of a terminal the list endpoint exposes — never the
+// pty and never buffered bytes (rule 0.8). `lastActivityAt` is the clock time of
+// the most recent input write OR output chunk; the reaper reads it (inactivity).
+export interface TerminalInfo {
+  terminalId: string;
+  cwd: string;
+  lastActivityAt: string;
+  resilient: boolean;
+  subscriberCount: number;
+}
+
 interface Terminal {
   terminalId: string;
   cwd: string;
@@ -73,10 +84,52 @@ interface Terminal {
   ring: TerminalRingBuffer;
   subscribers: Set<TerminalSubscriber>;
   exited: boolean;
+  // Persistence bookkeeping (terminal-lifecycle backlog item). `lastActivityAt`
+  // advances on every input write and every output chunk; the inactivity reaper
+  // compares it against the clock. `resilient` exempts a terminal from the
+  // reaper (a quiet-but-working shell — long compile/watch — or a deliberate keeper).
+  lastActivityAt: string;
+  resilient: boolean;
+}
+
+// ── Inactivity reaper (pure, deterministic — rule 0.3) ───────────────────────
+// A terminal is reapable iff it is NOT resilient AND has been idle (no input or
+// output) for LONGER than the window. INACTIVITY-based, never age-based: an
+// actively-used shell keeps advancing lastActivityAt and is never reaped, no
+// matter how old. The `0`-disables case is handled by the CALLER (reapIdle /
+// the daemon timer), not here — this function is a straight predicate over the
+// window it is given.
+export interface ReapCandidate {
+  terminalId: string;
+  lastActivityAt: string;
+  resilient: boolean;
+}
+
+export function terminalsToReap(
+  terminals: readonly ReapCandidate[],
+  nowIso: string,
+  idleWindowMs: number,
+): string[] {
+  const nowMs = Date.parse(nowIso);
+  const reapable: string[] = [];
+  for (const terminal of terminals) {
+    if (terminal.resilient) {
+      continue;
+    }
+    const idleMs = nowMs - Date.parse(terminal.lastActivityAt);
+    if (idleMs > idleWindowMs) {
+      reapable.push(terminal.terminalId);
+    }
+  }
+  return reapable;
 }
 
 export interface TerminalHostDeps {
   ids: IdSource;
+  // Injected clock (rule 0.3) — the source of `lastActivityAt` timestamps the
+  // inactivity reaper reads. CI injects a controllable clock; prod passes the
+  // real system clock (the daemon boundary).
+  clock: Clock;
   // The File API/Search allowlist union, read fresh per open (config.projectRoots ∪
   // live-session cwds) — the SAME source the fileApi/search use.
   getAllowedRoots: () => string[];
@@ -96,6 +149,7 @@ export interface TerminalHostDeps {
 
 export class TerminalHost {
   private readonly ids: IdSource;
+  private readonly clock: Clock;
   private readonly getAllowedRoots: () => string[];
   private readonly ptyFactory: TerminalPtyFactory;
   private readonly maxBufferBytes: number;
@@ -106,6 +160,7 @@ export class TerminalHost {
 
   constructor(deps: TerminalHostDeps) {
     this.ids = deps.ids;
+    this.clock = deps.clock;
     this.getAllowedRoots = deps.getAllowedRoots;
     this.ptyFactory = deps.ptyFactory ?? defaultTerminalPtyFactory;
     this.maxBufferBytes = deps.maxBufferBytes ?? DEFAULT_TERMINAL_BUFFER_BYTES;
@@ -148,10 +203,15 @@ export class TerminalHost {
       ring: new TerminalRingBuffer(this.maxBufferBytes),
       subscribers: new Set(),
       exited: false,
+      lastActivityAt: this.clock.now(),
+      resilient: false,
     };
     // Output: append to the reconnect ring, then broadcast the same bytes live.
-    // Bytes only — never parsed, never logged (rule 0.8).
+    // Bytes only — never parsed, never logged (rule 0.8). Output counts as
+    // activity (a live-but-quiet-input shell still emitting bytes is working),
+    // so it advances lastActivityAt and stays out of the inactivity reaper.
     pty.onData((data) => {
+      terminal.lastActivityAt = this.clock.now();
       const bytes = new Uint8Array(Buffer.from(data, 'utf8'));
       terminal.ring.append(bytes);
       for (const subscriber of terminal.subscribers) {
@@ -197,6 +257,9 @@ export class TerminalHost {
     if (terminal === undefined || terminal.exited) {
       return { refused: true, reason: 'unknown-terminal' };
     }
+    // Input is activity — a human (or an automation) typing at the shell keeps it
+    // out of the inactivity reaper.
+    terminal.lastActivityAt = this.clock.now();
     terminal.pty.write(Buffer.from(bytes).toString('utf8'));
     return { ok: true };
   }
@@ -212,6 +275,60 @@ export class TerminalHost {
     }
     terminal.pty.resize(cols, rows);
     return { ok: true };
+  }
+
+  // Flip a terminal's resilient flag. A resilient terminal is exempt from the
+  // inactivity reaper — the escape valve for a quiet keeper. Detach/subscribe are
+  // untouched; only the reaper reads this.
+  setResilient(terminalId: string, resilient: boolean): TerminalOpResult {
+    const terminal = this.terminals.get(terminalId);
+    if (terminal === undefined || terminal.exited) {
+      return { refused: true, reason: 'unknown-terminal' };
+    }
+    terminal.resilient = resilient;
+    return { ok: true };
+  }
+
+  // The byte-free listing the /api/terminals endpoint serves. Never the pty and
+  // never buffered bytes (rule 0.8) — only the fields the list UI needs to show
+  // an alive shell, its cwd, how long it has been idle, and whether it is a keeper.
+  listTerminals(): TerminalInfo[] {
+    const listed: TerminalInfo[] = [];
+    for (const terminal of this.terminals.values()) {
+      listed.push({
+        terminalId: terminal.terminalId,
+        cwd: terminal.cwd,
+        lastActivityAt: terminal.lastActivityAt,
+        resilient: terminal.resilient,
+        subscriberCount: terminal.subscribers.size,
+      });
+    }
+    return listed;
+  }
+
+  // Kill every terminal the pure `terminalsToReap` predicate selects as idle past
+  // the window. The DAEMON boundary (app.ts) owns the periodic timer that calls
+  // this with the production clock; the host only owns the deterministic decision
+  // + teardown. A window of 0 (or negative) DISABLES reaping — handled here, at
+  // the caller of the pure predicate, so no terminal is ever reaped when the knob
+  // is off. Returns the ids reaped (for logging/observation upstream).
+  reapIdle(nowIso: string, idleWindowMs: number): string[] {
+    if (idleWindowMs <= 0) {
+      return [];
+    }
+    const candidates: ReapCandidate[] = [];
+    for (const terminal of this.terminals.values()) {
+      candidates.push({
+        terminalId: terminal.terminalId,
+        lastActivityAt: terminal.lastActivityAt,
+        resilient: terminal.resilient,
+      });
+    }
+    const doomed = terminalsToReap(candidates, nowIso, idleWindowMs);
+    for (const terminalId of doomed) {
+      this.closeTerminal(terminalId);
+    }
+    return doomed;
   }
 
   // Explicit close: kill the shell and drop its buffer. Notifies subscribers via

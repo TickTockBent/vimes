@@ -93,8 +93,11 @@ check; all prior assertions green (rule 0.4).
 | 4 | Polish + gates | sonnet | build-manifest ci-gate step (DONE), interrupted-list polish, --report additions (buffer sizes, search latency observations) |
 
 **Step-4 polish backlog (aimed by 2026-07-20 live use — the reason polish was deferred):**
-- **Terminal lifecycle — persistent, reapable, re-enterable terminals (Wes,
-  2026-07-20; refined design).** The daemon ALREADY supports persistence (pty
+- **[LANDED 2026-07-20 — D23]** **Terminal lifecycle — persistent, reapable, re-enterable terminals (Wes,
+  2026-07-20; refined design).** Built: detach-on-navigate-away, inactivity
+  reaper (`terminalsToReap` pure fn + daemon timer; `VIMES_TERMINAL_IDLE_REAP_MS`
+  ⟨tune 1h PREVIEW⟩, 0=disabled), `resilient` flag, terminals list
+  (`GET /api/terminals`, in I14 matrix), `term_set_resilient`. 491 tests green. The daemon ALREADY supports persistence (pty
   outlives a WS connection + ring-buffer reconnect-replay, I9); the UI kills
   shells by sending `term_close` on unmount. **Key architectural distinction:
   terminals are live-or-dead, NOT sleepable** — a shell's state is a live
