@@ -4,10 +4,12 @@
 > class-bug + auth-timeout hardening — all verified, committed, UNDEPLOYED
 > (446 tests; entry 44.6KB gzip; CM6 + xterm both lazy). Step 4 (polish:
 > interrupted-list beat-7, `--report` additions) not started — minor.
-> BLOCKED ON WES: the three deploy decisions (roots scope, deploy sequencing,
-> PWA-precache-CM6 tradeoff); one deliberate restart ships all of slice 3
-> live. Exit gate (retire code-server, used for real desktop+mobile) is
-> human — likely reframes like D20 (used in anger, not a ceremonial week).
+> **DEPLOYED 2026-07-20 (D21):** roots widened to ~/projects, precache
+> trimmed (SW 1158->147 KiB), one restart shipped editor/files/search/
+> terminal + fixes live; verified wired (file API 401 behind auth, no session
+> flood, daemon clean on both listeners). Step 4 polish deferred. Exit gate
+> (code-server retired, used for real) is human — reframes like D20 (used in
+> anger, not a ceremonial week). Awaiting Wes's on-device smoke.
 
 *Skeleton drafted 2026-07-19 (night shift). **Construction not started** —
 awaiting (a) slice-2 step 4 (on-device checkpoint) and (b) Wes's process
