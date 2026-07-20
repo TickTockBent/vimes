@@ -93,7 +93,18 @@ check; all prior assertions green (rule 0.4).
 | 4 | Polish + gates | sonnet | build-manifest ci-gate step (DONE), interrupted-list polish, --report additions (buffer sizes, search latency observations) |
 
 **Step-4 polish backlog (aimed by 2026-07-20 live use — the reason polish was deferred):**
-- Terminal exit affordance (#1, Wes): keep the pane on `term_exit`, overlay a prominent "shell exited — New shell / Back" state (output preserved, exit unmistakable, one-tap recovery).
+- **Terminal lifecycle — persistent, re-enterable terminals (Wes, 2026-07-20).**
+  The daemon ALREADY supports this (pty outlives a WS connection + ring-buffer
+  reconnect-replay, I9); the UI kills shells by sending `term_close` on
+  unmount. Change: on navigate-away, DETACH not close (keep terminalId, shell
+  runs on) → terminals become first-class re-enterable objects like sessions
+  (pillar 2 for terminals). Needs: a terminals list to tap back into; a small
+  daemon "list active terminals" endpoint (survive page reload — terminalId is
+  currently in-memory only); re-subscribe-with-offset on return. **Safety
+  constraint: persistent shells are real processes — persistence REQUIRES
+  visibility (the list) + one-tap explicit close/kill, or it leaks zombie
+  shells.** Combined lifecycle: navigate-away = persist; shell-exits
+  (`term_exit`) = show exit state + New shell / Close; explicit close = kill.
 - Terminal free-text cwd (#2, Wes): a path input beside the root dropdown; server-side `resolveWithinRoots` already enforces the boundary, so arbitrary in-roots paths open and out-of-roots refuse.
 - SearchPanel roots consistency: still uses `deriveRoots(sessions)`; switch to `effectiveRoots` like terminal/tree.
 - Interrupted-list beat-7: float interrupted sessions to the top with one-tap resume (§4 beat 7).
