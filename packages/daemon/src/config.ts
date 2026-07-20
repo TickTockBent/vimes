@@ -36,6 +36,11 @@ export interface DaemonConfig {
   // (VIMES_PUSH_SUBJECT). The default is a placeholder — a real operator sets a
   // reachable mailto so push services can contact them. Never a secret.
   pushSubject: string;
+  // Max bytes the File API will preview/edit (GET /content, PUT /content) and
+  // accept per uploaded file. Over this → refuse (413) rather than stream a huge
+  // blob into the editor or half-write an upload (streaming upload is post-MVP).
+  // VIMES_MAX_EDIT_BYTES overrides. ⟨tune 5 MB PREVIEW⟩ — placeholder (rule 0.2).
+  maxEditBytes: number;
 }
 
 const DEFAULT_PORT = 4600;
@@ -48,6 +53,8 @@ const HARDCODED_BIND_HOST = '127.0.0.1';
 // Placeholder VAPID subject — a real deployment sets VIMES_PUSH_SUBJECT to a
 // reachable mailto. `.invalid` is reserved (RFC 2606) so it can never resolve.
 const DEFAULT_PUSH_SUBJECT = 'mailto:vimes@example.invalid';
+// ⟨tune 5 MB PREVIEW⟩ — File API preview/edit + per-upload ceiling; not pinned (rule 0.2).
+const DEFAULT_MAX_EDIT_BYTES = 5 * 1024 * 1024;
 
 function expandHome(path: string): string {
   if (path === '~') {
@@ -128,5 +135,9 @@ export function loadConfigFromEnv(env: NodeJS.ProcessEnv = process.env): DaemonC
       env.VIMES_PUSH_SUBJECT === undefined || env.VIMES_PUSH_SUBJECT === ''
         ? DEFAULT_PUSH_SUBJECT
         : env.VIMES_PUSH_SUBJECT,
+    maxEditBytes:
+      env.VIMES_MAX_EDIT_BYTES === undefined || env.VIMES_MAX_EDIT_BYTES === ''
+        ? DEFAULT_MAX_EDIT_BYTES
+        : parsePositiveInteger(env.VIMES_MAX_EDIT_BYTES, 'VIMES_MAX_EDIT_BYTES'),
   };
 }

@@ -37,6 +37,7 @@ function buildConfig(overrides: Partial<DaemonConfig>): DaemonConfig {
     sdkSettingSources: ['project'],
     projectRoots: [],
     pushSubject: 'mailto:test@example.invalid',
+    maxEditBytes: 5 * 1024 * 1024,
     ...overrides,
   };
 }

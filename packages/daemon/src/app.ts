@@ -31,6 +31,13 @@ import {
   type EmitAuthRejected,
 } from './auth.js';
 import { WsHub, type WsHubDeps } from './wsHub.js';
+import { registerFileApi } from './fileApi.js';
+import {
+  SearchService,
+  createRipgrepPreflight,
+  type RipgrepSpawner,
+  type RipgrepPreflight,
+} from './search.js';
 import {
   SessionHost,
   type PtySpawnFactory,
@@ -82,6 +89,12 @@ export interface DaemonDeps {
   // harness. VAPID keys are still generated/loaded either way (local crypto), so
   // the public-key endpoint works in tests.
   pushSender?: PushSender;
+  // Ripgrep seams (slice 3 step 1). Absent → the real `rg` spawner + a
+  // spawn-`rg --version` preflight. CI injects a fake spawner and a preflight it
+  // controls — a real `rg` binary is not guaranteed present (observed: the box's
+  // `rg` is a Claude Code shell shim, not a spawnable binary).
+  ripgrepSpawner?: RipgrepSpawner;
+  ripgrepPreflight?: RipgrepPreflight;
 }
 
 export interface Daemon {
@@ -212,6 +225,15 @@ export function createDaemon(deps: DaemonDeps): Daemon {
   // held mode-600 in the data dir, is a secret).
   app.get('/api/push/vapid-public-key', (context) => context.json({ publicKey: vapidKeys.publicKey }));
 
+  // File API (slice 3 step 1) — behind the same auth wall, before the static
+  // catch-all. The allowlist is read fresh per request: config.projectRoots plus
+  // the cwds of currently-live sessions (spec §3.4). `sessionHost` is created
+  // below; the closure only runs per request, long after construction.
+  registerFileApi(app, {
+    getAllowedRoots: () => [...config.projectRoots, ...sessionHost.liveSessionCwds()],
+    maxEditBytes: config.maxEditBytes,
+  });
+
   if (config.staticDir !== undefined) {
     const staticDir = config.staticDir;
     app.get('*', async (context) => {
@@ -277,6 +299,17 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     bindHost: config.bindHost,
   });
 
+  // Search + preview-gated replace (slice 3 step 1). The allowlist is the same
+  // union the File API uses (config roots ∪ live-session cwds), read per request.
+  // ripgrep preflight is resolved once here (cached inside the probe).
+  const ripgrepPreflight = deps.ripgrepPreflight ?? createRipgrepPreflight();
+  const searchService = new SearchService({
+    getAllowedRoots: () => [...config.projectRoots, ...sessionHost.liveSessionCwds()],
+    spawner: deps.ripgrepSpawner,
+    preflight: ripgrepPreflight,
+    ids,
+  });
+
   const httpServer = createAdaptorServer({ fetch: app.fetch }) as Server;
   const wsHub = new WsHub({
     router,
@@ -286,6 +319,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     sessionHost,
     projectRoots: config.projectRoots,
     pushSubscriptions,
+    searchService,
   });
 
   httpServer.on('upgrade', (request, socket, head) => {
