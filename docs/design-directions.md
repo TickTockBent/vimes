@@ -65,14 +65,24 @@ builds VIMES is the recursion the whole project is aimed at.
   platform/extension vision above). Pillar 1 ("session list is the home
   screen") was the slice-0–3 framing; this is its post-MVP evolution as the
   extension layer lands. Revisit when slice 6/7 UI is designed.
-- **Mobile terminal is inherently cramped — accepted.** Full TUIs (Claude
-  Code's own included) don't fit a narrow phone even when rendered correctly;
-  code-server's "readable but cluttered" is the realistic ceiling. The
-  2026-07-20 corruption was a real pty-sizing bug (fixed to reach that
-  ceiling), but the strategic answer to "TUIs on mobile are bad" is NOT a
-  better mobile terminal — it's the escape-hatch posture + chat/voice as the
-  real mobile surface (mobile-final-form note above). Do not invest in making
-  the mobile terminal a daily driver.
+- **Mobile terminal is inherently cramped — but vimes's ceiling beats
+  code-server's** (Wes, 2026-07-20). Full TUIs don't fit a narrow phone even
+  when rendered correctly. BUT code-server pays a chrome tax vimes doesn't:
+  its activity bar + terminal-tab strip steal columns from the shell. Vimes
+  has no file rail, no extension buttons, no multi-shell tabs — one row of
+  header, the rest is terminal. So a correctly-sized vimes terminal renders
+  MORE usable columns of content than code-server on the same phone. The
+  2026-07-20 corruption was a real pty-sizing bug (fixed); once sized right,
+  vimes is structurally *more* legible on mobile, not merely equal. Still an
+  escape hatch (chat/voice is the real mobile surface) — don't gold-plate it —
+  but the minimalism is a genuine advantage, not a compromise.
+- **Design principle candidate — real estate to content, not chrome.** In an
+  agentic dev environment the human reviews and steers; they don't need
+  IDE furniture (file trees, tab strips, panels) competing for space. Give
+  screen real estate to the content (terminal, diff, stream). Compounds
+  hardest on mobile where columns are scarce ("not tmux-maxxing on a phone" —
+  one shell, full width, no panes). Promote to design-principles.md if it
+  holds up across the desktop-layout work.
 
 ## Event-log growth: the post-MVP D12 revisit, first option pre-selected
 
