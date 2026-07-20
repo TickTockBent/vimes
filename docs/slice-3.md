@@ -1,5 +1,14 @@
 # Slice 3 — Workspace (operational plan) → THE MVP LINE
 
+> **Status 2026-07-20:** construction steps 1–3 complete + the spawn-fix
+> class-bug + auth-timeout hardening — all verified, committed, UNDEPLOYED
+> (446 tests; entry 44.6KB gzip; CM6 + xterm both lazy). Step 4 (polish:
+> interrupted-list beat-7, `--report` additions) not started — minor.
+> BLOCKED ON WES: the three deploy decisions (roots scope, deploy sequencing,
+> PWA-precache-CM6 tradeoff); one deliberate restart ships all of slice 3
+> live. Exit gate (retire code-server, used for real desktop+mobile) is
+> human — likely reframes like D20 (used in anger, not a ceremonial week).
+
 *Skeleton drafted 2026-07-19 (night shift). **Construction not started** —
 awaiting (a) slice-2 step 4 (on-device checkpoint) and (b) Wes's process
 call on whether the slice-2 exit-gate week blocks construction or runs
