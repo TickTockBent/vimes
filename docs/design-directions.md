@@ -84,6 +84,40 @@ builds VIMES is the recursion the whole project is aimed at.
   one shell, full width, no panes). Promote to design-principles.md if it
   holds up across the desktop-layout work.
 
+## The dispatcher's review/fix loop + cache economics (slice 6–7 design input)
+
+*(Wes, 2026-07-20 — articulating the intended orchestration workflow; refined
+with Fable. Informs the slice-6 dispatcher and D5/D6.)*
+
+The target loop, human at the top: a worker subagent completes work and checks
+it in on a worktree (D6 isolation) → the orchestrator either **pulls the diff
+to review itself** or **dispatches a review** → accept, or send the flaw back
+to the **original, still-hot worker** for a cheap fix → re-review. The human
+reviews diffs when they *want* to, not because they must — the orchestrator
+owns the review work by default (principle 8: live at the top).
+
+Load-bearing distinctions (the refinement):
+- **Review wants independence; fixes want the hot author.** An agent reviewing
+  its own work shares its own misunderstanding — a real blindspot. So the GATE
+  review is the orchestrator or a fresh reviewer; self-review is a cheap first
+  pass, never the gate. Fixes of orchestrator-found flaws go to the original
+  hot-cache worker (cheap + context-rich).
+- **Cache economics (Wes's point, correct):** resuming the hot worker for
+  fixes avoids the big cache-miss of a new agent. Prompt cache is scoped to
+  machine+directory (D6): a worktree worker is cold *relative to shared-dir
+  workers* but hot *within its own worktree* on resume — so the loop is
+  internally consistent; the miss avoided is the new-agent spin-up, at the
+  cost of no cross-agent cache sharing in worktree mode.
+- **Applies to the CURRENT orchestrator too:** Fable has been spawning fresh
+  fix-agents where resuming the hot author would be cheaper (independence was
+  already secured by the orchestrator finding the flaw). Adopt hot-resume for
+  mechanical fixes of orchestrator-identified issues going forward.
+
+This is D5 (course-correction into a live/resumed worker) + D6 (isolation) +
+the slice-6 dispatcher, unified. Build the dispatcher's stage-runner so
+"review" and "fix" are distinct dispatch verbs with the independence rule
+baked in.
+
 ## Event-log growth: the post-MVP D12 revisit, first option pre-selected
 
 D12 (decided): message bodies inline, growth accepted, archival/compaction
