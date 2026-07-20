@@ -122,6 +122,21 @@ retro: consider whether a deliberate "force concurrent resume" affordance is
 worth building purely for manual I11 demonstration — likely not (harness
 owns it).
 
+### 2026-07-20 — slice-3 dogfooding finds (during the push checkpoint session)
+
+- **PASS (real-world spawn allowlist):** spawning a session with a cwd outside
+  `VIMES_PROJECT_ROOTS` returns a red `cwd-outside-project-roots` refusal with
+  a dismiss button — the path-discipline / spawn-allowlist boundary
+  (slice-2 step 2) confirmed live, not just in the harness.
+- **BUG (queued, not yet fixed — UI state, slice-2 surface):** after a spawn
+  refusal, the spawn button stays in "Spawning…" forever. Cause (high
+  confidence): the spawn affordance sets a local pending flag on click and
+  clears it on `{op:'spawned'}`, but the `{op:'refused', refusedOp:'spawn'}`
+  path never resets it. Fix bundles into the next UI deploy (post-measurement,
+  with slice-3 + roots-widening). Any refused op that a button optimistically
+  "pended" needs the same reset — audit the store's refused handler for other
+  stuck-affordance cases while fixing.
+
 ## Budget table (`--report`)
 
 Design-intent targets from spec §8, listed so nothing gets pinned from memory.
