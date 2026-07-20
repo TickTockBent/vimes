@@ -49,6 +49,31 @@ VIMES's own repo — distinct from the MVP (replace code-server) and from the
 usable-product milestone (the kanban loop). VIMES hosting the workflow that
 builds VIMES is the recursion the whole project is aimed at.
 
+## UI shape evolution (Wes notes 2026-07-20, live desktop+mobile use — parked, not scheduled)
+
+- **Bespoke desktop and mobile layouts, not one responsive layout.** The
+  current UI is mobile-coded and looks it on desktop (a widened phone view).
+  Desktop should get its own layout that uses the width (multi-pane: session
+  list + stream + editor/diff side by side), not a stretched mobile column.
+  Consistent with the "mobile = light chat + voice; desktop = heavy work"
+  final-form note above — the two form factors want genuinely different
+  surfaces, not the same one scaled.
+- **Sessions should not be the landing page.** As the orchestration layer
+  arrives, the home screen should be the top-down project/orchestrator view
+  (kanban, PM status), with the session list a drill-down — matching the
+  "human stays at the top, tunnels down when needed" model (principle 8; the
+  platform/extension vision above). Pillar 1 ("session list is the home
+  screen") was the slice-0–3 framing; this is its post-MVP evolution as the
+  extension layer lands. Revisit when slice 6/7 UI is designed.
+- **Mobile terminal is inherently cramped — accepted.** Full TUIs (Claude
+  Code's own included) don't fit a narrow phone even when rendered correctly;
+  code-server's "readable but cluttered" is the realistic ceiling. The
+  2026-07-20 corruption was a real pty-sizing bug (fixed to reach that
+  ceiling), but the strategic answer to "TUIs on mobile are bad" is NOT a
+  better mobile terminal — it's the escape-hatch posture + chat/voice as the
+  real mobile surface (mobile-final-form note above). Do not invest in making
+  the mobile terminal a daily driver.
+
 ## Event-log growth: the post-MVP D12 revisit, first option pre-selected
 
 D12 (decided): message bodies inline, growth accepted, archival/compaction
