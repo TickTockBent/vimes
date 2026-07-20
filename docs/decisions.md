@@ -225,3 +225,19 @@ assertions would be over-carefulness (choosing not to pin is as deliberate as
 pinning, per Gate-D). Kill criterion not triggered; pillar 5 lands. Slice 3
 (workspace / code-server replacement) remains the MVP line and the next
 build; dev proceeds continuously (D19), not gated behind a lived week.
+
+## D21 — Slice-3 deploy: roots widened to ~/projects; precache excludes heavy chunks
+
+*2026-07-20 (Wes's three deploy calls, at the slice-3 construction-complete
+handoff).* (1) **`VIMES_PROJECT_ROOTS` widened to `/home/ticktockbent/projects`**
+(the whole tree) — VIMES is Wes's IDE now; risk is bounded to his single
+Access-gated identity, and it brings `infrastructure/vimes` itself into scope
+(first step toward the north star: driving the VIMES repo through VIMES).
+This governs both spawn cwds and the file-API/terminal reach. (2) **Deploy
+now** — slice 3 (editor/files/search/terminal + the spawn-fix class + auth
+hardening) ships in one deliberate restart; the code-server-replacement value
+and its kill criterion can't be evaluated until it's on Wes's devices. (3)
+**PWA precache excludes the CM6/xterm lazy chunks** — load-on-demand (online
+behind the tunnel); offline editing was never an MVP promise; keeps the SW
+install light on mobile-first. This is the first deliberate slice-3 deploy;
+subsequent deploys proceed per D19 (continuous, Wes owns awareness).
