@@ -29,6 +29,13 @@ npm test
 echo "ci-gate: ui build"
 npm run build -w @vimes/ui
 
+# --- build-manifest lazy-chunk gate (slice 3 step 2) -------------------------
+# Deterministic (no calibration): parse packages/ui/dist/.vite/manifest.json and
+# fail if CodeMirror 6 is not its own separate chunk, or if any entry chunk
+# statically imports it. Must run AFTER the ui build produced the manifest.
+echo "ci-gate: build-manifest lazy-chunk check (CM6 must be a lazy chunk)"
+node scripts/check-build-manifest.mjs
+
 # --- double-run determinism gate (step 4) -----------------------------------
 # Run each scenario profile twice, byte-compare the two canonicalJson artifacts
 # (event-log dump + projection serializations + counters). Typecheck above has

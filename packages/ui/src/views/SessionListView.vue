@@ -10,7 +10,11 @@ import {
 } from '../lib/killConfirm.js';
 import { isBellActionable, pushStateLabel } from '../lib/pushState.js';
 
-const emit = defineEmits<{ open: [appSessionId: string] }>();
+const emit = defineEmits<{
+  open: [appSessionId: string];
+  openFiles: [];
+  openSearch: [];
+}>();
 const store = useVimesStore();
 
 const LAST_CWD_KEY = 'vimes:lastCwd';
@@ -117,6 +121,22 @@ function bellIcon(): string {
           @click="store.togglePush()"
         >
           <span aria-hidden="true">{{ bellIcon() }}</span>
+        </button>
+        <button
+          type="button"
+          class="min-h-[44px] rounded-md border border-slate-300 px-3 text-sm font-medium active:bg-slate-100 dark:border-slate-700 dark:active:bg-slate-900"
+          aria-label="Files"
+          @click="emit('openFiles')"
+        >
+          📁 Files
+        </button>
+        <button
+          type="button"
+          class="min-h-[44px] rounded-md border border-slate-300 px-3 text-sm font-medium active:bg-slate-100 dark:border-slate-700 dark:active:bg-slate-900"
+          aria-label="Search"
+          @click="emit('openSearch')"
+        >
+          🔍
         </button>
         <button
           type="button"

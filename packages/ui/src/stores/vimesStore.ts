@@ -4,6 +4,8 @@ import { parseServerEnvelope, serializeClientEnvelope, type ClientEnvelope, type
 import type { EventRecord, SessionRecord } from '../lib/types.js';
 import { derivePushState, type PushUiState } from '../lib/pushState.js';
 import { decideReconnectAction, shouldProbeHealth, type HealthProbeOutcome } from '../lib/reconnectDecision.js';
+import type { SearchFlags } from '../lib/envelope.js';
+import type { SearchResultLine } from '../lib/searchGroup.js';
 
 // The single shared WS connection (docs/slice-1.md step-3 scope): one socket
 // multiplexes every subscribed stream; per-stream lastSeq is tracked so a
@@ -58,6 +60,17 @@ export const useVimesStore = defineStore('vimes', () => {
   // Push notification bell state (spec §3.8). 'off' until refreshPushState() reads
   // the real browser capability + permission + subscription.
   const pushState = ref<PushUiState>('off');
+
+  // ── Search (slice 3 step 2) — streamed over the same WS ──────────────────
+  // One search in flight at a time (the panel starts a new one on submit). The
+  // activeSearchId gates late frames from a superseded/cancelled search.
+  type SearchStatus = 'idle' | 'running' | 'done' | 'error';
+  const searchStatus = ref<SearchStatus>('idle');
+  const searchResults = ref<SearchResultLine[]>([]);
+  const searchStats = ref<{ matched: number; files: number; elapsedMs: number } | null>(null);
+  const searchErrorReason = ref<string | null>(null);
+  let activeSearchId: string | null = null;
+  let searchCounter = 0;
 
   let socket: WebSocket | null = null;
   let backoffMs = MIN_BACKOFF_MS;
@@ -169,6 +182,34 @@ export const useVimesStore = defineStore('vimes', () => {
         // home list so they appear (the resulting session_created events on
         // unsubscribed streams would not otherwise trigger a refresh).
         scheduleSessionsRefresh();
+        return;
+      }
+      case 'search_result': {
+        if (envelope.searchId !== activeSearchId) {
+          return; // a late frame from a superseded/cancelled search
+        }
+        searchResults.value.push({
+          file: envelope.file,
+          line: envelope.line,
+          col: envelope.col,
+          submatches: envelope.submatches,
+        });
+        return;
+      }
+      case 'search_done': {
+        if (envelope.searchId !== activeSearchId) {
+          return;
+        }
+        searchStats.value = envelope.stats;
+        searchStatus.value = 'done';
+        return;
+      }
+      case 'search_error': {
+        if (envelope.searchId !== activeSearchId) {
+          return;
+        }
+        searchErrorReason.value = envelope.reason;
+        searchStatus.value = 'error';
         return;
       }
     }
@@ -429,6 +470,35 @@ export const useVimesStore = defineStore('vimes', () => {
     lastRefusal.value = null;
   }
 
+  // ── Search actions ────────────────────────────────────────────────────────
+  // Start a fresh search: mint a new searchId (which supersedes any prior one),
+  // clear the panel, and stream results in via applyServerEnvelope.
+  function startSearch(root: string, query: string, flags?: SearchFlags): void {
+    searchCounter += 1;
+    const searchId = `s${searchCounter}`;
+    activeSearchId = searchId;
+    searchResults.value = [];
+    searchStats.value = null;
+    searchErrorReason.value = null;
+    searchStatus.value = 'running';
+    sendEnvelope({ op: 'search', searchId, root, query, flags });
+  }
+
+  function cancelSearch(): void {
+    if (activeSearchId !== null && searchStatus.value === 'running') {
+      sendEnvelope({ op: 'search_cancel', searchId: activeSearchId });
+    }
+    searchStatus.value = 'idle';
+  }
+
+  function clearSearch(): void {
+    activeSearchId = null;
+    searchResults.value = [];
+    searchStats.value = null;
+    searchErrorReason.value = null;
+    searchStatus.value = 'idle';
+  }
+
   return {
     sessions,
     connectionStatus,
@@ -453,5 +523,13 @@ export const useVimesStore = defineStore('vimes', () => {
     pushState,
     togglePush,
     refreshPushState,
+    // Search (slice 3 step 2)
+    searchStatus,
+    searchResults,
+    searchStats,
+    searchErrorReason,
+    startSearch,
+    cancelSearch,
+    clearSearch,
   };
 });
