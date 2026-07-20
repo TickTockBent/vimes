@@ -1,5 +1,14 @@
 # Slice 2 — Session surface (operational plan)
 
+> **Status end of 2026-07-19 (night shift):** steps 0a–3 built, verified,
+> committed, DEPLOYED (329 tests; hooks ingress live on :4601; push
+> pipeline live, VAPID minted). Remaining: **step 4 — the on-device
+> checkpoint (Wes)** — plus S9/S10 carry-over and live hooks confirmation,
+> then the week-long exit gate. Night-shift defaults awaiting ratification:
+> design principles 9–10, attention reasons 'rate-limited'/'brake'
+> (reserved, no setters). Slice-3 skeleton drafted, construction gated on
+> the checkpoint + Wes's pipelining call.
+
 *Skeleton drafted 2026-07-19, against: spec §9 slice 2; the decomposition
 series (D7 hooks-first lean, D10 custody trio lean); D4/D14/D18 (decided
 2026-07-19). Slice-1 carry-ins: S9/S10 smoke items run early in this slice's
