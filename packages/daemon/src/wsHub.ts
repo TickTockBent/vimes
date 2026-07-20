@@ -8,6 +8,7 @@ import { EventRouter } from '@vimes/core';
 import type { SessionHost } from './sessionHost.js';
 import { isValidPushSubscription, type PushSubscriptionRecord } from './pushService.js';
 import type { SearchService } from './search.js';
+import type { TerminalHost, TerminalSubscriber } from './terminalHost.js';
 
 // The narrow push-subscription sink the hub needs (PushSubscriptions implements
 // it). Keeps the hub decoupled from the sqlite cache class.
@@ -117,6 +118,30 @@ const replaceApplyEnvelopeSchema = z.object({
   op: z.literal('replace_apply'),
   previewId: z.string().min(1),
 });
+// v0.5 (slice 3 step 3): raw terminal control ops. Byte PAYLOADS ride BINARY WS
+// frames (never JSON, never zod — rule 0.8); ONLY these control envelopes are
+// validated. term_open mints a shell PTY (cwd scoped in the terminal host);
+// term_subscribe attaches this connection at a byte offset; term_resize / term_close
+// operate an existing terminal.
+const termOpenEnvelopeSchema = z.object({
+  op: z.literal('term_open'),
+  cwd: z.string().min(1),
+});
+const termSubscribeEnvelopeSchema = z.object({
+  op: z.literal('term_subscribe'),
+  terminalId: z.string().min(1),
+  offset: z.number().int().nonnegative(),
+});
+const termResizeEnvelopeSchema = z.object({
+  op: z.literal('term_resize'),
+  terminalId: z.string().min(1),
+  cols: z.number().int().positive(),
+  rows: z.number().int().positive(),
+});
+const termCloseEnvelopeSchema = z.object({
+  op: z.literal('term_close'),
+  terminalId: z.string().min(1),
+});
 
 const controlEnvelopeSchema = z.discriminatedUnion('op', [
   subscribeEnvelopeSchema,
@@ -137,6 +162,10 @@ const controlEnvelopeSchema = z.discriminatedUnion('op', [
   searchCancelEnvelopeSchema,
   replacePreviewEnvelopeSchema,
   replaceApplyEnvelopeSchema,
+  termOpenEnvelopeSchema,
+  termSubscribeEnvelopeSchema,
+  termResizeEnvelopeSchema,
+  termCloseEnvelopeSchema,
 ]);
 
 // A resolved cwd must sit within one of the resolved allowlisted roots. Empty
@@ -152,11 +181,34 @@ function isWithinProjectRoots(cwd: string, projectRoots: readonly string[]): boo
   return false;
 }
 
+// Per-connection terminal attachment: a compact byte-tag maps to a terminalId so
+// binary frames stay tiny (`[uint8 tag][...payload]`). The subscriber is the
+// terminal host's live-output sink for this (connection, tag).
+interface TerminalAttachment {
+  tag: number;
+  terminalId: string;
+  subscriber: TerminalSubscriber;
+}
+
 interface HubConnection {
   id: string;
   socket: WebSocket;
   subscriptions: Map<string, () => void>;
+  // Terminal byte-tag maps for this connection (both directions) + the tag counter.
+  terminalByTag: Map<number, TerminalAttachment>;
+  tagByTerminalId: Map<string, number>;
+  nextTerminalTag: number;
   closed: boolean;
+}
+
+function rawDataToBuffer(rawData: RawData): Buffer {
+  if (Array.isArray(rawData)) {
+    return Buffer.concat(rawData);
+  }
+  if (Buffer.isBuffer(rawData)) {
+    return rawData;
+  }
+  return Buffer.from(rawData as ArrayBuffer);
 }
 
 function rawDataToString(rawData: RawData): string {
@@ -190,6 +242,9 @@ export interface WsHubDeps {
   // Search + replace service (slice 3 step 1). Absent → search/replace ops refuse
   // as not-implemented.
   searchService?: SearchService;
+  // Raw terminal host (slice 3 step 3). Absent → term_* ops refuse as
+  // not-implemented and binary frames are dropped.
+  terminalHost?: TerminalHost;
 }
 
 export class WsHub {
@@ -201,6 +256,7 @@ export class WsHub {
   private readonly projectRoots: readonly string[];
   private readonly pushSubscriptions: PushSubscriptionSink | undefined;
   private readonly searchService: SearchService | undefined;
+  private readonly terminalHost: TerminalHost | undefined;
   private readonly webSocketServer: WebSocketServer;
   private readonly connections = new Set<HubConnection>();
   private connectionCounter = 0;
@@ -214,6 +270,7 @@ export class WsHub {
     this.projectRoots = deps.projectRoots ?? [];
     this.pushSubscriptions = deps.pushSubscriptions;
     this.searchService = deps.searchService;
+    this.terminalHost = deps.terminalHost;
     this.webSocketServer = new WebSocketServer({ noServer: true });
   }
 
@@ -249,18 +306,30 @@ export class WsHub {
       id: `conn-${this.connectionCounter}`,
       socket,
       subscriptions: new Map(),
+      terminalByTag: new Map(),
+      tagByTerminalId: new Map(),
+      nextTerminalTag: 0,
       closed: false,
     };
     this.connections.add(connection);
 
     const tearDown = (): void => {
       this.tearDownSubscriptions(connection);
+      // Detach this connection from every terminal it was watching. The shells
+      // OUTLIVE the connection (a phone reconnect re-subscribes with its offset);
+      // a terminal dies only on explicit term_close or daemon exit.
+      this.detachAllTerminals(connection);
       // Kill any in-flight rg searches this connection owned (no orphaned procs).
       this.searchService?.disposeConnection(connection.id);
       connection.closed = true;
       this.connections.delete(connection);
     };
-    socket.on('message', (rawData: RawData) => {
+    socket.on('message', (rawData: RawData, isBinary: boolean) => {
+      if (isBinary) {
+        // Byte payloads for a terminal — never parsed, never validated (rule 0.8).
+        this.handleBinaryFrame(connection, rawData);
+        return;
+      }
       this.handleMessage(connection, rawData);
     });
     socket.on('close', tearDown);
@@ -486,7 +555,142 @@ export class WsHub {
         );
         return;
       }
+      case 'term_open': {
+        const host = this.terminalHost;
+        if (host === undefined) {
+          this.refuse(connection, 'term_open', 'not-implemented');
+          return;
+        }
+        // The cwd scoping (resolveWithinRoots against projectRoots ∪ session cwds)
+        // lives in the terminal host — the single RCE boundary (spec §3.11).
+        const result = host.openTerminal({ cwd: control.cwd });
+        if ('refused' in result) {
+          this.refuse(connection, 'term_open', result.reason);
+          return;
+        }
+        this.sendControl(connection, { op: 'term_opened', terminalId: result.terminalId });
+        return;
+      }
+      case 'term_subscribe': {
+        this.handleTermSubscribe(connection, control.terminalId, control.offset);
+        return;
+      }
+      case 'term_resize': {
+        const host = this.terminalHost;
+        if (host === undefined) {
+          this.refuse(connection, 'term_resize', 'not-implemented');
+          return;
+        }
+        const result = host.resize(control.terminalId, control.cols, control.rows);
+        if ('refused' in result) {
+          this.refuse(connection, 'term_resize', result.reason);
+        }
+        return;
+      }
+      case 'term_close': {
+        const host = this.terminalHost;
+        if (host === undefined) {
+          this.refuse(connection, 'term_close', 'not-implemented');
+          return;
+        }
+        const result = host.closeTerminal(control.terminalId);
+        if ('refused' in result) {
+          this.refuse(connection, 'term_close', result.reason);
+        }
+        // The terminal host's exit signal (via the subscriber) tears down this
+        // connection's tag mapping — no extra cleanup needed here.
+        return;
+      }
     }
+  }
+
+  // ── raw terminal (binary frames + subscribe) ────────────────────────────────
+  private handleTermSubscribe(connection: HubConnection, terminalId: string, offset: number): void {
+    const host = this.terminalHost;
+    if (host === undefined) {
+      this.refuse(connection, 'term_subscribe', 'not-implemented');
+      return;
+    }
+    // Assign (or reuse) this connection's compact byte-tag for the terminal, then
+    // build the live-output subscriber that frames bytes as `[tag][...payload]`.
+    let tag = connection.tagByTerminalId.get(terminalId);
+    if (tag === undefined) {
+      if (connection.nextTerminalTag > 255) {
+        // 256 concurrent terminals on ONE socket is far past the escape-hatch use;
+        // refuse rather than overflow the 1-byte tag.
+        this.refuse(connection, 'term_subscribe', 'too-many-terminals');
+        return;
+      }
+      tag = connection.nextTerminalTag;
+      connection.nextTerminalTag += 1;
+    }
+    const byteTag = tag;
+    const subscriber: TerminalSubscriber = {
+      output: (bytes) => this.sendTerminalBytes(connection, byteTag, bytes),
+      lost: () => this.sendControl(connection, { op: 'term_lost', terminalId }),
+      exit: (exitCode) => {
+        this.sendControl(connection, { op: 'term_exit', terminalId, exitCode });
+        this.detachTerminal(connection, terminalId);
+      },
+    };
+    const result = host.subscribe(terminalId, offset, subscriber);
+    if ('refused' in result) {
+      this.refuse(connection, 'term_subscribe', result.reason);
+      return;
+    }
+    connection.tagByTerminalId.set(terminalId, byteTag);
+    connection.terminalByTag.set(byteTag, { tag: byteTag, terminalId, subscriber });
+    // Tell the client which tag carries this terminal's bytes (both directions).
+    this.sendControl(connection, { op: 'term_subscribed', terminalId, tag: byteTag });
+  }
+
+  private handleBinaryFrame(connection: HubConnection, rawData: RawData): void {
+    const host = this.terminalHost;
+    if (host === undefined) {
+      return; // no terminal surface — drop
+    }
+    const frame = rawDataToBuffer(rawData);
+    if (frame.length < 1) {
+      return; // empty frame — drop (no crash)
+    }
+    const tag = frame[0]!;
+    const attachment = connection.terminalByTag.get(tag);
+    if (attachment === undefined) {
+      return; // unknown/unsubscribed tag — drop, never crash
+    }
+    // Raw input relay: everything past the tag byte is written verbatim (rule 0.8).
+    host.writeInput(attachment.terminalId, new Uint8Array(frame.subarray(1)));
+  }
+
+  private sendTerminalBytes(connection: HubConnection, tag: number, bytes: Uint8Array): void {
+    if (connection.closed || connection.socket.readyState !== WebSocket.OPEN) {
+      return;
+    }
+    const frame = Buffer.allocUnsafe(bytes.length + 1);
+    frame[0] = tag & 0xff;
+    Buffer.from(bytes).copy(frame, 1);
+    connection.socket.send(frame, { binary: true });
+  }
+
+  // Detach one terminal's tag mapping from a connection (without touching the
+  // shell) — used on term_exit and per-terminal cleanup.
+  private detachTerminal(connection: HubConnection, terminalId: string): void {
+    const tag = connection.tagByTerminalId.get(terminalId);
+    if (tag !== undefined) {
+      connection.terminalByTag.delete(tag);
+      connection.tagByTerminalId.delete(terminalId);
+    }
+  }
+
+  // On socket close: unsubscribe from every attached terminal so the host stops
+  // broadcasting to a dead socket. The shells survive (reconnect re-subscribes).
+  private detachAllTerminals(connection: HubConnection): void {
+    const host = this.terminalHost;
+    for (const attachment of connection.terminalByTag.values()) {
+      host?.unsubscribe(attachment.terminalId, attachment.subscriber);
+    }
+    connection.terminalByTag.clear();
+    connection.tagByTerminalId.clear();
   }
 
   private handleSpawn(

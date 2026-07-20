@@ -43,6 +43,7 @@ import {
   type PtySpawnFactory,
   type SdkQueryFactory,
 } from './sessionHost.js';
+import { TerminalHost, type TerminalPtyFactory } from './terminalHost.js';
 import { JsonlTailer } from './tailer.js';
 import { createHookIngress, type HookIngress } from './hookIngress.js';
 import type { CliVersionProbe, PreflightProbe } from './runtimeChecks.js';
@@ -74,6 +75,9 @@ export interface DaemonDeps {
   // the harness); default to the real SDK query / node-pty spawn in production.
   sdkQueryFactory?: SdkQueryFactory;
   ptySpawnFactory?: PtySpawnFactory;
+  // Raw-terminal shell PTY factory (slice 3 step 3). Absent → the real node-pty
+  // spawn of $SHELL; CI injects a fake — a real shell NEVER runs in the harness.
+  terminalPtyFactory?: TerminalPtyFactory;
   // Override the transcript projects root + chokidar options (tests).
   projectsRoot?: string;
   tailerWatchOptions?: ConstructorParameters<typeof JsonlTailer>[0]['watchOptions'];
@@ -104,6 +108,7 @@ export interface Daemon {
   readonly snapshotStore: SqliteSnapshotStore;
   readonly wsHub: WsHub;
   readonly sessionHost: SessionHost;
+  readonly terminalHost: TerminalHost;
   readonly hookIngress: HookIngress;
   readonly pushPipeline: PushPipeline;
   readonly pushSubscriptions: PushSubscriptions;
@@ -310,6 +315,15 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     ids,
   });
 
+  // Raw terminal host (slice 3 step 3, spec §3.4/§3.11). Its cwd allowlist is the
+  // SAME union the File API/Search use (config roots ∪ live-session cwds), read per
+  // open. The shell PTY factory defaults to the real node-pty; CI injects a fake.
+  const terminalHost = new TerminalHost({
+    ids,
+    getAllowedRoots: () => [...config.projectRoots, ...sessionHost.liveSessionCwds()],
+    ptyFactory: deps.terminalPtyFactory,
+  });
+
   const httpServer = createAdaptorServer({ fetch: app.fetch }) as Server;
   const wsHub = new WsHub({
     router,
@@ -320,6 +334,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     projectRoots: config.projectRoots,
     pushSubscriptions,
     searchService,
+    terminalHost,
   });
 
   httpServer.on('upgrade', (request, socket, head) => {
@@ -363,6 +378,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     snapshotStore,
     wsHub,
     sessionHost,
+    terminalHost,
     hookIngress,
     pushPipeline,
     pushSubscriptions,
@@ -430,6 +446,8 @@ export function createDaemon(deps: DaemonDeps): Daemon {
       await hookIngress.stop();
       pushPipeline.stop();
       sessionHost.stop();
+      // Terminals are ephemeral shells; they die with the daemon (§3.10).
+      terminalHost.closeAll();
       await tailer.close();
       // Order (graceful shutdown): save snapshots → close WS clients → close db.
       try {

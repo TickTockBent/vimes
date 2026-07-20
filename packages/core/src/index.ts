@@ -6,6 +6,11 @@ export { MemoryEventStore } from './memoryEventStore.js';
 export { EventRouter, type OnEvent } from './router.js';
 
 export { canonicalJson } from './canonicalJson.js';
+export {
+  TerminalRingBuffer,
+  DEFAULT_TERMINAL_BUFFER_BYTES,
+  type TerminalReplay,
+} from './ringBuffer.js';
 export * from './events.js';
 export {
   LIVENESS_EDGES,
