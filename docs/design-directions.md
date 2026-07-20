@@ -118,6 +118,36 @@ the slice-6 dispatcher, unified. Build the dispatcher's stage-runner so
 "review" and "fix" are distinct dispatch verbs with the independence rule
 baked in.
 
+## A simple "alert my phone" API — for callers outside VIMES
+
+*(Wes, 2026-07-20.)* Right now the orchestrator buzzes Wes's phone via a
+side-channel script (`buzz.mjs`: vimes's VAPID keys + his registered
+subscription, sending JSON `{title, body, url}` straight to FCM — a "stunt
+double" for the real path). Wes: "make an easier way to call the vimes mobile
+alert — a simple API for the future so sessions **outside** of vimes can still
+call it."
+
+The shape: a small **authenticated daemon endpoint** — e.g. `POST /api/notify
+{ title, body, url? }` → fans out to the operator's push subscriptions —
+callable by any local process (a cron job, a build script, a non-VIMES Claude
+session, another lab service). It generalizes the buzz stunt into a first-class
+capability. Load-bearing distinctions:
+- **This is the human-alert primitive; it is NOT the event spine.** It sends a
+  push and returns — it does not write `notification_trigger` or touch the
+  store (principle 10: don't become a second writer). The authed, evented
+  orchestrator-MCP path (create_task/comment/etc.) remains slice 7's north
+  star; this is the thin "just buzz me" utility beneath it.
+- **Auth:** the product port is Access-gated (I14); a machine-to-machine caller
+  can't carry an Access JWT. So this wants either a **loopback-only** bind (like
+  the hook ingress on :4601 with a per-caller bearer secret, the D7 pattern
+  already in place) or a dedicated local token. Reuse the hook-ingress posture,
+  don't reinvent it.
+- **Abuse bound:** rate-limit + a fixed subject; it can only reach the
+  operator's own registered devices, never arbitrary endpoints.
+Parked, not scheduled. Small enough to slot as an early add in a notification-
+adjacent slice (or standalone) — Wes to place it. Connects to §3.8 and pillar 5
+(attention is the scarce resource — make it trivially reachable).
+
 ## Event-log growth: the post-MVP D12 revisit, first option pre-selected
 
 D12 (decided): message bodies inline, growth accepted, archival/compaction

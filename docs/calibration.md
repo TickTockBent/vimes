@@ -230,6 +230,45 @@ tunnel, screen-locked.
   Cleanup: a stray `/home/ticktockbent/desktop-test.md` ("PASS") exists — Wes to
   remove at will.
 
+### 2026-07-20 — slice-4 spikes (read-only, against real data; front-loaded per rule 0.6)
+
+**Spike G — git porcelain surfaces (fragile-adapter verify-row).** System
+`git version 2.43.0` present (like ripgrep — no npm dep needed). Confirmed
+stable + machine-parseable on this repo:
+- `git status --porcelain=v2 -z --branch` → `# branch.oid <sha>`, `# branch.head
+  <name>`, then `1/2/u/?` entry lines. NUL-delimited with `-z`.
+- `git diff --no-color [--staged] -- <path>` → standard unified hunks
+  (`@@ -a,b +c,d @@`), parseable per-hunk.
+- `git worktree list --porcelain` → `worktree <path>` / `HEAD <sha>` / `branch
+  <ref>` records.
+- `git for-each-ref --format='%(refname:short) %(objectname:short)
+  %(upstream:short)' refs/heads/` → clean branch list.
+Conclusion: shell out to system git behind a single `GitAdapter` parse module
+(rule 0.6). Pin/observe the git version like the CLI pin (2.43.0). No lib.
+
+**Spike C — cache-observability data (rule 0.7 verify-row).** 57 real
+`usage_block` events already in the deployed `events.db`. A live sample's usage
+object:
+```
+cache_creation: { ephemeral_1h_input_tokens: 2909, ephemeral_5m_input_tokens: 0 }
+cache_creation_input_tokens: 2909
+cache_read_input_tokens: 39044
+input_tokens: 2, output_tokens: 2
+service_tier: "standard"
+```
+Findings: (1) **observed TTL tier** is directly classifiable from
+`cache_creation.ephemeral_1h/5m_input_tokens` — this sample is **1h-tier**
+(1h>0, 5m==0), matching the spec's "1h TTL observed on subscription main
+conversations." Classifier: `1h>0&&5m==0→'1h'`, `5m>0&&1h==0→'5m'`,
+`both>0→'mixed'`, `both==0→'none'`. (2) **Cache hit rate** =
+`cache_read / (cache_read + cache_creation_input + input)` — this sample ≈ 93%
+warm (39044 read vs 2911 new). (3) **`service_tier`** ("standard") is the
+billing-bucket observation signal (rule 0.7) — pairs with session interactivity
+to answer "5h window vs $100 automation bucket" (the dongfu question).
+Conclusion: NO new event capture needed — a pure projection over existing
+`usage_block` events delivers the whole cache-observability surface. The classifier
+is a pure fn unit-tested over these real samples.
+
 ## Budget table (`--report`)
 
 Design-intent targets from spec §8, listed so nothing gets pinned from memory.
