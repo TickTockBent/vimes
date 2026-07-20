@@ -164,14 +164,13 @@ tunnel, screen-locked.
 
 ### 2026-07-20 — queued findings (slice-3 resume)
 
-- **Test-infra flakiness (rule 0.4 — to harden):** `packages/daemon/src/
-  auth.test.ts` I14 matrix (real servers + JWKS crypto + WS upgrades) times
-  out at the default 5000 ms under CPU contention — observed 3/3 timeout
-  failures during a full-gate run while an agent + the live daemon competed;
-  passes 6/6 in isolation and on a quiet box. A flaky test in the CI
-  double-run gate is a liability as the suite grows. Fix: raise that test's
-  `testTimeout` (like the slice-0 I2 sweep's 30 s). Queued as a rider on the
-  next daemon-touching agent.
+- **[RESOLVED 2026-07-20]** **Test-infra flakiness (rule 0.4 — to harden):**
+  `packages/daemon/src/auth.test.ts` I14 matrix (real servers + JWKS crypto +
+  WS upgrades) timed out at the default 5000 ms under CPU contention — observed
+  3/3 timeout failures during a full-gate run while an agent + the live daemon
+  competed; passed 6/6 in isolation. Fixed: `vi.setConfig({ testTimeout:
+  30_000, hookTimeout: 30_000 })` at the top of auth.test.ts. Green across
+  several full-gate runs since (491, then 501 tests).
 - **Protocol gap (gate_response refusal correlation):** the `refused`
   envelope carries no `requestId`, so a refused `gate_response` can only be
   recovered UI-side by clearing the WHOLE `answeringRequestIds` set (agent's
@@ -180,6 +179,18 @@ tunnel, screen-locked.
   Precise fix needs `requestId` on the refused envelope (daemon protocol
   addition) — queued for the slice where concurrent gates become real
   (6/7). Accepted as-is for now.
+- **[NEW 2026-07-20] CLI runtime drift — expected=2.1.215 observed=2.1.216
+  (rule 0.7, Wes's awareness).** The box auto-updated the Claude Code CLI again
+  (2.1.207→2.1.215 earlier, now 2.1.215→2.1.216) during the polish-pass deploy.
+  The daemon boots and runs fine — the version pin
+  (`VIMES_EXPECTED_CLI_VERSION`) emits a non-fatal drift warning, doing exactly
+  its job: surfacing a new Anthropic surface for a human glance rather than
+  silently trusting it. **Deliberately NOT bumped unreviewed** — under rule 0.7
+  we classify CLI behavior by observation, and blessing 2.1.216 (does it change
+  hook/JSONL/transcript shape?) is Wes's call. Hook golden fixtures are stamped
+  2.1.215 and still pass. Action for Wes: eyeball 2.1.216's release notes /
+  spot-check a session, then bump the pin in `/etc/vimes/env` to clear the
+  warning (or pin the CLI version to stop auto-updates mid-work).
 
 ### 2026-07-20 — slice-3 live smoke (desktop, deployed build)
 
@@ -209,13 +220,15 @@ tunnel, screen-locked.
   top-level "cockpit" — VIMES sessions load CLAUDE.md up the whole tree and
   agent writes are gated by permission cards, NOT confined to VIMES roots (by
   design — the agent is a full Claude session; §3 scoping is Claude's job).
-  **UX finding (queued):** the Write/Edit gate card shows
-  `Write: {"file_path":"...","content":"..."}` truncated at 160 chars — the
-  path can be hard to scan and easy to approve unread. Improve gate-card
-  rendering to surface the tool's target (file_path) PROMINENTLY, not buried
-  in truncated JSON. Not a bug (the gate worked); a real safety-ergonomics
-  improvement. Cleanup: a stray `/home/ticktockbent/desktop-test.md` ("PASS")
-  exists — Wes to remove at will.
+  **UX finding [RESOLVED 2026-07-20, commit a15a4b1]:** the Write/Edit gate card
+  showed `Write: {"file_path":"...","content":"..."}` truncated at 160 chars —
+  the path was hard to scan and easy to approve unread. Fixed: the gate now
+  headlines the tool name + a structured target (`file_path`/`command`/`pattern`
+  pulled from the SDK tool INPUT via pure `extractGateTarget`, rule 0.8 — never
+  the prompt string) in a monospace `break-all` line above the prompt. Not a bug
+  (the gate always worked); a safety-ergonomics improvement, now shipped.
+  Cleanup: a stray `/home/ticktockbent/desktop-test.md` ("PASS") exists — Wes to
+  remove at will.
 
 ## Budget table (`--report`)
 
