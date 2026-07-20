@@ -32,6 +32,8 @@ import {
 } from './auth.js';
 import { WsHub, type WsHubDeps } from './wsHub.js';
 import { registerFileApi } from './fileApi.js';
+import { registerGitApi } from './gitApi.js';
+import type { GitRunner } from './gitAdapter.js';
 import {
   SearchService,
   createRipgrepPreflight,
@@ -106,6 +108,11 @@ export interface DaemonDeps {
   // `rg` is a Claude Code shell shim, not a spawnable binary).
   ripgrepSpawner?: RipgrepSpawner;
   ripgrepPreflight?: RipgrepPreflight;
+  // Git runner seam (slice 4 step 1). Absent → the real execFile('git', …)
+  // runner (ARRAY args, never a shell — the injection-safety boundary). CI injects
+  // a fake returning canned output; the hermetic integration test uses the real
+  // runner over a scratch repo.
+  gitRunner?: GitRunner;
 }
 
 export interface Daemon {
@@ -244,6 +251,18 @@ export function createDaemon(deps: DaemonDeps): Daemon {
   registerFileApi(app, {
     getAllowedRoots: () => [...config.projectRoots, ...sessionHost.liveSessionCwds()],
     maxEditBytes: config.maxEditBytes,
+  });
+
+  // Git API (slice 4 step 1) — the review-panel service (spec §3.4). Behind the
+  // same auth wall, before the static catch-all, and scoped to the SAME allowlist
+  // union the file API/search/terminal use (config.projectRoots ∪ live-session
+  // cwds), read fresh per request. Every requested root, the discovered repo
+  // toplevel, and every path pass through resolveWithinRoots — a git op reachable
+  // outside the allowlist would be a halting finding, so the toplevel is checked
+  // too. `sessionHost` is created below; the closure only runs per request.
+  registerGitApi(app, {
+    getAllowedRoots: () => [...config.projectRoots, ...sessionHost.liveSessionCwds()],
+    runner: deps.gitRunner,
   });
 
   // GET /api/terminals — the live terminal list (terminal-lifecycle backlog
