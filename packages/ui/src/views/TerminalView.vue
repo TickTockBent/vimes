@@ -26,6 +26,17 @@ const terminalElement = ref<HTMLDivElement | null>(null);
 const handle = shallowRef<TerminalHandle | null>(null);
 let resizeObserver: ResizeObserver | null = null;
 
+// Wait one animation frame — used after nextTick() to let the browser finish a
+// real layout/paint pass before we measure the mount target. On mobile,
+// nextTick() alone can land before the on-screen viewport (safe-area, address
+// bar, initial keyboard state) has settled, so a fit() run immediately after
+// can measure a stale/wrong size. This matters here specifically because the
+// measured size is sent as the pty's INITIAL size (below) — before the shell,
+// and Claude Code's TUI, ever render a byte.
+function nextAnimationFrame(): Promise<void> {
+  return new Promise((resolve) => requestAnimationFrame(() => resolve()));
+}
+
 const statusLabel = computed(() => {
   switch (store.terminalStatus) {
     case 'opening':
@@ -66,6 +77,11 @@ async function start(): Promise<void> {
     started.value = false;
     return;
   }
+  // Let the real on-screen layout settle before we ever measure it (see
+  // nextAnimationFrame above) — a double rAF is cheap and covers browsers that
+  // need an extra frame past the DOM mutation.
+  await nextAnimationFrame();
+  await nextAnimationFrame();
   try {
     // The ONLY place xterm.js is loaded — a dynamic import keeps it in a lazy chunk.
     const { mountTerminal } = await import('../lib/xterm-setup.js');
@@ -85,12 +101,18 @@ async function start(): Promise<void> {
 
     // Input keystrokes → framed bytes to the daemon (verbatim relay).
     terminal.onInput((text) => store.sendTerminalInput(text));
-    // Keep the pty's dimensions in sync with the rendered size.
+    // Keep the pty's dimensions in sync with the rendered size for LATER
+    // changes (rotation, on-screen-keyboard show/hide) — the INITIAL size
+    // below rides with term_open itself so the shell never spawns at the
+    // wrong width in the first place.
     terminal.onResize(({ cols, rows }) => store.resizeTerminal(cols, rows));
 
+    // fit() now reflects the real settled layout (see the rAF wait above), so
+    // the pty spawns at the client's actual viewport size instead of a
+    // hardcoded default that gets corrected too late for the shell's first
+    // (already-wide) render.
     const dimensions = terminal.fit();
-    store.openTerminal(rootDecision.root);
-    store.resizeTerminal(dimensions.cols, dimensions.rows);
+    store.openTerminal(rootDecision.root, dimensions);
     terminal.focus();
 
     // Refit on container size changes (rotation / keyboard).

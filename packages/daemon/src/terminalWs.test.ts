@@ -34,6 +34,7 @@ const fakeClaudePtyFactory: PtySpawnFactory = (): PtyLike => ({
 interface FakeTerminal {
   writes: string[];
   resizes: Array<{ cols: number; rows: number }>;
+  spawnDimensions: { cols: number | undefined; rows: number | undefined };
   fireData: (data: string) => void;
   fireExit: (exitCode?: number) => void;
   killed: () => boolean;
@@ -41,7 +42,7 @@ interface FakeTerminal {
 
 function makeTerminalPtyFactory(): { factory: TerminalPtyFactory; created: FakeTerminal[] } {
   const created: FakeTerminal[] = [];
-  const factory: TerminalPtyFactory = (): TerminalPtyLike => {
+  const factory: TerminalPtyFactory = (_file, _args, options): TerminalPtyLike => {
     const writes: string[] = [];
     const resizes: Array<{ cols: number; rows: number }> = [];
     let dataCallback: ((data: string) => void) | undefined;
@@ -50,6 +51,7 @@ function makeTerminalPtyFactory(): { factory: TerminalPtyFactory; created: FakeT
     created.push({
       writes,
       resizes,
+      spawnDimensions: { cols: options.cols, rows: options.rows },
       fireData: (data) => dataCallback?.(data),
       fireExit: (exitCode = 0) => exitCallback?.({ exitCode }),
       killed: () => wasKilled,
@@ -248,6 +250,41 @@ describe('Raw terminal over WS — control + binary frames', () => {
         reason: 'cwd-outside-project-roots',
       });
       expect(terminals.created).toHaveLength(0);
+    } finally {
+      client.close();
+      await daemon.stop();
+    }
+  });
+
+  it('term_open with cols/rows spawns the pty at the client-fitted size (mobile terminal-corruption fix)', async () => {
+    const projectDir = mkdtempSync(join(temporaryDirectory, 'proj-'));
+    const terminals = makeTerminalPtyFactory();
+    const daemon = await startDaemon(buildConfig({ projectRoots: [projectDir] }), terminals.factory);
+    const client = new TermClient(daemon.port);
+    try {
+      await client.opened();
+      client.sendControl({ op: 'term_open', cwd: projectDir, cols: 42, rows: 18 });
+      await client.waitForControl(1);
+      expect(client.lastControl().op).toBe('term_opened');
+      expect(terminals.created).toHaveLength(1);
+      expect(terminals.created[0]!.spawnDimensions).toEqual({ cols: 42, rows: 18 });
+    } finally {
+      client.close();
+      await daemon.stop();
+    }
+  });
+
+  it('term_open without cols/rows still spawns (falls back to the terminal host default)', async () => {
+    const projectDir = mkdtempSync(join(temporaryDirectory, 'proj-'));
+    const terminals = makeTerminalPtyFactory();
+    const daemon = await startDaemon(buildConfig({ projectRoots: [projectDir] }), terminals.factory);
+    const client = new TermClient(daemon.port);
+    try {
+      await client.opened();
+      client.sendControl({ op: 'term_open', cwd: projectDir });
+      await client.waitForControl(1);
+      expect(client.lastControl().op).toBe('term_opened');
+      expect(terminals.created[0]!.spawnDimensions).toEqual({ cols: 80, rows: 24 });
     } finally {
       client.close();
       await daemon.stop();

@@ -29,7 +29,11 @@ export type ClientEnvelope =
   | { op: 'search_cancel'; searchId: string }
   // v0.5 (slice 3 step 3) raw terminal control ops. Byte payloads ride BINARY WS
   // frames (see terminalFraming.ts), never these envelopes (rule 0.8).
-  | { op: 'term_open'; cwd: string }
+  // cols/rows (v0.6, mobile terminal-corruption fix): the client's already-fitted
+  // viewport size, so the daemon spawns the pty at the right size BEFORE the
+  // shell renders instead of resizing after the fact. Optional — a caller that
+  // cannot fit yet (or doesn't care) omits them and gets the daemon's default.
+  | { op: 'term_open'; cwd: string; cols?: number; rows?: number }
   | { op: 'term_subscribe'; terminalId: string; offset: number }
   | { op: 'term_resize'; terminalId: string; cols: number; rows: number }
   | { op: 'term_close'; terminalId: string };
