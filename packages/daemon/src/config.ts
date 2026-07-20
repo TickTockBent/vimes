@@ -41,6 +41,13 @@ export interface DaemonConfig {
   // blob into the editor or half-write an upload (streaming upload is post-MVP).
   // VIMES_MAX_EDIT_BYTES overrides. ⟨tune 5 MB PREVIEW⟩ — placeholder (rule 0.2).
   maxEditBytes: number;
+  // Inactivity window after which a non-resilient terminal shell is auto-reaped
+  // (terminal-lifecycle backlog item). INACTIVITY-based, not age-based: the
+  // window is measured from the shell's last input/output, so an active shell is
+  // never killed. A value of 0 DISABLES reaping (the daemon skips the timer).
+  // VIMES_TERMINAL_IDLE_REAP_MS overrides. ⟨tune 1h PREVIEW⟩ — behavior-shaping,
+  // NOT pinned (rule 0.2): the 1h default is a placeholder to be calibrated.
+  terminalIdleReapMs: number;
 }
 
 const DEFAULT_PORT = 4600;
@@ -55,6 +62,9 @@ const HARDCODED_BIND_HOST = '127.0.0.1';
 const DEFAULT_PUSH_SUBJECT = 'mailto:vimes@example.invalid';
 // ⟨tune 5 MB PREVIEW⟩ — File API preview/edit + per-upload ceiling; not pinned (rule 0.2).
 const DEFAULT_MAX_EDIT_BYTES = 5 * 1024 * 1024;
+// ⟨tune 1h PREVIEW⟩ — terminal inactivity reaper window; behavior-shaping, not
+// pinned (rule 0.2). 0 disables reaping.
+const DEFAULT_TERMINAL_IDLE_REAP_MS = 3_600_000;
 
 function expandHome(path: string): string {
   if (path === '~') {
@@ -139,5 +149,9 @@ export function loadConfigFromEnv(env: NodeJS.ProcessEnv = process.env): DaemonC
       env.VIMES_MAX_EDIT_BYTES === undefined || env.VIMES_MAX_EDIT_BYTES === ''
         ? DEFAULT_MAX_EDIT_BYTES
         : parsePositiveInteger(env.VIMES_MAX_EDIT_BYTES, 'VIMES_MAX_EDIT_BYTES'),
+    terminalIdleReapMs:
+      env.VIMES_TERMINAL_IDLE_REAP_MS === undefined || env.VIMES_TERMINAL_IDLE_REAP_MS === ''
+        ? DEFAULT_TERMINAL_IDLE_REAP_MS
+        : parsePositiveInteger(env.VIMES_TERMINAL_IDLE_REAP_MS, 'VIMES_TERMINAL_IDLE_REAP_MS'),
   };
 }

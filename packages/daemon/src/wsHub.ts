@@ -148,6 +148,13 @@ const termCloseEnvelopeSchema = z.object({
   op: z.literal('term_close'),
   terminalId: z.string().min(1),
 });
+// Terminal-lifecycle backlog item: flip a shell's resilient flag (exempt it from
+// the inactivity reaper). A keeper the operator marks from the terminals list.
+const termSetResilientEnvelopeSchema = z.object({
+  op: z.literal('term_set_resilient'),
+  terminalId: z.string().min(1),
+  resilient: z.boolean(),
+});
 
 const controlEnvelopeSchema = z.discriminatedUnion('op', [
   subscribeEnvelopeSchema,
@@ -172,6 +179,7 @@ const controlEnvelopeSchema = z.discriminatedUnion('op', [
   termSubscribeEnvelopeSchema,
   termResizeEnvelopeSchema,
   termCloseEnvelopeSchema,
+  termSetResilientEnvelopeSchema,
 ]);
 
 // A resolved cwd must sit within one of the resolved allowlisted roots. Empty
@@ -605,6 +613,18 @@ export class WsHub {
         }
         // The terminal host's exit signal (via the subscriber) tears down this
         // connection's tag mapping — no extra cleanup needed here.
+        return;
+      }
+      case 'term_set_resilient': {
+        const host = this.terminalHost;
+        if (host === undefined) {
+          this.refuse(connection, 'term_set_resilient', 'not-implemented');
+          return;
+        }
+        const result = host.setResilient(control.terminalId, control.resilient);
+        if ('refused' in result) {
+          this.refuse(connection, 'term_set_resilient', result.reason);
+        }
         return;
       }
     }

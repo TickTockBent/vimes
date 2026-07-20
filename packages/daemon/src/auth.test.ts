@@ -44,6 +44,7 @@ function buildConfig(overrides: Partial<DaemonConfig>): DaemonConfig {
     projectRoots: [],
     pushSubject: 'mailto:test@example.invalid',
     maxEditBytes: 5 * 1024 * 1024,
+    terminalIdleReapMs: 0,
     ...overrides,
   };
 }
@@ -166,7 +167,7 @@ function assertZeroProductBytes(body: string): void {
 }
 
 describe('I14 auth matrix — real verifier over a locally-minted JWKS', () => {
-  const HTTP_PATHS = ['/api/health', '/api/projections/sessions', '/api/files/roots', '/'];
+  const HTTP_PATHS = ['/api/health', '/api/projections/sessions', '/api/files/roots', '/api/terminals', '/'];
 
   interface InvalidCase {
     label: string;

@@ -90,6 +90,7 @@ function buildConfig(overrides: Partial<DaemonConfig> = {}): DaemonConfig {
     projectRoots: [],
     pushSubject: 'mailto:test@example.invalid',
     maxEditBytes: 5 * 1024 * 1024,
+    terminalIdleReapMs: 0,
     ...overrides,
   };
 }
@@ -347,6 +348,62 @@ describe('Raw terminal over WS — control + binary frames', () => {
         { op: 'refused', refusedOp: 'term_subscribe', reason: 'unknown-terminal' },
         { op: 'refused', refusedOp: 'term_resize', reason: 'unknown-terminal' },
       ]);
+    } finally {
+      client.close();
+      await daemon.stop();
+    }
+  });
+
+  it('GET /api/terminals lists live shells (byte-free) and term_set_resilient flips the flag', async () => {
+    const projectDir = mkdtempSync(join(temporaryDirectory, 'proj-'));
+    const terminals = makeTerminalPtyFactory();
+    const daemon = await startDaemon(buildConfig({ projectRoots: [projectDir] }), terminals.factory);
+    const client = new TermClient(daemon.port);
+    try {
+      await client.opened();
+      client.sendControl({ op: 'term_open', cwd: projectDir });
+      await client.waitForControl(1);
+      const terminalId = client.lastControl().terminalId as string;
+
+      const fetchList = async (): Promise<Array<Record<string, unknown>>> => {
+        const response = await fetch(`http://127.0.0.1:${daemon.port}/api/terminals`, {
+          headers: { 'cf-access-jwt-assertion': ANY_TOKEN },
+        });
+        expect(response.status).toBe(200);
+        return ((await response.json()) as { terminals: Array<Record<string, unknown>> }).terminals;
+      };
+
+      const listed = await fetchList();
+      expect(listed).toHaveLength(1);
+      expect(listed[0]!.terminalId).toBe(terminalId);
+      expect(listed[0]!.cwd).toBe(projectDir);
+      expect(listed[0]!.resilient).toBe(false);
+      expect(typeof listed[0]!.lastActivityAt).toBe('string');
+      // Byte-free: no pty handle, no buffered bytes leak into the listing.
+      expect(Object.keys(listed[0]!).sort()).toEqual(
+        ['cwd', 'lastActivityAt', 'resilient', 'subscriberCount', 'terminalId'],
+      );
+
+      // Mark it resilient over the WS; the endpoint reflects the flip.
+      client.sendControl({ op: 'term_set_resilient', terminalId, resilient: true });
+      let becameResilient = false;
+      for (let attempt = 0; attempt < 100 && !becameResilient; attempt += 1) {
+        becameResilient = (await fetchList())[0]!.resilient === true;
+        if (!becameResilient) {
+          await delay(5);
+        }
+      }
+      expect(becameResilient).toBe(true);
+
+      // An unknown terminal is refused (reuses the shared refused envelope).
+      const controlBefore = client.control.length;
+      client.sendControl({ op: 'term_set_resilient', terminalId: 'nope', resilient: true });
+      await client.waitForControl(controlBefore + 1);
+      expect(client.lastControl()).toEqual({
+        op: 'refused',
+        refusedOp: 'term_set_resilient',
+        reason: 'unknown-terminal',
+      });
     } finally {
       client.close();
       await daemon.stop();

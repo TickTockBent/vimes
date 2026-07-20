@@ -36,7 +36,9 @@ export type ClientEnvelope =
   | { op: 'term_open'; cwd: string; cols?: number; rows?: number }
   | { op: 'term_subscribe'; terminalId: string; offset: number }
   | { op: 'term_resize'; terminalId: string; cols: number; rows: number }
-  | { op: 'term_close'; terminalId: string };
+  | { op: 'term_close'; terminalId: string }
+  // Terminal-lifecycle: flip a shell's resilient flag (reaper exemption).
+  | { op: 'term_set_resilient'; terminalId: string; resilient: boolean };
 
 export interface SearchFlags {
   caseInsensitive?: boolean;
