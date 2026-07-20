@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { deriveGateCards } from './gateCard.js';
+import { isGateResponseRefusal } from './refusalRecovery.js';
 import type { EventRecord } from './types.js';
 
 function makeEvent(overrides: Partial<EventRecord> & Pick<EventRecord, 'seq' | 'type' | 'payload'>): EventRecord {
@@ -71,6 +72,29 @@ describe('deriveGateCards', () => {
     ];
     expect(deriveGateCards(events, EMPTY)).toEqual([
       { requestId: 'req-1', appSessionId: 'app-1', prompt: 'p', status: 'fired' },
+    ]);
+  });
+
+  it('a refused gate_response clears the answering flag, reverting the card to fired (buttons re-enable)', () => {
+    // Reproduces the "Allow/Deny stuck disabled forever" bug: the store adds
+    // requestId to answeringRequestIds when gate_response is sent, but a
+    // `refused` envelope carries no requestId to remove just that one — so
+    // on a gate_response refusal the store clears the whole set (see
+    // refusalRecovery.ts's isGateResponseRefusal), which this proves is
+    // enough to un-stick the card.
+    const events = [
+      makeEvent({ seq: 1, type: 'gate_fired', payload: { appSessionId: 'app-1', prompt: 'Run rm -rf?', requestId: 'req-1' } }),
+    ];
+    const answeringRequestIds = new Set(['req-1']);
+    expect(deriveGateCards(events, answeringRequestIds)).toEqual([
+      { requestId: 'req-1', appSessionId: 'app-1', prompt: 'Run rm -rf?', status: 'answering' },
+    ]);
+
+    expect(isGateResponseRefusal('gate_response')).toBe(true);
+    answeringRequestIds.clear(); // what the store does on a gate_response refusal
+
+    expect(deriveGateCards(events, answeringRequestIds)).toEqual([
+      { requestId: 'req-1', appSessionId: 'app-1', prompt: 'Run rm -rf?', status: 'fired' },
     ]);
   });
 
