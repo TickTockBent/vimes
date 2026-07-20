@@ -126,6 +126,12 @@ const replaceApplyEnvelopeSchema = z.object({
 const termOpenEnvelopeSchema = z.object({
   op: z.literal('term_open'),
   cwd: z.string().min(1),
+  // Optional initial pty size (mobile terminal-corruption fix): when the
+  // client has already fitted its viewport, it sizes the shell BEFORE the
+  // first byte renders instead of resizing after the fact. Absent/invalid →
+  // the terminal host's own 80x24 default.
+  cols: z.number().int().positive().optional(),
+  rows: z.number().int().positive().optional(),
 });
 const termSubscribeEnvelopeSchema = z.object({
   op: z.literal('term_subscribe'),
@@ -563,7 +569,7 @@ export class WsHub {
         }
         // The cwd scoping (resolveWithinRoots against projectRoots ∪ session cwds)
         // lives in the terminal host — the single RCE boundary (spec §3.11).
-        const result = host.openTerminal({ cwd: control.cwd });
+        const result = host.openTerminal({ cwd: control.cwd, cols: control.cols, rows: control.rows });
         if ('refused' in result) {
           this.refuse(connection, 'term_open', result.reason);
           return;

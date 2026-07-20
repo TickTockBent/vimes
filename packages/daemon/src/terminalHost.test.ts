@@ -19,6 +19,7 @@ function makeFakePty(): {
   capturedEnv: () => Record<string, string> | undefined;
   capturedCwd: () => string | undefined;
   capturedFile: () => string | undefined;
+  capturedSpawnDimensions: () => { cols: number | undefined; rows: number | undefined } | undefined;
   fireData: (data: string) => void;
   fireExit: (exitCode?: number) => void;
   killed: () => boolean;
@@ -30,6 +31,7 @@ function makeFakePty(): {
   let seenEnv: Record<string, string> | undefined;
   let seenCwd: string | undefined;
   let seenFile: string | undefined;
+  let seenSpawnDimensions: { cols: number | undefined; rows: number | undefined } | undefined;
   let wasKilled = false;
   const pty: TerminalPtyLike = {
     write: (data) => writes.push(data),
@@ -49,6 +51,7 @@ function makeFakePty(): {
       seenFile = file;
       seenEnv = options.env;
       seenCwd = options.cwd;
+      seenSpawnDimensions = { cols: options.cols, rows: options.rows };
       return pty;
     },
     writes,
@@ -56,6 +59,7 @@ function makeFakePty(): {
     capturedEnv: () => seenEnv,
     capturedCwd: () => seenCwd,
     capturedFile: () => seenFile,
+    capturedSpawnDimensions: () => seenSpawnDimensions,
     fireData: (data) => dataCallback?.(data),
     fireExit: (exitCode = 0) => exitCallback?.({ exitCode }),
     killed: () => wasKilled,
@@ -113,6 +117,34 @@ describe('TerminalHost — open + scoping', () => {
     expect(fakePty.capturedFile()).toBe('/bin/bash');
     expect(fakePty.capturedCwd()).toBe('/work/project');
     expect(host.terminalCount()).toBe(1);
+  });
+
+  it('spawns the pty at the client-supplied cols/rows (mobile terminal-corruption fix)', () => {
+    const fakePty = makeFakePty();
+    const host = makeHost(fakePty);
+    const result = host.openTerminal({ cwd: '/work/project', cols: 42, rows: 18 });
+    expect('terminalId' in result).toBe(true);
+    expect(fakePty.capturedSpawnDimensions()).toEqual({ cols: 42, rows: 18 });
+  });
+
+  it('falls back to the 80x24 default when cols/rows are absent, not throwing', () => {
+    const fakePty = makeFakePty();
+    const host = makeHost(fakePty);
+    const result = host.openTerminal({ cwd: '/work/project' });
+    expect('terminalId' in result).toBe(true);
+    expect(fakePty.capturedSpawnDimensions()).toEqual({ cols: 80, rows: 24 });
+  });
+
+  it('falls back to the 80x24 default when cols/rows are invalid (zero, negative, non-integer), not throwing', () => {
+    const fakePty = makeFakePty();
+    const host = makeHost(fakePty);
+    expect(() => host.openTerminal({ cwd: '/work/project', cols: 0, rows: -5 })).not.toThrow();
+    expect(fakePty.capturedSpawnDimensions()).toEqual({ cols: 80, rows: 24 });
+
+    const fakePty2 = makeFakePty();
+    const host2 = makeHost(fakePty2);
+    expect(() => host2.openTerminal({ cwd: '/work/project', cols: 40.5, rows: 20 })).not.toThrow();
+    expect(fakePty2.capturedSpawnDimensions()).toEqual({ cols: 80, rows: 20 });
   });
 
   it('refuses a cwd outside the project roots (the RCE scoping boundary)', () => {

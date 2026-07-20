@@ -22,6 +22,16 @@ describe('serializeClientEnvelope', () => {
     });
   });
 
+  it('serializes term_open with cols/rows (mobile terminal-corruption fix — initial pty size)', () => {
+    const json = serializeClientEnvelope({ op: 'term_open', cwd: '/work/project', cols: 42, rows: 18 });
+    expect(JSON.parse(json)).toEqual({ op: 'term_open', cwd: '/work/project', cols: 42, rows: 18 });
+  });
+
+  it('serializes term_open with cols/rows omitted (unfitted caller — daemon falls back to its default)', () => {
+    const json = serializeClientEnvelope({ op: 'term_open', cwd: '/work/project' });
+    expect(JSON.parse(json)).toEqual({ op: 'term_open', cwd: '/work/project' });
+  });
+
   it('serializes the v0.2 session ops', () => {
     expect(JSON.parse(serializeClientEnvelope({ op: 'seen', appSessionId: 'a' }))).toEqual({ op: 'seen', appSessionId: 'a' });
     expect(JSON.parse(serializeClientEnvelope({ op: 'clear_attention', appSessionId: 'a' }))).toEqual({ op: 'clear_attention', appSessionId: 'a' });

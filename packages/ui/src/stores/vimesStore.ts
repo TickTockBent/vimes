@@ -665,15 +665,23 @@ export const useVimesStore = defineStore('vimes', () => {
   }
 
   // Open a shell at cwd (must be within the daemon's project roots / session cwds)
-  // and subscribe on term_opened.
-  function openTerminal(cwd: string): void {
+  // and subscribe on term_opened. `dimensions`, when given, is the caller's
+  // already-fitted viewport size — it rides WITH term_open so the daemon spawns
+  // the pty at the right size before the shell renders (the mobile
+  // terminal-corruption fix: a post-hoc resize is too late for a TUI that has
+  // already drawn its wide layout at the default 80 cols).
+  function openTerminal(cwd: string, dimensions?: { cols: number; rows: number }): void {
     terminalId = null;
     terminalTag = null;
     terminalOffset = 0;
     terminalCwd = cwd;
     terminalExitCode.value = null;
     terminalStatus.value = 'opening';
-    sendEnvelope({ op: 'term_open', cwd });
+    sendEnvelope(
+      dimensions === undefined
+        ? { op: 'term_open', cwd }
+        : { op: 'term_open', cwd, cols: dimensions.cols, rows: dimensions.rows },
+    );
   }
 
   function sendTerminalInput(text: string): void {

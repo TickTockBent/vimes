@@ -52,6 +52,16 @@ export interface TerminalSubscriber {
   exit(exitCode: number): void;
 }
 
+// Fallback pty size when the client sends no (or invalid) initial dimensions.
+// Matches node-pty's own historical default so behavior is unchanged for any
+// caller that still omits cols/rows.
+const DEFAULT_TERMINAL_COLS = 80;
+const DEFAULT_TERMINAL_ROWS = 24;
+
+function isPositiveInteger(value: number | undefined): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0;
+}
+
 export type OpenTerminalResult = { terminalId: string } | { refused: true; reason: string };
 export type SubscribeResult = { ok: true } | { refused: true; reason: string };
 export type TerminalOpResult = { ok: true } | { refused: true; reason: string };
@@ -107,7 +117,13 @@ export class TerminalHost {
   // Spawn a shell rooted at `cwd`. cwd MUST land within the allowlist — this is the
   // RCE scoping boundary (spec §3.11). The scrubbed env drops every CLAUDE* key
   // (D15), matching every other process VIMES spawns.
-  openTerminal(request: { cwd: string }): OpenTerminalResult {
+  //
+  // cols/rows (optional) size the pty BEFORE the shell renders its first byte —
+  // the mobile terminal-corruption fix: spawning at a stale 80-col default and
+  // resizing after the fact is too late for a TUI that already drew its wide
+  // layout. Invalid/absent dims fall back to the 80x24 default rather than
+  // throwing (a client is free to omit them, or send nonsense).
+  openTerminal(request: { cwd: string; cols?: number; rows?: number }): OpenTerminalResult {
     const resolved = resolveWithinRoots(request.cwd, this.getAllowedRoots(), this.realpath);
     if (!resolved.ok) {
       // A single classified refusal — never echo the requested path.
@@ -116,10 +132,14 @@ export class TerminalHost {
     const terminalId = this.ids.uuid();
     const shellFile = this.shellResolver();
     const environment = scrubClaudeEnv(this.envSource());
+    const cols = isPositiveInteger(request.cols) ? request.cols : DEFAULT_TERMINAL_COLS;
+    const rows = isPositiveInteger(request.rows) ? request.rows : DEFAULT_TERMINAL_ROWS;
     const pty = this.ptyFactory(shellFile, [], {
       cwd: resolved.absolute,
       env: environment,
       name: 'xterm-color',
+      cols,
+      rows,
     });
     const terminal: Terminal = {
       terminalId,
