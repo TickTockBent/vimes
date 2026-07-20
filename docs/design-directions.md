@@ -3,6 +3,52 @@
 Spun up 2026-07-19 (first tenant arrived via the decomposition series). Each
 entry is parked deliberately; scheduling one into a slice is a decision.
 
+## The product shape: an IDE platform, orchestration as an extension layer
+
+*(Wes, 2026-07-20 — vision articulated for the record; not a schedule change.)*
+
+**The destination.** The human stays at the top and does not delve. Create a
+task, attach files, write a description, drop it into review; the project's
+PM agent picks it up, expands it (asking any clarifying questions it needs
+answered), and shuffles it through work phases. The PM agent creates its own
+tasks to track its work. The human drags the folder — the mechanism handles
+the bytes (the Windows-copy analogy: you don't enumerate files and submit a
+copy list).
+
+**The architecture that gets there.** The agent-native human-IDE is the
+**platform**; the kanban / workflow / orchestration is a **layer that bolts
+on top of it, the way VSCode extensions bolt onto VSCode.** Consequences that
+bind slice design from here:
+- Replacing code-server (slices 0–3, the MVP line) is not a means to rush
+  past — it is the platform the whole product stands on. It stays first.
+- Every layer stays solid and directly usable (principles 7 & 8): all
+  sessions are AVAILABLE to inspect and manage directly; orchestration is
+  where you *live*, but the IDE is the floor you land on when you tunnel
+  down, and it must hold weight.
+- The IDE surface — mobile-friendly, terminal-accessible, project-scoped
+  chats with the orchestrator, agent-session inspection with full context —
+  exposes clean seams the orchestration layer *consumes as an extension*,
+  never woven into the core (reinforces rule 0.3 and principle 10; slice 0's
+  reserved task/kanban schema is the seam already in place).
+
+**Mobile's final form** (Wes, 2026-07-20): short chat sessions with optional
+voice synthesis; heavy text work happens on an actual computer. Phone
+keyboards are good but mobile terminals/heavy editing stay rough on the eyes
+and hands. **Effort-allocation consequence for slice 3 and the mobile UI:**
+nail light-chat + notification + session inspection on the phone; treat heavy
+mobile editing and the mobile terminal as escape hatches (pillar 7), not
+daily-driver surfaces to gold-plate. The desktop is where the heavy IDE work
+lives.
+
+**The north star — the real "definition of done."** The unlock is using
+VIMES to keep enhancing VIMES live, through the orchestrator, without this
+remote CLI at all. Concretely: a project-scoped orchestrator chat on the
+VIMES repo itself that can spawn and steer the work agents that *currently
+run through the Claude Code CLI in this build*. That is slice 7 pointed at
+VIMES's own repo — distinct from the MVP (replace code-server) and from the
+usable-product milestone (the kanban loop). VIMES hosting the workflow that
+builds VIMES is the recursion the whole project is aimed at.
+
 ## Event-log growth: the post-MVP D12 revisit, first option pre-selected
 
 D12 (decided): message bodies inline, growth accepted, archival/compaction

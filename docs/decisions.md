@@ -205,3 +205,23 @@ criterion. Orchestrator self-restraint: no deploys during an active
 on-device measurement. Night-shift defaults 1–4 ratified same morning
 (design principles 9–10, attention-reason reservation, operational
 housekeeping).
+
+## D20 — Slice-2 exit gate satisfied on "platform validated live"; week-ceremony retired; push latency unpinned
+
+*2026-07-20 (Wes's Gate-D call after the on-device checkpoint passed).* The
+slice-2 exit gate as written ("a week where no gate goes unnoticed past
+⟨tune 60s⟩ from the phone") tested the wrong usage mode: solo phone-driving of
+single sessions is a *means*, not the product (the destination is the
+orchestration layer — see design-directions.md). The session/notification
+layer is the platform and must be solid (principle 8), but its validation is
+the live checkpoint (auth, hooks, custody, push all confirmed 2026-07-20;
+locked-phone gate-to-buzz sub-second) plus continuous real use as slices 3+
+are built on it — not a ceremonial week of artificial typing. **Decisions:**
+(a) slice-2 exit gate is SATISFIED; the literal week is retired. (b) Push
+delivery latency is deliberately **UNPINNED** — the real invariant is
+qualitative ("delivery must not silently fail," confirmed), not a defended
+millisecond band; instrumenting ⟨tune 60s⟩/⟨tune 10s⟩ as FAIL-able
+assertions would be over-carefulness (choosing not to pin is as deliberate as
+pinning, per Gate-D). Kill criterion not triggered; pillar 5 lands. Slice 3
+(workspace / code-server replacement) remains the MVP line and the next
+build; dev proceeds continuously (D19), not gated behind a lived week.
