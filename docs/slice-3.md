@@ -90,7 +90,16 @@ check; all prior assertions green (rule 0.4).
 | 1 | File API + search | opus | scoped fs API w/ traversal wall + mtime preconditions, upload/download+zip, rg streaming + preview-gated replace, hostile probes |
 | 2 | Editor + tree UI | opus | CM6 lazy integration, tree, mobile toolbar, save flow, open-from-search; kill-criterion smoke on the phone EARLY (first usable build goes to Wes before polish) |
 | 3 | Raw terminal | opus | PTY endpoint, binary frames, ring buffer, I9 harness assertion, xterm lazy chunk, term hostile probes |
-| 4 | Polish + gates | sonnet | build-manifest ci-gate step, interrupted-list polish, --report additions (buffer sizes, search latency observations) |
+| 4 | Polish + gates | sonnet | build-manifest ci-gate step (DONE), interrupted-list polish, --report additions (buffer sizes, search latency observations) |
+
+**Step-4 polish backlog (aimed by 2026-07-20 live use — the reason polish was deferred):**
+- Terminal exit affordance (#1, Wes): keep the pane on `term_exit`, overlay a prominent "shell exited — New shell / Back" state (output preserved, exit unmistakable, one-tap recovery).
+- Terminal free-text cwd (#2, Wes): a path input beside the root dropdown; server-side `resolveWithinRoots` already enforces the boundary, so arbitrary in-roots paths open and out-of-roots refuse.
+- SearchPanel roots consistency: still uses `deriveRoots(sessions)`; switch to `effectiveRoots` like terminal/tree.
+- Interrupted-list beat-7: float interrupted sessions to the top with one-tap resume (§4 beat 7).
+- Gate-card target prominence (from smoke #4): surface `file_path`/target of a Write/Edit gate prominently instead of buried in truncated JSON — a safety-ergonomics win (a path was approved unread).
+- `--report` additions: terminal ring-buffer sizes, search first-result latency (observations, unpinned).
+**Gated on:** the kill-criterion verdict (does the editor replace code-server, esp. mobile) — polish only earns its build if the editor layer survives that call.
 
 ## What would be a finding
 
