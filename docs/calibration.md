@@ -181,6 +181,34 @@ tunnel, screen-locked.
   addition) — queued for the slice where concurrent gates become real
   (6/7). Accepted as-is for now.
 
+### 2026-07-20 — slice-3 live smoke (desktop, deployed build)
+
+- **#1 editor: PASS** — edited gate-test.txt (dongfu) in CM6, saved (87→125 B,
+  mtime confirmed); mtime-precondition write path works live.
+- **#2 search: PASS** — searched 'gate', all instances found (real ripgrep).
+- **#3 terminal: FAIL → fix in flight.** Root cause: `TerminalView.vue`
+  ref-timing deadlock — the xterm mount `<div ref>` is behind `v-else`
+  (renders only when `started`), but `start()` null-checks the ref and
+  silently returns BEFORE setting `started`, so the element never exists →
+  click does nothing, no console error. Fix: set started + `nextTick` before
+  mount; make failure paths show a visible error, not silence. Bundled: add
+  the missing `GET /api/files/roots` endpoint (step-2 gap) so terminal/tree
+  offer the configured `~/projects` roots, not just session cwds.
+- **#4 NOT a VIMES bug.** Session cwd was correctly `.../infrastructure/vimes`
+  (event log confirms); the AGENT chose the absolute path
+  `/home/ticktockbent/desktop-test.md` (gate card surfaced it verbatim, then
+  approved). Likely driven by the ambient `~/CLAUDE.md` framing `~` as the
+  top-level "cockpit" — VIMES sessions load CLAUDE.md up the whole tree and
+  agent writes are gated by permission cards, NOT confined to VIMES roots (by
+  design — the agent is a full Claude session; §3 scoping is Claude's job).
+  **UX finding (queued):** the Write/Edit gate card shows
+  `Write: {"file_path":"...","content":"..."}` truncated at 160 chars — the
+  path can be hard to scan and easy to approve unread. Improve gate-card
+  rendering to surface the tool's target (file_path) PROMINENTLY, not buried
+  in truncated JSON. Not a bug (the gate worked); a real safety-ergonomics
+  improvement. Cleanup: a stray `/home/ticktockbent/desktop-test.md` ("PASS")
+  exists — Wes to remove at will.
+
 ## Budget table (`--report`)
 
 Design-intent targets from spec §8, listed so nothing gets pinned from memory.
