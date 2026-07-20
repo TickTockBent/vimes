@@ -19,6 +19,14 @@ export default defineConfig({
       srcDir: 'src',
       filename: 'sw.ts',
       injectRegister: 'auto',
+      // Exclude the CM6 and xterm lazy chunks (JS + CSS) from the SW precache: the
+      // app is behind a tunnel and only opened online, so these load on demand via
+      // their existing dynamic import() (src/lib/codemirror-setup.ts,
+      // src/lib/xterm-setup.ts) instead of bloating SW install. Chunk names are
+      // content-hashed (e.g. codemirror-setup-DJDcSLmc.js); glob on the stable prefix.
+      injectManifest: {
+        globIgnores: ['**/codemirror-setup-*', '**/xterm-setup-*'],
+      },
       // Colors track the dark UI (bg-slate-950 background, sky-600 accent).
       manifest: {
         name: 'VIMES',
