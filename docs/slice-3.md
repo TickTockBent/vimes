@@ -93,18 +93,32 @@ check; all prior assertions green (rule 0.4).
 | 4 | Polish + gates | sonnet | build-manifest ci-gate step (DONE), interrupted-list polish, --report additions (buffer sizes, search latency observations) |
 
 **Step-4 polish backlog (aimed by 2026-07-20 live use — the reason polish was deferred):**
-- **Terminal lifecycle — persistent, re-enterable terminals (Wes, 2026-07-20).**
-  The daemon ALREADY supports this (pty outlives a WS connection + ring-buffer
-  reconnect-replay, I9); the UI kills shells by sending `term_close` on
-  unmount. Change: on navigate-away, DETACH not close (keep terminalId, shell
-  runs on) → terminals become first-class re-enterable objects like sessions
-  (pillar 2 for terminals). Needs: a terminals list to tap back into; a small
-  daemon "list active terminals" endpoint (survive page reload — terminalId is
-  currently in-memory only); re-subscribe-with-offset on return. **Safety
-  constraint: persistent shells are real processes — persistence REQUIRES
-  visibility (the list) + one-tap explicit close/kill, or it leaks zombie
-  shells.** Combined lifecycle: navigate-away = persist; shell-exits
-  (`term_exit`) = show exit state + New shell / Close; explicit close = kill.
+- **Terminal lifecycle — persistent, reapable, re-enterable terminals (Wes,
+  2026-07-20; refined design).** The daemon ALREADY supports persistence (pty
+  outlives a WS connection + ring-buffer reconnect-replay, I9); the UI kills
+  shells by sending `term_close` on unmount. **Key architectural distinction:
+  terminals are live-or-dead, NOT sleepable** — a shell's state is a live
+  process tree (not serializable), unlike a session whose state is a
+  replayable transcript. So "resume a terminal" can only mean reconnect to a
+  still-alive shell; a resumable Claude *conversation* belongs in a SESSION,
+  not a terminal (the terminal is the raw-shell escape hatch). Design:
+  - Persistent by default: navigate-away DETACHES (keep terminalId, shell runs
+    on), not close → re-enterable like sessions (pillar 2 for terminals).
+  - **Inactivity reaper** (⟨tune 1h PREVIEW⟩, configurable, unpinned): a
+    terminal idle (no I/O) for the window is auto-killed. INACTIVITY-based,
+    not age-based (age would kill an active shell). Bounds accumulation.
+  - **"Resilient" flag** (per-terminal checkmark): exempts from the reaper —
+    the escape valve for a quiet-but-working shell (long compile/watch) or a
+    keeper. An idle shell is nearly free (few MB, 0 CPU); the risks are
+    accumulation + runaway processes, which reaper + resilient + list cover.
+  - **Terminals list** on the landing screen: alive / last-active / resilient,
+    tap-to-enter, one-tap kill — the visibility that makes persistence safe.
+  - Needs a daemon "list active terminals" endpoint (terminalId is in-memory
+    only today → survive page reload) + re-subscribe-with-offset on return.
+  - Combined with `term_exit`: navigate-away = persist; shell-exits = show exit
+    state + New shell / Close; explicit close or reaper = kill.
+  Auto-reaping is behavior-shaping → earns a decision record when built; the
+  1h is ⟨tune⟩ (calibrate, don't pin).
 - Terminal free-text cwd (#2, Wes): a path input beside the root dropdown; server-side `resolveWithinRoots` already enforces the boundary, so arbitrary in-roots paths open and out-of-roots refuse.
 - SearchPanel roots consistency: still uses `deriveRoots(sessions)`; switch to `effectiveRoots` like terminal/tree.
 - Interrupted-list beat-7: float interrupted sessions to the top with one-tap resume (§4 beat 7).
