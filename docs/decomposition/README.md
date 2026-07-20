@@ -34,7 +34,7 @@ the right doc, no action due yet), **pending** (waits for its slice/trigger).
 | Auto-resume at reset w/ full staleness matrix; policy by session class (ata 2) | slice 5–6 | pending |
 | Turn attribution: injected vs terminal-native (jinn 5) | slices 2–3 attention model | pending |
 | Provider preflight + authenticated-not-just-installed (ata 8, jinn 4) | slice 2 step 1 | in build |
-| Attention reason enum additions: `rate-limited`, `brake`, spawn-failure (jinn 2.2, codor 2.3) | schema reservation (rule 0.5) | pending — **Wes call** |
+| Attention reason enum additions: `rate-limited`, `brake` (jinn 2.2, codor 2.3) | schema reservation (rule 0.5) | **default instituted 2026-07-19** — reserved, no setters; awaiting ratification |
 | One-source-of-record rule (codor 8) | design-principles #9 | **default instituted 2026-07-19** — awaiting ratification |
 | MCP surface: process_register/list/stop; briefing-as-tool; heartbeat+bootstrap check-in; reviewer-close structural; `report_completion` typed (ata 3/5/6/7, jinn 8) | slice 6 design | pending |
 | Cascade guard + brakes layer (held delivery, one-tap release) (ata 4, codor 3) | slice 7 | pending |

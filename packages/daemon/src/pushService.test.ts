@@ -51,9 +51,21 @@ describe('buildPushPayload / reasonBody (pure)', () => {
   });
 
   it('gives a distinct one-liner per attention reason', () => {
-    const reasons = ['gate', 'question', 'completed', 'stale', 'quarantined'] as const;
+    // Includes the rule-0.5-reserved reasons ('rate-limited' slice 5, 'brake'
+    // slice 7) — no setter emits them yet, but reasonBody must already be
+    // exhaustive over the widened AttentionReason value space.
+    const reasons = ['gate', 'question', 'completed', 'stale', 'quarantined', 'rate-limited', 'brake'] as const;
     const bodies = reasons.map((reason) => reasonBody(reason));
     expect(new Set(bodies).size).toBe(reasons.length);
+  });
+
+  it('builds a correct push payload for the reserved rate-limited reason (rule 0.5)', () => {
+    const payload = buildPushPayload({ appSessionId: 'app-rl-0001', name: 'rl session', reason: 'rate-limited' });
+    expect(payload).toEqual({
+      title: 'rl session',
+      body: reasonBody('rate-limited'),
+      url: '/#/session/app-rl-0001',
+    });
   });
 });
 

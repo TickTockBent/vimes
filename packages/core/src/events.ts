@@ -62,7 +62,20 @@ export const SYSTEM_STREAM = 'system';
 const livenessSchema = z.enum(['spawning', 'running', 'dormant', 'interrupted', 'dead']);
 export type Liveness = z.infer<typeof livenessSchema>;
 
-const attentionReasonSchema = z.enum(['gate', 'question', 'completed', 'stale', 'quarantined']);
+// 'rate-limited' and 'brake' are reserved (rule 0.5): no setter emits them
+// yet. 'rate-limited' lands with slice 5 (StopFailure/rate_limit_event
+// signals); 'brake' lands with slice 7 (cascade guard/brakes layer). Widening
+// here only extends the value space — ATTENTION_SETTER_REASON below still
+// keys on setter event TYPES, so no existing setter starts emitting these.
+const attentionReasonSchema = z.enum([
+  'gate',
+  'question',
+  'completed',
+  'stale',
+  'quarantined',
+  'rate-limited',
+  'brake',
+]);
 export type AttentionReason = z.infer<typeof attentionReasonSchema>;
 
 // ——— payload schemas ———

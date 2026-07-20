@@ -34,6 +34,11 @@ const ATTENTION_LABEL: Readonly<Record<AttentionReason, string>> = {
   completed: 'finished a run',
   stale: 'went quiet',
   quarantined: 'hit a quarantined line',
+  // Reserved (rule 0.5): no setter emits these yet — 'rate-limited' lands
+  // slice 5, 'brake' lands slice 7. Labels included now so the badge map
+  // stays exhaustive over AttentionReason.
+  'rate-limited': 'hit a rate limit',
+  brake: 'held by a brake',
 };
 
 function cwdTail(cwd: string): string {

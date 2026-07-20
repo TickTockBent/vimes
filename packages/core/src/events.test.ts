@@ -6,6 +6,10 @@ import {
   gateFiredPayloadSchema,
   hookEventPayloadSchema,
   hookSessionStart,
+  notificationTrigger,
+  notificationTriggerPayloadSchema,
+  pushFailedPayloadSchema,
+  pushSentPayloadSchema,
   resyncMarker,
   resyncMarkerPayloadSchema,
   runtimeDriftObserved,
@@ -15,6 +19,7 @@ import {
   sessionRenamed,
   sessionRenamedPayloadSchema,
 } from './events.js';
+import { sessionRecordSchema } from './schemas.js';
 
 // gate_fired's schema widened (rule 0.7) to match wire reality: the daemon's
 // real SDK gate carries requestId (sessionHost.ts's handleGate), harness
@@ -116,6 +121,58 @@ describe('custody vocabulary (D10)', () => {
     });
     expect(resyncMarkerPayloadSchema.safeParse(input.payload).success).toBe(true);
     expect(resyncMarkerPayloadSchema.safeParse({ appSessionId: 'app-1', reason: 'other' }).success).toBe(false);
+  });
+});
+
+// Attention reason enum reservation (rule 0.5, docs/decomposition/README.md
+// tracker row "Attention reason enum additions"): 'rate-limited' (slice 5,
+// StopFailure/rate_limit_event) and 'brake' (slice 7, cascade guard) widen
+// the value space now. NO setter emits them yet — verify every reason-typed
+// schema accepts both, without changing which event types set attention.
+describe('attention reason enum reservation — rate-limited / brake (rule 0.5)', () => {
+  const reservedReasons = ['rate-limited', 'brake'] as const;
+
+  it.each(reservedReasons)('notificationTriggerPayloadSchema accepts reason %s', (reason) => {
+    const input = notificationTrigger({ appSessionId: 'app-1', reason });
+    expect(input.payload).toEqual({ appSessionId: 'app-1', reason });
+    expect(notificationTriggerPayloadSchema.safeParse(input.payload).success).toBe(true);
+  });
+
+  it.each(reservedReasons)('pushSentPayloadSchema accepts reason %s', (reason) => {
+    expect(pushSentPayloadSchema.safeParse({ appSessionId: 'app-1', reason }).success).toBe(true);
+  });
+
+  it.each(reservedReasons)('pushFailedPayloadSchema accepts reason %s', (reason) => {
+    expect(
+      pushFailedPayloadSchema.safeParse({ appSessionId: 'app-1', reason, statusCode: 410 }).success,
+    ).toBe(true);
+  });
+
+  it.each(reservedReasons)('sessionRecordSchema.needsAttention accepts reason %s', (reason) => {
+    const candidate = {
+      appSessionId: 'app-1',
+      channel: 'sdk',
+      cwd: '/p',
+      claudeSessionIds: [],
+      liveness: 'running',
+      needsAttention: { reason, since: '2026-07-19T00:00:00.000Z' },
+      seenAt: null,
+      forkedFrom: null,
+      taskRef: null,
+      observedTtlTier: 'unknown',
+      observedBillingBucket: 'unknown',
+      name: null,
+      createdAt: '2026-07-19T00:00:00.000Z',
+      provider: 'claude-code',
+      custody: 'host',
+    };
+    expect(sessionRecordSchema.safeParse(candidate).success).toBe(true);
+  });
+
+  it('an out-of-vocabulary reason is still rejected', () => {
+    expect(notificationTriggerPayloadSchema.safeParse({ appSessionId: 'app-1', reason: 'sneaky' }).success).toBe(
+      false,
+    );
   });
 });
 

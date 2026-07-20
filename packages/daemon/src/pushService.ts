@@ -132,6 +132,13 @@ export function reasonBody(reason: AttentionReason): string {
       return 'This session looks stuck';
     case 'quarantined':
       return 'A task was quarantined';
+    // Reserved (rule 0.5): no setter emits these yet — 'rate-limited' lands
+    // slice 5, 'brake' lands slice 7. Bodies included now so this switch
+    // stays exhaustive over AttentionReason.
+    case 'rate-limited':
+      return 'Hit a rate limit';
+    case 'brake':
+      return 'Held by a brake';
     default:
       return 'Needs your attention';
   }
