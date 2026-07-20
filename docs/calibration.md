@@ -93,6 +93,35 @@ asking.
 
 Burn: 5 tiny invocations, low thousands of tokens. Process baseline clean.
 
+### 2026-07-20 — S9/S10 + hooks live-confirmation (second smoke session)
+
+**Hooks channel LIVE in production** (first real confirmation): session
+58070f4d received `hook_session_start` (payload `session_id` present +
+`appSessionId` stamped by the 4601 ingress) and 11× `hook_pre_tool_use`.
+**D7 correlation held live** — exactly ONE `claude_session_mapped` on the
+stream despite both SDK-init and hook paths firing (principle 9 dedupe
+boundary working). The two synthetically-tested fragile surfaces (settings
+hooks-block shape, relay contract) are now real-world validated.
+
+**S9 PASS** — airplane-mode gap mid-stream, session resumed on return via
+lastSeq replay.
+
+**S10 — I3 (no fork) PASS on disk; I11 refusal harness-owned.** Two phone
+tabs on one session; resume fired in tab A → dormant→spawning→running
+(seq 92→95), tab B reflected the resumed state (pillar 2 — viewport, not
+owner; it never fired its own resume). `transition_rejected: 0` (no
+concurrent attempt occurred), `claude_session_mapped: 1`, and ON DISK a
+single transcript (`75e6…a.jsonl`, appended in place) — I3 single-chain
+verified, the artifact the slice-1 exit gate wanted. I11's concurrent-resume
+REFUSAL was not exercised: the UI withdraws the resume affordance the instant
+a session leaves dormant, and human click-timing can't hit the sub-second
+spawn window, so the registry refusal has a UI guard in front of it in normal
+use. I11 stays proven by the concurrent-clash harness profile (its proper
+home for a sub-second race). Note for the on-device checkpoint / slice-2
+retro: consider whether a deliberate "force concurrent resume" affordance is
+worth building purely for manual I11 demonstration — likely not (harness
+owns it).
+
 ## Budget table (`--report`)
 
 Design-intent targets from spec §8, listed so nothing gets pinned from memory.
