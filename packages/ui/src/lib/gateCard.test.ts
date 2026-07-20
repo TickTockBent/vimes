@@ -28,6 +28,28 @@ describe('deriveGateCards', () => {
     ]);
   });
 
+  it('surfaces optional toolName/target when the payload carries them', () => {
+    const events = [
+      makeEvent({
+        seq: 1,
+        type: 'gate_fired',
+        payload: { appSessionId: 'app-1', prompt: 'Write: {"file_path":"/tmp/a.txt"}', requestId: 'req-1', toolName: 'Write', target: '/tmp/a.txt' },
+      }),
+    ];
+    expect(deriveGateCards(events, EMPTY)).toEqual([
+      { requestId: 'req-1', appSessionId: 'app-1', prompt: 'Write: {"file_path":"/tmp/a.txt"}', toolName: 'Write', target: '/tmp/a.txt', status: 'fired' },
+    ]);
+  });
+
+  it('omits toolName/target entirely when absent (harness/older gate_fired)', () => {
+    const events = [
+      makeEvent({ seq: 1, type: 'gate_fired', payload: { appSessionId: 'app-1', prompt: 'Run rm -rf?', requestId: 'req-1' } }),
+    ];
+    const [card] = deriveGateCards(events, EMPTY);
+    expect(card).not.toHaveProperty('toolName');
+    expect(card).not.toHaveProperty('target');
+  });
+
   it('answering: a locally-sent gate_response marks the card answering before the server confirms', () => {
     const events = [
       makeEvent({ seq: 1, type: 'gate_fired', payload: { appSessionId: 'app-1', prompt: 'Run rm -rf?', requestId: 'req-1' } }),

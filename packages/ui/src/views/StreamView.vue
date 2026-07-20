@@ -299,6 +299,8 @@ function resume(): void {
         <GateCard
           v-else-if="event.type === 'gate_fired' && activeCardFor(event)"
           :prompt="activeCardFor(event)!.prompt"
+          :tool-name="activeCardFor(event)!.toolName"
+          :target="activeCardFor(event)!.target"
           :answering="activeCardFor(event)!.status === 'answering'"
           @respond="(response) => respond(activeCardFor(event)!, response)"
         />

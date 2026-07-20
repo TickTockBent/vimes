@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
 import { useVimesStore } from '../stores/vimesStore.js';
 import { effectiveRoots } from '../lib/treeNode.js';
-import { decideMountReady, decideStartRoot } from '../lib/terminalStart.js';
+import { decideMountReady, decideStartCwd } from '../lib/terminalStart.js';
 import { deriveTerminalRows } from '../lib/terminalList.js';
 import type { TerminalHandle } from '../lib/xterm-setup.js';
 
@@ -25,6 +25,14 @@ const store = useVimesStore();
 // can only be rooted inside the daemon's allowlist either way.
 const roots = computed(() => effectiveRoots(store.roots, store.sessions));
 const selectedRoot = ref<string>('');
+// Editable working directory for the new shell. Prefilled from the selected
+// root and re-synced whenever the root changes, but the user may edit it to a
+// SUBPATH so a shell can open below a root (not only at one). The daemon's
+// term_open routes this cwd through resolveWithinRoots and refuses anything
+// outside the allowlist — that server wall is authoritative, so we do NO
+// client-side path validation beyond non-empty (the refusal reason surfaces as
+// loadError/status via the existing openTerminal flow).
+const cwdField = ref<string>('');
 const started = ref(false);
 const lostNotice = ref(false);
 const loadError = ref<string | null>(null);
@@ -130,13 +138,23 @@ async function mountXtermIntoView(): Promise<{ terminal: TerminalHandle; cols: n
   return { terminal, cols: dimensions.cols, rows: dimensions.rows };
 }
 
-// New-shell flow: pick a root, mount xterm, term_open at the fitted size (so the
-// shell never spawns at the wrong width — the mobile terminal-corruption fix).
+// Selecting a different root refills the editable path with that root; the user
+// can then extend it to a subpath before opening. Order-independent (a watch, so
+// it never races the select's v-model update).
+watch(selectedRoot, (root) => {
+  cwdField.value = root;
+});
+
+// New-shell flow: resolve the cwd (free-text field, or selected root when
+// empty), mount xterm, term_open at the fitted size (so the shell never spawns
+// at the wrong width — the mobile terminal-corruption fix).
 async function start(): Promise<void> {
-  // Phase 1: is there a root at all? Must fail visibly, never silently.
-  const rootDecision = decideStartRoot(selectedRoot.value, roots.value[0]);
-  if (!rootDecision.ok) {
-    loadError.value = rootDecision.error;
+  // Phase 1: resolve a cwd. The field wins (a subpath); an empty field falls
+  // back to the selected root. Must fail visibly when there is no root at all,
+  // never silently. The daemon still validates the cwd against the allowlist.
+  const cwdDecision = decideStartCwd(cwdField.value, selectedRoot.value, roots.value[0]);
+  if (!cwdDecision.ok) {
+    loadError.value = cwdDecision.error;
     return;
   }
   try {
@@ -144,7 +162,7 @@ async function start(): Promise<void> {
     if (mounted === null) {
       return;
     }
-    store.openTerminal(rootDecision.root, { cols: mounted.cols, rows: mounted.rows });
+    store.openTerminal(cwdDecision.cwd, { cols: mounted.cols, rows: mounted.rows });
   } catch {
     loadError.value = 'Could not load the terminal.';
     started.value = false;
@@ -310,6 +328,19 @@ onBeforeUnmount(() => {
             >
               <option v-for="root in roots" :key="root" :value="root">{{ root }}</option>
             </select>
+            <label class="flex flex-col gap-1 text-xs text-slate-400">
+              Working directory (edit to open at a subpath)
+              <input
+                v-model="cwdField"
+                type="text"
+                inputmode="url"
+                autocapitalize="off"
+                autocorrect="off"
+                spellcheck="false"
+                placeholder="Pick a root above, or type a path inside one"
+                class="min-h-[44px] w-full rounded-md border border-slate-700 bg-slate-950 px-2 font-mono text-sm text-slate-100"
+              />
+            </label>
             <div class="flex gap-2">
               <button
                 type="button"
