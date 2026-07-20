@@ -13,6 +13,7 @@ import {
   lineQuarantined,
   message,
   notificationTrigger,
+  notificationTriggerPayloadSchema,
   questionAsked,
   resyncMarker,
   runCompleted,
@@ -218,6 +219,29 @@ describe('sessions projection — I5 attention conservation', () => {
       expect(state.sessions[APP_SESSION_ID]!.needsAttention).toMatchObject({ reason });
     });
   }
+
+  // (c) Reserved reasons (rule 0.5 — schema addition only, no setter emits
+  // them yet: 'rate-limited' lands slice 5, 'brake' lands slice 7). A
+  // hand-built notification_trigger carrying 'rate-limited' must validate
+  // and flow through the projection exactly like any other non-setter event
+  // (I5 conservation holds: notification_trigger never itself sets
+  // needsAttention, regardless of which reason it carries).
+  it('a hand-built notification_trigger with reason "rate-limited" validates and flows through the projection', () => {
+    const input = notificationTrigger({ appSessionId: APP_SESSION_ID, reason: 'rate-limited' });
+    expect(notificationTriggerPayloadSchema.safeParse(input.payload).success).toBe(true);
+    const store = makeStore();
+    store.append([createInput()]);
+    store.append([input]);
+    // Conservation holds: this non-setter event never sets needsAttention...
+    const state = replayFromEmpty(sessionsProjection, readAllStreamsGrouped(store));
+    expect(state.sessions[APP_SESSION_ID]!.needsAttention).toBeNull();
+    // ...and the event itself round-trips through the log/projection intact.
+    const triggerEvents = readAllStreamsGrouped(store).filter(
+      (e) => e.stream === APP_SESSION_ID && e.type === 'notification_trigger',
+    );
+    expect(triggerEvents).toHaveLength(1);
+    expect(triggerEvents[0]!.payload).toMatchObject({ reason: 'rate-limited' });
+  });
 
   // (b) seen sets seenAt and does NOT clear needsAttention.
   it('seen sets seenAt but never clears needsAttention', () => {

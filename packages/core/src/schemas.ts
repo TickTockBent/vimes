@@ -14,7 +14,10 @@ export const sessionRecordSchema = z.object({
   liveness: z.enum(['spawning', 'running', 'dormant', 'interrupted', 'dead']),
   needsAttention: z
     .object({
-      reason: z.enum(['gate', 'question', 'completed', 'stale', 'quarantined']),
+      // 'rate-limited' and 'brake' are reserved (rule 0.5): no setter emits
+      // them yet — 'rate-limited' lands with slice 5 (StopFailure/
+      // rate_limit_event), 'brake' with slice 7 (cascade guard).
+      reason: z.enum(['gate', 'question', 'completed', 'stale', 'quarantined', 'rate-limited', 'brake']),
       since: z.string(),
     })
     .nullable(),

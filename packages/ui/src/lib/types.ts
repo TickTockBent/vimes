@@ -4,7 +4,9 @@
 // re-declared narrowly here rather than imported.
 
 export type Liveness = 'spawning' | 'running' | 'dormant' | 'interrupted' | 'dead';
-export type AttentionReason = 'gate' | 'question' | 'completed' | 'stale' | 'quarantined';
+// 'rate-limited' and 'brake' are reserved (rule 0.5): no setter emits them
+// yet — 'rate-limited' lands with slice 5, 'brake' with slice 7.
+export type AttentionReason = 'gate' | 'question' | 'completed' | 'stale' | 'quarantined' | 'rate-limited' | 'brake';
 export type Custody = 'host' | 'external';
 
 export interface SessionRecord {
