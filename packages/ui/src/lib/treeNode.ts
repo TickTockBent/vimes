@@ -3,11 +3,11 @@
 // sessions projection. No fetch, no DOM — the FileTreeView owns those and feeds
 // results through here.
 //
-// NOTE (roots gap): there is no /api/files/roots endpoint on the daemon, and
-// adding one is out of scope for this UI-only step. Roots are therefore derived
-// from the live sessions' cwds only. Consequence: a configured projectRoot with
-// no live session in it is not offered as a starting point. Documented as a gap
-// for the orchestrator; a trivial GET /api/files/roots would close it.
+// Roots: GET /api/files/roots (packages/daemon/src/fileApi.ts) now returns the
+// daemon's actual allowlist (config.projectRoots ∪ live-session cwds), fetched
+// once by the store and cached. `effectiveRoots` below prefers that fetched
+// list; `deriveRoots` (session cwds only) remains as the fallback for the
+// window before the first fetch lands — see vimesStore.ts's `roots` ref.
 
 import type { SessionRecord } from './types.js';
 
@@ -106,4 +106,25 @@ export function deriveRoots(sessions: Record<string, SessionRecord>): string[] {
     }
   }
   return [...roots].sort((a, b) => a.localeCompare(b));
+}
+
+// Defensively parse a GET /api/files/roots response body: a malformed or
+// unexpected shape degrades to null (the caller falls back to deriveRoots via
+// effectiveRoots) rather than throwing.
+export function parseRootsPayload(body: unknown): string[] | null {
+  if (typeof body !== 'object' || body === null) {
+    return null;
+  }
+  const roots = (body as { roots?: unknown }).roots;
+  if (!Array.isArray(roots) || !roots.every((entry) => typeof entry === 'string')) {
+    return null;
+  }
+  return roots;
+}
+
+// The roots a view should offer: the daemon's fetched allowlist once it has
+// landed (may legitimately be `[]` if nothing is configured/live), falling
+// back to session-cwd derivation only while no fetch has completed yet.
+export function effectiveRoots(fetchedRoots: string[] | null, sessions: Record<string, SessionRecord>): string[] {
+  return fetchedRoots !== null ? fetchedRoots : deriveRoots(sessions);
 }

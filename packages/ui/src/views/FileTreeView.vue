@@ -1,14 +1,14 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue';
 import { useVimesStore } from '../stores/vimesStore.js';
-import { deriveRoots, deriveTreeRows, parentDir, type RawTreeEntry, type TreeRow } from '../lib/treeNode.js';
+import { deriveTreeRows, effectiveRoots, parentDir, type RawTreeEntry, type TreeRow } from '../lib/treeNode.js';
 
 const emit = defineEmits<{ open: [path: string]; back: []; search: [] }>();
 const store = useVimesStore();
 
-// Roots come from live-session cwds (no /api/files/roots endpoint exists — see
-// treeNode.ts). A configured projectRoot with no live session won't appear.
-const roots = computed(() => deriveRoots(store.sessions));
+// Roots prefer the daemon's fetched allowlist (GET /api/files/roots), falling
+// back to live-session cwds only until that first fetch lands (see treeNode.ts).
+const roots = computed(() => effectiveRoots(store.roots, store.sessions));
 
 type LoadState = 'empty' | 'loading' | 'ready' | 'error';
 const loadState = ref<LoadState>('empty');

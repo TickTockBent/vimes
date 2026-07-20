@@ -2,6 +2,7 @@ import { defineStore } from 'pinia';
 import { reactive, ref } from 'vue';
 import { parseServerEnvelope, serializeClientEnvelope, type ClientEnvelope, type ServerEnvelope } from '../lib/envelope.js';
 import { advanceOffset, deframeTerminalOutput, frameTerminalInputText } from '../lib/terminalFraming.js';
+import { parseRootsPayload } from '../lib/treeNode.js';
 import type { EventRecord, SessionRecord } from '../lib/types.js';
 import { derivePushState, type PushUiState } from '../lib/pushState.js';
 import { decideReconnectAction, shouldProbeHealth, type HealthProbeOutcome } from '../lib/reconnectDecision.js';
@@ -57,6 +58,10 @@ export type ConnectionStatus = 'connecting' | 'open' | 'reconnecting';
 
 export const useVimesStore = defineStore('vimes', () => {
   const sessions = ref<Record<string, SessionRecord>>({});
+  // The daemon's live allowlist (config.projectRoots ∪ live-session cwds), fetched
+  // from GET /api/files/roots. Null until the first fetch lands — views prefer
+  // this over deriveRoots(sessions) once populated (see treeNode.ts effectiveRoots).
+  const roots = ref<string[] | null>(null);
   const connectionStatus = ref<ConnectionStatus>('connecting');
   const catchingUp = ref(false);
   const lastRefusal = ref<{ refusedOp: string; reason: string } | null>(null);
@@ -134,6 +139,25 @@ export const useVimesStore = defineStore('vimes', () => {
     } catch {
       // Transient network hiccup — the next scheduled refresh (or an event on
       // a subscribed stream) retries; the log is the truth, not this cache.
+    }
+  }
+
+  // Refreshed on load and after a spawn/discover — the only ops that can widen
+  // the allowlist (a newly-live session's cwd). A transient failure just leaves
+  // the previous roots (or the deriveRoots fallback) in place.
+  async function fetchRoots(): Promise<void> {
+    try {
+      const response = await fetch('/api/files/roots', { credentials: 'same-origin' });
+      if (!response.ok) {
+        return;
+      }
+      const parsed = parseRootsPayload(await response.json());
+      if (parsed !== null) {
+        roots.value = parsed;
+      }
+    } catch {
+      // Transient network hiccup — effectiveRoots() falls back to
+      // deriveRoots(sessions) until a later fetch succeeds.
     }
   }
 
@@ -216,13 +240,18 @@ export const useVimesStore = defineStore('vimes', () => {
         const spawnResolution = resolveSpawnedPending(pendingSpawn, envelope.appSessionId);
         pendingSpawn = spawnResolution.next;
         spawnResolution.fire?.();
+        // A spawn widens the allowlist (the new session's cwd) — refresh roots.
+        void fetchRoots();
         return;
       }
       case 'discovered': {
         // A discover scan may have minted new mirrored sessions — refresh the
         // home list so they appear (the resulting session_created events on
-        // unsubscribed streams would not otherwise trigger a refresh).
+        // unsubscribed streams would not otherwise trigger a refresh), and
+        // refresh roots (discovery can widen the allowlist the same way a
+        // spawn does).
         scheduleSessionsRefresh();
+        void fetchRoots();
         return;
       }
       case 'search_result': {
@@ -494,6 +523,7 @@ export const useVimesStore = defineStore('vimes', () => {
     }
     void refreshPushState();
     void refreshSessions();
+    void fetchRoots();
     connect();
   }
 
@@ -675,6 +705,7 @@ export const useVimesStore = defineStore('vimes', () => {
 
   return {
     sessions,
+    roots,
     connectionStatus,
     catchingUp,
     lastRefusal,

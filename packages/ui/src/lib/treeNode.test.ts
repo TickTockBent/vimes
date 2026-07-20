@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { deriveRoots, deriveTreeRows, formatSize, joinPath, parentDir, type RawTreeEntry } from './treeNode.js';
+import {
+  deriveRoots,
+  deriveTreeRows,
+  effectiveRoots,
+  formatSize,
+  joinPath,
+  parentDir,
+  parseRootsPayload,
+  type RawTreeEntry,
+} from './treeNode.js';
 import type { SessionRecord } from './types.js';
 
 describe('joinPath / parentDir', () => {
@@ -74,5 +83,54 @@ describe('deriveRoots', () => {
 
   it('is empty when there are no live sessions', () => {
     expect(deriveRoots({})).toEqual([]);
+  });
+});
+
+describe('parseRootsPayload', () => {
+  it('accepts a well-formed { roots: string[] } body', () => {
+    expect(parseRootsPayload({ roots: ['/a', '/b'] })).toEqual(['/a', '/b']);
+  });
+
+  it('accepts an empty roots array (a legitimately empty allowlist)', () => {
+    expect(parseRootsPayload({ roots: [] })).toEqual([]);
+  });
+
+  it('degrades to null on a malformed body rather than throwing', () => {
+    expect(parseRootsPayload(null)).toBeNull();
+    expect(parseRootsPayload(undefined)).toBeNull();
+    expect(parseRootsPayload('nope')).toBeNull();
+    expect(parseRootsPayload({})).toBeNull();
+    expect(parseRootsPayload({ roots: 'not-an-array' })).toBeNull();
+    expect(parseRootsPayload({ roots: [1, 2] })).toBeNull();
+  });
+});
+
+describe('effectiveRoots', () => {
+  function session(overrides: Partial<SessionRecord>): SessionRecord {
+    return {
+      appSessionId: overrides.appSessionId ?? 'id',
+      channel: 'sdk',
+      cwd: overrides.cwd ?? '/home/wes/proj',
+      liveness: overrides.liveness ?? 'running',
+      needsAttention: null,
+      name: null,
+      createdAt: '2026-07-20T00:00:00Z',
+      ...overrides,
+    };
+  }
+
+  it('prefers the fetched roots once populated, even over live-session cwds', () => {
+    const sessions: Record<string, SessionRecord> = { a: session({ cwd: '/home/wes/from-session' }) };
+    expect(effectiveRoots(['/home/wes/configured'], sessions)).toEqual(['/home/wes/configured']);
+  });
+
+  it('honors a legitimately empty fetched list rather than falling back', () => {
+    const sessions: Record<string, SessionRecord> = { a: session({ cwd: '/home/wes/from-session' }) };
+    expect(effectiveRoots([], sessions)).toEqual([]);
+  });
+
+  it('falls back to deriveRoots(sessions) only while nothing has been fetched yet (null)', () => {
+    const sessions: Record<string, SessionRecord> = { a: session({ cwd: '/home/wes/from-session' }) };
+    expect(effectiveRoots(null, sessions)).toEqual(['/home/wes/from-session']);
   });
 });
