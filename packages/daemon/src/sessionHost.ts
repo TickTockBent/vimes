@@ -615,6 +615,18 @@ export class SessionHost implements HookHost {
     return this.liveProcesses.size;
   }
 
+  // The cwds of every currently-live process — the File API/Search allowlist is
+  // `config.projectRoots ∪ these` (spec §3.4). Returned as a plain array so the
+  // composition point (createDaemon) owns the union; nothing reaches into the
+  // registry directly.
+  liveSessionCwds(): string[] {
+    const cwds = new Set<string>();
+    for (const live of this.liveProcesses.values()) {
+      cwds.add(live.cwd);
+    }
+    return [...cwds];
+  }
+
   rawBytesReceived(appSessionId: string): number {
     return this.rawByteCounts.get(appSessionId) ?? 0;
   }

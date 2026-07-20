@@ -79,6 +79,26 @@ export {
   defaultProjectsRoot,
 } from './transcriptPaths.js';
 export {
+  resolveWithinRoots,
+  realpathProbe,
+  type ResolveResult,
+  type ResolveOk,
+  type ResolveFail,
+  type RealpathProbe,
+} from './filePaths.js';
+export { registerFileApi, writeFileAtomic, type FileApiDeps } from './fileApi.js';
+export {
+  SearchService,
+  createRipgrepPreflight,
+  defaultRipgrepSpawner,
+  type SearchServiceDeps,
+  type RipgrepSpawner,
+  type RipgrepProcess,
+  type RipgrepPreflight,
+  type SearchFlags,
+  type SearchSend,
+} from './search.js';
+export {
   ACCESS_JWT_HEADER,
   AUTH_REJECTED_EVENT_TYPE,
   createCloudflareAccessVerifier,

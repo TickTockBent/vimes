@@ -7,6 +7,7 @@ import type { EventRecord, EventStore } from '@vimes/core';
 import { EventRouter } from '@vimes/core';
 import type { SessionHost } from './sessionHost.js';
 import { isValidPushSubscription, type PushSubscriptionRecord } from './pushService.js';
+import type { SearchService } from './search.js';
 
 // The narrow push-subscription sink the hub needs (PushSubscriptions implements
 // it). Keeps the hub decoupled from the sqlite cache class.
@@ -83,6 +84,39 @@ const pushUnsubscribeEnvelopeSchema = z.object({
   op: z.literal('push_unsubscribe'),
   endpoint: z.string().min(1),
 });
+// v0.4 (slice 3 step 1): search + preview-gated replace ops. Flags are LOOSE
+// (rule 0.6) — an unknown flag rides through and is ignored by the rg arg builder.
+const searchFlagsSchema = z
+  .object({
+    caseInsensitive: z.boolean().optional(),
+    word: z.boolean().optional(),
+    regex: z.boolean().optional(),
+  })
+  .passthrough()
+  .optional();
+const searchEnvelopeSchema = z.object({
+  op: z.literal('search'),
+  searchId: z.string().min(1),
+  root: z.string().min(1),
+  query: z.string().min(1),
+  flags: searchFlagsSchema,
+});
+const searchCancelEnvelopeSchema = z.object({
+  op: z.literal('search_cancel'),
+  searchId: z.string().min(1),
+});
+const replacePreviewEnvelopeSchema = z.object({
+  op: z.literal('replace_preview'),
+  searchId: z.string().min(1),
+  root: z.string().min(1),
+  query: z.string().min(1),
+  replacement: z.string(),
+  flags: searchFlagsSchema,
+});
+const replaceApplyEnvelopeSchema = z.object({
+  op: z.literal('replace_apply'),
+  previewId: z.string().min(1),
+});
 
 const controlEnvelopeSchema = z.discriminatedUnion('op', [
   subscribeEnvelopeSchema,
@@ -99,6 +133,10 @@ const controlEnvelopeSchema = z.discriminatedUnion('op', [
   discoverEnvelopeSchema,
   pushSubscribeEnvelopeSchema,
   pushUnsubscribeEnvelopeSchema,
+  searchEnvelopeSchema,
+  searchCancelEnvelopeSchema,
+  replacePreviewEnvelopeSchema,
+  replaceApplyEnvelopeSchema,
 ]);
 
 // A resolved cwd must sit within one of the resolved allowlisted roots. Empty
@@ -115,6 +153,7 @@ function isWithinProjectRoots(cwd: string, projectRoots: readonly string[]): boo
 }
 
 interface HubConnection {
+  id: string;
   socket: WebSocket;
   subscriptions: Map<string, () => void>;
   closed: boolean;
@@ -148,6 +187,9 @@ export interface WsHubDeps {
   // The push subscription cache (step 3). Absent → push_subscribe/unsubscribe
   // refuse as not-implemented.
   pushSubscriptions?: PushSubscriptionSink;
+  // Search + replace service (slice 3 step 1). Absent → search/replace ops refuse
+  // as not-implemented.
+  searchService?: SearchService;
 }
 
 export class WsHub {
@@ -158,8 +200,10 @@ export class WsHub {
   private readonly sessionHost: SessionHost | undefined;
   private readonly projectRoots: readonly string[];
   private readonly pushSubscriptions: PushSubscriptionSink | undefined;
+  private readonly searchService: SearchService | undefined;
   private readonly webSocketServer: WebSocketServer;
   private readonly connections = new Set<HubConnection>();
+  private connectionCounter = 0;
 
   constructor(deps: WsHubDeps) {
     this.router = deps.router;
@@ -169,6 +213,7 @@ export class WsHub {
     this.sessionHost = deps.sessionHost;
     this.projectRoots = deps.projectRoots ?? [];
     this.pushSubscriptions = deps.pushSubscriptions;
+    this.searchService = deps.searchService;
     this.webSocketServer = new WebSocketServer({ noServer: true });
   }
 
@@ -199,23 +244,28 @@ export class WsHub {
   }
 
   private registerConnection(socket: WebSocket): void {
-    const connection: HubConnection = { socket, subscriptions: new Map(), closed: false };
+    this.connectionCounter += 1;
+    const connection: HubConnection = {
+      id: `conn-${this.connectionCounter}`,
+      socket,
+      subscriptions: new Map(),
+      closed: false,
+    };
     this.connections.add(connection);
 
+    const tearDown = (): void => {
+      this.tearDownSubscriptions(connection);
+      // Kill any in-flight rg searches this connection owned (no orphaned procs).
+      this.searchService?.disposeConnection(connection.id);
+      connection.closed = true;
+      this.connections.delete(connection);
+    };
     socket.on('message', (rawData: RawData) => {
       this.handleMessage(connection, rawData);
     });
-    socket.on('close', () => {
-      this.tearDownSubscriptions(connection);
-      connection.closed = true;
-      this.connections.delete(connection);
-    });
+    socket.on('close', tearDown);
     // A socket-level error should not crash the daemon; treat like a close.
-    socket.on('error', () => {
-      this.tearDownSubscriptions(connection);
-      connection.closed = true;
-      this.connections.delete(connection);
-    });
+    socket.on('error', tearDown);
   }
 
   private tearDownSubscriptions(connection: HubConnection): void {
@@ -382,6 +432,58 @@ export class WsHub {
           return;
         }
         store.remove(control.endpoint);
+        return;
+      }
+      case 'search': {
+        const search = this.searchService;
+        if (search === undefined) {
+          this.refuse(connection, 'search', 'not-implemented');
+          return;
+        }
+        search.startSearch(
+          connection.id,
+          { searchId: control.searchId, root: control.root, query: control.query, flags: control.flags },
+          (message) => this.sendControl(connection, message),
+        );
+        return;
+      }
+      case 'search_cancel': {
+        const search = this.searchService;
+        if (search === undefined) {
+          this.refuse(connection, 'search_cancel', 'not-implemented');
+          return;
+        }
+        search.cancelSearch(connection.id, { searchId: control.searchId });
+        return;
+      }
+      case 'replace_preview': {
+        const search = this.searchService;
+        if (search === undefined) {
+          this.refuse(connection, 'replace_preview', 'not-implemented');
+          return;
+        }
+        search.replacePreview(
+          connection.id,
+          {
+            searchId: control.searchId,
+            root: control.root,
+            query: control.query,
+            replacement: control.replacement,
+            flags: control.flags,
+          },
+          (message) => this.sendControl(connection, message),
+        );
+        return;
+      }
+      case 'replace_apply': {
+        const search = this.searchService;
+        if (search === undefined) {
+          this.refuse(connection, 'replace_apply', 'not-implemented');
+          return;
+        }
+        void search.replaceApply(connection.id, { previewId: control.previewId }, (message) =>
+          this.sendControl(connection, message),
+        );
         return;
       }
     }
