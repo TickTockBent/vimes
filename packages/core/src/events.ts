@@ -113,11 +113,17 @@ export const transitionRejectedPayloadSchema = z.object({
 
 // requestId is optional (not required): harness profiles emit gate_fired
 // without it, while the daemon's real SDK gate carries it so the phone can
-// answer this exact gate (sessionHost.ts's handleGate).
+// answer this exact gate (sessionHost.ts's handleGate). toolName/target are
+// optional on the same footing (rule 0.5 — land the shape now): the daemon's
+// real gate populates them from the SDK tool INPUT so the phone can headline
+// WHICH tool + WHAT target is being gated (a path approved unread, smoke #4);
+// harness profiles omit them, keeping the scenario double-run byte-identical.
 export const gateFiredPayloadSchema = z.object({
   appSessionId: z.string(),
   prompt: z.string(),
   requestId: z.string().optional(),
+  toolName: z.string().optional(),
+  target: z.string().optional(),
 });
 export const questionAskedPayloadSchema = z.object({ appSessionId: z.string(), prompt: z.string() });
 export const runCompletedPayloadSchema = z.object({ appSessionId: z.string() });

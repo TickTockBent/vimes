@@ -4,6 +4,11 @@ export interface GateCard {
   requestId: string;
   appSessionId: string;
   prompt: string;
+  // Optional structured headline (daemon's real gate populates these from the
+  // tool INPUT; harness/older gate_fired events omit them). When present the
+  // card shows a prominent tool + target headline above the prompt.
+  toolName?: string;
+  target?: string;
   status: 'fired' | 'answering';
 }
 
@@ -17,13 +22,23 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 // gateFiredPayloadSchema, so requestId survives to the client). Observed
 // truth over declared truth (rule 0.7): the core payload schema only
 // declares {appSessionId, prompt}.
-function asGateFired(event: EventRecord): { appSessionId: string; prompt: string; requestId: string } | null {
+function asGateFired(
+  event: EventRecord,
+): { appSessionId: string; prompt: string; requestId: string; toolName?: string; target?: string } | null {
   if (!isRecord(event.payload)) {
     return null;
   }
-  const { appSessionId, prompt, requestId } = event.payload;
+  const { appSessionId, prompt, requestId, toolName, target } = event.payload;
   if (typeof appSessionId === 'string' && typeof prompt === 'string' && typeof requestId === 'string') {
-    return { appSessionId, prompt, requestId };
+    return {
+      appSessionId,
+      prompt,
+      requestId,
+      // Same optional-string read as requestId above: present only on the
+      // daemon's real gate, absent (undefined) on harness/older events.
+      ...(typeof toolName === 'string' ? { toolName } : {}),
+      ...(typeof target === 'string' ? { target } : {}),
+    };
   }
   return null;
 }
@@ -53,6 +68,8 @@ export function deriveGateCards(events: readonly EventRecord[], answeringRequest
           requestId: fired.requestId,
           appSessionId: fired.appSessionId,
           prompt: fired.prompt,
+          ...(fired.toolName !== undefined ? { toolName: fired.toolName } : {}),
+          ...(fired.target !== undefined ? { target: fired.target } : {}),
           status: 'fired',
         });
       }

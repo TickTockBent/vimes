@@ -26,6 +26,7 @@ import {
   CLAUDE_SDK_CAPABILITIES,
   SessionHost,
   scrubClaudeEnv,
+  extractGateTarget,
   truncateGatePrompt,
   type PtyLike,
   type PtySpawnFactory,
@@ -286,6 +287,10 @@ describe('SessionHost — SDK channel', () => {
         appSessionId,
         prompt: 'Claude wants to run ls',
         requestId: 'req-42',
+        // The daemon's real gate now headlines the structured tool + target
+        // (from the SDK tool INPUT, not the prompt): this gate is a Bash `ls`.
+        toolName: 'Bash',
+        target: 'ls',
       });
       // rule 0.7: the widened core schema (packages/core/src/events.ts) must
       // accept the daemon's real wire payload, requestId included.
@@ -552,6 +557,29 @@ describe('SessionHost — gate prompt', () => {
     expect(truncated.length).toBe(160);
     expect(truncated.endsWith('…')).toBe(true);
     expect(truncated.slice(0, 159)).toBe('a'.repeat(159));
+  });
+
+  it('extractGateTarget: maps each known tool to its structured input field', () => {
+    expect(extractGateTarget('Write', { file_path: '/tmp/a.txt' })).toBe('/tmp/a.txt');
+    expect(extractGateTarget('Edit', { file_path: '/tmp/a.txt' })).toBe('/tmp/a.txt');
+    expect(extractGateTarget('MultiEdit', { file_path: '/tmp/a.txt' })).toBe('/tmp/a.txt');
+    expect(extractGateTarget('Read', { file_path: '/tmp/a.txt' })).toBe('/tmp/a.txt');
+    expect(extractGateTarget('NotebookEdit', { file_path: '/tmp/nb.ipynb' })).toBe('/tmp/nb.ipynb');
+    expect(extractGateTarget('Bash', { command: 'rm -rf /tmp/x' })).toBe('rm -rf /tmp/x');
+    expect(extractGateTarget('Glob', { pattern: '**/*.ts' })).toBe('**/*.ts');
+    expect(extractGateTarget('Grep', { pattern: 'TODO' })).toBe('TODO');
+  });
+
+  it('extractGateTarget: an unknown tool has no single target → undefined', () => {
+    expect(extractGateTarget('WebFetch', { url: 'https://example.com' })).toBeUndefined();
+    expect(extractGateTarget('SomeMcpTool', { file_path: '/tmp/a.txt' })).toBeUndefined();
+  });
+
+  it('extractGateTarget: a non-string field is guarded (the SDK input is untyped) → undefined', () => {
+    expect(extractGateTarget('Write', {})).toBeUndefined();
+    expect(extractGateTarget('Write', { file_path: 42 })).toBeUndefined();
+    expect(extractGateTarget('Bash', { command: null })).toBeUndefined();
+    expect(extractGateTarget('Grep', { pattern: ['not', 'a', 'string'] })).toBeUndefined();
   });
 
   it('gate prompt: short toolName + input JSON is kept verbatim when title absent', async () => {

@@ -23,7 +23,13 @@ export interface TerminalStartRoot {
   root: string;
 }
 
+export interface TerminalStartCwd {
+  ok: true;
+  cwd: string;
+}
+
 export type TerminalStartRootDecision = TerminalStartRoot | TerminalStartError;
+export type TerminalStartCwdDecision = TerminalStartCwd | TerminalStartError;
 export type TerminalMountDecision = { ok: true } | TerminalStartError;
 
 // Phase 1 — is there a root to open the shell at? selectedRoot wins when set;
@@ -35,6 +41,26 @@ export function decideStartRoot(selectedRoot: string, firstRoot: string | undefi
     return { ok: false, error: 'Select a workspace root first.' };
   }
   return { ok: true, root };
+}
+
+// Compose the cwd a new shell opens at from the editable free-text field, with
+// the selected root as the fallback. A non-empty (trimmed) field wins — this is
+// how the user opens a shell at a SUBPATH, not only at a root. An empty field
+// falls back to the selected root (phase-1 root decision). NO client-side path
+// validation beyond non-empty: the daemon's term_open routes the cwd through
+// resolveWithinRoots and refuses anything outside the allowlist — that server
+// wall is the single authoritative boundary (we do not duplicate it here).
+export function decideStartCwd(
+  cwdFieldValue: string,
+  selectedRoot: string,
+  firstRoot: string | undefined,
+): TerminalStartCwdDecision {
+  const trimmedCwd = cwdFieldValue.trim();
+  if (trimmedCwd.length > 0) {
+    return { ok: true, cwd: trimmedCwd };
+  }
+  const rootDecision = decideStartRoot(selectedRoot, firstRoot);
+  return rootDecision.ok ? { ok: true, cwd: rootDecision.root } : rootDecision;
 }
 
 // Phase 2 — after `started` flips true and nextTick() lets the mount target

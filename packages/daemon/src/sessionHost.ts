@@ -277,6 +277,38 @@ export function truncateGatePrompt(text: string): string {
   return `${text.slice(0, GATE_PROMPT_MAX - 1)}…`;
 }
 
+// The gate headline's target: pull the human-meaningful subject of a tool call
+// out of the SDK's structured tool INPUT object (rule 0.8 — structured data, we
+// never parse screen bytes or the prompt string). Mapping is per known tool; the
+// field must actually be a string or we return undefined (guard the type — the
+// input is an untyped SDK payload). An unknown tool has no meaningful single
+// target, so it also returns undefined and the card falls back to the prompt.
+export function extractGateTarget(
+  toolName: string,
+  input: Record<string, unknown>,
+): string | undefined {
+  let candidateField: unknown;
+  switch (toolName) {
+    case 'Write':
+    case 'Edit':
+    case 'MultiEdit':
+    case 'Read':
+    case 'NotebookEdit':
+      candidateField = input.file_path;
+      break;
+    case 'Bash':
+      candidateField = input.command;
+      break;
+    case 'Glob':
+    case 'Grep':
+      candidateField = input.pattern;
+      break;
+    default:
+      return undefined;
+  }
+  return typeof candidateField === 'string' ? candidateField : undefined;
+}
+
 // Preflight cache TTL — a spawn burst re-uses one probe result (E3). Short, so a
 // credential change is picked up promptly.
 const PREFLIGHT_CACHE_TTL_MS = 5_000;
@@ -441,7 +473,11 @@ class ClaudeSdkAdapter implements SessionAdapter {
       typeof options.title === 'string' && options.title.length > 0
         ? options.title
         : truncateGatePrompt(`${toolName}: ${JSON.stringify(input)}`);
-    const gateEvent = gateFired({ appSessionId, prompt, requestId });
+    // Surface toolName + a structured target (from the tool INPUT, never the
+    // prompt string) so the phone can headline WHAT is being gated. `prompt`
+    // stays exactly as above — it remains the fallback/detail line.
+    const target = extractGateTarget(toolName, input);
+    const gateEvent = gateFired({ appSessionId, prompt, requestId, toolName, target });
     this.services.emit(withNotificationTrigger(gateEvent));
     return new Promise<SdkPermissionResult>((resolve) => {
       this.pendingGates.set(requestId, { appSessionId, input, resolve });
