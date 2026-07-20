@@ -17,6 +17,7 @@ import { CountingIdSource, SteppingClock } from '@vimes/core';
 import type { AccessVerifier } from './auth.js';
 import { createDaemon, type Daemon } from './app.js';
 import type { DaemonConfig } from './config.js';
+import type { PtyLike, PtySpawnFactory } from './sessionHost.js';
 
 // ─── File API over a live daemon + real mkdtemp roots (spec §3.4/§3.11) ───────
 
@@ -26,6 +27,14 @@ let databaseFileCounter = 0;
 const permissiveVerifier: AccessVerifier = { verify: async () => ({ ok: true }) };
 const ANY_TOKEN = 'valid-token-stub';
 const FIVE_MB = 5 * 1024 * 1024;
+
+// A fake PTY that satisfies the spawn seam without spawning anything real (no
+// Claude/shell in CI) — same shape as wsHub.test.ts's fixture, used here only to
+// put a live session cwd on the board for the /api/files/roots test.
+function makeFakePty(): PtyLike {
+  return { write: () => {}, kill: () => {}, onData: () => {}, onExit: () => {} };
+}
+const fakePtySpawnFactory: PtySpawnFactory = () => makeFakePty();
 
 function nextDatabasePath(): string {
   databaseFileCounter += 1;
@@ -53,12 +62,16 @@ function buildConfig(projectRoots: string[], overrides: Partial<DaemonConfig> = 
   };
 }
 
-function startDaemon(config: DaemonConfig): Promise<Daemon> {
+function startDaemon(
+  config: DaemonConfig,
+  overrides: Partial<Parameters<typeof createDaemon>[0]> = {},
+): Promise<Daemon> {
   const daemon = createDaemon({
     config,
     clock: new SteppingClock('2026-01-01T00:00:00.000Z', 1000),
     ids: new CountingIdSource(),
     verifier: permissiveVerifier,
+    ...overrides,
   });
   return daemon.start().then(() => daemon);
 }
@@ -84,6 +97,39 @@ function makeRoot(label: string): string {
 
 afterAll(() => {
   rmSync(temporaryDirectory, { recursive: true, force: true });
+});
+
+describe('File API — roots', () => {
+  it('returns config.projectRoots deduped and sorted', async () => {
+    const rootA = makeRoot('rootsA');
+    const rootB = makeRoot('rootsB');
+    // Deliberately unsorted with a duplicate — the endpoint must dedupe+sort.
+    const daemon = await startDaemon(buildConfig([rootB, rootA, rootA]));
+    try {
+      const response = await apiFetch(daemon, '/api/files/roots');
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as { roots: string[] };
+      expect(body.roots).toEqual([rootA, rootB].sort((a, b) => a.localeCompare(b)));
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  it('reflects a live session cwd alongside the configured roots', async () => {
+    const root = makeRoot('rootslive');
+    const sessionCwd = join(root, 'sub');
+    mkdirSync(sessionCwd);
+    const daemon = await startDaemon(buildConfig([root]), { ptySpawnFactory: fakePtySpawnFactory });
+    try {
+      const spawnResult = daemon.sessionHost.spawnSession({ channel: 'pty', cwd: sessionCwd });
+      expect('refused' in spawnResult).toBe(false);
+      const response = await apiFetch(daemon, '/api/files/roots');
+      const body = (await response.json()) as { roots: string[] };
+      expect(body.roots).toEqual([root, sessionCwd].sort((a, b) => a.localeCompare(b)));
+    } finally {
+      await daemon.stop();
+    }
+  });
 });
 
 describe('File API — tree', () => {

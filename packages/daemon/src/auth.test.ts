@@ -166,7 +166,7 @@ function assertZeroProductBytes(body: string): void {
 }
 
 describe('I14 auth matrix — real verifier over a locally-minted JWKS', () => {
-  const HTTP_PATHS = ['/api/health', '/api/projections/sessions', '/'];
+  const HTTP_PATHS = ['/api/health', '/api/projections/sessions', '/api/files/roots', '/'];
 
   interface InvalidCase {
     label: string;

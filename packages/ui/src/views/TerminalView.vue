@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue';
 import { useVimesStore } from '../stores/vimesStore.js';
-import { deriveRoots } from '../lib/treeNode.js';
+import { effectiveRoots } from '../lib/treeNode.js';
+import { decideMountReady, decideStartRoot } from '../lib/terminalStart.js';
 import type { TerminalHandle } from '../lib/xterm-setup.js';
 
 // Raw PTY shell — the ESCAPE HATCH (docs/design-directions.md): functional on
@@ -12,9 +13,10 @@ import type { TerminalHandle } from '../lib/xterm-setup.js';
 const emit = defineEmits<{ back: [] }>();
 const store = useVimesStore();
 
-// cwd candidates come from live-session cwds (same source the file tree uses; no
-// roots endpoint exists). A shell can only be rooted inside the daemon's allowlist.
-const roots = computed(() => deriveRoots(store.sessions));
+// cwd candidates prefer the daemon's fetched allowlist (GET /api/files/roots),
+// falling back to live-session cwds only until that first fetch lands. A shell
+// can only be rooted inside the daemon's allowlist either way.
+const roots = computed(() => effectiveRoots(store.roots, store.sessions));
 const selectedRoot = ref<string>('');
 const started = ref(false);
 const lostNotice = ref(false);
@@ -40,17 +42,34 @@ const statusLabel = computed(() => {
 });
 
 async function start(): Promise<void> {
-  const root = selectedRoot.value || roots.value[0];
-  if (root === undefined || root.length === 0 || terminalElement.value === null) {
+  // Phase 1: is there a root at all? Must fail visibly, never silently.
+  const rootDecision = decideStartRoot(selectedRoot.value, roots.value[0]);
+  if (!rootDecision.ok) {
+    loadError.value = rootDecision.error;
     return;
   }
-  started.value = true;
-  lostNotice.value = false;
   loadError.value = null;
+  lostNotice.value = false;
+  // Flip started FIRST, then wait a tick — the mount target lives behind
+  // v-else="!started" in the template, so it does not exist in the DOM until
+  // this render happens. Reading terminalElement.value before this point (the
+  // original bug) always saw null and returned with no error.
+  started.value = true;
+  await nextTick();
+  const element = terminalElement.value;
+  // Phase 2: did the mount target actually render? Must also fail visibly.
+  const mountDecision = decideMountReady(element !== null);
+  if (!mountDecision.ok || element === null) {
+    loadError.value = mountDecision.ok
+      ? 'Could not prepare the terminal — try again.'
+      : mountDecision.error;
+    started.value = false;
+    return;
+  }
   try {
     // The ONLY place xterm.js is loaded — a dynamic import keeps it in a lazy chunk.
     const { mountTerminal } = await import('../lib/xterm-setup.js');
-    const terminal = mountTerminal(terminalElement.value);
+    const terminal = mountTerminal(element);
     handle.value = terminal;
 
     store.setTerminalSinks({
@@ -70,7 +89,7 @@ async function start(): Promise<void> {
     terminal.onResize(({ cols, rows }) => store.resizeTerminal(cols, rows));
 
     const dimensions = terminal.fit();
-    store.openTerminal(root);
+    store.openTerminal(rootDecision.root);
     store.resizeTerminal(dimensions.cols, dimensions.rows);
     terminal.focus();
 
@@ -78,7 +97,7 @@ async function start(): Promise<void> {
     resizeObserver = new ResizeObserver(() => {
       handle.value?.fit();
     });
-    resizeObserver.observe(terminalElement.value);
+    resizeObserver.observe(element);
   } catch {
     loadError.value = 'Could not load the terminal.';
     started.value = false;

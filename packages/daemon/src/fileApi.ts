@@ -94,6 +94,16 @@ async function collectZipEntries(
 export function registerFileApi(app: Hono, deps: FileApiDeps): void {
   const realpath = deps.realpath ?? realpathProbe;
 
+  // GET /api/files/roots — the daemon's current allowlist (config.projectRoots ∪
+  // live-session cwds), deduped and sorted. Lets a client (terminal picker, file
+  // tree) offer the actual configured roots rather than only the cwds of
+  // sessions that happen to have run — the SAME union deps.getAllowedRoots
+  // already composes for every other route here, reused rather than re-derived.
+  app.get('/api/files/roots', (context) => {
+    const roots = [...new Set(deps.getAllowedRoots())].sort((a, b) => a.localeCompare(b));
+    return context.json({ roots });
+  });
+
   // GET /api/files/tree?root=<r>&path=<p> — one level deep directory listing.
   app.get('/api/files/tree', async (context) => {
     const rootParam = context.req.query('root') ?? '';
