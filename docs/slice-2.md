@@ -1,13 +1,15 @@
 # Slice 2 — Session surface (operational plan)
 
-> **Status end of 2026-07-19 (night shift):** steps 0a–3 built, verified,
-> committed, DEPLOYED (329 tests; hooks ingress live on :4601; push
-> pipeline live, VAPID minted). Remaining: **step 4 — the on-device
-> checkpoint (Wes)** — plus S9/S10 carry-over and live hooks confirmation,
-> then the week-long exit gate. Night-shift defaults awaiting ratification:
-> design principles 9–10, attention reasons 'rate-limited'/'brake'
-> (reserved, no setters). Slice-3 skeleton drafted, construction gated on
-> the checkpoint + Wes's pipelining call.
+> **Status: COMPLETE 2026-07-20.** Steps 0a–3 built, verified, deployed.
+> On-device checkpoint PASSED (locked-phone gate-to-buzz sub-second; auth /
+> hooks-live / custody / push all confirmed against real Claude). S9 pass;
+> S10 I3 no-fork verified on disk. **Exit gate SATISFIED per D20** — the
+> ceremonial week is retired; the platform is validated live and gets its
+> continuous real-use pressure as slice 3+ build on it. Defaults ratified
+> 2026-07-20 (principles 9–10, attention-reason reservation). Known
+> carry-forward: spawn-button-stuck-on-refusal bug (queued for next UI
+> deploy); mirrored-row liveness-badge polish; the three post-measurement
+> deploy decisions (roots scope, deploy sequencing, PWA-precache tradeoff).
 
 *Skeleton drafted 2026-07-19, against: spec §9 slice 2; the decomposition
 series (D7 hooks-first lean, D10 custody trio lean); D4/D14/D18 (decided

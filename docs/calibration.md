@@ -156,11 +156,11 @@ same second easily" (sub-1 s).** This is the spike's flagged worst case
 effectively immediately. **Slice-2 kill criterion (push unreliable on
 Android → halt) is NOT triggered — the pillar-5 promise lands.** Gate-D
 pin-readiness: the ⟨tune 10s gate-to-push-delivered⟩ and ⟨tune 60s
-gate-noticed⟩ intents both have enormous margin; the week-long exit gate now
-runs to confirm sustained reliability, not to discover feasibility. Bands
-pin after the week (a single instant reading proves the ceiling isn't a
-problem; the week defends against intermittent misses). Assumptions: single
-Android device, GitHub-IdP Access session valid, home tunnel, screen-locked.
+gate-noticed⟩ intents both have enormous margin; **push latency is deliberately UNPINNED (D20):** the real invariant is
+qualitative — delivery must not silently fail (confirmed) — not a defended
+millisecond band. No FAIL-able assertion on gate-to-buzz. Assumptions of the
+observation: single Android device, GitHub-IdP Access session valid, home
+tunnel, screen-locked.
 
 ## Budget table (`--report`)
 
