@@ -162,6 +162,25 @@ millisecond band. No FAIL-able assertion on gate-to-buzz. Assumptions of the
 observation: single Android device, GitHub-IdP Access session valid, home
 tunnel, screen-locked.
 
+### 2026-07-20 — queued findings (slice-3 resume)
+
+- **Test-infra flakiness (rule 0.4 — to harden):** `packages/daemon/src/
+  auth.test.ts` I14 matrix (real servers + JWKS crypto + WS upgrades) times
+  out at the default 5000 ms under CPU contention — observed 3/3 timeout
+  failures during a full-gate run while an agent + the live daemon competed;
+  passes 6/6 in isolation and on a quiet box. A flaky test in the CI
+  double-run gate is a liability as the suite grows. Fix: raise that test's
+  `testTimeout` (like the slice-0 I2 sweep's 30 s). Queued as a rider on the
+  next daemon-touching agent.
+- **Protocol gap (gate_response refusal correlation):** the `refused`
+  envelope carries no `requestId`, so a refused `gate_response` can only be
+  recovered UI-side by clearing the WHOLE `answeringRequestIds` set (agent's
+  flagged choice). Safe for the minimal one-gate-at-a-time page; imprecise
+  once many gates are concurrently pending (a refusal on one re-enables all).
+  Precise fix needs `requestId` on the refused envelope (daemon protocol
+  addition) — queued for the slice where concurrent gates become real
+  (6/7). Accepted as-is for now.
+
 ## Budget table (`--report`)
 
 Design-intent targets from spec §8, listed so nothing gets pinned from memory.

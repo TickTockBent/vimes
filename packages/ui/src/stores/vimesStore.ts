@@ -6,6 +6,13 @@ import { derivePushState, type PushUiState } from '../lib/pushState.js';
 import { decideReconnectAction, shouldProbeHealth, type HealthProbeOutcome } from '../lib/reconnectDecision.js';
 import type { SearchFlags } from '../lib/envelope.js';
 import type { SearchResultLine } from '../lib/searchGroup.js';
+import {
+  isGateResponseRefusal,
+  resolveRefusedPending,
+  resolveSpawnedPending,
+  shouldSearchRefusalError,
+  type SpawnPendingState,
+} from '../lib/refusalRecovery.js';
 
 // The single shared WS connection (docs/slice-1.md step-3 scope): one socket
 // multiplexes every subscribed stream; per-stream lastSeq is tracked so a
@@ -82,7 +89,10 @@ export const useVimesStore = defineStore('vimes', () => {
   let consecutiveWsFailures = 0;
   const subscribedStreams = new Set<string>();
   const pendingResubscribeAcks = new Set<string>();
-  const spawnedListeners: Array<(appSessionId: string) => void> = [];
+  // The single in-flight spawn (see spawnSession / refusalRecovery.ts for the
+  // one-spawn-at-a-time simplification and why both terminal envelopes must
+  // resolve it).
+  let pendingSpawn: SpawnPendingState = null;
 
   let sessionsRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   let lastSessionsRefreshAt = 0;
@@ -163,18 +173,32 @@ export const useVimesStore = defineStore('vimes', () => {
         }
         return;
       }
-      case 'refused':
+      case 'refused': {
         lastRefusal.value = { refusedOp: envelope.refusedOp, reason: envelope.reason };
+        const spawnResolution = resolveRefusedPending(pendingSpawn, envelope.refusedOp, envelope.reason);
+        pendingSpawn = spawnResolution.next;
+        spawnResolution.fire?.();
+        // gate_response and search refusals carry no requestId/searchId to
+        // correlate against (wire limitation, see refusalRecovery.ts) — both
+        // ops only ever have one thing in flight, so a refusal is resolved
+        // against whatever is currently pending rather than left to hang.
+        if (isGateResponseRefusal(envelope.refusedOp)) {
+          answeringRequestIds.clear();
+        }
+        if (shouldSearchRefusalError(searchStatus.value, envelope.refusedOp)) {
+          searchErrorReason.value = envelope.reason;
+          searchStatus.value = 'error';
+        }
         return;
+      }
       case 'error':
         lastRefusal.value = { refusedOp: '(malformed request)', reason: envelope.reason };
         return;
       case 'spawned': {
         streamStateFor(envelope.appSessionId);
-        const listeners = spawnedListeners.splice(0);
-        for (const listener of listeners) {
-          listener(envelope.appSessionId);
-        }
+        const spawnResolution = resolveSpawnedPending(pendingSpawn, envelope.appSessionId);
+        pendingSpawn = spawnResolution.next;
+        spawnResolution.fire?.();
         return;
       }
       case 'discovered': {
@@ -457,12 +481,22 @@ export const useVimesStore = defineStore('vimes', () => {
     sendEnvelope({ op: 'discover' });
   }
 
-  // Fires `onSpawned` the next time a `spawned` envelope arrives. The minimal
-  // page only ever has one spawn in flight at a time, so a simple FIFO queue
-  // (drained in full on each `spawned`) is sufficient — a documented
-  // simplification, not a correctness claim for concurrent spawns.
-  function spawnSession(channel: 'sdk' | 'pty', cwd: string, onSpawned: (appSessionId: string) => void): void {
-    spawnedListeners.push(onSpawned);
+  // Fires `onSpawned` on the next `spawned` envelope, or `onRefused` on a
+  // `refused` envelope with refusedOp 'spawn' — whichever terminal envelope
+  // arrives first resolves this spawn and clears the pending record (see
+  // resolveSpawnedPending/resolveRefusedPending in refusalRecovery.ts). The
+  // minimal page only ever has one spawn in flight at a time, so tracking a
+  // single pending record (rather than a FIFO of listeners) is sufficient —
+  // a documented simplification, not a correctness claim for concurrent
+  // spawns. A newer spawnSession call replaces any still-pending record: its
+  // caller already presented (and is responsible for) whatever pending UI it
+  // showed for the earlier spawn.
+  function spawnSession(
+    channel: 'sdk' | 'pty',
+    cwd: string,
+    callbacks: { onSpawned: (appSessionId: string) => void; onRefused?: (reason: string) => void },
+  ): void {
+    pendingSpawn = { onSpawned: callbacks.onSpawned, onRefused: callbacks.onRefused ?? (() => {}) };
     sendEnvelope({ op: 'spawn', channel, cwd });
   }
 

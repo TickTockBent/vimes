@@ -42,9 +42,17 @@ function spawn(): void {
   }
   localStorage.setItem(LAST_CWD_KEY, trimmedCwd);
   spawning.value = true;
-  store.spawnSession(channel.value, trimmedCwd, (appSessionId) => {
-    spawning.value = false;
-    emit('open', appSessionId);
+  store.spawnSession(channel.value, trimmedCwd, {
+    onSpawned: (appSessionId) => {
+      spawning.value = false;
+      emit('open', appSessionId);
+    },
+    // A refused spawn (e.g. cwd-outside-project-roots) must still clear the
+    // local pending flag — the refusal itself surfaces via store.lastRefusal
+    // and its dismiss banner (App.vue), same as any other refused op.
+    onRefused: () => {
+      spawning.value = false;
+    },
   });
 }
 
