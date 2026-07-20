@@ -186,7 +186,15 @@ tunnel, screen-locked.
 - **#1 editor: PASS** — edited gate-test.txt (dongfu) in CM6, saved (87→125 B,
   mtime confirmed); mtime-precondition write path works live.
 - **#2 search: PASS** — searched 'gate', all instances found (real ripgrep).
-- **#3 terminal: FAIL → fix in flight.** Root cause: `TerminalView.vue`
+- **#3 terminal: PASS (desktop + mobile), after two fixes.** (a) ref-timing
+  deadlock fixed; (b) mobile-corruption fixed — pty now spawns at the client's
+  fitted viewport size (was hardcoded 80 cols → Claude rendered wide → phone
+  wrapped it into garbage). Field-verified 2026-07-20: Claude Code's TUI
+  reflows clean and full-width on the phone, visibly MORE legible than the
+  code-server comparison shot (no activity-bar/tab-strip chrome tax — the box
+  border runs edge to edge). Validates the "real estate to content" candidate
+  principle (design-directions). Original failure notes retained below.
+  Original root cause: `TerminalView.vue`
   ref-timing deadlock — the xterm mount `<div ref>` is behind `v-else`
   (renders only when `started`), but `start()` null-checks the ref and
   silently returns BEFORE setting `started`, so the element never exists →
