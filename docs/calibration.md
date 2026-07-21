@@ -530,6 +530,58 @@ first-party Claude Code, `-p` or not, is not. **This answers Wes's standing
 dongfu question: those runs burned the 5-hour/weekly windows, not a $100
 automation bucket.** Promote D24 to a decision on his sign-off.
 
+### 2026-07-21 — operational: CLI pin bumped 2.1.215 → 2.1.216 (Wes's call, rule 0.7)
+
+The box auto-updated 2.1.215 → 2.1.216 and the daemon had been warning on every
+boot. **Wes blessed the new surface**; `VIMES_EXPECTED_CLI_VERSION` in
+`/etc/vimes/env` bumped (backup at `/etc/vimes/env.bak-20260721`, perms preserved
+`root:root 600`), daemon restarted, boot line now clean with no drift warning.
+
+**Honest caveat recorded at the time:** 2.1.216 had NOT been exercised through a
+VIMES-hosted session when the pin was bumped — the day's work ran in code-server.
+The pin is warn-only so nothing is gated on it, but silencing it removed the only
+automatic signal that the CLI surface moved. First place to look if session
+spawning misbehaves.
+
+### 2026-07-21 — observed LIVE: a real 5-hour window rollover, and `resets_at` DISAPPEARS at zero
+
+First genuine window reset captured by the deployed step-4b stack (rule 0.7 —
+observed, and this one could not have been learned from the U1 fixture, which was
+a single point in time).
+
+```
+15:16:27Z  endpoint:session  percent=71  resetsAt=2026-07-21T15:20:00Z
+15:21:27Z  endpoint:session  percent= 0  resetsAt=(absent)
+```
+
+**The new fact: at rollover the endpoint drops `resets_at` for that limit.** A
+window sitting at 0% reports no reset time — reasonably, since there is nothing
+pending to reset. So `percent: 0` + `resetsAt: null` is a NORMAL steady state for
+a freshly-rolled window, not a degraded or malformed one. Consumers must not read
+a missing `resets_at` as an error or as "unknown window".
+
+**Both reset signals fired, independently and correctly** — the validation the
+step-4a fix wanted and could not get from a test alone: the percentage DROPPED
+(71 → 0), and `resetsAt` CHANGED (timestamp → null). Either alone would have
+re-armed; together they agree. The bounded-history fix shipped two hours earlier
+met a real rollover and behaved.
+
+**The fingerprint did NOT churn** (`ddf8f5b9c6602417` across all 7 observations
+spanning the reset). Correct: the key remains present and only its value changed,
+and the fingerprint covers the sorted set of key PATHS, not values — so ordinary
+movement, including a 71→0 reset, raises no drift alarm. Both halves of that
+design were exercised on the detector's first day.
+
+**Zero `meter_alert` events**, correct — the peak was 71 against an ⟨tune 80%
+PREVIEW⟩ line, so nothing should have fired. The alert path remains unproven
+against a REAL crossing; that still wants a window that actually reaches 80.
+
+**Rider for the D27 correlation spike (C1):** this rollover is a clean natural
+experiment and the observation log has it. Between 14:32 and 15:16 the session
+window climbed 64 → 71 (7 points) with VIMES hosting a known set of work — the
+first real paired (Δpercent, Σtokens) sample for pinning tokens-per-percent.
+Snapshot it before the log rotates.
+
 ### 2026-07-21 — FINDING (step 4a, caught at orchestrator verification): weekly meters would re-alert every ~5h20m forever
 
 Caught by an orchestrator probe against the step-4a agent's reported-green

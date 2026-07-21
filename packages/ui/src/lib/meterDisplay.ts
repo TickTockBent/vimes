@@ -1,5 +1,5 @@
-// Pure derivation for the home-screen usage-meters strip (slice 5 step 3) —
-// turns the meters projection (GET /api/projections/meters) into display rows.
+// Pure derivation for the usage-meters strip (slice 5, step 3 → step 4c) —
+// turns the DERIVED usage read model (GET /api/usage/derived) into display rows.
 // No Vue, no DOM, no I/O: every branch is unit-tested without a browser.
 //
 // THE INTEGRITY RULE (pillar 4 — "a meter that lies is worse than no meter",
@@ -7,7 +7,23 @@
 // NEVER rendered as a current number, and an unobserved percentage is NEVER
 // rendered as 0 or as "fine". Both collapse into `displayPercent === null`,
 // which the view must render as words ("stale" / "usage unknown"), never as a
-// figure. This is the point of the unit, not a detail.
+// figure.
+//
+// THE SHARPENED INVARIANT (step 4c, from the 2026-07-21 finding "meter
+// freshness is BINARY, and the fresh band is wider than the poll interval"):
+// **a reading's AGE is always visible; freshness is a gradient the user can
+// see, not a binary the code decides for them.** A three-second-old reading and
+// a nine-minute-old reading used to render identically as a bare confident
+// number; every row now carries an `ageLabel` that counts up on screen.
+//
+// AND THE CLOCK IT COUNTS AGAINST IS THE SERVER'S, NOT THE BROWSER'S. The
+// daemon stamps `observedNow` and a per-meter `ageMs` measured against its own
+// clock; this module advances that baseline only by LOCAL ELAPSED TIME since
+// the response landed. A client whose clock is wrong by an hour therefore still
+// sees the true age: the local clock contributes a *difference* of two of its
+// own readings, never an absolute. A "3 seconds ago" that actually means "we
+// re-fetched a six-hour-old 401-blocked reading three seconds ago" is precisely
+// the lie this slice exists to prevent.
 //
 // D26 (binding): the authoritative source reports PERCENTAGES ONLY. `used` /
 // `limit` are usually absent, so nothing here ever renders a token or dollar
@@ -15,9 +31,9 @@
 //
 // @vimes/core is deliberately NOT a dependency of packages/ui (see the header
 // of lib/types.ts), so the shapes below are mirrored narrowly here exactly as
-// lib/cacheBadge.ts and lib/gitReview.ts mirror theirs. Freshness deliberately
-// re-implements the core rule (packages/core/src/meterDerivations.ts) in the
-// same shape rather than importing it.
+// lib/cacheBadge.ts and lib/gitReview.ts mirror theirs. Every derivation this
+// strip needs is now computed server-side (packages/daemon/src/usageDerived.ts)
+// — that is the point of the derived endpoint.
 
 // ── Mirrored wire shapes ────────────────────────────────────────────────────
 
@@ -37,22 +53,86 @@ export interface MeterRecord {
   severity?: string | null;
   // Whether this is the currently BINDING limit, per the source (U1).
   isActive?: boolean | null;
+  // Absent is NORMAL, not an error: at rollover the endpoint drops `resets_at`
+  // for a window sitting at 0% (observed live 2026-07-21).
   resetsAt?: string | null;
   source?: string;
   // Required on every sample so freshness is always derivable.
   observedAt: string;
 }
 
-// Mirrors packages/core/src/projections/meters.ts `MetersState`. Only `meters`
-// is read here; `history` (burn rate / projected exhaustion) is explicitly out
-// of this unit — those derivations live in core and the UI may not import it.
-export interface MetersState {
-  meters?: Record<string, MeterRecord> | null;
+// Mirrors packages/daemon/src/usageDerived.ts `DerivedMeter`: every MeterRecord
+// field verbatim, plus the daemon's additive derivations. Each addition is
+// optional here because the UI must survive an older daemon without inventing
+// values — an absent derivation reads as UNKNOWN, never as 0.
+export type MeterFreshness = 'fresh' | 'stale' | 'unknown';
+
+// Mirrors packages/core/src/meterDerivations.ts `ExhaustionReason`. Typed as a
+// union widened with `string` on purpose (rule 0.6): a reason word we have
+// never seen must degrade to a generic phrase, never crash and never be
+// rendered raw at the user.
+export type ExhaustionReason =
+  | 'projected'
+  | 'meter-never-observed'
+  | 'percent-unobserved'
+  | 'already-exhausted'
+  | 'observation-unusable'
+  | 'burn-rate-unknown'
+  | 'burn-rate-non-positive'
+  | 'resets-first'
+  | (string & {});
+
+export interface DerivedMeter extends MeterRecord {
+  freshness?: MeterFreshness | string | null;
+  // now − observedAt as the DAEMON measured it. May be NEGATIVE when the
+  // source's clock runs ahead of the daemon's; that is reported verbatim rather
+  // than clamped, and this module renders it as "just now" (never as a negative
+  // duration, and never as a reason to call something falsely fresh).
+  ageMs?: number | null;
+  headroomPercent?: number | null;
+  burnRatePercentPerHour?: number | null;
+  projectedExhaustion?: string | null;
+  projectedExhaustionReason?: ExhaustionReason | null;
+}
+
+// Mirrors packages/daemon/src/usageDerived.ts `DerivedUsageBody`.
+export interface DerivedUsageBody {
+  observedNow?: string | null;
+  // THE SINGLE AUTHORITY for the staleness band (see the deleted local
+  // constant, below). `null` = the daemon says the poller is DISABLED and there
+  // is no meaningful freshness band at all.
+  staleAfterMs?: number | null;
+  pollIntervalMs?: number | null;
+  // Already ordered by the daemon (binding first, then meterId). PRESERVED
+  // here, never re-sorted — one ordering authority (principle 9).
+  meters?: DerivedMeter[] | null;
+}
+
+// Mirrors the `refresh` envelope of POST /api/usage/refresh. That route always
+// returns 200: a throttled refresh still hands back a complete honest read
+// model, so it is not an error.
+export interface UsageRefreshOutcome {
+  polled: boolean;
+  throttled: boolean;
+  failureReason: string | null;
+  httpStatus: number | null;
+  nextForcedPollAt: string | null;
+  retryAfterMs: number | null;
+}
+
+/**
+ * A fetched derived body plus the LOCAL clock reading at the moment it landed.
+ *
+ * The pairing is the whole trick: `body` is anchored to the daemon's clock and
+ * `receivedAtLocalMs` is only ever subtracted from another reading of the same
+ * local clock, so client skew cancels out instead of leaking into an age.
+ */
+export interface UsageSnapshot {
+  body: DerivedUsageBody;
+  receivedAtLocalMs: number;
 }
 
 // ── Display shapes ──────────────────────────────────────────────────────────
-
-export type MeterFreshness = 'fresh' | 'stale' | 'unknown';
 
 // Semantic tone key only — the template maps this to a color class; this lib
 // never touches Tailwind/CSS (same split as cacheBadge.ts).
@@ -70,6 +150,31 @@ export interface MeterRow {
   severity: string | null;
   resetLabel: string | null;
   tone: MeterTone;
+  // The reading's age RIGHT NOW (server-anchored baseline + local elapsed).
+  // Null when the daemon could not age the observation at all.
+  ageMs: number | null;
+  // Always present — a meter that hides how old it is overstates its precision.
+  ageLabel: string;
+  // Never a fabricated 0: absent burn rate says so in words.
+  burnRateLabel: string;
+  // Never the raw enum: `resets-first` becomes reassurance, `burn-rate-unknown`
+  // becomes "not enough samples yet".
+  exhaustionLabel: string;
+}
+
+// The whole strip's model — rows plus the band that produced their freshness,
+// so the view can explain WHY everything reads unknown when the poller is off.
+export interface UsageStripModel {
+  rows: MeterRow[];
+  // The server-anchored "now" the countdowns and ages were computed against.
+  nowMs: number | null;
+  // Echoed from the response: null = no band exists (poller disabled).
+  staleAfterMs: number | null;
+  pollIntervalMs: number | null;
+  // True when there is no freshness band, i.e. every row is 'unknown' by
+  // construction and the view should say so rather than imply a dead poller is
+  // a transient hiccup.
+  freshnessBandMissing: boolean;
 }
 
 // ── ⟨tune PREVIEW⟩ bands — NOT PINNED (rule 0.2) ────────────────────────────
@@ -86,11 +191,14 @@ export const ELEVATED_PERCENT_PREVIEW = 60;
 // "high". Unpinned; mirrors the slice-5 notification threshold's preview value
 // so the two calibrate together rather than drifting apart.
 export const HIGH_PERCENT_PREVIEW = 80;
-// ⟨tune 10min PREVIEW⟩ — how old an observation may be before the strip calls
-// it stale. Unpinned: the staleness window is explicitly an uncalibrated band
-// in core too (`meterFreshness` refuses a default `staleAfterMs`), so this is
-// the UI's preview value and callers may override it.
-export const METER_STALE_AFTER_MS_PREVIEW = 10 * 60 * 1000;
+
+// DELIBERATELY ABSENT: `METER_STALE_AFTER_MS_PREVIEW`. It was a SECOND COPY of
+// a number the daemon owns and derives from its own poll interval, and that
+// duplication was the root cause of the 2026-07-21 freshness finding (principle
+// 9 violated on a derived RELATIONSHIP rather than on a fact). The band now
+// arrives as `staleAfterMs` in the response and there is exactly one authority.
+// A response that carries no band at all is not an excuse to invent one: it
+// means UNKNOWN.
 
 // Known server severity strings (U1 observed `normal`) mapped onto tones. An
 // unrecognized severity falls through to percent banding rather than being
@@ -126,25 +234,52 @@ function parseIsoToEpochMs(isoTimestamp: string | null | undefined): number | nu
   return Number.isFinite(epochMs) ? epochMs : null;
 }
 
+function finiteNumberOrNull(value: number | null | undefined): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
 // ── Freshness ───────────────────────────────────────────────────────────────
 
-// Freshness is DERIVED, never stored (D26) — a stored flag lets a stale record
-// masquerade as fresh. Three states, and the third is not a synonym for either
-// of the others: with no parseable observation we know nothing, which is
-// 'unknown'. Mirrors packages/core/src/meterDerivations.ts `meterFreshness`,
-// including the rule that a future-dated observation (source/daemon clock skew)
-// is fresh, not stale.
-export function meterFreshness(
-  observedAt: string | null | undefined,
-  nowMs: number,
-  staleAfterMs: number,
+/**
+ * Freshness from an AGE and a band. Derived, never stored (D26) — a stored flag
+ * lets a stale record masquerade as fresh.
+ *
+ * `staleAfterMs === null` means the daemon told us there is NO band (the poller
+ * is disabled), and the honest answer is `unknown` for every meter: not `fresh`
+ * (nothing is refreshing these, which is the opposite of confidence) and not a
+ * band of 0 (which would read as instantly stale). An unknowable age is
+ * likewise `unknown`.
+ *
+ * A NEGATIVE age (source clock ahead of ours) is fresh, not stale — but note it
+ * can only ever make a reading look *newer than zero seconds old*, which the
+ * label renders as "just now"; it can never flip a genuinely old reading fresh,
+ * because the age it is compared against is the daemon's own measurement.
+ */
+export function freshnessFromAge(
+  ageMs: number | null,
+  staleAfterMs: number | null,
 ): MeterFreshness {
-  const observedAtMs = parseIsoToEpochMs(observedAt);
-  if (observedAtMs === null || !Number.isFinite(nowMs)) {
+  if (staleAfterMs === null || !Number.isFinite(staleAfterMs) || ageMs === null) {
     return 'unknown';
   }
-  const observationAgeMs = nowMs - observedAtMs;
-  return observationAgeMs > staleAfterMs ? 'stale' : 'fresh';
+  return ageMs > staleAfterMs ? 'stale' : 'fresh';
+}
+
+/**
+ * Freshness for a raw `observedAt` against an injected now. Retained for the
+ * fallback path where the daemon supplied no `ageMs` — `nowMs` must still be
+ * the SERVER-ANCHORED now (see `usageStripModel`), never `Date.now()`.
+ */
+export function meterFreshness(
+  observedAt: string | null | undefined,
+  nowMs: number | null,
+  staleAfterMs: number | null,
+): MeterFreshness {
+  const observedAtMs = parseIsoToEpochMs(observedAt);
+  if (observedAtMs === null || nowMs === null || !Number.isFinite(nowMs)) {
+    return 'unknown';
+  }
+  return freshnessFromAge(nowMs - observedAtMs, staleAfterMs);
 }
 
 // ── Labels ──────────────────────────────────────────────────────────────────
@@ -175,15 +310,58 @@ function fallbackLabelFromMeterId(meterId: string, scopeLabel: string | null): s
   return scopeLabel === null ? sentenceCased : `${sentenceCased} (${scopeLabel})`;
 }
 
-// ── Countdown ───────────────────────────────────────────────────────────────
+// ── Durations ───────────────────────────────────────────────────────────────
 
-// Deterministic, LOCALE-FREE reset countdown — no Intl/toLocaleString, which
+// Deterministic, LOCALE-FREE duration rendering — no Intl/toLocaleString, which
 // vary by environment (rule 0.3 determinism carries into the UI's pure
-// derivations too). null when `resetsAt` is absent or unparseable: the strip
-// then shows no countdown at all rather than a fabricated one.
-export function formatResetCountdown(resetsAt: string | null | undefined, nowMs: number): string | null {
+// derivations too). Input must be a non-negative span; callers handle <= 0.
+function formatDuration(spanMs: number): string {
+  const totalSeconds = Math.floor(spanMs / 1000);
+  if (totalSeconds < 60) {
+    return `${totalSeconds}s`;
+  }
+  const totalMinutes = Math.floor(totalSeconds / 60);
+  if (totalMinutes < 60) {
+    return `${totalMinutes}m`;
+  }
+  const totalHours = Math.floor(totalMinutes / 60);
+  const remainderMinutes = totalMinutes % 60;
+  if (totalHours < 24) {
+    return `${totalHours}h ${remainderMinutes}m`;
+  }
+  const totalDays = Math.floor(totalHours / 24);
+  const remainderHours = totalHours % 24;
+  return `${totalDays}d ${remainderHours}h`;
+}
+
+/**
+ * The age line. This is the user-facing half of the sharpened invariant, so it
+ * is never allowed to be absent or flattering:
+ *
+ * - `null` age → "age unknown" (we could not age it — say so, do not omit it).
+ * - NEGATIVE age (a source clock ahead of the daemon's) → "just now". Rendering
+ *   "-4s ago" would be nonsense, and clamping it into a *fresher* claim than
+ *   zero is impossible because zero is already the freshest claim there is.
+ * - otherwise a plain elapsed span, seconds through days.
+ */
+export function formatObservationAge(ageMs: number | null): string {
+  if (ageMs === null || !Number.isFinite(ageMs)) {
+    return 'age unknown';
+  }
+  if (ageMs < 1000) {
+    // Includes the negative (clock-skew) case.
+    return 'updated just now';
+  }
+  return `updated ${formatDuration(ageMs)} ago`;
+}
+
+// Deterministic, LOCALE-FREE reset countdown. null when `resetsAt` is absent or
+// unparseable: the strip then shows no countdown at all rather than a
+// fabricated one. Absent `resetsAt` is NORMAL for a freshly-rolled window
+// sitting at 0% (observed live 2026-07-21) — the view says so calmly.
+export function formatResetCountdown(resetsAt: string | null | undefined, nowMs: number | null): string | null {
   const resetsAtMs = parseIsoToEpochMs(resetsAt);
-  if (resetsAtMs === null || !Number.isFinite(nowMs)) {
+  if (resetsAtMs === null || nowMs === null || !Number.isFinite(nowMs)) {
     return null;
   }
   const remainingMs = resetsAtMs - nowMs;
@@ -192,21 +370,70 @@ export function formatResetCountdown(resetsAt: string | null | undefined, nowMs:
     // post-reset sample yet, so we say so instead of claiming a duration.
     return 'resetting…';
   }
-  const totalMinutes = Math.floor(remainingMs / 60_000);
-  if (totalMinutes < 1) {
+  if (remainingMs < 60_000) {
     return 'resets in <1m';
   }
-  const totalHours = Math.floor(totalMinutes / 60);
-  const remainderMinutes = totalMinutes % 60;
-  if (totalHours < 1) {
-    return `resets in ${totalMinutes}m`;
+  return `resets in ${formatDuration(remainingMs)}`;
+}
+
+// ── Burn rate and projected exhaustion (deliverable 5) ──────────────────────
+
+/**
+ * Burn rate in percent per hour. **Null is UNKNOWN, never 0** — "we cannot see
+ * a rate" and "you are burning nothing" are opposite facts to someone deciding
+ * whether to start work.
+ */
+export function formatBurnRate(burnRatePercentPerHour: number | null | undefined): string {
+  const burnRate = finiteNumberOrNull(burnRatePercentPerHour);
+  if (burnRate === null) {
+    return 'burn rate unknown';
   }
-  const totalDays = Math.floor(totalHours / 24);
-  const remainderHours = totalHours % 24;
-  if (totalDays < 1) {
-    return `resets in ${totalHours}h ${remainderMinutes}m`;
+  if (burnRate <= 0) {
+    // A real, observed non-positive rate — distinct from "unknown" above.
+    return 'not rising';
   }
-  return `resets in ${totalDays}d ${remainderHours}h`;
+  const rounded = burnRate >= 10 ? Math.round(burnRate) : Math.round(burnRate * 10) / 10;
+  return `${rounded}%/h`;
+}
+
+// The reason enum turned into something a human can act on. The raw enum string
+// is NEVER rendered: `resets-first` is reassuring ("the window rolls over before
+// you'd run out") while `burn-rate-unknown` is merely uninformative, and a user
+// cannot tell those apart from the identifier. An unrecognized reason (rule 0.6
+// — the vocabulary may grow) degrades to a generic honest phrase.
+const EXHAUSTION_REASON_LABEL: Readonly<Record<string, string>> = {
+  'resets-first': 'resets before you run out',
+  'burn-rate-unknown': 'not enough samples to project yet',
+  'burn-rate-non-positive': 'usage is flat — no exhaustion in sight',
+  'already-exhausted': 'no headroom left',
+  'percent-unobserved': 'usage not observed — cannot project',
+  'meter-never-observed': 'never observed — cannot project',
+  'observation-unusable': 'observation unusable — cannot project',
+};
+
+/**
+ * The projected-exhaustion line. `projectedExhaustion` non-null wins; otherwise
+ * the REASON is translated, because a bare "unknown" throws away the difference
+ * between reassurance and ignorance.
+ */
+export function formatProjectedExhaustion(
+  projectedExhaustion: string | null | undefined,
+  projectedExhaustionReason: ExhaustionReason | null | undefined,
+  nowMs: number | null,
+): string {
+  const exhaustionAtMs = parseIsoToEpochMs(projectedExhaustion);
+  if (exhaustionAtMs !== null && nowMs !== null && Number.isFinite(nowMs)) {
+    const remainingMs = exhaustionAtMs - nowMs;
+    if (remainingMs <= 0) {
+      return 'projected to run out now';
+    }
+    return `projected to run out in ${formatDuration(remainingMs)}`;
+  }
+  const reasonLabel =
+    typeof projectedExhaustionReason === 'string'
+      ? EXHAUSTION_REASON_LABEL[projectedExhaustionReason]
+      : undefined;
+  return reasonLabel ?? 'no exhaustion projection';
 }
 
 // ── Tone ────────────────────────────────────────────────────────────────────
@@ -237,24 +464,59 @@ function meterTone(severity: string | null, displayPercent: number | null): Mete
 
 // ── Rows ────────────────────────────────────────────────────────────────────
 
-// One display row. THE INTEGRITY RULE lives in `displayPercent`: it is null
-// unless the observation is FRESH and the record carries a FINITE percent. A
-// stale record holding a real percent therefore yields null — the last known
-// figure is never shown as if it were now.
-export function deriveMeterRow(record: MeterRecord, nowMs: number, staleAfterMs: number): MeterRow {
-  const freshness = meterFreshness(record.observedAt, nowMs, staleAfterMs);
-  const observedPercent = typeof record.percent === 'number' && Number.isFinite(record.percent) ? record.percent : null;
+export interface MeterRowContext {
+  // The SERVER-ANCHORED now (observedNow advanced by local elapsed time).
+  nowMs: number | null;
+  // The band from the response. Null = no band exists → every row 'unknown'.
+  staleAfterMs: number | null;
+  // Local ms elapsed since the response landed, added to each baseline age.
+  elapsedSinceResponseMs: number;
+}
+
+/**
+ * One display row. THE INTEGRITY RULE lives in `displayPercent`: it is null
+ * unless the observation is FRESH and the record carries a FINITE percent. A
+ * stale record holding a real percent therefore yields null — the last known
+ * figure is never shown as if it were now.
+ */
+export function deriveMeterRow(meter: DerivedMeter, context: MeterRowContext): MeterRow {
+  const baselineAgeMs = finiteNumberOrNull(meter.ageMs);
+  const observedAtMs = parseIsoToEpochMs(meter.observedAt);
+  // Prefer the daemon's own measurement; fall back to the server-anchored now
+  // minus observedAt. Both are measured against the DAEMON's clock — the local
+  // clock only ever contributes `elapsedSinceResponseMs`, a difference of two
+  // readings of the same clock, so client skew cancels instead of accumulating.
+  const currentAgeMs =
+    baselineAgeMs !== null
+      ? baselineAgeMs + context.elapsedSinceResponseMs
+      : observedAtMs !== null && context.nowMs !== null
+        ? context.nowMs - observedAtMs
+        : null;
+  // Freshness is RE-DERIVED locally against the ticking age, not taken from the
+  // response's `freshness` field: that field was true when the response was
+  // built, and a reading must be able to go stale on screen between fetches.
+  // The band is still the server's.
+  const freshness = freshnessFromAge(currentAgeMs, context.staleAfterMs);
+  const observedPercent = finiteNumberOrNull(meter.percent);
   const displayPercent = freshness === 'fresh' && observedPercent !== null ? clampPercent(observedPercent) : null;
-  const severity = typeof record.severity === 'string' && record.severity.length > 0 ? record.severity : null;
+  const severity = typeof meter.severity === 'string' && meter.severity.length > 0 ? meter.severity : null;
   return {
-    meterId: record.meterId,
-    label: meterLabel(record),
+    meterId: meter.meterId,
+    label: meterLabel(meter),
     displayPercent,
     freshness,
-    isBinding: record.isActive === true,
+    isBinding: meter.isActive === true,
     severity,
-    resetLabel: formatResetCountdown(record.resetsAt, nowMs),
+    resetLabel: formatResetCountdown(meter.resetsAt, context.nowMs),
     tone: meterTone(severity, displayPercent),
+    ageMs: currentAgeMs,
+    ageLabel: formatObservationAge(currentAgeMs),
+    burnRateLabel: formatBurnRate(meter.burnRatePercentPerHour),
+    exhaustionLabel: formatProjectedExhaustion(
+      meter.projectedExhaustion,
+      meter.projectedExhaustionReason,
+      context.nowMs,
+    ),
   };
 }
 
@@ -264,25 +526,95 @@ function clampPercent(percent: number): number {
   return Math.min(100, Math.max(0, Math.round(percent)));
 }
 
-// All rows, BINDING FIRST (the source tells us which limit currently binds —
-// that is the one answering "can I afford this?"), then by meterId so the list
-// never jitters between fetches (a re-sorting strip reads as noise).
-export function deriveMeterRows(
-  metersState: MetersState | null | undefined,
-  nowMs: number,
-  staleAfterMs: number,
-): MeterRow[] {
-  const meters = metersState?.meters;
-  if (meters === null || meters === undefined) {
-    return [];
+/**
+ * The whole strip, from a fetched snapshot and the CURRENT local clock reading.
+ *
+ * Ordering is the daemon's (binding first, then meterId) and is preserved
+ * verbatim — re-sorting here would make two authorities out of one and let the
+ * list jitter between fetches.
+ */
+export function usageStripModel(
+  snapshot: UsageSnapshot | null | undefined,
+  localNowMs: number,
+): UsageStripModel {
+  if (snapshot === null || snapshot === undefined) {
+    return { rows: [], nowMs: null, staleAfterMs: null, pollIntervalMs: null, freshnessBandMissing: true };
   }
-  const rows = Object.values(meters)
-    .filter((record): record is MeterRecord => record !== null && typeof record === 'object')
-    .map((record) => deriveMeterRow(record, nowMs, staleAfterMs));
-  return rows.sort((leftRow, rightRow) => {
-    if (leftRow.isBinding !== rightRow.isBinding) {
-      return leftRow.isBinding ? -1 : 1;
-    }
-    return leftRow.meterId < rightRow.meterId ? -1 : leftRow.meterId > rightRow.meterId ? 1 : 0;
-  });
+  const staleAfterMs = finiteNumberOrNull(snapshot.body.staleAfterMs);
+  const observedNowMs = parseIsoToEpochMs(snapshot.body.observedNow);
+  // Local elapsed time only. Never negative: a clock that jumps backwards must
+  // not make a reading appear to grow younger.
+  const elapsedSinceResponseMs =
+    Number.isFinite(localNowMs) && Number.isFinite(snapshot.receivedAtLocalMs)
+      ? Math.max(0, localNowMs - snapshot.receivedAtLocalMs)
+      : 0;
+  const nowMs = observedNowMs === null ? null : observedNowMs + elapsedSinceResponseMs;
+  const context: MeterRowContext = { nowMs, staleAfterMs, elapsedSinceResponseMs };
+  const meters = Array.isArray(snapshot.body.meters) ? snapshot.body.meters : [];
+  const rows = meters
+    .filter((meter): meter is DerivedMeter => meter !== null && typeof meter === 'object')
+    .map((meter) => deriveMeterRow(meter, context));
+  return {
+    rows,
+    nowMs,
+    staleAfterMs,
+    pollIntervalMs: finiteNumberOrNull(snapshot.body.pollIntervalMs),
+    freshnessBandMissing: staleAfterMs === null,
+  };
+}
+
+// ── The refresh control's message (deliverable 3) ───────────────────────────
+
+export type RefreshNoticeTone = 'success' | 'throttled' | 'failed';
+
+export interface RefreshNotice {
+  tone: RefreshNoticeTone;
+  message: string;
+}
+
+// Failure reasons the daemon classifies (packages/daemon/src/usageEndpoint.ts).
+// `request-failed` is the CLIENT's own word for "the POST itself did not land",
+// which is a different fact from any server-side classification.
+const REFRESH_FAILURE_LABEL: Readonly<Record<string, string>> = {
+  'no-credentials': 'no usage credentials available',
+  unauthorized: 'the usage token was rejected (it refreshes about every 6h)',
+  'http-error': 'the usage endpoint returned an error',
+  'network-error': 'the usage endpoint could not be reached',
+  unparseable: 'the usage endpoint returned something unreadable',
+  'request-failed': 'the request did not reach VIMES',
+};
+
+/**
+ * Turn a refresh envelope into one honest line.
+ *
+ * The three cases are kept genuinely distinct, because presenting a throttled
+ * or failed refresh as a successful one is the same class of lie as a stale
+ * number rendered confidently:
+ * - throttled → we did NOT poll; say when the next forced poll is available.
+ * - failure   → we polled and it failed; the ages below are UNCHANGED (and have
+ *   grown), which is the truth and is left on screen.
+ * - success   → a real poll landed.
+ */
+export function refreshNotice(outcome: UsageRefreshOutcome | null | undefined): RefreshNotice | null {
+  if (outcome === null || outcome === undefined) {
+    return null;
+  }
+  if (outcome.throttled) {
+    const retryAfterMs = finiteNumberOrNull(outcome.retryAfterMs);
+    const waitLabel = retryAfterMs !== null && retryAfterMs > 0 ? ` — try again in ${formatDuration(retryAfterMs)}` : '';
+    return { tone: 'throttled', message: `Not refreshed: polled a moment ago${waitLabel}.` };
+  }
+  if (outcome.failureReason !== null && outcome.failureReason !== undefined) {
+    const reasonLabel = REFRESH_FAILURE_LABEL[outcome.failureReason] ?? 'the refresh failed';
+    const statusLabel = finiteNumberOrNull(outcome.httpStatus) !== null ? ` (HTTP ${String(outcome.httpStatus)})` : '';
+    return {
+      tone: 'failed',
+      message: `Refresh failed: ${reasonLabel}${statusLabel}. Ages below are unchanged.`,
+    };
+  }
+  if (outcome.polled) {
+    return { tone: 'success', message: 'Refreshed from the usage endpoint.' };
+  }
+  // Neither polled, nor throttled, nor failed: nothing we can honestly claim.
+  return { tone: 'failed', message: 'Refresh did not run.' };
 }

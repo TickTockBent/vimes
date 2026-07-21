@@ -5,7 +5,7 @@ import { advanceOffset, deframeTerminalOutput, frameTerminalInputText } from '..
 import { parseRootsPayload } from '../lib/treeNode.js';
 import type { TerminalListItem } from '../lib/terminalList.js';
 import type { CacheObservabilityRecord } from '../lib/cacheBadge.js';
-import type { MeterRecord } from '../lib/meterDisplay.js';
+import type { DerivedUsageBody, UsageRefreshOutcome, UsageSnapshot } from '../lib/meterDisplay.js';
 import type { GitStatus, GitFileDiff, GitRepoEntry, GitDiffContext } from '../lib/gitReview.js';
 import type { EventRecord, SessionRecord } from '../lib/types.js';
 import { derivePushState, type PushUiState } from '../lib/pushState.js';
@@ -107,13 +107,29 @@ export const useVimesStore = defineStore('vimes', () => {
   // wherever refreshSessions() already runs (session-list mount, WS reconnect,
   // a session-affecting event, discover) — no separate polling loop.
   const cacheObservability = ref<Record<string, CacheObservabilityRecord>>({});
-  // ── Usage meters (slice 5 step 3) — the home-screen "can I afford to start
-  // this?" strip, reading the step-1 meters projection
-  // (GET /api/projections/meters). Same plain REST-into-ref shape as
-  // cacheObservability, refreshed on the existing refreshSessions() cadence —
-  // no new polling loop. An empty map means we have observed NOTHING, which the
-  // strip renders as "usage unknown", never as zeros (pillar 4).
-  const meters = ref<Record<string, MeterRecord>>({});
+  // ── Usage meters (slice 5 step 3 → step 4c) — the home-screen "can I afford
+  // to start this?" strip. It now reads the DERIVED read model
+  // (GET /api/usage/derived) rather than the raw projection, because every
+  // field the strip needs beyond the record itself — freshness, age, burn rate,
+  // projected exhaustion, and above all the STALENESS BAND — is a function of
+  // *now* and is owned by the daemon (rule 0.3; the 2026-07-21 freshness
+  // finding). Same plain REST-into-ref shape as cacheObservability, refreshed on
+  // the existing refreshSessions() cadence — no new polling loop.
+  //
+  // The snapshot pairs the body with the LOCAL clock reading at the moment it
+  // landed. That pairing is what lets the strip age a reading against the
+  // DAEMON's clock while ticking on the browser's: only the local *delta* is
+  // ever used, so client clock skew cannot make a stale reading look fresh.
+  // A null snapshot means we have observed NOTHING, which the strip renders as
+  // "usage unknown", never as zeros (pillar 4).
+  const usageSnapshot = ref<UsageSnapshot | null>(null);
+  // True while a forced refresh is in flight — the control disables itself so an
+  // impatient thumb cannot stack requests against an unofficial endpoint.
+  const usageRefreshInFlight = ref(false);
+  // The last forced refresh's envelope, or null if none has run this session.
+  // Rendered verbatim-ish by refreshNotice(): a throttled or failed refresh is
+  // NEVER presented as a successful one.
+  const lastUsageRefresh = ref<UsageRefreshOutcome | null>(null);
   // ── Git review (slice 4 step 3) — the primary-human-job surface (spec §3.4) ──
   // Plain REST-into-ref, mirroring fetchTerminals: fetch, credentials
   // same-origin, tolerant of transient failure. The daemon's /api/git/* endpoints
@@ -193,7 +209,7 @@ export const useVimesStore = defineStore('vimes', () => {
     void fetchCacheObservability();
     // Same reasoning for the usage meters (slice 5 step 3): they ride the
     // sessions refresh cadence rather than owning a polling loop of their own.
-    void fetchMeters();
+    void fetchDerivedUsage();
   }
 
   // Refreshed on load and after a spawn/discover — the only ops that can widen
@@ -250,22 +266,73 @@ export const useVimesStore = defineStore('vimes', () => {
     }
   }
 
-  // GET /api/projections/meters — the usage-meters projection (slice 5 step 3).
+  // GET /api/usage/derived — the derived usage read model (slice 5 step 4b).
   // Mirrors fetchCacheObservability exactly: plain same-origin REST into a ref,
   // tolerant of transient failure, no polling loop of its own. A failure leaves
-  // the previous records in place ON PURPOSE — they carry their own observedAt,
-  // so meterDisplay derives them as stale and the strip stops showing figures
-  // by itself. Freshness is never faked by the fetch layer.
-  async function fetchMeters(): Promise<void> {
+  // the previous SNAPSHOT in place ON PURPOSE — its ages keep counting up from
+  // the last real observation, so the strip degrades to stale by itself and
+  // says so. Freshness is never faked by the fetch layer, and the arrival of a
+  // response is never mistaken for the freshness of the reading inside it.
+  async function fetchDerivedUsage(): Promise<void> {
     try {
-      const response = await fetch('/api/projections/meters', { credentials: 'same-origin' });
+      const response = await fetch('/api/usage/derived', { credentials: 'same-origin' });
       if (!response.ok) {
         return;
       }
-      const parsed = (await response.json()) as { meters?: Record<string, MeterRecord> };
-      meters.value = parsed.meters ?? {};
+      const body = (await response.json()) as DerivedUsageBody;
+      usageSnapshot.value = { body, receivedAtLocalMs: Date.now() };
     } catch {
       // Transient network hiccup — the next refreshSessions() retries.
+    }
+  }
+
+  // POST /api/usage/refresh — force a REAL poll (slice 5 step 4b/4c). The route
+  // always answers 200 and always carries a complete derived body plus a
+  // `refresh` envelope saying what actually happened; a throttled refresh is not
+  // an error, it just did not poll.
+  //
+  // The body is adopted in every 200 case, INCLUDING throttled and failed ones:
+  // it is the honest current read model (with the meters' real, grown ages), and
+  // adopting it is what keeps a failed refresh from freezing the display. What
+  // is never adopted is the CLAIM of a refresh — that lives in
+  // `lastUsageRefresh` and the view renders it through refreshNotice().
+  async function refreshUsage(): Promise<void> {
+    if (usageRefreshInFlight.value) {
+      return;
+    }
+    usageRefreshInFlight.value = true;
+    try {
+      const response = await fetch('/api/usage/refresh', {
+        method: 'POST',
+        credentials: 'same-origin',
+      });
+      if (!response.ok) {
+        lastUsageRefresh.value = {
+          polled: false,
+          throttled: false,
+          failureReason: 'request-failed',
+          httpStatus: response.status,
+          nextForcedPollAt: null,
+          retryAfterMs: null,
+        };
+        return;
+      }
+      const body = (await response.json()) as DerivedUsageBody & { refresh?: UsageRefreshOutcome };
+      usageSnapshot.value = { body, receivedAtLocalMs: Date.now() };
+      lastUsageRefresh.value = body.refresh ?? null;
+    } catch {
+      // The POST itself did not land (offline, Access bounce). Say so; the
+      // existing snapshot stays, and its ages keep growing.
+      lastUsageRefresh.value = {
+        polled: false,
+        throttled: false,
+        failureReason: 'request-failed',
+        httpStatus: null,
+        nextForcedPollAt: null,
+        retryAfterMs: null,
+      };
+    } finally {
+      usageRefreshInFlight.value = false;
     }
   }
 
@@ -1052,9 +1119,12 @@ export const useVimesStore = defineStore('vimes', () => {
     // Cache observability (slice 4 step 4)
     cacheObservability,
     fetchCacheObservability,
-    // Usage meters (slice 5 step 3)
-    meters,
-    fetchMeters,
+    // Usage meters (slice 5 step 3 → 4c: the derived read model)
+    usageSnapshot,
+    usageRefreshInFlight,
+    lastUsageRefresh,
+    fetchDerivedUsage,
+    refreshUsage,
     // Git review (slice 4 step 3)
     gitStatus,
     gitDiffFiles,
