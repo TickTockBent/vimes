@@ -6,3 +6,8 @@ coverage
 *.db
 *.db-wal
 *.db-shm
+
+# Ad-hoc debugging screenshots (phone drops these in the repo root). Two were
+# committed during the 2026-07-20 mobile-terminal debugging and later stripped
+# from history — ignore them at the source so it can't recur.
+Screenshot_*.png

@@ -220,7 +220,7 @@ tunnel, screen-locked.
   top-level "cockpit" — VIMES sessions load CLAUDE.md up the whole tree and
   agent writes are gated by permission cards, NOT confined to VIMES roots (by
   design — the agent is a full Claude session; §3 scoping is Claude's job).
-  **UX finding [RESOLVED 2026-07-20, commit a15a4b1]:** the Write/Edit gate card
+  **UX finding [RESOLVED 2026-07-20, commit ef758d6]:** the Write/Edit gate card
   showed `Write: {"file_path":"...","content":"..."}` truncated at 160 chars —
   the path was hard to scan and easy to approve unread. Fixed: the gate now
   headlines the tool name + a structured target (`file_path`/`command`/`pattern`
