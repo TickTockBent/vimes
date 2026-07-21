@@ -98,6 +98,72 @@ check whether it already does before slice 4/5.
      resolved: inherited CLAUDE* env suppresses transcripts; PTY channel
      scrubs env; tailer trusted on that basis. -->
 
+## D27 — The cost ledger: hierarchy-aware rollup of usage and equivalent API dollars ⚠ *(trigger: its own slice, after slice 5 closes; TWO spikes decide the shape)*
+
+Wes's ask (2026-07-21): *"a hierarchy-aware readout that rolls up … what
+percentage of my usage AND what the equivalent API costs would be, per project
+and per session … click a session and see the costs including all the subagent
+calls … click a project and see historical data over time."* Purpose is
+retrospective scoping (*"that API build was actually much cheaper than we
+thought"*) and forward decisions (*"the last similar task cost 8% usage so it's
+probably safe to fire when we're at 20% remaining"*).
+
+**Scope call (Wes, 2026-07-21): its own slice, spikes first.** It is materially
+bigger than slice 5's remaining items, and slice 5's exit gate is about headroom
+*truthfulness*, not accounting — folding this in would require rewriting that
+gate mid-slice.
+
+**The raw material exists and is retroactive** (observed 2026-07-21, rule 0.7 —
+see calibration.md): `~/.claude/projects/<project-slug>/<sessionId>.jsonl` plus
+`<sessionId>/subagents/agent-<agentId>.jsonl`. **641 session transcripts, 584
+subagent transcripts across 10 projects**, each message carrying `usage` with
+cache tiers split (`ephemeral_5m` / `ephemeral_1h`), `model`, and `message.id`
+for the D17 dedupe. The parent→child link is the directory path. So project,
+session and subagent are all derivable **for work already done**, not only from
+the ship date forward.
+
+**The asymmetry that shapes the whole slice: dollars are checkable, percent is
+not.** Tokens→dollars is arithmetic over a price table. Tokens→*percent of
+window* is **not derivable at all** — D26: the endpoint discloses percentages
+and no absolutes, so nothing states how many tokens a window holds. It can only
+be *estimated* by correlating Δpercent on the account meter against Σtokens
+VIMES observed over the same interval — valid only when VIMES saw essentially
+all account activity (the D24 confound), and drifting with model mix because the
+weekly cap is per-model scoped.
+
+**Lean (2026-07-21):** build both, and render them as *different kinds of
+number*. Dollars are computed and stated; percent-of-window is calibrated and
+carries its confidence band visibly. A "8% of weekly" figure with false precision
+is the lying meter pillar 4 forbids wearing a more useful hat.
+
+**Lean on pricing — the prior art's objection is dissolved, not inherited.**
+Jinn built tokens→dollars from a hardcoded `MODEL_PRICES` table and the
+decomposition declined it twice as *"notional on subscription"*. The objection
+was that the number is an unverifiable fiction, **not** that dollars are
+useless. U2 found `claude_code.cost.usage` — **USD emitted first-party by the
+CLI**, model- and cache-tier-correct, no table to maintain. So: OTel supplies
+dollars going forward; a price table is needed only to price the historical
+transcripts; and **running both concurrently lets the OTel figure validate the
+table on the same work**, turning it from a fiction into a calibrated instrument
+with a known error band. That validation loop is the difference between what
+Jinn built and what this slice would build.
+
+**Spikes — both verify-before-build, both runnable against existing data:**
+- **C1 — can correlation pin tokens-per-percent to a useful band?** If the
+  implied window size is too noisy or too model-dependent to state with a
+  defensible confidence, the percent half of the ask is not honestly buildable
+  and the slice ships dollars only. *This is the kill criterion.*
+- **C2 — does a price table survive validation against OTel's USD figure** on
+  the same session, once cache tiers are priced correctly (1h vs 5m cache writes
+  price differently)? Fails → historical dollars carry a wider band, or the
+  ledger is forward-only from OTel.
+
+**No prior art to borrow (mining, 2026-07-21).** Per-project attribution,
+per-task attribution, parent/child subagent rollup, and cost-over-time history
+are **absent from all three** decomposed repos. Jinn's SSE proxy came closest to
+subagent cost and *suppressed* subagent traffic deliberately — the opposite of
+rollup. This is designed from zero, on raw material none of them had.
+
 <!-- D24 (billing-bucket classification) moved to decisions.md 2026-07-21 —
      decided: Claude Code usage, interactive or headless, consumes the standard
      account-wide 5h/weekly windows; there is no separate automation credit;

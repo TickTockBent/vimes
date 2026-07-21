@@ -31,7 +31,11 @@ the right doc, no action due yet), **pending** (waits for its slice/trigger).
 | Self-owned blob refs for D12 horizon (codor 4) | post-MVP revisit | **noted** (design-directions.md) |
 | Stop/StopFailure/PreToolUse relay; StopFailure = usage adapter #4 (jinn 2) | slice 2 → 5 | pending |
 | `rate_limit_event` from SDK stream into meters/attention (ata 1) | slice 5 | pending (already observed live on this box in the D4 spike) |
-| Auto-resume at reset w/ full staleness matrix; policy by session class (ata 2) | slice 5–6 | pending |
+| Auto-resume at reset w/ full staleness matrix; policy by session class (ata 2) | slice 5–6 | pending — **matrix re-read 2026-07-21**, four guards transcribed to calibration.md; U1 improves the TRIGGER (schedule proactively from `limits[].resets_at`, not reactively from a rate-limit event) |
+| Spend-brake semantics: held work + one-tap release + always-on non-blocking meter (codor 3) | slice 5 read side / slice 7 enforcement | **lean-updated 2026-07-21** — Wes: ship slice 5's threshold *notification* as scoped, **reserve the hold/release vocabulary now** (rule 0.5) so slice 7 upgrades without a migration |
+| Per-session $-cost from a hardcoded price table (jinn 3.4/§4) — originally **skipped** as "notional on subscription" | D27 cost ledger | **revisited 2026-07-21** — the objection was *unverifiable fiction*, not *dollars are useless*. U2's first-party `claude_code.cost.usage` (USD) dissolves it, and can **validate** a price table used to price historical transcripts |
+| Hierarchical cost rollup (project / session / subagent) + cost-over-time history | D27 cost ledger | **absent from all three repos** — designed from zero; raw material (on-disk subagent transcripts, `query_source`, per-message `usage`) is unique to VIMES |
+| `billing_error` StopFailure reason unrouted (jinn 2.1 lists it; only `rate_limit` handled) | attention reason enum | **noted 2026-07-21** — distinct from rate-limiting, currently unclaimed anywhere |
 | Turn attribution: injected vs terminal-native (jinn 5) | slices 2–3 attention model | pending |
 | Provider preflight + authenticated-not-just-installed (ata 8, jinn 4) | slice 2 step 1 | in build |
 | Attention reason enum additions: `rate-limited`, `brake` (jinn 2.2, codor 2.3) | schema reservation (rule 0.5) | **ratified 2026-07-20** — reserved, no setters |

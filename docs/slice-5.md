@@ -1,10 +1,37 @@
 # Slice 5 (0.3) — Usage service (meters)
 
-> **Status 2026-07-21:** skeleton drafted by the orchestrator. **Construction
-> NOT started** — Wes: "prep slice 5 but don't start until the edit button
-> lands." Spikes are front-loaded and read-only; the kill criterion is decided
-> BY a spike, so U1 runs first and its result is a Gate-D conversation before any
-> adapter is built.
+> **Status 2026-07-21 (updated):** spikes U1/U2/U3 ✅ run — **kill criterion NOT
+> triggered.** The headroom spine is COMPLETE end-to-end and live: endpoint →
+> fragile adapter → event log → pure projection → derivations → home-screen
+> meters. Steps landed: **1** meter model + pure derivations (`06c7ebd`), **2**
+> endpoint adapter + `Cache-Control` fix (`cc3c009`), initial-poll fix
+> (`b5bfc12`), **3** home-screen meters strip (`e4ddb07`). Meters confirmed
+> rendering on desktop and mobile by Wes.
+>
+> **Remaining (one daemon-touching unit, then the gate):** the derived read
+> model (`GET /api/usage/derived` — burn rate, projected exhaustion, freshness,
+> computed at the boundary with an injected clock), the usage **observation
+> log** (see below), and **threshold notifications** — bundled into ONE restart
+> because a restart kills live shells. Push is verified working again
+> (2026-07-21, FCM 201) after the subscription was re-registered.
+>
+> **Deliberately NOT here:** the burn/exhaustion derivations must not ride
+> `/api/projections/meters` — every field is a function of *now*, and projection
+> state is snapshot/replay byte-identical by construction. The nondeterminism
+> gate exists to keep clocks out of core state; the daemon stamps `nowIso` at the
+> boundary and calls the already-tested pure functions (rule 0.3).
+>
+> **Usage observation log (added 2026-07-21, rule 0.6).** Classified poll
+> failures currently emit nothing — correct for product state, but it also makes
+> them invisible, and a 401 every ~6h at token roll is the *normal* case we have
+> no evidence of. An append-only diagnostic log beside the event DB records one
+> line per poll (timestamp, outcome class, HTTP status, and a **fingerprint of
+> the response's key structure**), storing the full redacted body the first time
+> a fingerprint is unseen. That gives a dated corpus of real shapes and tells us
+> the moment Anthropic's surface moves. **Outside the event spine on purpose** —
+> it is diagnostic evidence, not product state. Window resets every 5 hours
+> exercise reset-detection for free; near-100% and severity escalation are the
+> genuinely rare shapes and would have to be provoked deliberately.
 
 Spec reference: §9 slice 5 (line 359), §3.6 (usage service), §5 (`MeterRecord`),
 pillar 4 ("budgets gate work, not surprise it"), I10.
@@ -117,7 +144,17 @@ automation bucket?").
   when a headroom gate fails) belongs there; slice 5 only makes the read correct.
 - The **keep-warm pinger** (spec §3.7 — out).
 - Cost/dollar estimation and billing reconciliation — meters are about
-  *headroom*, not accounting.
+  *headroom*, not accounting. **Still out, and now it has a home: D27 (the cost
+  ledger) owns hierarchy-aware rollup, dollars, and history as its own slice.**
+  Note the rationale shifted: this line was written against a Jinn-style
+  *fabricated* price table; U2's first-party `claude_code.cost.usage` in USD is a
+  different animal. It stays out of slice 5 because the slice's exit gate is
+  about headroom **truthfulness**, not because dollars are notional.
+- **Brake ENFORCEMENT** (held work, one-tap release — codor's semantics, better
+  than a bare notification). Slice 5 ships the threshold *notification* and
+  **reserves the hold/release vocabulary** (rule 0.5, Wes 2026-07-21) so slice 7
+  upgrades without a migration. `needsAttention: brake` was already reserved
+  2026-07-20.
 - Multi-account / multi-provider meters (D18 boundary: provider specifics stay
   inside adapters).
 

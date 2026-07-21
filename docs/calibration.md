@@ -530,6 +530,153 @@ first-party Claude Code, `-p` or not, is not. **This answers Wes's standing
 dongfu question: those runs burned the 5-hour/weekly windows, not a $100
 automation bucket.** Promote D24 to a decision on his sign-off.
 
+### 2026-07-21 — FINDING: meter freshness is BINARY, and the fresh band is wider than the poll interval
+
+**Observed by Wes on the deployed build:** the meters strip read `59%` for the
+5-hour window while a live probe of the endpoint returned `60%`. His words:
+*"it's actually stale data with no way to detect that."*
+
+**The numbers.** `DEFAULT_USAGE_POLL_INTERVAL_MS = 300_000` (5 min, daemon
+`config.ts`; no `VIMES_USAGE_POLL_MS` override in `/etc/vimes/env`, so the
+default is live). `METER_STALE_AFTER_MS_PREVIEW = 10 * 60 * 1000` (10 min, UI
+`meterDisplay.ts`).
+
+**Two distinct defects, one root cause.**
+
+1. **Age is invisible inside the fresh band.** `displayPercent` is correctly
+   nulled when a reading goes stale — the invariant holds literally — but
+   `fresh` is a *binary*. A reading three seconds old and a reading nine minutes
+   old render identically, as a bare confident number. The user cannot tell
+   which they are looking at, which is exactly what Wes hit.
+2. **The stale threshold is 2× the poll interval, so one missed poll still reads
+   fresh.** A silently failing poller — and per U1 the *normal* daily failure is
+   a 401 at ~6h token roll, which by design emits nothing — leaves a
+   confident-looking number on screen for up to 10 minutes before anything marks
+   it.
+
+**Root cause: two independent ⟨tune⟩ constants that are only meaningful
+relative to each other**, held in two packages, with nothing forcing the
+relationship. That is the one-source-of-record rule (principle 9) violated on a
+*derived relationship* rather than on a fact — a shape worth recognising again.
+
+**The invariant needs sharpening, not just the code.** "A stale observation never
+renders as a current number" was satisfied while the screen still misled. The
+stronger form, adopted here: **a reading's AGE is always visible; freshness is a
+gradient the user can see, not a binary the code decides for them.** Under
+pillar 4 a meter that hides how old it is overstates its own precision, which is
+the same failure as overstating its units (D26).
+
+**Fix, split across the two remaining slice-5 units:**
+- `staleAfterMs` is **derived from the poll interval by the daemon** and served
+  in the derived read model — one number, one owner, relationship enforced.
+- The UI shows a **continuously updating age** against `observedAt` (never
+  against the browser's own fetch time — that would read "3 seconds ago" while
+  the underlying reading is hours old and 401-blocked, the precise failure this
+  slice exists to prevent).
+- A **forced-refresh** route so the user can close the gap on demand, debounced,
+  because the endpoint is unofficial and exposes no rate-limit headers.
+
+**Not a cost concern (probed 2026-07-21):** three back-to-back calls to
+`GET /api/oauth/usage` returned 200 with byte-identical percentages
+(`session=60 weekly_all=54 weekly_scoped=64`) and **no rate-limit headers of any
+kind**. It is an OAuth account-metadata read, not an inference call — a forced
+poll consumes no window. The debounce exists for endpoint-citizenship (rule
+0.6), not for usage.
+
+### 2026-07-21 — observed: the cost hierarchy already exists on disk, retroactively (feeds D27)
+
+Prompted by Wes's ask for a per-project / per-session / per-subagent cost
+readout. Read-only survey of `~/.claude/projects`, rule 0.7 — observed, not
+documented.
+
+**Layout.** Project → session → subagents, with the parent link encoded in the
+path:
+
+```
+~/.claude/projects/<project-slug>/
+    <sessionId>.jsonl                          ← the session's own thread
+    <sessionId>/subagents/agent-<agentId>.jsonl ← its subagents
+```
+
+**Volume: 641 session transcripts; 584 subagent transcripts across 10
+projects.** Subagent transcripts are durable — the `/tmp/claude-*/…/tasks/
+<agentId>.output` path a running session sees is a **symlink** into the
+`subagents/` directory above, not ephemeral scratch as first assumed.
+
+**Per-message content (sampled):** `usage` with cache tiers split out
+(`cache_creation.ephemeral_5m_input_tokens` / `ephemeral_1h_input_tokens`,
+`cache_read_input_tokens`, `input_tokens`, `output_tokens`), `model` per message,
+and `message.id` — so D17 dedupe applies unchanged and pricing can be
+model- and tier-correct.
+
+**Why it matters:** every dimension of the D27 ask (project, session, subagent,
+history) is derivable from data **already on disk for work already done**. A cost
+ledger would ship with retrospective history on day one rather than beginning to
+accumulate from its ship date.
+
+**What is NOT there:** dollars. JSONL carries tokens only; USD comes from OTel
+(`claude_code.cost.usage`, U2) which covers only sessions VIMES spawns with the
+env set, and only going forward. Hence D27's price-table-validated-against-OTel
+approach. Also absent: any statement of window SIZE — consistent with D26,
+nothing on disk says how many tokens a 5-hour window holds, which is why
+percent-of-window can only ever be estimated by correlation (D27 spike C1).
+
+**Caution for whoever builds this:** `isSidechain` is `false` on all 2726
+records sampled in the main transcripts, and a naive `*/*.jsonl` glob **misses
+every subagent file** (they sit one level deeper). Both are easy ways to conclude
+"subagent cost is invisible" and be wrong.
+
+### 2026-07-21 — prior-art mining: usage/cost monitoring across the three decomposed repos
+
+Read-only re-read of the decomposition series against one question: *how did
+Jinn / agent-teams-ai / Codor solve usage and cost monitoring, and is any of it
+better than what VIMES is building?* Full carry-over rows in
+[decomposition/README.md](decomposition/README.md).
+
+**Headline: this is the thinnest territory in the series** — roughly 12 lines of
+substantive findings across ~355 lines of analysis. All three treat cost as a
+bolt-on.
+
+**Nothing beats VIMES observationally.** None of the three found the
+account-wide usage endpoint (U1); none used OTel (U2); none had a first-party
+USD figure; none pre-flighted work against remaining headroom. **All three were
+structurally account-blind and none of them knew it** — Jinn sums its own
+transcripts, ATA reads its own streams, Codor tracks its own runs, and each
+presents "what my platform spent" as a budget. That is U3's finding applied
+backwards, and it is why slice 5's source-precedence-as-a-TYPE-DISTINCTION rule
+is the thing all three violate.
+
+**Three things worth taking** (tracker rows updated):
+1. **Codor's brake semantics** — work is *held*, not failed; release is one tap
+   from the phone; the spend meter is always-on and never-blocking so the brake
+   is never the first you hear of it. *"Operators kill, software doesn't."*
+   Strictly better than slice 5's threshold *notification*. Wes's call
+   (2026-07-21): ship the notification as scoped, **reserve the brake vocabulary
+   now** (rule 0.5) so slice 7 upgrades it without a migration.
+2. **ATA's auto-resume staleness matrix** — never stack timers; sanity-cap
+   parsed reset times; past-due resets fall back to a buffered delay; at fire
+   time re-check the flag, that the session is alive, and that it has not
+   advanced past the run that hit the limit. Needed verbatim by
+   `deferUntilReset`. **U1 improves the trigger:** they schedule reactively off a
+   rate-limit event (i.e. only after hitting the wall); `limits[].resets_at`
+   lets VIMES schedule *before* it.
+3. **Per-spawner budget scope** — appears independently in all three (Jinn
+   monthly-per-employee, ATA meters, Codor `budgets` table). Triple
+   corroboration, the bar that promoted hooks and reviewer-close. Cheap to
+   reserve alongside the meter schema, expensive after meters ship.
+
+**The one prior-art verdict that U1/U2 overturned.** jinn §2.2 judged StopFailure
+"more sanctioned than the unofficial `/usage` endpoint probe (D8)" — written
+before U1 ran. StopFailure is official but **session-scoped**; the endpoint is
+unofficial but **account-wide and alive**. They answer different questions and
+principle 9 already forbids treating them as substitutes. Likewise jinn's
+dollar-estimation "skip" was reasoned as *"notional on subscription"* — true of a
+hardcoded table, false of OTel's first-party USD figure (see D27).
+
+**Still unclaimed:** `billing_error` in the StopFailure reason enum (jinn §2.1
+lists it; only `rate_limit` is routed). A distinct attention reason from
+rate-limiting, and nothing in slice 5 or the tracker mentions it.
+
 ## Budget table (`--report`)
 
 Design-intent targets from spec §8, listed so nothing gets pinned from memory.
