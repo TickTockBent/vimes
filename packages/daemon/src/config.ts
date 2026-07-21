@@ -1,5 +1,6 @@
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
+import { DEFAULT_USAGE_BASE_URL } from './usageEndpoint.js';
 
 // Env-driven daemon configuration. The bind host is deliberately NOT an env knob
 // (D3): the daemon binds 127.0.0.1 only, with cloudflared as the sole route in.
@@ -48,6 +49,16 @@ export interface DaemonConfig {
   // VIMES_TERMINAL_IDLE_REAP_MS overrides. ⟨tune 1h PREVIEW⟩ — behavior-shaping,
   // NOT pinned (rule 0.2): the 1h default is a placeholder to be calibrated.
   terminalIdleReapMs: number;
+  // How often the usage-endpoint adapter is polled (slice 5 step 2). The
+  // endpoint is the SOLE headroom authority (spike U3), so this is the cadence
+  // at which headroom can possibly be fresh. A value of 0 DISABLES the poller
+  // entirely (the daemon never creates the timer). VIMES_USAGE_POLL_MS
+  // overrides. ⟨tune 5m PREVIEW⟩ — behavior-shaping, NOT pinned (rule 0.2).
+  usagePollIntervalMs: number;
+  // Base URL the usage adapter calls (`<base>/api/oauth/usage`). Overridable so
+  // a test can point at a local stub; production leaves it at Anthropic's API.
+  // VIMES_USAGE_BASE_URL overrides.
+  usageBaseUrl: string;
 }
 
 const DEFAULT_PORT = 4600;
@@ -65,6 +76,9 @@ const DEFAULT_MAX_EDIT_BYTES = 5 * 1024 * 1024;
 // ⟨tune 1h PREVIEW⟩ — terminal inactivity reaper window; behavior-shaping, not
 // pinned (rule 0.2). 0 disables reaping.
 const DEFAULT_TERMINAL_IDLE_REAP_MS = 3_600_000;
+// ⟨tune 5m PREVIEW⟩ — usage-endpoint poll cadence; behavior-shaping, NOT pinned
+// (rule 0.2). 0 disables the poller.
+const DEFAULT_USAGE_POLL_INTERVAL_MS = 300_000;
 
 function expandHome(path: string): string {
   if (path === '~') {
@@ -153,5 +167,13 @@ export function loadConfigFromEnv(env: NodeJS.ProcessEnv = process.env): DaemonC
       env.VIMES_TERMINAL_IDLE_REAP_MS === undefined || env.VIMES_TERMINAL_IDLE_REAP_MS === ''
         ? DEFAULT_TERMINAL_IDLE_REAP_MS
         : parsePositiveInteger(env.VIMES_TERMINAL_IDLE_REAP_MS, 'VIMES_TERMINAL_IDLE_REAP_MS'),
+    usagePollIntervalMs:
+      env.VIMES_USAGE_POLL_MS === undefined || env.VIMES_USAGE_POLL_MS === ''
+        ? DEFAULT_USAGE_POLL_INTERVAL_MS
+        : parsePositiveInteger(env.VIMES_USAGE_POLL_MS, 'VIMES_USAGE_POLL_MS'),
+    usageBaseUrl:
+      env.VIMES_USAGE_BASE_URL === undefined || env.VIMES_USAGE_BASE_URL === ''
+        ? DEFAULT_USAGE_BASE_URL
+        : env.VIMES_USAGE_BASE_URL,
   };
 }

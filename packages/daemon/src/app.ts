@@ -11,6 +11,7 @@ import {
   runtimeDriftObserved,
   snapshotAfter,
   cacheObservabilityProjection,
+  meterSample,
   metersProjection,
   sessionsProjection,
   tasksProjection,
@@ -54,6 +55,13 @@ import type { DaemonConfig } from './config.js';
 import { PushSubscriptions } from './pushSubscriptions.js';
 import { PushPipeline } from './pushPipeline.js';
 import { createWebPushSender, loadOrCreateVapidKeys, type PushSender } from './pushService.js';
+import {
+  createCredentialsReader,
+  createUsageEndpointAdapter,
+  defaultUsageHttpFetch,
+  type CredentialsReader,
+  type UsageHttpFetch,
+} from './usageEndpoint.js';
 
 // How often the inactivity reaper wakes to check for idle terminals. This is the
 // detection CADENCE, not the tuned window: config.terminalIdleReapMs is the
@@ -115,6 +123,12 @@ export interface DaemonDeps {
   // a fake returning canned output; the hermetic integration test uses the real
   // runner over a scratch repo.
   gitRunner?: GitRunner;
+  // Usage-endpoint seams (slice 5 step 2). Absent → the real HTTPS fetch and the
+  // real `~/.claude/.credentials.json` reader. CI injects fakes for BOTH: no
+  // test may touch the network or the real credentials file. The token they
+  // carry is never logged or evented anywhere.
+  usageHttpFetch?: UsageHttpFetch;
+  usageCredentialsReader?: CredentialsReader;
 }
 
 export interface Daemon {
@@ -132,6 +146,9 @@ export interface Daemon {
   readonly port: number;
   readonly hookPort: number;
   serializeProjection(projectionId: string): string | null;
+  // One usage-endpoint poll, awaited. The poller's timer calls exactly this;
+  // tests call it directly so a poll is deterministic rather than clock-raced.
+  pollUsageOnce(): Promise<void>;
   start(): Promise<void>;
   stop(): Promise<void>;
 }
@@ -157,6 +174,7 @@ function resolveVerifier(config: DaemonConfig, injected: AccessVerifier | undefi
 
 const STATIC_CONTENT_TYPES: Readonly<Record<string, string>> = {
   '.html': 'text/html; charset=utf-8',
+  '.webmanifest': 'application/manifest+json',
   '.js': 'text/javascript; charset=utf-8',
   '.mjs': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
@@ -172,6 +190,37 @@ const STATIC_CONTENT_TYPES: Readonly<Record<string, string>> = {
 interface StaticFile {
   body: Uint8Array<ArrayBuffer>;
   contentType: string;
+}
+
+// ─── Cache-Control on static files (calibration finding, 2026-07-21) ─────────
+//
+// The handler used to set ONLY content-type. With no cache directives,
+// Cloudflare edge-caches by extension under the Standard cache level and can
+// serve a STALE APP SHELL after a deploy — a deploy that "didn't land" with no
+// obvious cause. Three classes, deliberately small and obvious:
+//   * the unhashed shell (index.html / sw.js / manifest.webmanifest) → must
+//     revalidate on every request;
+//   * Vite's content-hashed build output (/assets/*) → the URL changes whenever
+//     the bytes do, so it is safe to cache forever;
+//   * everything else → a short conservative default.
+const SHELL_NO_CACHE = 'no-cache';
+const HASHED_ASSET_CACHE = 'public, max-age=31536000, immutable';
+const DEFAULT_STATIC_CACHE = 'public, max-age=300';
+const ALWAYS_REVALIDATE_FILES: ReadonlySet<string> = new Set([
+  '/index.html',
+  '/sw.js',
+  '/manifest.webmanifest',
+]);
+
+export function cacheControlForStaticPath(servedPath: string): string {
+  const normalizedPath = servedPath.startsWith('/') ? servedPath : `/${servedPath}`;
+  if (ALWAYS_REVALIDATE_FILES.has(normalizedPath)) {
+    return SHELL_NO_CACHE;
+  }
+  if (normalizedPath.startsWith('/assets/')) {
+    return HASHED_ASSET_CACHE;
+  }
+  return DEFAULT_STATIC_CACHE;
 }
 
 // Read a file within staticRoot, denying path traversal at the boundary. Returns
@@ -280,13 +329,20 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     app.get('*', async (context) => {
       const direct = await readStaticFile(staticDir, context.req.path);
       if (direct !== null) {
-        return context.body(direct.body, 200, { 'content-type': direct.contentType });
+        return context.body(direct.body, 200, {
+          'content-type': direct.contentType,
+          'cache-control': cacheControlForStaticPath(context.req.path),
+        });
       }
-      // SPA fallback: extension-less paths fall back to index.html.
+      // SPA fallback: extension-less paths fall back to index.html — which is
+      // the app shell, so it carries the shell's no-cache directive.
       if (extname(context.req.path) === '') {
         const indexFile = await readStaticFile(staticDir, '/index.html');
         if (indexFile !== null) {
-          return context.body(indexFile.body, 200, { 'content-type': indexFile.contentType });
+          return context.body(indexFile.body, 200, {
+            'content-type': indexFile.contentType,
+            'cache-control': cacheControlForStaticPath('/index.html'),
+          });
         }
       }
       return context.text('not found', 404);
@@ -406,8 +462,31 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     }
   };
 
+  // The usage-endpoint adapter (slice 5 step 2) — the SOLE headroom authority.
+  // Both seams default to the real ones; CI injects fakes for both.
+  const usageEndpointAdapter = createUsageEndpointAdapter({
+    httpFetch: deps.usageHttpFetch ?? defaultUsageHttpFetch,
+    readCredentials: deps.usageCredentialsReader ?? createCredentialsReader(),
+    baseUrl: config.usageBaseUrl,
+  });
+
+  // One poll. On success, one meter_sample per returned record through the
+  // normal event path (I13 persist-before-broadcast is the store's job). On
+  // ANY failure: emit NOTHING — no placeholder, no zero, no reuse of a previous
+  // body. The meters then age out via observedAt and the pure derivations
+  // report stale/unknown themselves (pillar 4: a meter that lies is worse than
+  // no meter).
+  const pollUsageOnce = async (): Promise<void> => {
+    const probeResult = await usageEndpointAdapter.probe(clock.now());
+    if (!probeResult.ok) {
+      return;
+    }
+    router.emit(probeResult.meters.map((meterRecord) => meterSample(meterRecord)));
+  };
+
   let snapshotTimer: ReturnType<typeof setInterval> | null = null;
   let terminalReapTimer: ReturnType<typeof setInterval> | null = null;
+  let usagePollTimer: ReturnType<typeof setInterval> | null = null;
 
   return {
     httpServer,
@@ -429,6 +508,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
       return hookIngress.port;
     },
     serializeProjection,
+    pollUsageOnce,
 
     async start(): Promise<void> {
       await new Promise<void>((resolveStart, rejectStart) => {
@@ -485,6 +565,20 @@ export function createDaemon(deps: DaemonDeps): Daemon {
         }, TERMINAL_REAP_CHECK_INTERVAL_MS);
         terminalReapTimer.unref();
       }
+      // Usage-endpoint poller (slice 5 step 2). The DAEMON boundary owns the
+      // periodic timer, exactly like the reaper above (rule 0.3) — the adapter
+      // and the parser stay pure/injected. An interval of 0 disables polling
+      // entirely: the timer is never created. unref'd so it never keeps the
+      // process alive, and cleared on stop() so no handle leaks.
+      if (config.usagePollIntervalMs > 0) {
+        usagePollTimer = setInterval(() => {
+          void pollUsageOnce().catch(() => {
+            // A failed poll emits nothing and is never fatal: the next tick
+            // retries, and the meters degrade to stale in the meantime.
+          });
+        }, config.usagePollIntervalMs);
+        usagePollTimer.unref();
+      }
     },
 
     async stop(): Promise<void> {
@@ -495,6 +589,10 @@ export function createDaemon(deps: DaemonDeps): Daemon {
       if (terminalReapTimer !== null) {
         clearInterval(terminalReapTimer);
         terminalReapTimer = null;
+      }
+      if (usagePollTimer !== null) {
+        clearInterval(usagePollTimer);
+        usagePollTimer = null;
       }
       // host_stopped + kill children (they die with the daemon, §3.10) and stop
       // watching transcripts BEFORE the final snapshot, so the log/watchers are
