@@ -1,11 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import {
+  EVENT_PAYLOAD_SCHEMAS,
+  EVENT_TYPES,
   HOOK_EVENT_CONSTRUCTORS,
   REGISTERED_HOOK_EVENT_NAMES,
   gateFired,
   gateFiredPayloadSchema,
   hookEventPayloadSchema,
   hookSessionStart,
+  meterAlert,
+  meterAlertPayloadSchema,
   notificationTrigger,
   notificationTriggerPayloadSchema,
   pushFailedPayloadSchema,
@@ -182,5 +186,62 @@ describe('runtime_drift_observed (E4)', () => {
     expect(input.stream).toBe('system');
     expect(input.type).toBe('runtime_drift_observed');
     expect(runtimeDriftObservedPayloadSchema.safeParse(input.payload).success).toBe(true);
+  });
+});
+
+describe('meter_alert (slice-5 step 4a — account-wide, not session-shaped)', () => {
+  const crossingPayload = {
+    meterId: 'session',
+    thresholdPercent: 80,
+    observedPercent: 83,
+    kind: 'rolling-window' as const,
+    scope: null,
+    resetsAt: '2026-07-21T15:19:59.000Z',
+    observedAt: '2026-07-21T12:00:00.000Z',
+    disposition: 'notify' as const,
+  };
+
+  it('constructs on the usage stream and validates', () => {
+    expect(meterAlert(crossingPayload)).toEqual({
+      stream: 'usage',
+      type: 'meter_alert',
+      payload: crossingPayload,
+    });
+    expect(meterAlertPayloadSchema.safeParse(crossingPayload).success).toBe(true);
+    expect(EVENT_PAYLOAD_SCHEMAS[EVENT_TYPES.meterAlert]).toBe(meterAlertPayloadSchema);
+  });
+
+  it('carries NO appSessionId — a threshold crossing belongs to no session', () => {
+    // Deliberately not notification_trigger: that payload is keyed to a session
+    // and its D9 suppression answers a different question. Forcing this event
+    // into that shape would mean fabricating a session id.
+    expect(Object.keys(meterAlertPayloadSchema.shape)).not.toContain('appSessionId');
+    expect(notificationTriggerPayloadSchema.safeParse(crossingPayload).success).toBe(false);
+  });
+
+  // Rule 0.5 reservation (Wes, 2026-07-21): slice 7's brake holds work rather
+  // than merely notifying. The vocabulary lands NOW so slice 7 needs no
+  // migration — but slice 5 has no code path that sets it.
+  it("accepts the RESERVED disposition 'hold' even though slice 5 never emits it", () => {
+    expect(
+      meterAlertPayloadSchema.safeParse({ ...crossingPayload, disposition: 'hold' }).success,
+    ).toBe(true);
+    expect(
+      meterAlertPayloadSchema.safeParse({ ...crossingPayload, disposition: 'brake' }).success,
+    ).toBe(false);
+    // The emitter's own type is narrower than the schema: `evaluateMeterAlerts`
+    // is proved to emit only 'notify' in meterDerivations.test.ts.
+  });
+
+  it('tolerates an omitted scope/resetsAt (a source may supply neither)', () => {
+    const minimalPayload = {
+      meterId: 'weekly_all',
+      thresholdPercent: 90,
+      observedPercent: 91,
+      kind: 'weekly-cap' as const,
+      observedAt: '2026-07-21T12:00:00.000Z',
+      disposition: 'notify' as const,
+    };
+    expect(meterAlertPayloadSchema.safeParse(minimalPayload).success).toBe(true);
   });
 });

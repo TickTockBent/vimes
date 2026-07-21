@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { meterAlert } from '../events.js';
 import { CountingIdSource, SteppingClock } from '../ids.js';
 import { MemoryEventStore } from '../memoryEventStore.js';
 import { meterRecordSchema, type MeterRecord } from '../schemas.js';
@@ -212,5 +213,29 @@ describe('metersProjection (upsert + bounded history)', () => {
       const booted = metersProjection.serialize(bootFromSnapshot(metersProjection, snapshotStore, store));
       expect(booted).toBe(fullReplaySerialized);
     }
+  });
+});
+
+describe('meter_alert is a projection NO-OP (rule 0.4 — green stays green)', () => {
+  it('leaves the meters state byte-identical when alerts share the usage stream', () => {
+    const store = newStore();
+    store.append([meterSample(percentOnlyMeter({ observedAt: '2026-07-21T15:00:00.000Z' }))]);
+    const beforeSerialized = metersProjection.serialize(foldStore(store));
+
+    store.append([
+      meterAlert({
+        meterId: 'session',
+        thresholdPercent: 80,
+        observedPercent: 83,
+        kind: 'rolling-window',
+        scope: null,
+        resetsAt: '2026-07-21T18:00:00.000Z',
+        observedAt: '2026-07-21T15:00:00.000Z',
+        disposition: 'notify',
+      }),
+    ]);
+    // The alert is a RECORD of a decision, never an input to the read model:
+    // the meters projection folds exactly one honest event, `meter_sample`.
+    expect(metersProjection.serialize(foldStore(store))).toBe(beforeSerialized);
   });
 });
