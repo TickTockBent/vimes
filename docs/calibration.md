@@ -595,6 +595,64 @@ and matched (1.877 s worst).
 the two re-arm signals could collapse into one detector (principle 9). A
 future-slice cleanup, recorded so it is not rediscovered.
 
+### 2026-07-21 — DEPLOYED LIVE: Unit A + Unit B carried by one restart; the spurious stream has stopped
+
+Both queued fixes are live on `the host`. Unit A (`7e696c4`, jitter) + Unit B
+(`62111e0`, push delivery — urgency/TTL caller-decides + `meter_push_outcome`)
+shipped in **one** `systemctl restart vimes.service` (new MainPID 3482633,
+`auth=configured`, no CLI drift warning, pin 2.1.216). Pre-flight ran both halves
+— zero daemon child processes (no pty terminals, no spawned sessions to lose) —
+and the `/proc` ancestry check confirmed the orchestrator's shell is **not** a
+daemon descendant, so the restart could not self-kill (the lesson from the same
+day's process failure, applied).
+
+**Running code proven, not assumed.** The restart booted from a dist built during
+verification; because the sabotage-restore rewrote source *after* that build, a
+clean `typecheck` rebuild from HEAD was run and every `dist/*.js` hash came back
+**byte-identical** — the daemon is provably running exactly HEAD, not a stale or
+coincidental build.
+
+**Observed evidence the fix holds (rule 0.7):** the last `meter_alert` in
+`events.db` is seq 357 at **20:38:44Z** — the tail of the 33, firing on the
+5-minute poll cadence (…20:28, 20:33, 20:38) right up to the 20:40 window reset.
+Since the reset and the deploy: **zero** `meter_alert` events, including now with
+`meter_sample` rows flowing again at pct 66/68 (weekly Fable, the binding meter).
+`meter_push_outcome` count is 0 — correct: it emits only when an alert fires under
+the new code, and none has yet.
+
+**Still owed, and it cannot be forced now:** the definitive live proof —
+*one 80% crossing produces exactly ONE alert carrying `urgency:'high'` + a
+reset-bounded TTL + a `meter_push_outcome` trail* — needs an actual crossing.
+Usage sits at ~66–68%, nowhere near 80%, and manufacturing one means burning to
+80% on purpose again. This is the D28 in-flight validation: it will confirm itself
+on the next real crossing, now instrumented to leave a delivery trail when it does.
+
+### 2026-07-21 — FINDING (test-strength, resolved): the cost-ingester "non-fatal" test was VACUOUS at the daemon layer
+
+Wiring step-1's ingester into the daemon (`a5d8de9`) shipped with a test named
+*"non-fatal — a corpus that throws never rejects"*. It passed — but an
+orchestrator sabotage (re-throw from the daemon's `ingestCostOnce` catch) changed
+nothing: **7/7 still green.** The catch was never reached. `scanCostCorpus`
+swallows a throwing `listDirectory` itself (`costCorpus.ts`, "an unreadable
+directory is skipped, never fatal"), so the test's throwing corpus was absorbed by
+the SCANNER; the daemon's guard — which really protects a **ledger-db write
+failure** during `upsertUsageRows`/`setWatermark`, a path the scanner does NOT
+swallow — was untested. The test's name claimed a guarantee it did not exercise:
+the same "correct by coincidence" shape as the day's other five, caught the same
+way (sabotage a guard, watch nothing fail).
+
+**Decision (Wes): strengthen before commit** (over commit-now-queue-it). A
+`costLedgerStore?` injection seam was added to `DaemonDeps`; the old test was
+renamed to what it actually proves (*scanner* resilience) and a new test injects a
+store whose `upsertUsageRows` throws. Now load-bearing and proven so: re-throwing
+from the daemon's catch fails **exactly** that one test and no other. The code was
+correct throughout — this was a test that lied about why it was green, fixed so it
+can't.
+
+**General lesson banked:** a test whose subject is a guard must be validated by
+breaking the guard, not by trusting a green tick — a passing test can be measuring
+a different guard upstream. "Green" is not "green for the reason on the label".
+
 ### 2026-07-21 — PROCESS FAILURE: a forked session ran a duplicate agent, and I killed the wrong process
 
 **What happened.** Wes works remotely, and a session **fork** left two live
