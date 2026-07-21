@@ -109,6 +109,33 @@ const POST_ROLLOVER_CROSSING_AT = '2026-07-21T15:55:00.000Z';
 const WEEKLY_SAMPLE_COUNT = METER_HISTORY_LIMIT + 6;
 const WEEKLY_SAMPLE_INTERVAL_MS = 60 * 1000;
 
+// ── the endpoint's `resets_at` JITTER, as observed (FINDING 2026-07-21) ─────
+//
+// The endpoint RECOMPUTES `resets_at` on every request, so one window is
+// reported with a different string every poll. This profile used to reuse the
+// single golden literal for every session observation — a fixture tidier than
+// production, which is exactly why it could not fail when window identity was
+// compared by string equality and one 80% crossing sent 33 notifications.
+//
+// These are the REAL values from the 15:20 window dump, in observed order, with
+// the golden capture's own reading first. Note the last one CROSSES A WHOLE
+// SECOND (`15:19:59.…` → `15:20:00.…`): a fix that truncates to whole seconds,
+// or tolerates only one second, is still broken and this profile must say so.
+const SESSION_WINDOW_RESETS_AT_AS_OBSERVED: readonly string[] = [
+  '2026-07-21T15:19:59.702520+00:00',
+  '2026-07-21T15:19:59.779964+00:00',
+  '2026-07-21T15:19:59.801817+00:00',
+  '2026-07-21T15:20:00.814087+00:00',
+];
+
+// The poll index → the string that poll saw. Deterministic by construction: a
+// pure function of the index, no clock and no randomness.
+function sessionResetsAtForPoll(pollIndex: number): string {
+  return SESSION_WINDOW_RESETS_AT_AS_OBSERVED[
+    pollIndex % SESSION_WINDOW_RESETS_AT_AS_OBSERVED.length
+  ]!;
+}
+
 const SESSION_METER_ID = 'endpoint:session';
 const WEEKLY_ALL_METER_ID = 'endpoint:weekly_all';
 const WEEKLY_SCOPED_METER_ID = 'endpoint:weekly_scoped:Fable';
@@ -364,7 +391,13 @@ export const budgetWall: ScenarioProfile = {
     // ── STAGE 3 — the real derivations, injected clock, real values ──────────
     const sessionBase = goldenMeterById(SESSION_METER_ID);
     world.router.emit([
-      meterSample(observe(sessionBase, { percent: 55, observedAt: SESSION_CLIMB_MID_AT })),
+      meterSample(
+        observe(sessionBase, {
+          percent: 55,
+          observedAt: SESSION_CLIMB_MID_AT,
+          resetsAt: sessionResetsAtForPoll(1),
+        }),
+      ),
     ]);
     const metersAtMidClimb = world.projectionHost.metersState();
     const sessionAtMidClimb = metersAtMidClimb.meters[SESSION_METER_ID];
@@ -432,7 +465,13 @@ export const budgetWall: ScenarioProfile = {
 
     // 55 -> 85 crosses the ⟨tune PREVIEW⟩ 80% line. Exactly one alert.
     world.router.emit([
-      meterSample(observe(sessionBase, { percent: 85, observedAt: SESSION_CROSSING_AT })),
+      meterSample(
+        observe(sessionBase, {
+          percent: 85,
+          observedAt: SESSION_CROSSING_AT,
+          resetsAt: sessionResetsAtForPoll(2),
+        }),
+      ),
     ]);
     const metersAtCrossing = world.projectionHost.metersState();
     if (emitAlerts(metersAtCrossing, SESSION_CROSSING_AT) !== 1) {
@@ -441,9 +480,27 @@ export const budgetWall: ScenarioProfile = {
 
     // Climbing further inside the same window must produce NONE — attention is
     // the scarce resource (pillar 5), so crossing is edge-triggered.
+    //
+    // AND the window's `resets_at` is re-jittered ACROSS A WHOLE SECOND between
+    // these two polls, which is what the live endpoint does. Window identity is
+    // a tolerance, not a string comparison; if it ever becomes a string
+    // comparison again, this poll re-arms the 80% line and the standing
+    // `meter_alert` count at the bottom of this profile goes red.
     world.router.emit([
-      meterSample(observe(sessionBase, { percent: 90, observedAt: SESSION_FURTHER_CLIMB_AT })),
+      meterSample(
+        observe(sessionBase, {
+          percent: 90,
+          observedAt: SESSION_FURTHER_CLIMB_AT,
+          resetsAt: sessionResetsAtForPoll(3),
+        }),
+      ),
     ]);
+    if (sessionResetsAtForPoll(3) === sessionResetsAtForPoll(2)) {
+      fail('the two in-window polls must carry DIFFERENT resets_at strings (the observed shape)');
+    }
+    if (sessionResetsAtForPoll(3).slice(0, 19) === sessionResetsAtForPoll(2).slice(0, 19)) {
+      fail('the in-window jitter must cross a whole second — truncating seconds is not the fix');
+    }
     // The local attribution source keeps reporting on its own cadence (U3: when
     // the endpoint dies, attribution keeps working — it just never becomes
     // headroom). Re-sampled here so stage 6(c) tests a FRESH percent-less meter,

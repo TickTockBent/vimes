@@ -415,12 +415,85 @@ function currentWindowStartIso(history: MeterHistorySample[], nowIso: string): s
     : new Date(oldestSampleInWindow.observedAtMs).toISOString();
 }
 
+// ⟨tune 60s PREVIEW⟩ — NOT PINNED (rule 0.2), and it carries its assumptions
+// with it. How far two `resets_at` readings may differ and still name the SAME
+// window.
+//
+// Why a tolerance exists at all (FINDING 2026-07-21, SHIPPED): the endpoint
+// RECOMPUTES `resets_at` on every request, so one window reports many slightly
+// different instants. Five real payloads from a single window:
+//
+//   20:39:59.374302  .418056  .375408  .900385  .746564
+//
+// Compared by string equality, every poll looked like a new window, so a fired
+// alert was re-armed and re-fired every five minutes — 33 notifications for one
+// 80% crossing.
+//
+// THE MEASUREMENT (whole live event log, 2026-07-21, 325 `meter_sample` rows,
+// clustered per meter per window; max spread within one window):
+//
+//   endpoint:session              28 samples   1.212 s   (the 15:20 window)
+//   endpoint:session              76 samples   1.877 s   (the 20:40 window)
+//   endpoint:weekly_all          110 samples   1.919 s
+//   endpoint:weekly_scoped:Fable 110 samples   0.953 s
+//
+// WHY TRUNCATING TO WHOLE SECONDS IS NOT ENOUGH — the obvious cheap fix, and it
+// does not work. The 20:40 cluster spans `20:39:59.085393` … `20:40:00.962453`,
+// straddling a second boundary, so second-truncation still yields two distinct
+// keys and the alert still re-fires. Neither is a 1 s tolerance sufficient: the
+// observed spread already exceeds one second.
+//
+// WHY 60 s, when the worst observed jitter is 1.919 s. The quantity being
+// classified has a four-order-of-magnitude gap in it: source noise is ~2 s, and
+// a genuine window change is 5 h (session) or 7 days (weekly caps). A threshold
+// should sit in the middle of that gap, not 2.6× above the noise we happen to
+// have sampled — the failure we are fixing was caused by sitting BELOW it. At
+// 60 s the margin is ~31× the worst observed jitter and still 1/300 of the
+// shortest real window.
+//
+// THE LIMIT THIS IMPOSES, stated plainly: a meter whose real window advanced by
+// LESS THAN 60 s would be read as the same window and would not re-arm. No such
+// meter exists in VIMES today (5 h and 7 days); if one is ever added, this band
+// must be revisited before it is used for that meter.
+//
+// The null↔non-null transition is NOT subject to this tolerance (see
+// `sameWindowIdentity`): at a real rollover the endpoint DROPS the field, and
+// that is a hard change, so the live-observed rollover shape keeps re-arming.
+export const WINDOW_IDENTITY_TOLERANCE_MS_PREVIEW = 60_000;
+
+// Do two `resets_at` readings name the same window?
+//
+// Absence is a fact, not a near-value: null↔non-null is always a DIFFERENT
+// window (that transition is exactly how a real rollover shows up — the endpoint
+// drops `resets_at` when the window is at zero). Unparseable values fall back to
+// exact string comparison rather than being treated as equal, because an
+// unreadable timestamp is not evidence of sameness.
+function sameWindowIdentity(
+  firstResetsAt: string | null,
+  secondResetsAt: string | null,
+): boolean {
+  if (firstResetsAt === null || secondResetsAt === null) {
+    return firstResetsAt === secondResetsAt;
+  }
+  if (firstResetsAt === secondResetsAt) {
+    return true;
+  }
+  const firstResetsAtMs = parseIsoToEpochMs(firstResetsAt);
+  const secondResetsAtMs = parseIsoToEpochMs(secondResetsAt);
+  if (firstResetsAtMs === null || secondResetsAtMs === null) {
+    return false;
+  }
+  return Math.abs(firstResetsAtMs - secondResetsAtMs) <= WINDOW_IDENTITY_TOLERANCE_MS_PREVIEW;
+}
+
 // Is a previously-fired alert still binding, or has the window rolled over and
 // re-armed it?
 //
 // Two independent reset signals, and EITHER one re-arms (they are OR'd, so an
 // alert stays binding only when BOTH agree it is the same window):
-//   1. `resetsAt` changed — the source told us directly.
+//   1. `resetsAt` changed BEYOND THE JITTER TOLERANCE — the source told us
+//      directly. Compared with `sameWindowIdentity`, never by string equality:
+//      the source's own sub-second noise is not a window change.
 //   2. the alert was observed before the current window's first sample — the
 //      percent DROPPED after it, which is a rollover (see currentWindowStartIso).
 //      This signal ABSTAINS (windowStartIso === null) whenever no drop was
@@ -432,7 +505,7 @@ function firedAlertIsStillBinding(
   currentResetsAt: string | null,
   windowStartIso: string | null,
 ): boolean {
-  if ((firedAlert.resetsAt ?? null) !== currentResetsAt) {
+  if (!sameWindowIdentity(firedAlert.resetsAt ?? null, currentResetsAt)) {
     return false;
   }
   if (windowStartIso !== null) {
