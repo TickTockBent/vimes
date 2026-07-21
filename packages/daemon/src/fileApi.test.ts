@@ -63,6 +63,7 @@ function buildConfig(projectRoots: string[], overrides: Partial<DaemonConfig> = 
     usageBaseUrl: 'http://usage.invalid',
     usageAlertPercents: [],
     usageForcedRefreshMinIntervalMs: 0,
+    costIngestIntervalMs: 0,
     ...overrides,
   };
 }

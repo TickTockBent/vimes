@@ -69,6 +69,15 @@ export interface DaemonConfig {
   // poll. ⟨tune 30s PREVIEW⟩ — behavior-shaping, NOT pinned (rule 0.2).
   // VIMES_USAGE_REFRESH_MIN_INTERVAL_MS overrides; 0 disables debouncing.
   usageForcedRefreshMinIntervalMs: number;
+  // How often the cost-ledger ingester re-scans Claude Code's transcripts into
+  // the durable ledger db (slice 5b). This is an OPERATIONAL CADENCE, not a
+  // calibrated meter band: the first scan captures the full backlog and the
+  // incremental (path,size,mtime) machinery makes every later scan cheap, so the
+  // interval is a freshness-vs-noise default open to tuning (like the push TTL),
+  // NOT a behavior-shaping ⟨tune⟩ number. A value of 0 DISABLES ingestion
+  // entirely: no store is opened, no db file is created, no timer runs.
+  // VIMES_COST_INGEST_MS overrides.
+  costIngestIntervalMs: number;
 }
 
 const DEFAULT_PORT = 4600;
@@ -98,6 +107,11 @@ const DEFAULT_USAGE_ALERT_PERCENTS: readonly number[] = [80];
 // headers at all — so the debounce is about endpoint-citizenship (rule 0.6) and
 // about a UI retry loop never becoming a hammer. 0 disables it.
 const DEFAULT_USAGE_REFRESH_MIN_INTERVAL_MS = 30_000;
+// Cost-ledger re-scan cadence, 30 min. An OPERATIONAL default open to tuning —
+// like DEFAULT_PUSH_TTL_SECONDS, NOT a pinned ⟨tune⟩ band (rule 0.2 does not
+// apply): the first scan captures the full backlog and later scans are cheap, so
+// this is freshness-vs-noise, not a correctness knob. 0 disables ingestion.
+const DEFAULT_COST_INGEST_INTERVAL_MS = 1_800_000;
 
 function expandHome(path: string): string {
   if (path === '~') {
@@ -221,5 +235,9 @@ export function loadConfigFromEnv(env: NodeJS.ProcessEnv = process.env): DaemonC
             env.VIMES_USAGE_REFRESH_MIN_INTERVAL_MS,
             'VIMES_USAGE_REFRESH_MIN_INTERVAL_MS',
           ),
+    costIngestIntervalMs:
+      env.VIMES_COST_INGEST_MS === undefined || env.VIMES_COST_INGEST_MS === ''
+        ? DEFAULT_COST_INGEST_INTERVAL_MS
+        : parsePositiveInteger(env.VIMES_COST_INGEST_MS, 'VIMES_COST_INGEST_MS'),
   };
 }

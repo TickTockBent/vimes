@@ -76,6 +76,7 @@ function buildConfig(dbPath: string, overrides: Partial<DaemonConfig> = {}): Dae
     usageBaseUrl: 'http://usage.invalid',
     usageAlertPercents: [80],
     usageForcedRefreshMinIntervalMs: 0,
+    costIngestIntervalMs: 0,
     ...overrides,
   };
 }

@@ -52,6 +52,7 @@ function buildConfig(dbPath: string): DaemonConfig {
     usageBaseUrl: 'http://usage.invalid',
     usageAlertPercents: [],
     usageForcedRefreshMinIntervalMs: 0,
+    costIngestIntervalMs: 0,
   };
 }
 
