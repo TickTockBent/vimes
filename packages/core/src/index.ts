@@ -43,6 +43,19 @@ export {
   type MetersState,
 } from './projections/meters.js';
 export { tasksProjection, type TasksState } from './projections/tasks.js';
+export {
+  cacheObservabilityProjection,
+  type CacheObservabilityState,
+  type CacheObservabilityRecord,
+} from './projections/cacheObservability.js';
+export {
+  classifyTtlTier,
+  readCacheTokens,
+  cacheHitRate,
+  readServiceTier,
+  type TtlTier,
+  type CacheTokenTotals,
+} from './cacheClassification.js';
 
 export {
   TranscriptTail,

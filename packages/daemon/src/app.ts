@@ -10,6 +10,7 @@ import {
   readAllStreamsGrouped,
   runtimeDriftObserved,
   snapshotAfter,
+  cacheObservabilityProjection,
   metersProjection,
   sessionsProjection,
   tasksProjection,
@@ -65,6 +66,7 @@ const DAEMON_PROJECTIONS: ReadonlyArray<Projection<unknown>> = [
   sessionsProjection as Projection<unknown>,
   metersProjection as Projection<unknown>,
   tasksProjection as Projection<unknown>,
+  cacheObservabilityProjection as Projection<unknown>,
 ];
 const PROJECTION_BY_ID = new Map<string, Projection<unknown>>(
   DAEMON_PROJECTIONS.map((projection) => [projection.id, projection]),
