@@ -549,6 +549,65 @@ first-party Claude Code, `-p` or not, is not. **This answers Wes's standing
 dongfu question: those runs burned the 5-hour/weekly windows, not a $100
 automation bucket.** Promote D24 to a decision on his sign-off.
 
+### 2026-07-21 — the usage endpoint DOES rate-limit (429), and the honest-degradation path proved itself under a REAL failure
+
+**Self-inflicted, which makes it better evidence.** The orchestrator started a
+95%-ceiling watcher polling `GET /api/oauth/usage` **every 30 seconds** (~120
+req/h) on top of the daemon's 12/h. **429s began 2 minutes later** and persisted:
+
+```
+18:16:39  ok  200
+18:18:15  http-error 429   ← watcher started ~18:16
+18:18:44  http-error 429
+18:23:44  http-error 429   … continuing
+```
+
+**The endpoint's rate-limit surface, now observed rather than assumed:**
+- Body: `{"error":{"type":"rate_limit_error","message":"Rate limited. Please try again later."}}`
+- **`retry-after` header IS present on a 429** — value observed as `0` — while
+  **200 responses carry no rate-limit headers at all**. Earlier today three
+  back-to-back 200s showed no headers and no throttling, which was read as "no
+  rate limiting visible". Correct as far as it went, and wrong as a conclusion:
+  **the limit was simply never approached.** Absence of a rate-limit header is
+  not absence of a rate limit.
+- Rough ceiling: sustained ~2 req/min tripped it; the daemon's 1-per-5-min never
+  has.
+
+**This vindicates the debounce, and indicts its author.** The forced-refresh
+debounce was written this afternoon with the rationale *"the endpoint is
+unofficial and returns no rate-limit headers, so restraint is
+endpoint-citizenship"* — and then the orchestrator stood up a 30-second poller
+against the same endpoint an hour later. **The rule was right; the person who
+wrote it broke it.** Automation gets a debounce and a human with a shell does
+not, which is precisely backwards.
+
+**⭐ The slice invariant held under an unplanned production failure — which no
+test had yet done.** With the source returning 429:
+- The poller emitted **no samples** rather than a placeholder (`limitsParsed: 0`).
+- Meters aged out and **rendered stale**, showing no percentage figure.
+- Forced refresh reported honestly: *"Refresh failed: the usage endpoint returned
+  an error (HTTP 429). Ages below are unchanged."* — the real status code
+  surfaced, ages preserved and growing, **no fabricated `observedAt`**.
+
+Every one of those behaviors was designed against a hypothetical and had only
+ever been exercised by injected failures. **This is the first time the whole
+degradation path ran end-to-end against a real upstream failure, in front of the
+user, and it behaved exactly as specified.** Wes's report — *"showing stale …
+Refresh failed … Ages below are unchanged"* — is the assertion text, observed.
+
+**The observation log paid for itself on day one.** The 429 body produced a
+**new fingerprint (`f6412f5aa41a82ee`)**, so the first sighting was captured
+whole, giving a complete forensic record of a failure nobody planned. That is
+exactly the rule-0.6 drift-detection case it was built for, and it arrived within
+hours.
+
+**Actions:** watcher killed. **Any future endpoint watcher must poll the LOCAL
+event log, not the endpoint** — the daemon already polls, and its results are in
+`events.db` and `usage-observations.jsonl` for free. The earlier alert-watcher did
+exactly this and cost nothing; the ceiling watcher hit the network because it was
+written in a hurry. Also worth considering for the adapter: honour `retry-after`
+and back off after a 429 rather than continuing the fixed cadence into a wall.
+
 ### 2026-07-21 — C2 Fable-1h: cell CLOSED exact; plus `--model` is a REQUEST, and one case where JSONL's tier split is NOT what Anthropic bills
 
 **The gap is closed.** One `claude-fable-5` session forced onto the 1h tier
