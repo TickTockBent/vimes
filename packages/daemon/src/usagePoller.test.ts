@@ -149,6 +149,26 @@ describe('usage poller at the daemon boundary', () => {
     }
   });
 
+  it('a positive interval polls ONCE immediately on start, before the interval ever fires', async () => {
+    let callCount = 0;
+    // A deliberately long interval: if the immediate poll didn't happen, the
+    // interval callback could not possibly fire within this test's short
+    // real-time budget, so any observed call must be the immediate one.
+    const daemon = await startDaemon(buildConfig({ usagePollIntervalMs: 60_000 }), async () => {
+      callCount += 1;
+      return { status: 200, body: GOLDEN_BODY };
+    });
+    try {
+      const deadlineMs = Date.now() + 2000;
+      while (callCount === 0 && Date.now() < deadlineMs) {
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
+      }
+      expect(callCount).toBe(1);
+    } finally {
+      await daemon.stop();
+    }
+  });
+
   it('a positive interval polls on a timer, and stop() clears it', async () => {
     let callCount = 0;
     const daemon = await startDaemon(buildConfig({ usagePollIntervalMs: 10 }), async () => {
