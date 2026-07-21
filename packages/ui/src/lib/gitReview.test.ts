@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  decideGitRoot,
   deriveGitStatusRow,
   deriveGitStatusRows,
   diffLineStyle,
@@ -168,5 +169,38 @@ describe('summarizeDiffStat', () => {
 
   it('is zero for an empty diff', () => {
     expect(summarizeDiffStat([])).toEqual({ filesChanged: 0, additions: 0, deletions: 0 });
+  });
+});
+
+describe('decideGitRoot — repo picker + free-text escape hatch', () => {
+  it('prefers the free-text field over the selected repo', () => {
+    expect(decideGitRoot('/home/wes/projects/other/repo', '/home/wes/projects/infrastructure/vimes')).toEqual({
+      ok: true,
+      root: '/home/wes/projects/other/repo',
+    });
+  });
+
+  it('trims the free-text field', () => {
+    expect(decideGitRoot('  /home/wes/projects/a/repo  ', '')).toEqual({ ok: true, root: '/home/wes/projects/a/repo' });
+  });
+
+  it('falls back to the selected repo when the field is empty or whitespace', () => {
+    const selectedRepoPath = '/home/wes/projects/infrastructure/vimes';
+    expect(decideGitRoot('', selectedRepoPath)).toEqual({ ok: true, root: selectedRepoPath });
+    expect(decideGitRoot('   ', selectedRepoPath)).toEqual({ ok: true, root: selectedRepoPath });
+  });
+
+  it('reports a visible problem when neither a field value nor a selection exists', () => {
+    const decision = decideGitRoot('', '');
+    expect(decision.ok).toBe(false);
+    expect(decision.ok === false && decision.error.length > 0).toBe(true);
+  });
+
+  // The daemon owns the boundary: a traversal or an out-of-roots path is passed
+  // through UNCHANGED and refused server-side (surfacing via gitError). The
+  // helper must NOT invent a second, weaker client-side wall.
+  it('passes hostile-looking paths through untouched — the daemon is the wall', () => {
+    expect(decideGitRoot('../../etc', '/home/wes/projects')).toEqual({ ok: true, root: '../../etc' });
+    expect(decideGitRoot('/etc/shadow', '')).toEqual({ ok: true, root: '/etc/shadow' });
   });
 });

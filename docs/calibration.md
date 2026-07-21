@@ -269,6 +269,33 @@ Conclusion: NO new event capture needed — a pure projection over existing
 `usage_block` events delivers the whole cache-observability surface. The classifier
 is a pure fn unit-tested over these real samples.
 
+### 2026-07-21 — slice-4 exit-gate test: FINDING (git panel could not reach any repo)
+
+**Found by Wes in the first live exit-gate attempt, from Vimes itself.** The git
+panel's picker offered only `effectiveRoots` — the configured
+`VIMES_PROJECT_ROOTS` (`~/projects`, D21) plus live-session cwds. But
+`~/projects` is a **container of repos, not a repo**: the real repos sit one or
+more levels down (`~/projects/infrastructure/vimes`, `…/games/dongfu`). With no
+live sessions the dropdown had exactly one entry, it wasn't a repo, and the
+daemon (correctly) answered `not-a-repo` — so the entire diff surface was
+unreachable and the kill criterion could not even be evaluated.
+
+**Class of error worth remembering:** this is the SAME gap the terminal hit
+(fixed there 2026-07-20 with a free-text cwd field + `decideStartCwd`, because
+`~/projects` is not a shell-worthy cwd either). The lesson was not carried
+across surfaces — when a surface takes a "root", ask whether the configured
+roots are actually *usable targets* for it, or merely containers of them.
+
+**Fix (same day):** (1) `GET /api/git/repos` — depth-bounded (≤3 below each
+root) discovery walker: a directory containing a `.git` entry of ANY type (the
+worktree/submodule `.git`-FILE case included) is a repo; no descent into a found
+repo; `node_modules`/`.git`/dot-dirs skipped; only `isDirectory()` entries
+descended so symlinks cannot cycle; unreadable dirs skipped, never thrown; every
+returned path re-verified through `resolveWithinRoots`; added to the I14 auth
+matrix. (2) The panel now picks from DISCOVERED REPOS (one tap on mobile) with a
+free-text path field as the escape hatch (pillar 7), last-used repo remembered.
+603 tests green. Gate test re-armed.
+
 ## Budget table (`--report`)
 
 Design-intent targets from spec §8, listed so nothing gets pinned from memory.

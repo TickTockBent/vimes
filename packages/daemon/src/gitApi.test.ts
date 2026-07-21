@@ -1,13 +1,14 @@
 import { afterAll, describe, expect, it } from 'vitest';
-import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { CountingIdSource, SteppingClock } from '@vimes/core';
 import type { AccessVerifier } from './auth.js';
 import { createDaemon, type Daemon } from './app.js';
 import type { DaemonConfig } from './config.js';
 import type { GitRunner, GitRunResult } from './gitAdapter.js';
 import type {
+  GitReposResponse,
   GitStatusResponse,
   GitDiffResponse,
   GitBranchesResponse,
@@ -387,6 +388,131 @@ describe('Git API — hostile input (extends I14 / traversal posture)', () => {
       const body = (await response.json()) as GitRefusalResponse;
       expect(body.error).toBe('missing-root');
     } finally {
+      await daemon.stop();
+    }
+  });
+});
+
+// ─── Repo discovery (GET /api/git/repos) ──────────────────────────────────────
+//
+// The gate finding this fixes: VIMES_PROJECT_ROOTS points at a CONTAINER of
+// repos (~/projects), so a picker offering the roots themselves can never reach
+// a repository. Discovery walks a bounded depth below each allowlisted root and
+// returns only allowlist-verified repo paths.
+
+// Mark `directoryPath` as a repository. `asFile` writes a `.git` FILE (the
+// worktree/submodule shape) instead of a `.git` DIRECTORY — both must count.
+function makeRepositoryAt(directoryPath: string, asFile = false): void {
+  mkdirSync(directoryPath, { recursive: true });
+  const gitEntryPath = join(directoryPath, '.git');
+  if (asFile) {
+    writeFileSync(gitEntryPath, 'gitdir: /elsewhere/.git/worktrees/w\n', 'utf8');
+  } else {
+    mkdirSync(gitEntryPath, { recursive: true });
+  }
+}
+
+async function fetchDiscoveredRepos(daemon: Daemon): Promise<GitReposResponse> {
+  const response = await apiFetch(daemon, '/api/git/repos');
+  expect(response.status).toBe(200);
+  return (await response.json()) as GitReposResponse;
+}
+
+describe('Git API — repo discovery under the allowlist', () => {
+  it('discovers nested repos (.git as DIRECTORY and as FILE) and labels them relative to the root', async () => {
+    const containerRoot = makeRoot('discover');
+    makeRepositoryAt(join(containerRoot, 'infrastructure', 'vimes'));
+    makeRepositoryAt(join(containerRoot, 'games', 'dongfu'), true);
+    // A plain directory with no .git is not a repo.
+    mkdirSync(join(containerRoot, 'notes'), { recursive: true });
+
+    const daemon = await startDaemon(buildConfig([containerRoot]), makeFakeRunner({ calls: [] }));
+    try {
+      const body = await fetchDiscoveredRepos(daemon);
+      expect(body.repos).toEqual([
+        { path: join(containerRoot, 'games', 'dongfu'), name: 'games/dongfu' },
+        { path: join(containerRoot, 'infrastructure', 'vimes'), name: 'infrastructure/vimes' },
+      ]);
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  it('lists a root that is itself a repo, under its basename', async () => {
+    const repoRoot = makeRoot('rootisrepo');
+    makeRepositoryAt(repoRoot);
+    const daemon = await startDaemon(buildConfig([repoRoot]), makeFakeRunner({ calls: [] }));
+    try {
+      const body = await fetchDiscoveredRepos(daemon);
+      expect(body.repos).toEqual([{ path: repoRoot, name: basename(repoRoot) }]);
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  it('never returns a repo outside the allowlisted roots', async () => {
+    const insideRoot = makeRoot('inside');
+    const outsideRoot = makeRoot('outside');
+    makeRepositoryAt(join(insideRoot, 'mine'));
+    makeRepositoryAt(join(outsideRoot, 'theirs'));
+
+    const daemon = await startDaemon(buildConfig([insideRoot]), makeFakeRunner({ calls: [] }));
+    try {
+      const body = await fetchDiscoveredRepos(daemon);
+      expect(body.repos.map((repo) => repo.path)).toEqual([join(insideRoot, 'mine')]);
+      expect(body.repos.some((repo) => repo.path.startsWith(outsideRoot))).toBe(false);
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  it('bounds the walk at 3 levels below the root', async () => {
+    const containerRoot = makeRoot('depth');
+    makeRepositoryAt(join(containerRoot, 'one', 'two', 'three'));
+    makeRepositoryAt(join(containerRoot, 'one', 'two', 'threeb', 'four'));
+
+    const daemon = await startDaemon(buildConfig([containerRoot]), makeFakeRunner({ calls: [] }));
+    try {
+      const body = await fetchDiscoveredRepos(daemon);
+      expect(body.repos.map((repo) => repo.name)).toEqual(['one/two/three']);
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  it('does not descend into a discovered repo, and skips node_modules and dot-directories', async () => {
+    const containerRoot = makeRoot('nodescend');
+    makeRepositoryAt(join(containerRoot, 'outer'));
+    // A submodule INSIDE the discovered repo must not be listed separately.
+    makeRepositoryAt(join(containerRoot, 'outer', 'vendor', 'submodule'));
+    // Noise that must never be walked.
+    makeRepositoryAt(join(containerRoot, 'node_modules', 'somepackage'));
+    makeRepositoryAt(join(containerRoot, '.cache', 'hiddenrepo'));
+
+    const daemon = await startDaemon(buildConfig([containerRoot]), makeFakeRunner({ calls: [] }));
+    try {
+      const body = await fetchDiscoveredRepos(daemon);
+      expect(body.repos.map((repo) => repo.name)).toEqual(['outer']);
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  it('skips an unreadable directory instead of throwing', async () => {
+    const containerRoot = makeRoot('unreadable');
+    makeRepositoryAt(join(containerRoot, 'readable'));
+    const lockedDirectory = join(containerRoot, 'locked');
+    // No repo inside the locked directory, so the expectation holds whether or
+    // not the test user can bypass the mode bits.
+    mkdirSync(join(lockedDirectory, 'plain'), { recursive: true });
+    chmodSync(lockedDirectory, 0o000);
+
+    const daemon = await startDaemon(buildConfig([containerRoot]), makeFakeRunner({ calls: [] }));
+    try {
+      const body = await fetchDiscoveredRepos(daemon);
+      expect(body.repos.map((repo) => repo.name)).toEqual(['readable']);
+    } finally {
+      chmodSync(lockedDirectory, 0o755);
       await daemon.stop();
     }
   });

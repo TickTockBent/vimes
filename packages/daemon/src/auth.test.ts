@@ -172,6 +172,7 @@ describe('I14 auth matrix — real verifier over a locally-minted JWKS', () => {
     '/api/projections/sessions',
     '/api/files/roots',
     '/api/terminals',
+    '/api/git/repos',
     '/api/git/status',
     '/api/git/diff',
     '/api/git/branches',
@@ -288,6 +289,12 @@ describe('I14 fail-closed — unconfigured verifier rejects everything with 503'
       const withToken = await probeHttp(daemon.port, '/api/projections/sessions', 'anything-at-all');
       expect(withToken.status).toBe(503);
       assertZeroProductBytes(withToken.body);
+
+      // Repo DISCOVERY fails closed like every other product-port path — an
+      // unconfigured verifier must never leak the shape of the filesystem.
+      const repos = await probeHttp(daemon.port, '/api/git/repos', 'anything-at-all');
+      expect(repos.status).toBe(503);
+      assertZeroProductBytes(repos.body);
 
       const upgrade = await probeWsUpgrade(daemon.port, undefined);
       expect(upgrade.opened).toBe(false);
