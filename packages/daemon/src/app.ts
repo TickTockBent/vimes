@@ -571,6 +571,15 @@ export function createDaemon(deps: DaemonDeps): Daemon {
       // entirely: the timer is never created. unref'd so it never keeps the
       // process alive, and cleared on stop() so no handle leaks.
       if (config.usagePollIntervalMs > 0) {
+        // Fire one poll immediately (fire-and-forget, never awaited) so meters
+        // populate promptly after boot instead of sitting at unknown for a
+        // full interval — setInterval alone doesn't fire until the first
+        // tick elapses. Never fatal, same as the interval callback below: a
+        // failed poll emits nothing and the interval retries on schedule.
+        void pollUsageOnce().catch(() => {
+          // A failed poll emits nothing and is never fatal: the next tick
+          // retries, and the meters degrade to stale in the meantime.
+        });
         usagePollTimer = setInterval(() => {
           void pollUsageOnce().catch(() => {
             // A failed poll emits nothing and is never fatal: the next tick
