@@ -247,10 +247,16 @@ are not: the dedupe and fork rules determine what a "message" even is, and
 pricing or rolling up the wrong row set is worse than doing it later.
 
 ## Open riders (not blocking construction)
-- **PTY `usage_block` has no positive evidence yet** — the one observed PTY
-  session's usage all predated VIMES attaching. One live PTY session doing real
-  work closes it. Matters for VIMES's *live* attribution, not for the ledger
-  (which reads transcripts).
+- **Terminal work is INVISIBLE to the event log — confirmed 2026-07-21.** A
+  vimes terminal wrote a real file and left 3 usage rows in its transcript;
+  VIMES's log recorded no session, no message, no `usage_block`, and terminals
+  are not evented at all. **This makes the transcripts-not-event-log ingestion
+  decision non-negotiable rather than merely preferable** — the event log would
+  miss 100% of terminal work, not just pre-deployment history.
+- **PTY-*session* `usage_block` still has no positive evidence** — the terminal
+  test above exercised a different path. The one observed `channel: 'pty'`
+  session's usage all predated VIMES attaching. Matters for VIMES's *live*
+  attribution, not for the ledger.
 - **D15 is stale** — inherited `CLAUDE*` env no longer suppresses transcripts
   (tested 2026-07-21 from a shell carrying 9 such vars). The PTY channel's env
   scrubbing is now belt-and-braces. Worth a dated correction on D15 when someone

@@ -549,6 +549,51 @@ first-party Claude Code, `-p` or not, is not. **This answers Wes's standing
 dongfu question: those runs burned the 5-hour/weekly windows, not a $100
 automation bucket.** Promote D24 to a decision on his sign-off.
 
+### 2026-07-21 — FINDING: work done in a VIMES **terminal** is INVISIBLE to VIMES's event log
+
+Wes ran the closing half of the spawn-path check on request: opened a vimes
+terminal shell and had Sonnet write a file. The result answered a bigger question
+than the one asked.
+
+**What happened.** `~/projects/pty-gate.md` was created (3,465 bytes, real work).
+The CLI wrote a transcript with **3 usage rows** (`claude-sonnet-5`,
+17:40:11Z–17:40:28Z), full token detail, exactly as every other spawn path does.
+
+**What VIMES recorded: nothing.** In that window the event log contains
+**`meter_sample` events and nothing else** — no `session_created`, no `message`,
+no `usage_block`. Session count did not move (still 8, newest from the previous
+day). And `type LIKE '%terminal%'` returns **zero rows: terminals are not evented
+at all.**
+
+**This is a DIFFERENT and larger hole than the PTY-session question.** A
+PTY-*channel session* at least exists as a session and gets a stream. A raw
+**terminal** produces no session, so there is nothing to attribute to — the work
+is not under-counted, it is entirely absent. The tokens were spent, the account
+window moved, and VIMES's own log has no trace.
+
+**It is the accounting face of a hazard already documented for deploys.**
+CLAUDE.md records that terminals are daemon children **invisible to the liveness
+projection**, which is why a deploy pre-flight must check `/api/terminals`
+separately. Same blind spot, second consequence: what is invisible to liveness is
+equally invisible to attribution. **One structural gap, two symptoms, discovered
+months apart** — worth noting as a pattern, because a third symptom probably
+exists somewhere.
+
+**Consequences:**
+1. **Vindicates the slice-5b ingestion decision emphatically.** A ledger built on
+   the event log would miss **100%** of terminal work, not merely the
+   pre-deployment history. Transcripts are the only source that sees everything.
+2. **Slice 4's cache observability and slice 5's attribution are blind to
+   terminal work** — correct for what they claim (they describe *sessions*), but
+   worth stating plainly rather than discovering later.
+3. **Not a regression and not a slice-5b blocker** — the ledger reads
+   transcripts, which captured this perfectly. Recorded as a known boundary of
+   the live event log.
+
+**PTY-channel sessions remain unproven** — this test exercised the terminal path,
+not the PTY-session path. Closing that one still needs a session created with
+`channel: 'pty'` doing fresh work.
+
 ### 2026-07-21 — spawn-path check: 3 of 4 paths confirmed; the tailer's attach-at-head is the ledger's real constraint
 
 Run because a spawn path that writes no usage rows would be a silent hole in
