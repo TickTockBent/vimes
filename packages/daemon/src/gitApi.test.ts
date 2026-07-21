@@ -272,6 +272,136 @@ describe('Git API — happy path with a fake runner', () => {
   });
 });
 
+// ─── Repo-relative request paths (the acceptance-test finding) ────────────────
+//
+// `git status --porcelain=v2` emits REPO-RELATIVE paths and the UI hands them
+// straight back. The bug: they were resolved against the ALLOWLIST ROOT, so a
+// repo NESTED below the root (~/projects/content/vesh under ~/projects) lost its
+// `content/vesh/` prefix and the diff read ENOENT. Every test below nests the
+// repo below the allowlisted root so the old behavior would reproduce.
+
+describe('Git API — repo-relative request paths', () => {
+  // Allowlist the container; the repo lives two levels below it.
+  function makeNestedRepository(): { containerRoot: string; repositoryRoot: string } {
+    const containerRoot = makeRoot('relpath');
+    const repositoryRoot = join(containerRoot, 'content', 'vesh');
+    mkdirSync(join(repositoryRoot, 'manuscript'), { recursive: true });
+    writeFileSync(join(repositoryRoot, 'manuscript', 'chapter-01.md'), 'chapter one\n', 'utf8');
+    return { containerRoot, repositoryRoot };
+  }
+
+  it('GET /api/git/diff resolves a repo-relative path against the REPO ROOT, not the allowlist root', async () => {
+    const { containerRoot, repositoryRoot } = makeNestedRepository();
+    const controls: FakeGitControls = { calls: [], canned: { diff: { stdout: DIFF_STDOUT, stderr: '', exitCode: 0 } } };
+    const daemon = await startDaemon(buildConfig([containerRoot]), makeFakeRunner(controls));
+    try {
+      const response = await apiFetch(
+        daemon,
+        `/api/git/diff?root=${encodeURIComponent(repositoryRoot)}&path=${encodeURIComponent('manuscript/chapter-01.md')}`,
+      );
+      expect(response.status).toBe(200);
+      const diffCall = controls.calls.find((call) => call[0] === 'diff');
+      expect(diffCall).toEqual(['diff', '--no-color', '--', join(repositoryRoot, 'manuscript', 'chapter-01.md')]);
+      // The regression: the container-root resolution dropped `content/vesh/`.
+      expect(diffCall![3]).not.toBe(join(containerRoot, 'manuscript', 'chapter-01.md'));
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  it('POST /api/git/stage resolves a repo-relative path against the REPO ROOT', async () => {
+    const { containerRoot, repositoryRoot } = makeNestedRepository();
+    const controls: FakeGitControls = { calls: [] };
+    const daemon = await startDaemon(buildConfig([containerRoot]), makeFakeRunner(controls));
+    try {
+      const response = await apiFetch(daemon, '/api/git/stage', {
+        method: 'POST',
+        body: JSON.stringify({ root: repositoryRoot, path: 'manuscript/chapter-01.md' }),
+      });
+      expect(response.status).toBe(200);
+      const expectedAbsolutePath = join(repositoryRoot, 'manuscript', 'chapter-01.md');
+      const addCall = controls.calls.find((call) => call[0] === 'add');
+      expect(addCall).toEqual(['add', '--', expectedAbsolutePath]);
+      // The response echoes the RESOLVED absolute path.
+      const body = (await response.json()) as { path: string };
+      expect(body.path).toBe(expectedAbsolutePath);
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  it('POST /api/git/unstage resolves a repo-relative path against the REPO ROOT', async () => {
+    const { containerRoot, repositoryRoot } = makeNestedRepository();
+    const controls: FakeGitControls = { calls: [] };
+    const daemon = await startDaemon(buildConfig([containerRoot]), makeFakeRunner(controls));
+    try {
+      const response = await apiFetch(daemon, '/api/git/unstage', {
+        method: 'POST',
+        body: JSON.stringify({ root: repositoryRoot, path: 'manuscript/chapter-01.md' }),
+      });
+      expect(response.status).toBe(200);
+      const resetCall = controls.calls.find((call) => call[0] === 'reset' || call[0] === 'restore');
+      expect(resetCall![resetCall!.length - 1]).toBe(join(repositoryRoot, 'manuscript', 'chapter-01.md'));
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  it('still accepts an ABSOLUTE path unchanged', async () => {
+    const { containerRoot, repositoryRoot } = makeNestedRepository();
+    const controls: FakeGitControls = { calls: [], canned: { diff: { stdout: DIFF_STDOUT, stderr: '', exitCode: 0 } } };
+    const daemon = await startDaemon(buildConfig([containerRoot]), makeFakeRunner(controls));
+    try {
+      const absolutePath = join(repositoryRoot, 'manuscript', 'chapter-01.md');
+      const response = await apiFetch(
+        daemon,
+        `/api/git/diff?root=${encodeURIComponent(repositoryRoot)}&path=${encodeURIComponent(absolutePath)}`,
+      );
+      expect(response.status).toBe(200);
+      const diffCall = controls.calls.find((call) => call[0] === 'diff');
+      expect(diffCall).toEqual(['diff', '--no-color', '--', absolutePath]);
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  it('still REFUSES a repo-relative traversal that climbs out of the allowlist (403, no git op)', async () => {
+    const { containerRoot, repositoryRoot } = makeNestedRepository();
+    const controls: FakeGitControls = { calls: [] };
+    const daemon = await startDaemon(buildConfig([containerRoot]), makeFakeRunner(controls));
+    try {
+      const response = await apiFetch(
+        daemon,
+        `/api/git/diff?root=${encodeURIComponent(repositoryRoot)}&path=${encodeURIComponent('../../../etc/passwd')}`,
+      );
+      expect(response.status).toBe(403);
+      const body = (await response.json()) as GitRefusalResponse;
+      expect(body.error).toBe('path-outside-allowlist');
+      expect(controls.calls.some((call) => call[0] === 'diff')).toBe(false);
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  it('still REFUSES a repo-relative traversal on stage (403, no add)', async () => {
+    const { containerRoot, repositoryRoot } = makeNestedRepository();
+    const controls: FakeGitControls = { calls: [] };
+    const daemon = await startDaemon(buildConfig([containerRoot]), makeFakeRunner(controls));
+    try {
+      const response = await apiFetch(daemon, '/api/git/stage', {
+        method: 'POST',
+        body: JSON.stringify({ root: repositoryRoot, path: '../../../etc/passwd' }),
+      });
+      expect(response.status).toBe(403);
+      const body = (await response.json()) as GitRefusalResponse;
+      expect(body.error).toBe('path-outside-allowlist');
+      expect(controls.calls.some((call) => call[0] === 'add')).toBe(false);
+    } finally {
+      await daemon.stop();
+    }
+  });
+});
+
 describe('Git API — hostile input (extends I14 / traversal posture)', () => {
   it('refuses a root OUTSIDE the allowlist with 403 and never runs git', async () => {
     const root = makeRoot('inroots');
