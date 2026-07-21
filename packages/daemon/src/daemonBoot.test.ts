@@ -50,6 +50,8 @@ function buildConfig(dbPath: string): DaemonConfig {
     terminalIdleReapMs: 0,
     usagePollIntervalMs: 0,
     usageBaseUrl: 'http://usage.invalid',
+    usageAlertPercents: [],
+    usageForcedRefreshMinIntervalMs: 0,
   };
 }
 
