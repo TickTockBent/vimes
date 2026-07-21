@@ -530,6 +530,54 @@ first-party Claude Code, `-p` or not, is not. **This answers Wes's standing
 dongfu question: those runs burned the 5-hour/weekly windows, not a $100
 automation bucket.** Promote D24 to a decision on his sign-off.
 
+### 2026-07-21 — FINDING (step 4a, caught at orchestrator verification): weekly meters would re-alert every ~5h20m forever
+
+Caught by an orchestrator probe against the step-4a agent's reported-green
+`evaluateMeterAlerts`, before any daemon wiring existed. **ci-gate was fully
+green (728 tests) with this defect present** — it is not a regression, it is an
+uncovered interaction.
+
+**Reproduction** (probe kept as `_orchVerify.test.ts` until folded into the real
+suite): a `weekly-cap` meter, `resetsAt` unchanged, `percent` only ever rising —
+i.e. the window demonstrably has NOT rolled over. Fire the 80% alert, advance six
+hours, evaluate again → **the alert fires a second time.**
+
+**Root cause.** `currentWindowStartIso` infers the window's start from the
+bounded sample history (`METER_HISTORY_LIMIT = 64`). When no reset occurred
+inside the retained span, `samplesSinceLastReset` returns *everything it has*, so
+the inferred "window start" is simply the oldest retained sample — **a sliding
+value that tracks the buffer, not the window.** At the 5-minute default poll
+interval 64 samples ≈ 5h20m, which happens to approximate the 5-hour window, so
+`endpoint:session` looks correct **by coincidence**. For `weekly_all` /
+`weekly_scoped` the real window is 7 days and the inference is wrong by two
+orders of magnitude.
+
+**Consequence.** Any alert older than the retained span falls before the apparent
+window start, is read as re-armed, and re-fires; the replacement alert then ages
+out of the buffer 5h20m later and the cycle repeats. **A weekly meter parked
+above threshold would buzz the phone roughly every five hours, indefinitely** —
+precisely the pillar-5 noise the multi-threshold rule was carefully designed to
+avoid. The care went into the wrong branch.
+
+**The transferable lesson: absence of evidence of a reset was read as evidence of
+a reset.** Running off the end of a bounded buffer is, in that code path,
+indistinguishable from a genuine rollover — and the code chose the alarming
+interpretation. This is the same family as the D25 rule (specifying a value's
+security property says nothing about its semantics): here, specifying that
+history is *bounded* said nothing about what the boundary MEANS to a reader of
+that history. **Bounded retention must degrade to `unknown`, never to
+"something changed".** That is the slice invariant applied to a buffer edge, and
+it is the general form worth carrying: every place VIMES truncates, the truncation
+edge needs an explicit meaning, or a consumer will invent an alarming one.
+
+**Fix direction (a new agent, not a patch — rule 0.1):** the percent-drop signal
+may only re-arm on **positive evidence** of a drop, i.e. when
+`samplesSinceLastReset` actually located a reset boundary *inside* the retained
+history. When the returned segment begins at the very first retained sample there
+is no observed reset and that signal must **abstain**, leaving `resetsAt`
+(which for weekly meters is the reliable signal, and does change on rollover) to
+decide alone.
+
 ### 2026-07-21 — FINDING: meter freshness is BINARY, and the fresh band is wider than the poll interval
 
 **Observed by Wes on the deployed build:** the meters strip read `59%` for the
