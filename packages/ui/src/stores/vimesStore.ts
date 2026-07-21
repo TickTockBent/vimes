@@ -4,6 +4,7 @@ import { parseServerEnvelope, serializeClientEnvelope, type ClientEnvelope, type
 import { advanceOffset, deframeTerminalOutput, frameTerminalInputText } from '../lib/terminalFraming.js';
 import { parseRootsPayload } from '../lib/treeNode.js';
 import type { TerminalListItem } from '../lib/terminalList.js';
+import type { CacheObservabilityRecord } from '../lib/cacheBadge.js';
 import type { GitStatus, GitFileDiff } from '../lib/gitReview.js';
 import type { EventRecord, SessionRecord } from '../lib/types.js';
 import { derivePushState, type PushUiState } from '../lib/pushState.js';
@@ -98,6 +99,13 @@ export const useVimesStore = defineStore('vimes', () => {
   // Fetched on the view's mount; terminalId is in-memory on the daemon, so this
   // is how a fresh page load rediscovers shells left running to re-enter.
   const terminals = ref<TerminalListItem[]>([]);
+  // ── Cache observability (slice 4 step 4) — badges joining the step-2 pure
+  // projection (GET /api/projections/cache-observability) to the session list/
+  // stream by appSessionId. Plain REST-into-ref, mirroring fetchTerminals:
+  // fetch, credentials same-origin, tolerant of transient failure. Refreshed
+  // wherever refreshSessions() already runs (session-list mount, WS reconnect,
+  // a session-affecting event, discover) — no separate polling loop.
+  const cacheObservability = ref<Record<string, CacheObservabilityRecord>>({});
   // ── Git review (slice 4 step 3) — the primary-human-job surface (spec §3.4) ──
   // Plain REST-into-ref, mirroring fetchTerminals: fetch, credentials
   // same-origin, tolerant of transient failure. The daemon's /api/git/* endpoints
@@ -158,6 +166,10 @@ export const useVimesStore = defineStore('vimes', () => {
       // Transient network hiccup — the next scheduled refresh (or an event on
       // a subscribed stream) retries; the log is the truth, not this cache.
     }
+    // Piggyback the cache-observability badges on every sessions refresh
+    // (mount, WS reconnect, a session-affecting event, discover) rather than
+    // running a separate polling loop — same cadence as the sessions list.
+    void fetchCacheObservability();
   }
 
   // Refreshed on load and after a spawn/discover — the only ops that can widen
@@ -192,6 +204,25 @@ export const useVimesStore = defineStore('vimes', () => {
       terminals.value = Array.isArray(parsed.terminals) ? parsed.terminals : [];
     } catch {
       // Transient network hiccup — the next fetch (view remount) retries.
+    }
+  }
+
+  // Fetch the cache-observability projection (byte-free — token counts and a
+  // TTL classification, never PTY/message bytes). Called wherever
+  // refreshSessions() already runs, plus explicitly on the session list's
+  // mount (see SessionListView.vue) so the badges are populated before the
+  // first session-affecting event. A transient failure leaves the previous
+  // map in place.
+  async function fetchCacheObservability(): Promise<void> {
+    try {
+      const response = await fetch('/api/projections/cache-observability', { credentials: 'same-origin' });
+      if (!response.ok) {
+        return;
+      }
+      const parsed = (await response.json()) as { perSession?: Record<string, CacheObservabilityRecord> };
+      cacheObservability.value = parsed.perSession ?? {};
+    } catch {
+      // Transient network hiccup — the next refreshSessions() retries.
     }
   }
 
@@ -958,6 +989,9 @@ export const useVimesStore = defineStore('vimes', () => {
     detachTerminal,
     setTerminalResilient,
     killTerminal,
+    // Cache observability (slice 4 step 4)
+    cacheObservability,
+    fetchCacheObservability,
     // Git review (slice 4 step 3)
     gitStatus,
     gitDiffFiles,
