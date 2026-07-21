@@ -59,6 +59,8 @@ function buildConfig(projectRoots: string[], overrides: Partial<DaemonConfig> = 
     pushSubject: 'mailto:test@example.invalid',
     maxEditBytes: FIVE_MB,
     terminalIdleReapMs: 0,
+    usagePollIntervalMs: 0,
+    usageBaseUrl: 'http://usage.invalid',
     ...overrides,
   };
 }

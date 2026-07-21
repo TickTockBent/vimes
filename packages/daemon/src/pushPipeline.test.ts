@@ -54,6 +54,8 @@ function buildConfig(dbPath: string): DaemonConfig {
     pushSubject: 'mailto:test@example.invalid',
     maxEditBytes: 5 * 1024 * 1024,
     terminalIdleReapMs: 0,
+    usagePollIntervalMs: 0,
+    usageBaseUrl: 'http://usage.invalid',
   };
 }
 
