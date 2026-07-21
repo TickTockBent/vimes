@@ -30,12 +30,18 @@ function usageMeter(used: number, observedAt: string): MeterRecord {
   };
 }
 
+// TYPE-ONLY narrowing after D26 made `used`/`limit` optional (a source may give
+// percentages only). This profile still emits absolutes, so every value it feeds
+// in is a number and the arithmetic below is unchanged — no event payload, no
+// assertion, and no emitted byte in this profile differs.
 function observedPct(metersState: MetersState, meterId: string): number {
   const meter = metersState.meters[meterId];
-  if (meter === undefined || meter.limit === null || meter.limit === 0) {
+  const usedAmount = meter?.used;
+  const limitAmount = meter?.limit;
+  if (typeof usedAmount !== 'number' || typeof limitAmount !== 'number' || limitAmount === 0) {
     return 0;
   }
-  return (meter.used / meter.limit) * 100;
+  return (usedAmount / limitAmount) * 100;
 }
 
 // Stub dispatcher — gate-check only. Headroom: dispatch is allowed only while the

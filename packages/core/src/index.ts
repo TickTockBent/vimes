@@ -38,10 +38,26 @@ export { sessionsProjection, type SessionsState } from './projections/sessions.j
 export {
   metersProjection,
   meterSample,
+  meterHistory,
   METER_SAMPLE_TYPE,
+  METER_HISTORY_LIMIT,
   USAGE_STREAM,
   type MetersState,
+  type MeterHistorySample,
 } from './projections/meters.js';
+export {
+  meterFreshness,
+  headroomPercent,
+  burnRatePercentPerHour,
+  samplesSinceLastReset,
+  projectedExhaustion,
+  evaluateHeadroomGate,
+  type MeterFreshness,
+  type HeadroomGate,
+  type HeadroomGateVerdict,
+  type HeadroomGateReason,
+  type HeadroomGateResult,
+} from './meterDerivations.js';
 export { tasksProjection, type TasksState } from './projections/tasks.js';
 export {
   cacheObservabilityProjection,
