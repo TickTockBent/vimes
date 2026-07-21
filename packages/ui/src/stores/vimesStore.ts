@@ -5,7 +5,7 @@ import { advanceOffset, deframeTerminalOutput, frameTerminalInputText } from '..
 import { parseRootsPayload } from '../lib/treeNode.js';
 import type { TerminalListItem } from '../lib/terminalList.js';
 import type { CacheObservabilityRecord } from '../lib/cacheBadge.js';
-import type { GitStatus, GitFileDiff, GitRepoEntry } from '../lib/gitReview.js';
+import type { GitStatus, GitFileDiff, GitRepoEntry, GitDiffContext } from '../lib/gitReview.js';
 import type { EventRecord, SessionRecord } from '../lib/types.js';
 import { derivePushState, type PushUiState } from '../lib/pushState.js';
 import { decideReconnectAction, shouldProbeHealth, type HealthProbeOutcome } from '../lib/reconnectDecision.js';
@@ -123,6 +123,12 @@ export const useVimesStore = defineStore('vimes', () => {
   // The last repo root the panel actually loaded, remembered across mounts so a
   // return visit lands where the reviewer left off.
   const lastGitRoot = ref<string>('');
+  // The diff the reviewer left behind when tapping Edit (repo root, the REPO-
+  // RELATIVE file path, and which side of the worktree/staged toggle was on
+  // screen). It lives HERE, not in GitPanel, because the panel unmounts for the
+  // editor visit — same reason lastGitRoot lives here. GitPanel consumes it on
+  // mount (restore the diff + re-fetch) and clears it; see decideDiffRestore.
+  const pendingGitDiffContext = ref<GitDiffContext | null>(null);
 
   let terminalId: string | null = null;
   let terminalTag: number | null = null;
@@ -1022,6 +1028,7 @@ export const useVimesStore = defineStore('vimes', () => {
     gitError,
     gitRepos,
     lastGitRoot,
+    pendingGitDiffContext,
     fetchGitRepos,
     fetchGitStatus,
     fetchGitDiff,

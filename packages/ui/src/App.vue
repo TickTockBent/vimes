@@ -8,6 +8,7 @@ import SearchPanel from './views/SearchPanel.vue';
 import TerminalView from './views/TerminalView.vue';
 import GitPanel from './views/GitPanel.vue';
 import { useVimesStore } from './stores/vimesStore.js';
+import { decideEditorReturn } from './lib/gitReview.js';
 
 const store = useVimesStore();
 const hash = ref(window.location.hash);
@@ -56,6 +57,12 @@ const editorTarget = computed<{ path: string; line?: number } | null>(() => {
   return { path, line: line !== undefined && Number.isFinite(line) ? line : undefined };
 });
 
+// Where EditorView's `back` lands. A WHITELIST (only 'git' is understood today —
+// see decideEditorReturn, unit-tested): anything absent or unrecognized falls
+// back to the file tree, which is exactly the pre-existing behavior. This is
+// deliberately not a general redirect mechanism.
+const editorReturnTarget = computed(() => decideEditorReturn(route.value.params.get('returnTo')));
+
 const showFileTree = computed(() => route.value.routePath === '/files' && editorTarget.value === null);
 const showSearch = computed(() => route.value.routePath === '/search');
 const showTerminal = computed(() => route.value.routePath === '/terminal');
@@ -79,12 +86,24 @@ function navigateToTerminal(): void {
 function navigateToGit(): void {
   window.location.hash = '#/git';
 }
-function navigateToEditor(path: string, line?: number): void {
+function navigateToEditor(path: string, line?: number, returnTo?: 'git'): void {
   const params = new URLSearchParams({ path });
   if (line !== undefined) {
     params.set('line', String(line));
   }
+  if (returnTo !== undefined) {
+    params.set('returnTo', returnTo);
+  }
   window.location.hash = `#/files?${params.toString()}`;
+}
+// The editor's back button: the git panel only when the route said so (and the
+// panel then restores + refreshes the diff), otherwise the file tree as before.
+function leaveEditor(): void {
+  if (editorReturnTarget.value === 'git') {
+    navigateToGit();
+    return;
+  }
+  navigateToFiles();
 }
 
 const bannerText = computed(() => {
@@ -119,7 +138,7 @@ const bannerText = computed(() => {
       :key="editorTarget.path"
       :path="editorTarget.path"
       :line="editorTarget.line"
-      @back="navigateToFiles"
+      @back="leaveEditor"
     />
     <FileTreeView
       v-else-if="showFileTree"
@@ -133,7 +152,11 @@ const bannerText = computed(() => {
       @back="navigateHome"
     />
     <TerminalView v-else-if="showTerminal" @back="navigateHome" />
-    <GitPanel v-else-if="showGit" @back="navigateHome" />
+    <GitPanel
+      v-else-if="showGit"
+      @open-editor="(path) => navigateToEditor(path, undefined, 'git')"
+      @back="navigateHome"
+    />
     <StreamView v-else-if="activeSessionId" :app-session-id="activeSessionId" @back="navigateHome" />
     <SessionListView
       v-else

@@ -1,7 +1,15 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue';
 import { useVimesStore } from '../stores/vimesStore.js';
-import { decideGitRoot, diffLineStyle, groupStatusRows, summarizeDiffStat, type GitStatusRow } from '../lib/gitReview.js';
+import {
+  absoluteRepoFilePath,
+  decideDiffRestore,
+  decideGitRoot,
+  diffLineStyle,
+  groupStatusRows,
+  summarizeDiffStat,
+  type GitStatusRow,
+} from '../lib/gitReview.js';
 
 // Git review panel — the PRIMARY HUMAN JOB (spec §3.4: reviewing agent diffs) and
 // the slice-4 KILL CRITERION: the mobile hunk diff must be legible enough to
@@ -13,7 +21,9 @@ import { decideGitRoot, diffLineStyle, groupStatusRows, summarizeDiffStat, type 
 // review loop (see the diff clearly, then stage/commit or leave it) is fully
 // covered. No push/pull/merge (the raw terminal is the escape hatch).
 
-const emit = defineEmits<{ back: [] }>();
+// `openEditor` carries the ABSOLUTE file path; App.vue routes it to the CM6
+// editor with returnTo=git, closing the review → fix → re-review loop.
+const emit = defineEmits<{ back: []; openEditor: [absolutePath: string] }>();
 const store = useVimesStore();
 
 // The repo picker (2026-07-21 gate finding). The panel used to offer the
@@ -40,6 +50,11 @@ const activeFilePath = ref<string | null>(null);
 // The diff screen toggles between the worktree (unstaged) diff and the staged
 // diff (staged=1) for the active file.
 const diffShowsStaged = ref(false);
+
+// Set when a remembered diff could not be reopened because the file is no longer
+// in status (the edit made it clean) — the reviewer gets a reason instead of an
+// empty diff screen.
+const restoreNotice = ref<string | null>(null);
 
 const commitMessage = ref('');
 const committing = ref(false);
@@ -83,6 +98,19 @@ const changedFileCount = computed(
 // the fetched hunks — pure + unit-tested). Empty until a file's diff is loaded.
 const activeDiffStat = computed(() => summarizeDiffStat(store.gitDiffFiles));
 
+// The ABSOLUTE path of the file on the diff screen. Status rows are REPO-
+// RELATIVE; the editor route needs absolute. The join is the tested helper
+// absoluteRepoFilePath, never an inline concat — D25 is the bug that taught us.
+// The daemon's canonical repoRoot leads; activeRoot (what the user typed) is the
+// fallback before the first status lands.
+const activeFileAbsolutePath = computed(() => {
+  if (activeFilePath.value === null) {
+    return '';
+  }
+  const canonicalRepoRoot = store.gitStatus?.repoRoot ?? activeRoot.value;
+  return absoluteRepoFilePath(canonicalRepoRoot, activeFilePath.value);
+});
+
 async function refreshStatus(): Promise<void> {
   if (activeRoot.value === '') {
     return;
@@ -106,6 +134,33 @@ async function applyRoot(): Promise<void> {
   store.clearGitDiff();
   commitNotice.value = null;
   await refreshStatus();
+  await restoreRememberedDiff();
+}
+
+// After a status load, reopen the diff the reviewer left behind for the editor
+// (if any). The context is CONSUMED unconditionally — a stale one must not
+// resurrect on a later, unrelated visit. decideDiffRestore (pure, tested) owns
+// the branch; this function only performs it.
+async function restoreRememberedDiff(): Promise<void> {
+  const rememberedContext = store.pendingGitDiffContext;
+  const changedFilePaths = (store.gitStatus?.status.entries ?? []).map((entry) => entry.path);
+  const decision = decideDiffRestore(rememberedContext, activeRoot.value, changedFilePaths);
+  if (decision.action === 'none') {
+    store.pendingGitDiffContext = null;
+    return;
+  }
+  store.pendingGitDiffContext = null;
+  if (decision.action === 'fallback') {
+    activeFilePath.value = null;
+    store.clearGitDiff();
+    restoreNotice.value = `${decision.repoRelativePath} has no changes left — showing the file list.`;
+    return;
+  }
+  restoreNotice.value = null;
+  activeFilePath.value = decision.repoRelativePath;
+  diffShowsStaged.value = decision.showsStaged;
+  // The re-fetch is the point: an edit made in the editor shows up immediately.
+  await loadActiveDiff();
 }
 
 // Load (or reload) the active file's diff for the current worktree/staged toggle.
@@ -119,6 +174,7 @@ async function loadActiveDiff(): Promise<void> {
 // Tap a file → open its diff. Default to whichever side has content: if the file
 // is staged-only, show the staged diff; otherwise show the worktree diff.
 async function openFileDiff(row: GitStatusRow): Promise<void> {
+  restoreNotice.value = null;
   activeFilePath.value = row.path;
   diffShowsStaged.value = row.hasStaged && !row.hasUnstaged;
   await loadActiveDiff();
@@ -127,6 +183,25 @@ async function openFileDiff(row: GitStatusRow): Promise<void> {
 function backToList(): void {
   activeFilePath.value = null;
   store.clearGitDiff();
+  // Leaving the diff normally forgets it, so a later visit lands on the file
+  // list exactly as it did before edit-from-diff existed.
+  store.pendingGitDiffContext = null;
+  restoreNotice.value = null;
+}
+
+// Edit this file: remember where to come back to (in the STORE — this component
+// unmounts during the editor visit), then hand App.vue the ABSOLUTE path.
+function editActiveFile(): void {
+  const absolutePath = activeFileAbsolutePath.value;
+  if (activeFilePath.value === null || absolutePath === '') {
+    return;
+  }
+  store.pendingGitDiffContext = {
+    repoRoot: activeRoot.value,
+    repoRelativePath: activeFilePath.value,
+    showsStaged: diffShowsStaged.value,
+  };
+  emit('openEditor', absolutePath);
 }
 
 async function stageRow(row: GitStatusRow): Promise<void> {
@@ -277,6 +352,13 @@ onMounted(async () => {
           </p>
         </section>
 
+        <p
+          v-if="restoreNotice"
+          class="rounded-lg border border-sky-300 bg-sky-50 px-3 py-2 text-sm text-sky-800 dark:border-sky-800 dark:bg-sky-950/40 dark:text-sky-200"
+        >
+          {{ restoreNotice }}
+        </p>
+
         <p v-if="changedFileCount === 0 && store.gitStatus" class="rounded-lg border border-slate-200 p-4 text-center text-sm text-slate-500 dark:border-slate-800 dark:text-slate-400">
           Working tree clean — nothing to review.
         </p>
@@ -378,23 +460,35 @@ onMounted(async () => {
             {{ activeDiffStat.filesChanged }} file · <span class="text-emerald-600 dark:text-emerald-400">+{{ activeDiffStat.additions }}</span>
             <span class="text-rose-600 dark:text-rose-400">−{{ activeDiffStat.deletions }}</span>
           </p>
-          <!-- Worktree vs staged toggle for this file. -->
-          <div class="inline-flex self-start overflow-hidden rounded-md border border-slate-300 text-xs dark:border-slate-700">
+          <!-- Worktree vs staged toggle for this file, and Edit beside it: the
+               review → fix → re-review loop without leaving the surface. Coming
+               back re-fetches both this diff and the repo status. -->
+          <div class="flex flex-wrap items-center gap-2">
+            <div class="inline-flex overflow-hidden rounded-md border border-slate-300 text-xs dark:border-slate-700">
+              <button
+                type="button"
+                class="min-h-[36px] px-3 font-semibold"
+                :class="!diffShowsStaged ? 'bg-sky-600 text-white' : 'text-slate-600 active:bg-slate-100 dark:text-slate-300 dark:active:bg-slate-800'"
+                @click="diffShowsStaged = false"
+              >
+                Working tree
+              </button>
+              <button
+                type="button"
+                class="min-h-[36px] border-l border-slate-300 px-3 font-semibold dark:border-slate-700"
+                :class="diffShowsStaged ? 'bg-sky-600 text-white' : 'text-slate-600 active:bg-slate-100 dark:text-slate-300 dark:active:bg-slate-800'"
+                @click="diffShowsStaged = true"
+              >
+                Staged
+              </button>
+            </div>
             <button
               type="button"
-              class="min-h-[36px] px-3 font-semibold"
-              :class="!diffShowsStaged ? 'bg-sky-600 text-white' : 'text-slate-600 active:bg-slate-100 dark:text-slate-300 dark:active:bg-slate-800'"
-              @click="diffShowsStaged = false"
+              class="min-h-[36px] rounded-md border border-sky-600 px-4 text-xs font-semibold text-sky-700 active:bg-sky-50 dark:border-sky-500 dark:text-sky-300 dark:active:bg-sky-950/40"
+              :aria-label="`Edit ${activeFilePath}`"
+              @click="editActiveFile"
             >
-              Working tree
-            </button>
-            <button
-              type="button"
-              class="min-h-[36px] border-l border-slate-300 px-3 font-semibold dark:border-slate-700"
-              :class="diffShowsStaged ? 'bg-sky-600 text-white' : 'text-slate-600 active:bg-slate-100 dark:text-slate-300 dark:active:bg-slate-800'"
-              @click="diffShowsStaged = true"
-            >
-              Staged
+              Edit
             </button>
           </div>
         </div>
