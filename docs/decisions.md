@@ -396,3 +396,43 @@ currently BINDING), and `scope` (e.g. the model a weekly cap is scoped to).
 `source` + `observedAt` stay mandatory on every sample so freshness is always
 derivable — freshness itself is DERIVED by a pure function, never stored, so a
 stale record can never masquerade as fresh.
+
+## D28 — Slice 5's human exit gate validates IN FLIGHT, not in a freeze
+
+*2026-07-21. Wes's call, after the machine half was rebuilt and the meters
+shipped. Reframing of a gate, in the manner D20/D22 established — slice-5.md
+already anticipated this ("Reframable like D20/D22 if a shorter honest sample
+settles it").*
+
+**The gate as written** asked for meters matching Anthropic's `/usage` within
+⟨tune 5% PREVIEW⟩ "over a week of real use", which read as *pause development
+for a week*.
+
+**Decision: do not pause. Keep building, and let ordinary use produce the
+evidence.** Wes: *"My usage will generate feedback as we go and building will
+further push the window where we need to see a gate crossing event."*
+
+**Why this is a sharpening rather than a weakening.** The gate needs three
+things: accuracy against the authoritative source, at least one **window
+rollover**, and ideally a **real threshold crossing**. None of them is produced
+by waiting — rollover happens on the clock regardless, and *the other two are
+produced by WORK*. A frozen week yields a flat, uninformative sample: meters
+parked at a constant percentage, no crossing, and accuracy confirmed only in the
+one state that never mattered. **Development is not an interruption of this
+gate's evidence; it is the source of it.**
+
+**What still holds, unchanged.** The gate's *content* is untouched — accuracy
+within the band, across at least one rollover, is still what passes it. What
+changed is the posture: evidence accumulates continuously (the usage observation
+log records every poll, and `meter_alert` events are durable in the log), and
+the gate is called when the evidence is sufficient rather than when a calendar
+says so. **The orchestrator reports when the sample supports a verdict, and does
+not declare a pass from a comfortable partial one.**
+
+**Already banked toward it (2026-07-21):** one real 5-hour rollover captured end
+to end, including the previously-unknown `resets_at`-disappears-at-zero shape;
+the first half of the human gate landed unprompted (VIMES displaced the official
+portal); the machine half rebuilt into an instrument proven to fail under seven
+sabotages. **Still missing: a real threshold crossing** — the deliberate burn
+reached 16% of a fresh window before the load stopped, and the 80% line has not
+yet been crossed in anger.
