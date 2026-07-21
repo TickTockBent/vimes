@@ -11,6 +11,8 @@ import {
   runtimeDriftObserved,
   snapshotAfter,
   cacheObservabilityProjection,
+  evaluateMeterAlerts,
+  meterAlert,
   meterSample,
   metersProjection,
   sessionsProjection,
@@ -18,6 +20,7 @@ import {
   SYSTEM_STREAM,
   type Clock,
   type IdSource,
+  type MetersState,
   type Projection,
 } from '@vimes/core';
 import { SqliteEventStore } from './sqliteEventStore.js';
@@ -60,8 +63,20 @@ import {
   createUsageEndpointAdapter,
   defaultUsageHttpFetch,
   type CredentialsReader,
+  type UsageFailureReason,
   type UsageHttpFetch,
+  type UsageProbeResult,
 } from './usageEndpoint.js';
+import {
+  buildDerivedUsage,
+  deriveStaleAfterMs,
+  type DerivedUsageBody,
+} from './usageDerived.js';
+import {
+  UsageObservationLog,
+  defaultUsageObservationLogPath,
+} from './usageObservationLog.js';
+import { MeterAlertLedger, sendMeterAlertPush } from './meterAlerts.js';
 
 // How often the inactivity reaper wakes to check for idle terminals. This is the
 // detection CADENCE, not the tuned window: config.terminalIdleReapMs is the
@@ -129,6 +144,10 @@ export interface DaemonDeps {
   // carry is never logged or evented anywhere.
   usageHttpFetch?: UsageHttpFetch;
   usageCredentialsReader?: CredentialsReader;
+  // Where the usage OBSERVATION LOG is written (slice 5 step 4b). Absent → beside
+  // the event DB in the data dir. INJECTED by every test so none of them ever
+  // writes into the real data dir.
+  usageObservationLogPath?: string;
 }
 
 export interface Daemon {
@@ -149,6 +168,12 @@ export interface Daemon {
   // One usage-endpoint poll, awaited. The poller's timer calls exactly this;
   // tests call it directly so a poll is deterministic rather than clock-raced.
   pollUsageOnce(): Promise<void>;
+  // The derived usage read model as GET /api/usage/derived would serve it, with
+  // `nowIso` stamped from the injected clock. Exposed so tests can assert the
+  // shape without a round trip.
+  derivedUsage(): DerivedUsageBody;
+  // The append-only diagnostic observation log (rule 0.6 drift detection).
+  usageObservationLog: UsageObservationLog;
   start(): Promise<void>;
   stop(): Promise<void>;
 }
@@ -324,6 +349,32 @@ export function createDaemon(deps: DaemonDeps): Daemon {
   // runs per request, long after construction.
   app.get('/api/terminals', (context) => context.json({ terminals: terminalHost.listTerminals() }));
 
+  // ─── the derived usage read model (slice 5 step 4b) ────────────────────────
+  //
+  // Registered here, before the static catch-all and behind the same auth wall.
+  // It is deliberately NOT `/api/projections/meters`: every field it adds is a
+  // function of *now*, and projection state must stay snapshot/replay
+  // byte-identical (rule 0.3). The daemon stamps the clock at this boundary.
+  //
+  // No meters at all → the envelope with an EMPTY array. Never a 404 (which
+  // would read as "this feature is missing" rather than "nothing observed yet"),
+  // and never a synthetic zero meter.
+  app.get('/api/usage/derived', (context) => context.json(currentDerivedUsage()));
+
+  // ─── forced refresh (slice 5 step 4b) ─────────────────────────────────────
+  //
+  // Forces an ACTUAL poll. Re-serving the last sample would re-render the same
+  // stale number more confidently, which is the exact failure this route exists
+  // to fix. Returns the same derived body (freshly derived) so the UI needs ONE
+  // round trip, not two, plus a `refresh` envelope describing what happened.
+  //
+  // CONVENTION CHOSEN: always HTTP 200 with an envelope field, never 429. A
+  // throttled refresh is not an error — the client still receives a complete,
+  // honest read model, and a 429 would push callers toward retry/backoff
+  // machinery for what is really "here is the data, the endpoint was just
+  // polled a moment ago".
+  app.post('/api/usage/refresh', async (context) => context.json(await forceUsageRefresh()));
+
   if (config.staticDir !== undefined) {
     const staticDir = config.staticDir;
     app.get('*', async (context) => {
@@ -462,26 +513,177 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     }
   };
 
+  // The usage OBSERVATION LOG (slice 5 step 4b, rule 0.6) — append-only JSONL
+  // beside the event DB, NEVER inside the event spine. One line per poll
+  // attempt, success or classified failure, so a 401 at token roll and a shape
+  // drift both leave evidence instead of vanishing. The path is injectable so no
+  // test writes to the real data dir; the OAuth token never reaches it.
+  const usageObservationLog = new UsageObservationLog({
+    path: deps.usageObservationLogPath ?? defaultUsageObservationLogPath(config.dataDir),
+  });
+
   // The usage-endpoint adapter (slice 5 step 2) — the SOLE headroom authority.
   // Both seams default to the real ones; CI injects fakes for both.
   const usageEndpointAdapter = createUsageEndpointAdapter({
     httpFetch: deps.usageHttpFetch ?? defaultUsageHttpFetch,
     readCredentials: deps.usageCredentialsReader ?? createCredentialsReader(),
     baseUrl: config.usageBaseUrl,
+    // Diagnostics only; the observation carries a RESPONSE body and status, and
+    // never a request header (where the bearer lives).
+    observe: (observation) => {
+      usageObservationLog.record(clock.now(), {
+        outcome: observation.outcome,
+        httpStatus: observation.httpStatus,
+        body: observation.body,
+        limitsParsed: observation.limitsParsed,
+      });
+    },
   });
 
-  // One poll. On success, one meter_sample per returned record through the
-  // normal event path (I13 persist-before-broadcast is the store's job). On
-  // ANY failure: emit NOTHING — no placeholder, no zero, no reuse of a previous
-  // body. The meters then age out via observedAt and the pure derivations
-  // report stale/unknown themselves (pillar 4: a meter that lies is worse than
-  // no meter).
-  const pollUsageOnce = async (): Promise<void> => {
-    const probeResult = await usageEndpointAdapter.probe(clock.now());
-    if (!probeResult.ok) {
+  // The alert memory, folded from the log (slice 5 step 4b, deliverable 4).
+  const meterAlertLedger = new MeterAlertLedger(store);
+
+  const currentMetersState = (): MetersState =>
+    bootFromSnapshot(metersProjection, snapshotStore, store);
+
+  const currentDerivedUsage = (): DerivedUsageBody =>
+    buildDerivedUsage({
+      metersState: currentMetersState(),
+      // The clock is stamped HERE, at the boundary, and nowhere deeper (rule 0.3).
+      nowIso: clock.now(),
+      pollIntervalMs: config.usagePollIntervalMs,
+    });
+
+  // Evaluate 4a's PURE evaluator against the freshly-sampled meters, persist any
+  // crossings as `meter_alert` events, and push one notification per alert.
+  //
+  // Two explicit disable paths, both silent by design:
+  //   * NO THRESHOLDS configured → alerting is off entirely (no evaluation, no
+  //     events, no push).
+  //   * NO STALENESS BAND (the poller is disabled, so `deriveStaleAfterMs` is
+  //     null) → nothing can be judged `fresh`, and 4a refuses to alert on a
+  //     number it cannot vouch for. Waking a phone over an observation of
+  //     unknown age is precisely the lying meter pillar 4 forbids.
+  const dispatchMeterAlerts = (): void => {
+    const alertThresholds = config.usageAlertPercents;
+    if (alertThresholds.length === 0) {
       return;
     }
+    const staleAfterMs = deriveStaleAfterMs(config.usagePollIntervalMs);
+    if (staleAfterMs === null) {
+      return;
+    }
+    const nowIso = clock.now();
+    // `.current()` is read BEFORE the new alerts are emitted, so this evaluation
+    // sees exactly the history that existed at the crossing.
+    const firedAlerts = evaluateMeterAlerts(
+      currentMetersState(),
+      meterAlertLedger.current(),
+      alertThresholds,
+      nowIso,
+      staleAfterMs,
+    );
+    if (firedAlerts.length === 0) {
+      return;
+    }
+    router.emit(firedAlerts.map((alertPayload) => meterAlert(alertPayload)));
+    for (const alertPayload of firedAlerts) {
+      // Fire-and-forget: a push failure is LOGGED inside, never thrown, and can
+      // never be fatal to the poll that produced it.
+      void sendMeterAlertPush(alertPayload, nowIso, {
+        sender: pushSender,
+        subscriptions: pushSubscriptions,
+      }).catch(() => {
+        // sendMeterAlertPush does not reject; this is belt-and-braces so an
+        // unexpected throw can never become an unhandled rejection.
+      });
+    }
+  };
+
+  // One poll. On success, one meter_sample per returned record through the
+  // normal event path (I13 persist-before-broadcast is the store's job), then
+  // threshold evaluation. On ANY failure: emit NOTHING — no placeholder, no
+  // zero, no reuse of a previous body. The meters then age out via observedAt
+  // and the pure derivations report stale/unknown themselves (pillar 4: a meter
+  // that lies is worse than no meter). The attempt is recorded in the
+  // observation log either way, by the adapter's observe seam.
+  const runUsagePoll = async (): Promise<UsageProbeResult> => {
+    const probeResult = await usageEndpointAdapter.probe(clock.now());
+    if (!probeResult.ok) {
+      return probeResult;
+    }
     router.emit(probeResult.meters.map((meterRecord) => meterSample(meterRecord)));
+    dispatchMeterAlerts();
+    return probeResult;
+  };
+
+  const pollUsageOnce = async (): Promise<void> => {
+    await runUsagePoll();
+  };
+
+  // ─── forced refresh, debounced ────────────────────────────────────────────
+  interface UsageRefreshOutcome {
+    // Did this request actually hit the endpoint?
+    polled: boolean;
+    // Was it refused by the debounce?
+    throttled: boolean;
+    // The adapter's classified failure when the poll ran and failed. Null when
+    // the poll succeeded OR when no poll ran — `polled` disambiguates, and a
+    // throttled response NEVER claims a refresh succeeded.
+    failureReason: UsageFailureReason | null;
+    httpStatus: number | null;
+    // When the next forced poll becomes available. Non-null only when throttled.
+    nextForcedPollAt: string | null;
+    retryAfterMs: number | null;
+  }
+  type UsageRefreshBody = DerivedUsageBody & { refresh: UsageRefreshOutcome };
+
+  // Epoch-ms of the last forced poll ATTEMPT (successful or not — a failed
+  // attempt still hit the endpoint, and the debounce is about endpoint
+  // citizenship, not about outcomes).
+  let lastForcedPollAtMs: number | null = null;
+
+  const forceUsageRefresh = async (): Promise<UsageRefreshBody> => {
+    const requestedAtMs = Date.parse(clock.now());
+    const debounceMs = config.usageForcedRefreshMinIntervalMs;
+    const earliestNextPollMs =
+      lastForcedPollAtMs === null ? null : lastForcedPollAtMs + debounceMs;
+    if (
+      debounceMs > 0 &&
+      earliestNextPollMs !== null &&
+      Number.isFinite(requestedAtMs) &&
+      requestedAtMs < earliestNextPollMs
+    ) {
+      // Inside the window: do NOT poll. The body is still complete and honest —
+      // the meters carry their real ages — it simply does not claim a refresh.
+      return {
+        ...currentDerivedUsage(),
+        refresh: {
+          polled: false,
+          throttled: true,
+          failureReason: null,
+          httpStatus: null,
+          nextForcedPollAt: new Date(earliestNextPollMs).toISOString(),
+          retryAfterMs: earliestNextPollMs - requestedAtMs,
+        },
+      };
+    }
+    lastForcedPollAtMs = Number.isFinite(requestedAtMs) ? requestedAtMs : lastForcedPollAtMs;
+    const probeResult = await runUsagePoll();
+    // On failure the derived body is rebuilt from the UNCHANGED meters: their
+    // real observedAt, their real ages, no fresher stamp anywhere. The failure
+    // is reported instead of hidden.
+    return {
+      ...currentDerivedUsage(),
+      refresh: {
+        polled: true,
+        throttled: false,
+        failureReason: probeResult.ok ? null : probeResult.reason,
+        httpStatus: probeResult.ok ? null : probeResult.status,
+        nextForcedPollAt: null,
+        retryAfterMs: null,
+      },
+    };
   };
 
   let snapshotTimer: ReturnType<typeof setInterval> | null = null;
@@ -509,6 +711,8 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     },
     serializeProjection,
     pollUsageOnce,
+    derivedUsage: currentDerivedUsage,
+    usageObservationLog,
 
     async start(): Promise<void> {
       await new Promise<void>((resolveStart, rejectStart) => {

@@ -59,6 +59,16 @@ export interface DaemonConfig {
   // a test can point at a local stub; production leaves it at Anthropic's API.
   // VIMES_USAGE_BASE_URL overrides.
   usageBaseUrl: string;
+  // Percentage lines that fire a meter alert (slice 5 step 4b). AN EMPTY LIST
+  // DISABLES ALERTING ENTIRELY — no evaluation, no events, no push. Comma
+  // separated via VIMES_USAGE_ALERT_PERCENTS; set it to an empty string to turn
+  // alerts off. ⟨tune 80% PREVIEW⟩ — behavior-shaping, NOT pinned (rule 0.2).
+  usageAlertPercents: number[];
+  // Minimum spacing between FORCED polls (POST /api/usage/refresh). A call
+  // inside this window is throttled: it re-derives and returns, it does not
+  // poll. ⟨tune 30s PREVIEW⟩ — behavior-shaping, NOT pinned (rule 0.2).
+  // VIMES_USAGE_REFRESH_MIN_INTERVAL_MS overrides; 0 disables debouncing.
+  usageForcedRefreshMinIntervalMs: number;
 }
 
 const DEFAULT_PORT = 4600;
@@ -79,6 +89,15 @@ const DEFAULT_TERMINAL_IDLE_REAP_MS = 3_600_000;
 // ⟨tune 5m PREVIEW⟩ — usage-endpoint poll cadence; behavior-shaping, NOT pinned
 // (rule 0.2). 0 disables the poller.
 const DEFAULT_USAGE_POLL_INTERVAL_MS = 300_000;
+// ⟨tune 80% PREVIEW⟩ — the threshold slice-5 names; behavior-shaping, NOT pinned
+// (rule 0.2). An EMPTY list disables alerting.
+const DEFAULT_USAGE_ALERT_PERCENTS: readonly number[] = [80];
+// ⟨tune 30s PREVIEW⟩ — forced-refresh debounce; behavior-shaping, NOT pinned
+// (rule 0.2). A forced poll costs no usage (probed: an OAuth metadata GET, not
+// an inference call), but the endpoint is UNOFFICIAL and returns no rate-limit
+// headers at all — so the debounce is about endpoint-citizenship (rule 0.6) and
+// about a UI retry loop never becoming a hammer. 0 disables it.
+const DEFAULT_USAGE_REFRESH_MIN_INTERVAL_MS = 30_000;
 
 function expandHome(path: string): string {
   if (path === '~') {
@@ -113,6 +132,24 @@ function parseProjectRoots(rawValue: string | undefined): string[] {
     .map((entry) => entry.trim())
     .filter((entry) => entry.length > 0)
     .map((entry) => resolve(expandHome(entry)));
+}
+
+// Comma-separated percentages. An UNSET env keeps the default; an env set to the
+// empty string (or to nothing but separators) yields [] — which DISABLES
+// alerting, deliberately and explicitly. Non-numeric entries are dropped rather
+// than guessed at; the result is sorted and de-duplicated so the evaluation
+// order never depends on how the operator typed it.
+function parseAlertPercents(rawValue: string | undefined): number[] {
+  if (rawValue === undefined) {
+    return [...DEFAULT_USAGE_ALERT_PERCENTS];
+  }
+  const parsedPercents = rawValue
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0)
+    .map((entry) => Number(entry))
+    .filter((entry) => Number.isFinite(entry));
+  return [...new Set(parsedPercents)].sort((left, right) => left - right);
 }
 
 function parsePositiveInteger(rawValue: string, variableName: string): number {
@@ -175,5 +212,14 @@ export function loadConfigFromEnv(env: NodeJS.ProcessEnv = process.env): DaemonC
       env.VIMES_USAGE_BASE_URL === undefined || env.VIMES_USAGE_BASE_URL === ''
         ? DEFAULT_USAGE_BASE_URL
         : env.VIMES_USAGE_BASE_URL,
+    usageAlertPercents: parseAlertPercents(env.VIMES_USAGE_ALERT_PERCENTS),
+    usageForcedRefreshMinIntervalMs:
+      env.VIMES_USAGE_REFRESH_MIN_INTERVAL_MS === undefined ||
+      env.VIMES_USAGE_REFRESH_MIN_INTERVAL_MS === ''
+        ? DEFAULT_USAGE_REFRESH_MIN_INTERVAL_MS
+        : parsePositiveInteger(
+            env.VIMES_USAGE_REFRESH_MIN_INTERVAL_MS,
+            'VIMES_USAGE_REFRESH_MIN_INTERVAL_MS',
+          ),
   };
 }

@@ -71,6 +71,36 @@ export {
   type VapidKeys,
 } from './pushService.js';
 export { PushSubscriptions } from './pushSubscriptions.js';
+export {
+  buildDerivedUsage,
+  deriveStaleAfterMs,
+  STALE_POLL_INTERVAL_MULTIPLE_PREVIEW,
+  STALE_BAND_SLACK_MS_PREVIEW,
+  type DerivedMeter,
+  type DerivedUsageBody,
+} from './usageDerived.js';
+export {
+  UsageObservationLog,
+  defaultUsageObservationLogPath,
+  fingerprintBody,
+  redactBody,
+  REDACTED_PLACEHOLDER,
+  USAGE_OBSERVATION_LOG_FILENAME,
+  USAGE_OBSERVATION_LOG_MAX_LINES,
+  USAGE_OBSERVATION_LOG_MAX_BYTES,
+  type UsageObservation,
+  type UsageObservationLine,
+  type UsageObservationOutcome,
+} from './usageObservationLog.js';
+export {
+  MeterAlertLedger,
+  buildMeterAlertPushPayload,
+  meterAlertLabel,
+  resetCountdownText,
+  sendMeterAlertPush,
+  METER_ALERT_DEEP_LINK,
+  type MeterAlertPushDeps,
+} from './meterAlerts.js';
 export { PushPipeline, shouldSuppressPush, type PushPipelineDeps } from './pushPipeline.js';
 export {
   encodeCwdForProjects,

@@ -194,12 +194,36 @@ export function parseUsageResponse(body: string, nowIso: string): MeterRecord[] 
   return meters;
 }
 
+// ── the observation seam (slice 5 step 4b, rule 0.6) ─────────────────────────
+//
+// Classified failures emit NOTHING into the event log, which is correct for
+// product state and terrible for visibility. This callback fires EXACTLY ONCE
+// per probe, success or failure, so the daemon can keep a diagnostic record of
+// what this fragile surface actually did.
+//
+// THE TOKEN NEVER REACHES IT. The observation carries the response body and
+// status only; the request headers — the sole place the bearer exists — are not
+// a field of this type and are never passed anywhere near it.
+export interface UsageProbeObservation {
+  outcome: 'ok' | UsageFailureReason;
+  // Present only when a response actually arrived; null otherwise (UNKNOWN).
+  httpStatus: number | null;
+  // The RESPONSE body, verbatim, when one arrived; null otherwise.
+  body: string | null;
+  // How many MeterRecords the parser recovered from it.
+  limitsParsed: number;
+}
+export type UsageProbeObserver = (observation: UsageProbeObservation) => void;
+
 export interface UsageEndpointAdapterDeps {
   httpFetch: UsageHttpFetch;
   readCredentials: CredentialsReader;
   baseUrl?: string;
   // Single-line warning sink (no token, no body dump). Defaults to console.warn.
   warn?: (message: string) => void;
+  // Called once per probe with the classified outcome. Absent → no observation
+  // is recorded. A throw from it is swallowed: diagnostics never break a poll.
+  observe?: UsageProbeObserver;
 }
 
 export interface UsageEndpointAdapter {
@@ -216,6 +240,18 @@ export function createUsageEndpointAdapter(deps: UsageEndpointAdapterDeps): Usag
       console.warn(message);
     });
 
+  // Fires the observation seam without ever letting it affect the probe.
+  const observe = (observation: UsageProbeObservation): void => {
+    if (deps.observe === undefined) {
+      return;
+    }
+    try {
+      deps.observe(observation);
+    } catch {
+      // A diagnostic sink that throws must not fail a poll.
+    }
+  };
+
   return {
     async probe(nowIso: string): Promise<UsageProbeResult> {
       let accessToken: string | null;
@@ -227,6 +263,7 @@ export function createUsageEndpointAdapter(deps: UsageEndpointAdapterDeps): Usag
       if (accessToken === null || accessToken === '') {
         // No token at all — not an error worth shouting about every tick.
         warn('vimes-daemon: usage endpoint skipped — no OAuth credentials available');
+        observe({ outcome: 'no-credentials', httpStatus: null, body: null, limitsParsed: 0 });
         return { ok: false, reason: 'no-credentials', status: null };
       }
 
@@ -239,6 +276,7 @@ export function createUsageEndpointAdapter(deps: UsageEndpointAdapterDeps): Usag
         });
       } catch {
         warn('vimes-daemon: usage endpoint unreachable — meters will age out to stale');
+        observe({ outcome: 'network-error', httpStatus: null, body: null, limitsParsed: 0 });
         return { ok: false, reason: 'network-error', status: null };
       }
 
@@ -248,10 +286,22 @@ export function createUsageEndpointAdapter(deps: UsageEndpointAdapterDeps): Usag
         warn(
           `vimes-daemon: usage endpoint rejected the token (status ${httpResponse.status}) — meters will age out to stale`,
         );
+        observe({
+          outcome: 'unauthorized',
+          httpStatus: httpResponse.status,
+          body: httpResponse.body,
+          limitsParsed: 0,
+        });
         return { ok: false, reason: 'unauthorized', status: httpResponse.status };
       }
       if (httpResponse.status < 200 || httpResponse.status >= 300) {
         warn(`vimes-daemon: usage endpoint returned status ${httpResponse.status} — no samples emitted`);
+        observe({
+          outcome: 'http-error',
+          httpStatus: httpResponse.status,
+          body: httpResponse.body,
+          limitsParsed: 0,
+        });
         return { ok: false, reason: 'http-error', status: httpResponse.status };
       }
 
@@ -260,8 +310,20 @@ export function createUsageEndpointAdapter(deps: UsageEndpointAdapterDeps): Usag
         // A 200 we cannot understand is a shape drift — it must fail LOUDLY as a
         // classified failure rather than quietly emitting zero samples as success.
         warn('vimes-daemon: usage endpoint returned no recognizable limits — no samples emitted');
+        observe({
+          outcome: 'unparseable',
+          httpStatus: httpResponse.status,
+          body: httpResponse.body,
+          limitsParsed: 0,
+        });
         return { ok: false, reason: 'unparseable', status: httpResponse.status };
       }
+      observe({
+        outcome: 'ok',
+        httpStatus: httpResponse.status,
+        body: httpResponse.body,
+        limitsParsed: meters.length,
+      });
       return { ok: true, meters };
     },
   };
