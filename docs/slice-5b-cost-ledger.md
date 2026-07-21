@@ -1,8 +1,22 @@
 # Slice 5b (0.3) — The cost ledger (D27)
 
-> **Status 2026-07-21:** skeleton drafted by the orchestrator. **Construction
-> NOT started.** Spikes C1/C2 are front-loaded; **C1 is the kill criterion** and
-> decides whether half the slice is honestly buildable at all.
+> **Status 2026-07-21:** skeleton drafted; spikes run. **C1's KILL CRITERION
+> FIRED — the share-of-window half is CUT. Slice 5b ships DOLLARS AND
+> ATTRIBUTION ONLY.** Pre-authorized by Wes before the spike ran: *"If we cannot
+> pin C1 down … that doesn't kill the whole idea, we just fall back to raw
+> api-dollar accounting."*
+>
+> The decisive evidence: an interval where the 5-hour window advanced **+10
+> points in five minutes with ZERO transcript records anywhere on the box**
+> (46% → 56%, verified independently). No non-negative weighting of any local
+> token measure yields ten points from zero units, so **Δpercent is provably not
+> a function of anything a local source can see.** Full evidence, the rejected
+> alternatives, and the unresolved confound are in
+> [calibration.md](calibration.md).
+>
+> **C2 stands and is nearly done** — dollars reproduce Anthropic's own figure to
+> $0.000000 at n=1. **The slice is still worth building**, and is now smaller,
+> sharper, and entirely composed of numbers we can defend.
 
 Numbered 5b deliberately: the spec's slice 6 (dispatcher) and slice 7
 (orchestrator MCP) keep their numbers. Design record: [D27](open-questions.md).
@@ -104,7 +118,11 @@ finding, not noise to average out**).
 - **Hierarchy: project → session → subagent, as a TREE.** Depth > 1 is real
   (observed 129/44/4 at depths 1/2/3 in one session).
 - **Dollars** per node, from a **dated** price table, validated against OTel.
-- **Share-of-window** per node — as a labelled estimate with its band, or absent.
+- ~~**Share-of-window** per node~~ — **CUT 2026-07-21, C1 kill criterion fired.**
+  Not deferred, not "later with a wider band": the quantity is not estimable from
+  any local source, and the slice's own assertion — *share-of-window is absent
+  entirely when C1 could not pin a band* — is now the one to EXERCISE, with a
+  sabotage test proving the surface fails if a percent figure ever appears.
 - **History over time**, per project and per session.
 - **Cost per `attributionSkill` / `attributionAgent`** — derivable today, and
   closer to Wes's actual question than per-session is.
@@ -167,12 +185,19 @@ finding, not noise to average out**).
   clicks a project and the trend tells him something he did not already know.
   Per D28, validated in flight.
 
-## Kill criterion
-**If C1 cannot pin tokens-per-percent to a defensible band, the percent half is
-cut** and the slice ships dollars-and-attribution only. That is a reduction in
-scope, not a failure — a dollar figure that reproduces Anthropic's own number is
-worth shipping alone. **What must NOT happen is a percent figure with invented
-precision.**
+## Kill criterion — FIRED 2026-07-21
+**C1 could not pin tokens-per-percent to a defensible band, so the percent half
+is CUT** and the slice ships dollars-and-attribution only. A reduction in scope,
+not a failure: a dollar figure that reproduces Anthropic's own number to
+$0.000000 is worth shipping alone, and **the percent figure we did not ship would
+have been the lying meter this whole project exists to refuse.**
+
+The value of having asked: we now know *why* it is unbuildable, and can say so to
+a user instead of shrugging. Either ~46% of account burn is invisible to us, or
+the exchange rate itself moves — and **both answers mean the same thing for the
+product.** Recorded in full in calibration.md, including the controlled
+quiet-period experiment that could settle it later (~2 days of discipline, not
+more sampling) should anyone want to revisit.
 
 ## What would be a finding
 - Rollups that do not reconcile (a tree walk missing a level, or a fork counted

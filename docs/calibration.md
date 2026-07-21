@@ -549,6 +549,82 @@ first-party Claude Code, `-p` or not, is not. **This answers Wes's standing
 dongfu question: those runs burned the 5-hour/weekly windows, not a $100
 automation bucket.** Promote D24 to a decision on his sign-off.
 
+### 2026-07-21 — SPIKE C1 (slice 5b): KILL CRITERION FIRED — share-of-window is not estimable; 5b ships dollars-only
+
+Read-only analysis over 60 session-meter samples (13:07–17:13 Z, one clean
+rollover), 19,341 globally max-deduped messages from 655 transcripts (320 MB,
+recursive incl. `subagents/workflows/wf_*/`, `<synthetic>` excluded).
+
+**The decisive observation, verified independently by the orchestrator:**
+
+```
+13:47:37Z   session  46%
+13:52:37Z   session  56%     (+10 points in five minutes)
+```
+
+**Zero transcript records exist anywhere on the box in that interval** —
+confirmed by scanning every `.jsonl` on disk for timestamps in the range, not by
+sampling. **No non-negative weighting of input / output / cache-create /
+cache-read / message-count produces ten points from zero units.** Every candidate
+measure fails this interval identically. Δpercent is therefore **provably not a
+function of any locally-visible token quantity.**
+
+**Supporting evidence.** Six clean multi-point segments give implied
+input-equivalents per percentage point of **392K, 0, 311K, 294K, 159K, 146K** —
+a **2.7× spread excluding the anomaly, unbounded with it**. Raw token totals are
+the WORST predictor (cv 0.56), which makes the 96–97%-cache-read finding
+quantitatively load-bearing; the best measures (non-cache-read cv 0.25,
+output-only cv 0.12) are 8 measures fitted on 5 segments — probable overfit — and
+fail the anomaly anyway.
+
+**Two alternative explanations were tested and REJECTED:**
+- *Model mix* — segment A2b is 100% `claude-opus-4-8` and its ratio is half
+  A1's, same window, one hour apart. Restricting to Opus makes the mixed segment
+  worse, not better.
+- *A steady unseen background burn* — fitting `pct = a·tokens + b·minutes` over
+  the clean window returns **b = −0.057 pts/min, the wrong sign**. Whatever
+  inflates Δpercent is **bursty**, not constant. A 0–15 min lag scan does not
+  remove the step.
+
+**The confound could NOT be resolved, and the spike says so.** Implied ratios are
+a *lower* bound, so either **(a)** unobserved work exists and roughly **46% of
+today's account burn was invisible to the full local corpus** (VIMES sees less
+still), or **(b)** the exchange rate genuinely moved ≥2.7× in four hours with no
+trend, no time-of-day pattern, no model correlation, plus one infinite-rate
+interval no multiplicative model can produce. **Bursty hidden burn and a jumpy
+exchange rate are observationally identical in this data.**
+
+**The verdict does not depend on resolving it — both are fatal in the same way.**
+(a) means the quantity is structurally unseeable from here; (b) means there is no
+constant to converge on. Wes's compute-fluctuation hypothesis is therefore
+neither confirmed nor refuted, and **did not need to be** for the kill criterion
+to fire.
+
+**The weekly meter — the one Wes's actual question needs — is far worse.**
+`weekly_all` moved **6 integer points** across the entire observation (±17% from
+quantization alone, effectively n=1); `weekly_scoped` moved 2. **No weekly band is
+estimable from this data at all**, which matters because "this task costs 8% of
+my weekly" was the ask.
+
+**Side finding worth keeping:** the 5-hour limit may not be a pure token budget.
+Message count fares no better (cv 0.45), and a `max()` over several sub-budgets
+would produce exactly this regime-switching behavior.
+
+**The one result that would most change this** (the spike's own stated threat to
+itself): if some spawn path writes NO transcript, the residual is our blind spot
+rather than the account's. D15 says inherited `CLAUDE*` env suppresses
+transcripts and that VIMES's PTY channel scrubs env specifically to prevent this.
+Cheap to verify — drive a known workload through each spawn path (SDK-hosted, PTY
+terminal, `claude -p`) and confirm each leaves usage rows. **Worth doing for the
+LEDGER regardless of C1**, because a spawn path that writes no transcript is a
+silent hole in slice 5b's attribution, not just in this spike.
+
+**What would make C1 answerable later** (not more sampling — a controlled
+experiment): one 5-hour window with no Claude use from any other surface (web,
+mobile, other hosts) and a single known workload through VIMES, repeated twice.
+~2 days of discipline. Plus ≥20 weekly integer points across a weekly rollover
+before any weekly figure is ever quoted.
+
 ### 2026-07-21 — human gate, first half: VIMES displaced the official portal
 
 Unprompted, on the deployed build, hours after the meters UI shipped. Wes:
