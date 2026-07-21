@@ -32,12 +32,31 @@ shipping "usage unknown" honestly rather than a plausible fiction.
 
 ## Spikes — FRONT-LOADED, read-only, before any construction (rule 0.6)
 
-**Spike U1 — the unofficial `/usage` endpoint (risk-register VERIFY row).**
-Does what the CLI's `/usage` calls still exist, and what does it return? This is
-the highest-information probe in the slice and it **gates the kill criterion** —
-run it FIRST and report before anything is built. Capture the raw shape as a
-fixture (rule 0.7: classify by observation). Expect it to be fragile and
-undocumented; the adapter that consumes it is a one-module swap by construction.
+**Spike U1 — the unofficial `/usage` endpoint. ✅ RUN 2026-07-21 — ALIVE.**
+`GET https://api.anthropic.com/api/oauth/usage` (the CLI's own
+`fetchUtilization`), OAuth bearer from `~/.claude/.credentials.json` → **HTTP
+200**, rich body. **KILL CRITERION NOT TRIGGERED** — the authoritative source
+exists, so meters can be truthful. Golden fixture:
+`fixtures/usage/oauth-usage-2026-07-21.json`. Full findings in calibration.md.
+Binding results for construction:
+- **Consume `limits[]`** — already normalized `{kind, group, percent, severity,
+  resets_at, scope, is_active}`; `session` / `weekly_all` / `weekly_scoped`
+  (+`scope.model`) map 1:1 onto our meter set, and `is_active` marks the
+  currently-binding limit. Do NOT enumerate the flat top-level buckets.
+- **PERCENT ONLY** — no token/dollar absolutes. `MeterRecord {used, limit}`
+  (§5) assumes absolutes and must be revisited in step 1 (**lean: widen the
+  record with `percent`/`unit`** rather than fake `used/limit`, because
+  inventing precision the source never gave us is exactly the lying meter
+  pillar 4 forbids). **This is a Gate-D schema decision — Wes signs it off
+  before step 1 builds on it.**
+- **The schema churns (rule 0.6 confirmed):** the body carries internal
+  codenamed null buckets (`tangelo`, `iguana_necktie`, `nimbus_quill`,
+  `cinder_cove`, `amber_ladder`, `seven_day_cowork`, …). Tolerate and IGNORE
+  unknown keys; never enumerate.
+- **Token expiry is the real staleness trigger:** the OAuth token lives ~6 h and
+  the CLI owns refresh; a daemon adapter will meet 401 and must degrade to
+  stale, never crash, never show old numbers as current.
+- Not usage: `/api/claude_code/policy_limits` (policy/compliance flags only).
 
 **Spike U2 — OTel direct ingest.** `CLAUDE_CODE_ENABLE_TELEMETRY=1` with
 `OTEL_EXPORTER_OTLP_PROTOCOL=http/json` pinned into the env of every session the

@@ -363,6 +363,80 @@ land" with no obvious cause. Fix: set `Cache-Control` in the static handler —
 long-lived `immutable` for content-hashed `/assets/*`. Schedule with the next
 daemon-touching work; it is a correctness/operability fix, not a tuning knob.
 
+### 2026-07-21 — SPIKE U1 (slice 5): the usage endpoint is ALIVE — kill criterion NOT triggered
+
+Read-only probe, run at Wes's instruction. **Method (rule 0.7 — observed truth,
+never documentation):** extracted endpoint strings from the installed CLI bundle
+(`~/.local/share/claude/versions/2.1.216`), found a function literally named
+**`fetchUtilization`** issuing `GET /api/oauth/usage`, base
+`https://api.anthropic.com` (58 occurrences; `api-staging` also present). Then
+called it directly with the OAuth bearer from `~/.claude/.credentials.json`
+(mode 600, `claudeAiOauth.accessToken`).
+
+**Result: HTTP 200 with a rich, structured body.** Golden fixture pinned at
+`fixtures/usage/oauth-usage-2026-07-21.json` (CLI 2.1.216, plan `max` /
+`default_claude_max_5x`). **The slice-5 kill criterion is NOT triggered** — the
+authoritative source exists, so meters can be truthful.
+
+**The response carries TWO surfaces; consume the second.**
+1. Flat legacy fields: `five_hour`, `seven_day` (each `{utilization, resets_at,
+   limit_dollars, used_dollars, remaining_dollars}`), plus many null buckets.
+2. **`limits[]` — already NORMALIZED**, and the right adapter target:
+   `{kind, group, percent, severity, resets_at, scope, is_active}`. Observed:
+
+   | kind | group | percent | resets_at | scope | is_active |
+   |---|---|---|---|---|---|
+   | `session` | session | 29 | 2026-07-21T15:19:59Z | — | false |
+   | `weekly_all` | weekly | 52 | 2026-07-23T16:59:59Z | — | false |
+   | `weekly_scoped` | weekly | 64 | 2026-07-23T16:59:59Z | `model.display_name: "Fable"` | **true** |
+
+   This maps 1:1 onto the spec's presumed meter set: 5-hour rolling window =
+   `session`; weekly all-models cap = `weekly_all`; weekly model-family cap =
+   `weekly_scoped` (+ `scope.model`). `is_active` marks the currently-BINDING
+   limit — a gift for "can I afford to start this?".
+
+**Design consequences for slice-5 step 1 (must be decided before building):**
+- **PERCENT ONLY.** `limit_dollars`/`used_dollars`/`remaining_dollars` are all
+  null and `limits[]` carries `percent`, never token or dollar absolutes. The
+  reserved `MeterRecord {used, limit}` (§5) assumes absolutes. Either store
+  `used = percent, limit = 100`, or widen the record with an explicit
+  `percent`/`unit` field. **Lean: widen** — collapsing a percentage into
+  `used/limit` invents precision the source never gave us, and pillar 4 says
+  meters must not lie.
+- `severity` (`normal` | …) is a server-side judgement we get for free — prefer
+  it over inventing our own ⟨tune 80%⟩ threshold where present.
+- No overage on this plan: `extra_usage.is_enabled: false`, `spend.enabled:
+  false`, `can_purchase_credits: false`, `spend.used = $0.00`.
+
+**Rule-0.6 goldmine — the schema visibly churns.** The body carries obviously
+internal/unreleased codenamed buckets, all null: `seven_day_cowork`,
+`seven_day_omelette`, `tangelo`, `iguana_necktie`, `omelette_promotional`,
+`nimbus_quill`, `cinder_cove`, `amber_ladder`. This is direct evidence for the
+fragile-adapter posture: **consume `limits[]`, tolerate and IGNORE unknown
+top-level keys, never enumerate buckets.** The fixture retains the codenames
+deliberately as that evidence.
+
+**D24 (billing bucket) — strong lean, not yet a decision.**
+`seven_day_oauth_apps` is **null** — that is the bucket that would plausibly
+carry non-interactive / third-party-app usage — while `session` and `weekly_all`
+are both populated and moving. The lean: VIMES-spawned SDK work consumes the
+SAME 5-hour/weekly buckets as interactive use, i.e. Wes's dongfu runs did NOT
+draw on a separate automation credit. **This is a null-based inference and must
+not be promoted to a decision on its own** (a null can mean "no usage", "not on
+this plan", or "not populated"). Confirm by correlation: sample the endpoint
+before/after a known headless run and observe WHICH meter moves. That
+correlation is the D24-settling experiment; it belongs in slice-5 step 2.
+
+**Adapter constraint (operational).** The OAuth access token expires (observed
+~6 h validity) and the CLI owns refreshing it. A daemon adapter reading the same
+credentials file will eventually present a stale token and get 401 → it must
+degrade to **stale**, never crash and never silently show old numbers as
+current. This is the staleness path, exercised by a real failure mode.
+
+**Second endpoint, for the record:** `/api/claude_code/policy_limits` also
+returns 200 but is policy/compliance flags (`restrictions`,
+`compliance_taints`, `defaults`) — **not** usage. Noted so nobody chases it.
+
 ## Budget table (`--report`)
 
 Design-intent targets from spec §8, listed so nothing gets pinned from memory.
