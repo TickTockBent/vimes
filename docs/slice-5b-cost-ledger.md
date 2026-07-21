@@ -222,3 +222,40 @@ more sampling) should anyone want to revisit.
 - Any share-of-window figure rendered without its band.
 - A price residual correlating with the 1h/5m cache ratio (a mispriced tier).
 - The ledger reading headroom from anything but the endpoint (U3 violation).
+
+## Build order (sequential agents; verify + commit between each)
+
+Shaped by two settled facts: **ingestion reads transcripts, not the event log**
+(spawn-path check), and **the percent half is cut** (C1). Rule 0.3 still binds —
+the pure core does the arithmetic and the tree, the daemon does the I/O.
+
+| # | Step | Model | Delivers |
+|---|------|-------|----------|
+| 0 | **Spikes C1 + C2** | — | C1 ✅ fired (percent cut). C2 widening in flight — **the price table must clear its bar before step 2 pins anything.** |
+| 1 | **Corpus reader + durable store** (daemon) | opus | Recursive transcript walk incl. `subagents/workflows/wf_*/`; **max-wins dedupe by `message.id`**; fork/ancestor-prefix detection so the +6–13% inflation cannot land; `<synthetic>` excluded as unpriceable; the outside-`VIMES_PROJECT_ROOTS` bucket; usage rows copied into VIMES's own storage **so retention cannot eat them** |
+| 2 | **Pricing** (core, pure) | opus | Dated price table as data, not code; **per-message** pricing (31 files mix models within one agent); the three cache tiers priced distinctly; unknown model → **unpriced, never $0**; every figure carries its price-table date |
+| 3 | **The tree + rollups** (core, pure) | opus | project → session → subagent as a **tree** (depth >1 is real); the `toolUseResult.agentId` join where the path does not carry the edge, and an explicit *unattributed* bucket for the ~54% where it is absent; **reconciliation assertion** Σ(children)+parent === node total; cost per `attributionSkill` / `attributionAgent` |
+| 4 | **API + UI** | opus | Click a session → its cost including subagents; click a project → history over time; **every total carries its scope label** ("VIMES-hosted work", never "your spend"); no percent-of-window anywhere |
+| 5 | **Scenario profile + exit gate** | opus | A new profile over a fixture corpus, **proven to fail by sabotage** per the budget-wall precedent; reconciliation and the anti-double-count checks are the load-bearing ones, plus a sabotage proving the surface fails if a percent figure ever appears |
+
+**Sequencing note.** Step 1 is the only step with a deadline attached — every day
+it is not running is a day of history that `cleanupPeriodDays` protects but does
+not guarantee. Steps 2–5 have no clock on them.
+
+**Deliberately NOT parallelised.** Steps 2 and 3 both look independent of 1 and
+are not: the dedupe and fork rules determine what a "message" even is, and
+pricing or rolling up the wrong row set is worse than doing it later.
+
+## Open riders (not blocking construction)
+- **PTY `usage_block` has no positive evidence yet** — the one observed PTY
+  session's usage all predated VIMES attaching. One live PTY session doing real
+  work closes it. Matters for VIMES's *live* attribution, not for the ledger
+  (which reads transcripts).
+- **D15 is stale** — inherited `CLAUDE*` env no longer suppresses transcripts
+  (tested 2026-07-21 from a shell carrying 9 such vars). The PTY channel's env
+  scrubbing is now belt-and-braces. Worth a dated correction on D15 when someone
+  is next in decisions.md.
+- **The 5-hour limit may not be a pure token budget** (C1 side finding): message
+  count predicts Δpercent no better than tokens, and a `max()` over several
+  sub-budgets would explain the observed regime-switching. Irrelevant to a
+  dollars-only ledger; relevant if anyone revisits the percent half.
