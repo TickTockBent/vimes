@@ -3,10 +3,12 @@ import { mkdtempSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  DEFAULT_PUSH_TTL_SECONDS,
   buildPushPayload,
   isValidPushSubscription,
   loadOrCreateVapidKeys,
   reasonBody,
+  urgencyForAttentionReason,
   vapidKeyPath,
 } from './pushService.js';
 
@@ -66,6 +68,30 @@ describe('buildPushPayload / reasonBody (pure)', () => {
       body: reasonBody('rate-limited'),
       url: '/#/session/app-rl-0001',
     });
+  });
+});
+
+describe('urgencyForAttentionReason (D29 — high wakes the radio, routine does not)', () => {
+  it('is HIGH only for the "human needed now" reasons (blocking + reserved action)', () => {
+    // gate/question block on the human; rate-limited/brake are rule-0.5-reserved
+    // action-required reasons. All wake a dozing device.
+    for (const reason of ['gate', 'question', 'rate-limited', 'brake'] as const) {
+      expect(urgencyForAttentionReason(reason)).toBe('high');
+    }
+  });
+
+  it('is NORMAL for the informational reasons — "this is merely true" costs no battery', () => {
+    for (const reason of ['completed', 'stale', 'quarantined'] as const) {
+      expect(urgencyForAttentionReason(reason)).toBe('normal');
+    }
+  });
+});
+
+describe('DEFAULT_PUSH_TTL_SECONDS (bounded, sane — not web-push four weeks)', () => {
+  it('is positive and far below web-push default four weeks', () => {
+    const fourWeeksSeconds = 4 * 7 * 24 * 60 * 60;
+    expect(DEFAULT_PUSH_TTL_SECONDS).toBeGreaterThan(0);
+    expect(DEFAULT_PUSH_TTL_SECONDS).toBeLessThan(fourWeeksSeconds);
   });
 });
 

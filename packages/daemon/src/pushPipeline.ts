@@ -14,7 +14,12 @@ import {
 } from '@vimes/core';
 import type { PushSubscriptionRecord } from './pushService.js';
 import { PushSubscriptions } from './pushSubscriptions.js';
-import { buildPushPayload, type PushSender } from './pushService.js';
+import {
+  DEFAULT_PUSH_TTL_SECONDS,
+  buildPushPayload,
+  urgencyForAttentionReason,
+  type PushSender,
+} from './pushService.js';
 
 // ─── Push pipeline (slice-2 step 3) ──────────────────────────────────────────
 //
@@ -133,7 +138,13 @@ export class PushPipeline {
   ): Promise<void> {
     let outcome: { ok: boolean; statusCode?: number };
     try {
-      outcome = await this.sender.send(subscription, payloadJson);
+      // The caller decides urgency (D29): a blocking gate/question wakes the
+      // radio, an informational completed/stale does not. A bounded default TTL
+      // keeps a stale attention push from arriving days later.
+      outcome = await this.sender.send(subscription, payloadJson, {
+        urgency: urgencyForAttentionReason(reason),
+        ttlSeconds: DEFAULT_PUSH_TTL_SECONDS,
+      });
     } catch {
       // The sender contract is not to throw, but stay defensive — a throw becomes
       // a failure with no statusCode rather than an unhandled rejection.

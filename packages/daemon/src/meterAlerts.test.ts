@@ -7,9 +7,10 @@ import { EVENT_TYPES, SteppingClock, USAGE_STREAM, type EventRecord, type IdSour
 import type { AccessVerifier } from './auth.js';
 import { createDaemon, type Daemon } from './app.js';
 import type { DaemonConfig } from './config.js';
-import type { PushSender, PushSubscriptionRecord } from './pushService.js';
+import type { PushSender, PushSendOptions, PushSubscriptionRecord } from './pushService.js';
+import { DEFAULT_PUSH_TTL_SECONDS } from './pushService.js';
 import type { UsageHttpFetch } from './usageEndpoint.js';
-import { buildMeterAlertPushPayload, resetCountdownText } from './meterAlerts.js';
+import { buildMeterAlertPushPayload, resetCountdownText, ttlSecondsUntilReset } from './meterAlerts.js';
 
 // ─── Meter alert emission + push (slice 5 step 4b, deliverable 4) ────────────
 //
@@ -35,14 +36,15 @@ const SUBSCRIPTION: PushSubscriptionRecord = {
 };
 
 class FakePushSender implements PushSender {
-  readonly sends: Array<{ endpoint: string; payloadJson: string }> = [];
+  readonly sends: Array<{ endpoint: string; payloadJson: string; options?: PushSendOptions }> = [];
   outcomeFor: (endpoint: string) => { ok: boolean; statusCode?: number } = () => ({ ok: true, statusCode: 201 });
 
   async send(
     subscription: PushSubscriptionRecord,
     payloadJson: string,
+    options?: PushSendOptions,
   ): Promise<{ ok: boolean; statusCode?: number }> {
-    this.sends.push({ endpoint: subscription.endpoint, payloadJson });
+    this.sends.push({ endpoint: subscription.endpoint, payloadJson, options });
     return this.outcomeFor(subscription.endpoint);
   }
 }
@@ -119,6 +121,10 @@ function meterAlertEvents(daemon: Daemon): EventRecord[] {
   return daemon.store.read(USAGE_STREAM, 1).filter((record) => record.type === EVENT_TYPES.meterAlert);
 }
 
+function meterPushOutcomeEvents(daemon: Daemon): EventRecord[] {
+  return daemon.store.read(USAGE_STREAM, 1).filter((record) => record.type === EVENT_TYPES.meterPushOutcome);
+}
+
 function flushSends(): Promise<void> {
   return new Promise((resolveDelay) => setTimeout(resolveDelay, 20));
 }
@@ -174,6 +180,19 @@ describe('meter alert push payload', () => {
     expect(resetCountdownText('2026-07-21T11:00:00.000Z', '2026-07-21T12:00:00.000Z')).toBeNull();
     expect(resetCountdownText('2026-07-24T12:00:00.000Z', '2026-07-21T12:00:00.000Z')).toBe('3d 0h');
   });
+
+  it('ttlSecondsUntilReset derives seconds-to-reset, falls back with no deadline, and expires a past reset (D29)', () => {
+    // Natural value: the seconds remaining to the window reset.
+    expect(ttlSecondsUntilReset('2026-07-21T15:00:00.000Z', '2026-07-21T12:00:00.000Z')).toBe(3 * 3600);
+    // No natural deadline (absent / unparseable) → a sane bounded default.
+    expect(ttlSecondsUntilReset(null, '2026-07-21T12:00:00.000Z')).toBe(DEFAULT_PUSH_TTL_SECONDS);
+    expect(ttlSecondsUntilReset('soonish', '2026-07-21T12:00:00.000Z')).toBe(DEFAULT_PUSH_TTL_SECONDS);
+    // The window already reset → 0, so an undeliverable stale alert drops rather
+    // than arriving late.
+    expect(ttlSecondsUntilReset('2026-07-21T11:00:00.000Z', '2026-07-21T12:00:00.000Z')).toBe(0);
+    // The fallback is caller-overridable.
+    expect(ttlSecondsUntilReset(undefined, '2026-07-21T12:00:00.000Z', 42)).toBe(42);
+  });
 });
 
 describe('meter alerts at the daemon boundary', () => {
@@ -199,6 +218,73 @@ describe('meter alerts at the daemon boundary', () => {
       await flushSends();
       expect(meterAlertEvents(harness.daemon)).toHaveLength(1);
       expect(harness.sender.sends).toHaveLength(1);
+    } finally {
+      await harness.daemon.stop();
+    }
+  });
+
+  it('sends at HIGH urgency with a resetsAt-derived TTL, and events a SENT outcome (D29)', async () => {
+    const harness = createHarness(nextDatabasePath());
+    try {
+      harness.daemon.pushSubscriptions.save(SUBSCRIPTION);
+      harness.setBody(usageBody(84));
+      await harness.daemon.pollUsageOnce();
+      await flushSends();
+
+      // Threshold alerts are time-sensitive → HIGH (wakes a dozing device).
+      expect(harness.sender.sends).toHaveLength(1);
+      expect(harness.sender.sends[0]!.options?.urgency).toBe('high');
+      // TTL is DERIVED from resetsAt (12:00 → 15:19:59 ≈ 11999s), NOT the
+      // four-week / 24h fallback: bounded, and well under the default.
+      const ttl = harness.sender.sends[0]!.options?.ttlSeconds;
+      expect(ttl).toBeGreaterThan(0);
+      expect(ttl!).toBeLessThanOrEqual(3 * 3600 + 20 * 60);
+      expect(ttl!).toBeLessThan(DEFAULT_PUSH_TTL_SECONDS);
+
+      // The delivery outcome is evented on the 'usage' stream (no session).
+      const outcomes = meterPushOutcomeEvents(harness.daemon);
+      expect(outcomes).toHaveLength(1);
+      expect(outcomes[0]!.payload).toMatchObject({ attempted: true, outcome: 'sent', statusCode: 201 });
+      expect(typeof (outcomes[0]!.payload as { meterId: unknown }).meterId).toBe('string');
+    } finally {
+      await harness.daemon.stop();
+    }
+  });
+
+  it('events a FAILED outcome with the 410 status on the prune path (D29)', async () => {
+    const harness = createHarness(nextDatabasePath());
+    harness.sender.outcomeFor = () => ({ ok: false, statusCode: 410 });
+    try {
+      harness.daemon.pushSubscriptions.save(SUBSCRIPTION);
+      harness.setBody(usageBody(84));
+      await harness.daemon.pollUsageOnce();
+      await flushSends();
+
+      const outcomes = meterPushOutcomeEvents(harness.daemon);
+      expect(outcomes).toHaveLength(1);
+      expect(outcomes[0]!.payload).toMatchObject({ attempted: true, outcome: 'failed', statusCode: 410 });
+      // The dead subscription is pruned, exactly as before.
+      expect(harness.daemon.pushSubscriptions.count()).toBe(0);
+    } finally {
+      await harness.daemon.stop();
+    }
+  });
+
+  it('events attempted:false when a crossing has NO subscription to reach', async () => {
+    const harness = createHarness(nextDatabasePath());
+    try {
+      // No subscription saved — the crossing still fires an alert, but there is
+      // nobody to push to. The log must still say a send was NOT attempted.
+      harness.setBody(usageBody(84));
+      await harness.daemon.pollUsageOnce();
+      await flushSends();
+
+      expect(meterAlertEvents(harness.daemon)).toHaveLength(1);
+      expect(harness.sender.sends).toHaveLength(0);
+      const outcomes = meterPushOutcomeEvents(harness.daemon);
+      expect(outcomes).toHaveLength(1);
+      expect(outcomes[0]!.payload).toMatchObject({ attempted: false });
+      expect((outcomes[0]!.payload as { outcome?: unknown }).outcome).toBeUndefined();
     } finally {
       await harness.daemon.stop();
     }

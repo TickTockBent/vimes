@@ -593,6 +593,9 @@ export function createDaemon(deps: DaemonDeps): Daemon {
       void sendMeterAlertPush(alertPayload, nowIso, {
         sender: pushSender,
         subscriptions: pushSubscriptions,
+        // D29: the delivery outcome rides the 'usage' stream (meter has no
+        // session), never the session-scoped push_sent/push_failed.
+        emit: (events) => router.emit(events),
       }).catch(() => {
         // sendMeterAlertPush does not reject; this is belt-and-braces so an
         // unexpected throw can never become an unhandled rejection.
