@@ -6,6 +6,7 @@ import FileTreeView from './views/FileTreeView.vue';
 import EditorView from './views/EditorView.vue';
 import SearchPanel from './views/SearchPanel.vue';
 import TerminalView from './views/TerminalView.vue';
+import GitPanel from './views/GitPanel.vue';
 import { useVimesStore } from './stores/vimesStore.js';
 
 const store = useVimesStore();
@@ -58,6 +59,7 @@ const editorTarget = computed<{ path: string; line?: number } | null>(() => {
 const showFileTree = computed(() => route.value.routePath === '/files' && editorTarget.value === null);
 const showSearch = computed(() => route.value.routePath === '/search');
 const showTerminal = computed(() => route.value.routePath === '/terminal');
+const showGit = computed(() => route.value.routePath === '/git');
 
 function navigateToSession(appSessionId: string): void {
   window.location.hash = `#/session/${encodeURIComponent(appSessionId)}`;
@@ -73,6 +75,9 @@ function navigateToSearch(): void {
 }
 function navigateToTerminal(): void {
   window.location.hash = '#/terminal';
+}
+function navigateToGit(): void {
+  window.location.hash = '#/git';
 }
 function navigateToEditor(path: string, line?: number): void {
   const params = new URLSearchParams({ path });
@@ -128,6 +133,7 @@ const bannerText = computed(() => {
       @back="navigateHome"
     />
     <TerminalView v-else-if="showTerminal" @back="navigateHome" />
+    <GitPanel v-else-if="showGit" @back="navigateHome" />
     <StreamView v-else-if="activeSessionId" :app-session-id="activeSessionId" @back="navigateHome" />
     <SessionListView
       v-else
@@ -135,6 +141,7 @@ const bannerText = computed(() => {
       @open-files="navigateToFiles"
       @open-search="navigateToSearch"
       @open-terminal="navigateToTerminal"
+      @open-git="navigateToGit"
     />
   </div>
 </template>

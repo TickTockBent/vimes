@@ -1,0 +1,252 @@
+// Pure derivations for the git review panel (GitPanel.vue) — the primary-human-
+// job surface (spec §3.4: reviewing agent diffs). No Vue, no DOM, no I/O: every
+// branch is unit-tested without a browser (gitReview.test.ts), mirroring the
+// lib/terminalList.ts pattern. The Vue component stays declarative; the decisions
+// that matter (status grouping, diff-line styling, the diffstat) live here where
+// they can be asserted.
+//
+// The types below MIRROR the daemon's exported shapes (packages/daemon/src/
+// gitAdapter.ts / gitApi.ts) — the UI re-declares the wire shape locally rather
+// than importing across the package boundary (same as TerminalListItem in
+// terminalList.ts). The daemon owns the parse; this file only reshapes the parsed
+// model for display.
+
+// ── wire shapes (mirror packages/daemon/src/gitAdapter.ts) ──
+
+export type GitStatusEntryKind = 'ordinary' | 'renamed' | 'unmerged' | 'untracked' | 'ignored';
+
+export interface GitStatusEntry {
+  kind: GitStatusEntryKind;
+  path: string;
+  origPath: string | null;
+  // The index (staged) status letter, '' when unmodified.
+  staged: string;
+  // The worktree (unstaged) status letter, '' when unmodified.
+  unstaged: string;
+  xy: string;
+  score: string | null;
+}
+
+export interface GitBranchInfo {
+  oid: string | null;
+  head: string | null;
+  upstream: string | null;
+  ahead: number | null;
+  behind: number | null;
+}
+
+export interface GitStatus {
+  branch: GitBranchInfo;
+  entries: GitStatusEntry[];
+}
+
+export type GitDiffLineKind = 'add' | 'del' | 'context';
+
+export interface GitDiffLine {
+  kind: GitDiffLineKind;
+  content: string;
+  oldLineNumber: number | null;
+  newLineNumber: number | null;
+}
+
+export interface GitDiffHunk {
+  header: string;
+  oldStart: number;
+  oldLines: number;
+  newStart: number;
+  newLines: number;
+  section: string;
+  lines: GitDiffLine[];
+}
+
+export type GitFileChangeKind = 'added' | 'deleted' | 'modified' | 'renamed' | 'copied';
+
+export interface GitFileDiff {
+  path: string;
+  oldPath: string | null;
+  newPath: string | null;
+  changeKind: GitFileChangeKind;
+  binary: boolean;
+  hunks: GitDiffHunk[];
+}
+
+// ── changed-files list (the tap-a-file-to-see-its-diff rail) ──
+
+// The three review buckets, in most-meaningful order: what is ready to commit
+// (staged), what is not yet staged (unstaged), then brand-new files (untracked).
+export type GitStatusGroup = 'staged' | 'unstaged' | 'untracked';
+
+export interface GitStatusRow {
+  // The path exactly as git reports it — the operand handed back to the stage/
+  // unstage/diff API (the daemon re-resolves it against the allowlist).
+  path: string;
+  // The last path segment — the compact label for a tight mobile row (the full
+  // path is shown too, but the tail is what fits).
+  pathTail: string;
+  // The rename/copy source path, for a "was: <origPath>" hint; null otherwise.
+  origPath: string | null;
+  // A human status word derived from the staged/unstaged letters + kind.
+  statusLabel: string;
+  group: GitStatusGroup;
+  // A file can be BOTH staged and unstaged (partially staged) — these drive which
+  // of the file-level Stage / Unstage actions the row offers.
+  hasStaged: boolean;
+  hasUnstaged: boolean;
+}
+
+export interface GroupedStatusRows {
+  staged: GitStatusRow[];
+  unstaged: GitStatusRow[];
+  untracked: GitStatusRow[];
+}
+
+// Last path segment — the human-legible file label. A trailing slash or an empty
+// path falls back to the whole string.
+function pathTail(path: string): string {
+  const segments = path.split('/').filter((segment) => segment.length > 0);
+  return segments.length > 0 ? segments[segments.length - 1]! : path;
+}
+
+// A single porcelain-v2 status letter → a human word. '' (unmodified on this
+// axis) yields '' so the caller can fall back to the other axis.
+function letterToWord(letter: string): string {
+  switch (letter) {
+    case 'M':
+      return 'Modified';
+    case 'A':
+      return 'Added';
+    case 'D':
+      return 'Deleted';
+    case 'R':
+      return 'Renamed';
+    case 'C':
+      return 'Copied';
+    case 'T':
+      return 'Type changed';
+    case 'U':
+      return 'Unmerged';
+    default:
+      return '';
+  }
+}
+
+// The human status word for an entry. Kind wins for the special buckets;
+// otherwise the staged letter is preferred (what will commit), falling back to
+// the worktree letter, then a generic 'Changed'.
+function statusLabelFor(entry: GitStatusEntry): string {
+  if (entry.kind === 'untracked') {
+    return 'Untracked';
+  }
+  if (entry.kind === 'ignored') {
+    return 'Ignored';
+  }
+  if (entry.kind === 'unmerged') {
+    return 'Unmerged';
+  }
+  if (entry.kind === 'renamed') {
+    return 'Renamed';
+  }
+  return letterToWord(entry.staged) || letterToWord(entry.unstaged) || 'Changed';
+}
+
+// Which review bucket a file belongs to. A file with ANY staged content sits in
+// 'staged' (even when it also has unstaged edits — the hasUnstaged flag marks
+// that "partially staged" case); a conflict is surfaced under 'unstaged' since it
+// needs resolution before it can cleanly commit.
+function groupFor(entry: GitStatusEntry): GitStatusGroup {
+  if (entry.kind === 'untracked') {
+    return 'untracked';
+  }
+  if (entry.kind === 'unmerged') {
+    return 'unstaged';
+  }
+  if (entry.staged !== '') {
+    return 'staged';
+  }
+  return 'unstaged';
+}
+
+export function deriveGitStatusRow(entry: GitStatusEntry): GitStatusRow {
+  const hasStaged = entry.kind !== 'untracked' && entry.kind !== 'unmerged' && entry.staged !== '';
+  const hasUnstaged = entry.kind === 'untracked' || entry.kind === 'unmerged' || entry.unstaged !== '';
+  return {
+    path: entry.path,
+    pathTail: pathTail(entry.path),
+    origPath: entry.origPath,
+    statusLabel: statusLabelFor(entry),
+    group: groupFor(entry),
+    hasStaged,
+    hasUnstaged,
+  };
+}
+
+// All rows, path-sorted within each group for a stable, jitter-free order between
+// fetches (git's own status order is stable but not alphabetical; a deterministic
+// sort here keeps the list from reordering under the reviewer's thumb).
+export function deriveGitStatusRows(entries: readonly GitStatusEntry[]): GitStatusRow[] {
+  return entries.map(deriveGitStatusRow);
+}
+
+// Group the rows into the three review buckets, each path-sorted. The template
+// renders the buckets in staged → unstaged → untracked order (most-meaningful
+// first — what is ready to commit leads).
+export function groupStatusRows(entries: readonly GitStatusEntry[]): GroupedStatusRows {
+  const byPath = (first: GitStatusRow, second: GitStatusRow): number =>
+    first.path < second.path ? -1 : first.path > second.path ? 1 : 0;
+  const rows = deriveGitStatusRows(entries);
+  return {
+    staged: rows.filter((row) => row.group === 'staged').sort(byPath),
+    unstaged: rows.filter((row) => row.group === 'unstaged').sort(byPath),
+    untracked: rows.filter((row) => row.group === 'untracked').sort(byPath),
+  };
+}
+
+// ── diff-line styling (the mobile hunk view) ──
+
+// The semantic style for one diff line: the left-gutter sign and a stable class
+// token. The component binds the token to the actual tint (see GitPanel's scoped
+// styles, which set legible add/del/context colors in BOTH light and dark). The
+// mapping is decided here so it is tested, not buried in template ternaries.
+export type DiffLineClass = 'diff-line-add' | 'diff-line-del' | 'diff-line-context';
+
+export interface DiffLineStyle {
+  // The gutter marker: '+' for an addition, '-' for a deletion, ' ' for context.
+  sign: '+' | '-' | ' ';
+  className: DiffLineClass;
+}
+
+export function diffLineStyle(kind: GitDiffLineKind): DiffLineStyle {
+  switch (kind) {
+    case 'add':
+      return { sign: '+', className: 'diff-line-add' };
+    case 'del':
+      return { sign: '-', className: 'diff-line-del' };
+    default:
+      return { sign: ' ', className: 'diff-line-context' };
+  }
+}
+
+// ── diffstat (the compact header: N files, +A −D) ──
+
+export interface DiffStat {
+  filesChanged: number;
+  additions: number;
+  deletions: number;
+}
+
+export function summarizeDiffStat(files: readonly GitFileDiff[]): DiffStat {
+  let additions = 0;
+  let deletions = 0;
+  for (const file of files) {
+    for (const hunk of file.hunks) {
+      for (const line of hunk.lines) {
+        if (line.kind === 'add') {
+          additions += 1;
+        } else if (line.kind === 'del') {
+          deletions += 1;
+        }
+      }
+    }
+  }
+  return { filesChanged: files.length, additions, deletions };
+}

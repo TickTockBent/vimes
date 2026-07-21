@@ -4,6 +4,7 @@ import { parseServerEnvelope, serializeClientEnvelope, type ClientEnvelope, type
 import { advanceOffset, deframeTerminalOutput, frameTerminalInputText } from '../lib/terminalFraming.js';
 import { parseRootsPayload } from '../lib/treeNode.js';
 import type { TerminalListItem } from '../lib/terminalList.js';
+import type { GitStatus, GitFileDiff } from '../lib/gitReview.js';
 import type { EventRecord, SessionRecord } from '../lib/types.js';
 import { derivePushState, type PushUiState } from '../lib/pushState.js';
 import { decideReconnectAction, shouldProbeHealth, type HealthProbeOutcome } from '../lib/reconnectDecision.js';
@@ -97,6 +98,17 @@ export const useVimesStore = defineStore('vimes', () => {
   // Fetched on the view's mount; terminalId is in-memory on the daemon, so this
   // is how a fresh page load rediscovers shells left running to re-enter.
   const terminals = ref<TerminalListItem[]>([]);
+  // ── Git review (slice 4 step 3) — the primary-human-job surface (spec §3.4) ──
+  // Plain REST-into-ref, mirroring fetchTerminals: fetch, credentials
+  // same-origin, tolerant of transient failure. The daemon's /api/git/* endpoints
+  // are behind the Access wall and root-scoped (every path re-resolved against the
+  // allowlist server-side). gitStatus holds the last-fetched repo status;
+  // gitDiffFiles the last-fetched file diff; gitError a local refusal channel the
+  // panel surfaces inline (a clean 4xx { error } from the daemon).
+  const gitStatus = ref<{ repoRoot: string; status: GitStatus } | null>(null);
+  const gitDiffFiles = ref<GitFileDiff[]>([]);
+  const gitError = ref<string | null>(null);
+
   let terminalId: string | null = null;
   let terminalTag: number | null = null;
   let terminalOffset = 0; // bytes consumed — mirrors the daemon's totalBytesSeen (I9)
@@ -181,6 +193,122 @@ export const useVimesStore = defineStore('vimes', () => {
     } catch {
       // Transient network hiccup — the next fetch (view remount) retries.
     }
+  }
+
+  // ── Git review fetches (mirror fetchTerminals: plain REST, same-origin creds,
+  // tolerant). A clean 4xx from the daemon carries { error, detail? }; we surface
+  // the classified reason to gitError so the panel can show it inline. A transient
+  // network failure leaves the previous state in place (the log/repo is truth).
+
+  // Read the git error body of a non-ok response into a short reason string.
+  async function gitRefusalReason(response: Response): Promise<string> {
+    try {
+      const body = (await response.json()) as { error?: string; detail?: string };
+      const reason = typeof body.error === 'string' ? body.error : `git request failed (${response.status})`;
+      return typeof body.detail === 'string' && body.detail.length > 0 ? `${reason}: ${body.detail}` : reason;
+    } catch {
+      return `git request failed (${response.status})`;
+    }
+  }
+
+  // GET /api/git/status?root — the changed-files list + branch for a repo root.
+  async function fetchGitStatus(root: string): Promise<void> {
+    gitError.value = null;
+    try {
+      const query = new URLSearchParams({ root });
+      const response = await fetch(`/api/git/status?${query.toString()}`, { credentials: 'same-origin' });
+      if (!response.ok) {
+        gitError.value = await gitRefusalReason(response);
+        return;
+      }
+      const parsed = (await response.json()) as { repoRoot: string; status: GitStatus };
+      gitStatus.value = { repoRoot: parsed.repoRoot, status: parsed.status };
+    } catch {
+      // Transient network hiccup — a later fetch retries; keep the prior status.
+    }
+  }
+
+  // Clear the loaded diff (leaving the diff screen / switching root) so a stale
+  // file's hunks never flash under a different selection.
+  function clearGitDiff(): void {
+    gitDiffFiles.value = [];
+  }
+
+  // GET /api/git/diff?root&path&staged=1 — one file's hunks (worktree or staged).
+  async function fetchGitDiff(root: string, path: string, staged: boolean): Promise<void> {
+    gitError.value = null;
+    try {
+      const query = new URLSearchParams({ root, path });
+      if (staged) {
+        query.set('staged', '1');
+      }
+      const response = await fetch(`/api/git/diff?${query.toString()}`, { credentials: 'same-origin' });
+      if (!response.ok) {
+        gitError.value = await gitRefusalReason(response);
+        gitDiffFiles.value = [];
+        return;
+      }
+      const parsed = (await response.json()) as { repoRoot: string; files: GitFileDiff[] };
+      gitDiffFiles.value = Array.isArray(parsed.files) ? parsed.files : [];
+    } catch {
+      // Transient network hiccup — leave the previous diff in place.
+    }
+  }
+
+  // Shared POST helper for stage/unstage/commit: returns ok, surfacing a refusal
+  // to gitError so the view can react (re-fetch on success, show the reason on
+  // failure). Never throws — a network failure resolves to ok:false.
+  async function gitMutate(endpoint: string, payload: Record<string, string>): Promise<{ ok: boolean; error?: string }> {
+    gitError.value = null;
+    try {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!response.ok) {
+        const reason = await gitRefusalReason(response);
+        gitError.value = reason;
+        return { ok: false, error: reason };
+      }
+      return { ok: true };
+    } catch {
+      const reason = 'git request could not be sent';
+      gitError.value = reason;
+      return { ok: false, error: reason };
+    }
+  }
+
+  // POST /api/git/stage — file-level stage, then re-fetch status so the buckets
+  // (staged/unstaged) reflect the change. HUNK-LEVEL staging is deferred: the
+  // step-1 API is path-level only (a future API extension would add hunk patches).
+  async function stageGitPath(root: string, path: string): Promise<{ ok: boolean; error?: string }> {
+    const result = await gitMutate('/api/git/stage', { root, path });
+    if (result.ok) {
+      await fetchGitStatus(root);
+    }
+    return result;
+  }
+
+  // POST /api/git/unstage — file-level unstage (git restore --staged), re-fetch.
+  async function unstageGitPath(root: string, path: string): Promise<{ ok: boolean; error?: string }> {
+    const result = await gitMutate('/api/git/unstage', { root, path });
+    if (result.ok) {
+      await fetchGitStatus(root);
+    }
+    return result;
+  }
+
+  // POST /api/git/commit — commit the staged index with a message. Returns ok/
+  // refusal so the composer can surface an empty-index or empty-message refusal;
+  // re-fetches status on success (the committed files leave the staged bucket).
+  async function commitGit(root: string, message: string): Promise<{ ok: boolean; error?: string }> {
+    const result = await gitMutate('/api/git/commit', { root, message });
+    if (result.ok) {
+      await fetchGitStatus(root);
+    }
+    return result;
   }
 
   function scheduleSessionsRefresh(): void {
@@ -830,5 +958,15 @@ export const useVimesStore = defineStore('vimes', () => {
     detachTerminal,
     setTerminalResilient,
     killTerminal,
+    // Git review (slice 4 step 3)
+    gitStatus,
+    gitDiffFiles,
+    gitError,
+    fetchGitStatus,
+    fetchGitDiff,
+    clearGitDiff,
+    stageGitPath,
+    unstageGitPath,
+    commitGit,
   };
 });
