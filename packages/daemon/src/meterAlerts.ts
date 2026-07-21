@@ -2,12 +2,20 @@ import {
   EVENT_TYPES,
   USAGE_STREAM,
   meterAlertPayloadSchema,
+  meterPushOutcome,
   rememberMeterAlert,
+  type EventInput,
   type EventStore,
   type MeterAlertMemory,
   type MeterAlertPayload,
 } from '@vimes/core';
-import type { PushPayload, PushSender, PushSubscriptionRecord } from './pushService.js';
+import {
+  DEFAULT_PUSH_TTL_SECONDS,
+  type PushPayload,
+  type PushSender,
+  type PushSendOptions,
+  type PushSubscriptionRecord,
+} from './pushService.js';
 import type { PushSubscriptions } from './pushSubscriptions.js';
 
 // ─── Meter alerts at the daemon boundary (slice 5 step 4b, deliverable 4) ────
@@ -133,6 +141,30 @@ export function resetCountdownText(resetsAt: string | null | undefined, nowIso: 
   return `${minutes}m`;
 }
 
+// The push TTL (SECONDS) for a threshold alert (D29). Its natural deadline is the
+// window reset: a "you crossed 80%" push that cannot beat its own reset should
+// EXPIRE, not arrive late as a stale number wearing a notification. So when
+// `resetsAt` is known, the TTL is the seconds remaining to it (clamped at 0 — a
+// window already reset has no future deadline to honor and the message should
+// drop immediately). When `resetsAt` is absent or unparseable there is no natural
+// deadline, so a sane bounded default stands in.
+export function ttlSecondsUntilReset(
+  resetsAt: string | null | undefined,
+  nowIso: string,
+  fallbackSeconds: number = DEFAULT_PUSH_TTL_SECONDS,
+): number {
+  if (typeof resetsAt !== 'string' || resetsAt.length === 0) {
+    return fallbackSeconds;
+  }
+  const resetsAtMs = Date.parse(resetsAt);
+  const nowMs = Date.parse(nowIso);
+  if (!Number.isFinite(resetsAtMs) || !Number.isFinite(nowMs)) {
+    return fallbackSeconds;
+  }
+  const remainingSeconds = Math.floor((resetsAtMs - nowMs) / 1000);
+  return remainingSeconds > 0 ? remainingSeconds : 0;
+}
+
 // Deliberately NOT `buildPushPayload`'s session wording. Its {title, body, url}
 // CONVENTION is reused (that is the contract the service worker renders), but a
 // meter alert names a budget, not a session, and its deep link is the meters
@@ -160,6 +192,11 @@ export function buildMeterAlertPushPayload(alert: MeterAlertPayload, nowIso: str
 export interface MeterAlertPushDeps {
   sender: PushSender;
   subscriptions: PushSubscriptions;
+  // Emit sink for the non-session-scoped delivery-outcome events (D29). In
+  // production this is `router.emit`; a meter belongs to no session, so the
+  // outcome rides the 'usage' stream as `meter_push_outcome`, never the
+  // session-scoped `push_sent`/`push_failed`.
+  emit: (events: EventInput[]) => void;
   // Single-line warning sink (never a payload dump). Defaults to console.warn.
   warn?: (message: string) => void;
 }
@@ -169,9 +206,16 @@ export interface MeterAlertPushDeps {
  * subscription and NEVER fatal: a push failure is logged, not thrown, so a dead
  * push service can never take the usage poll down with it.
  *
- * A gone subscription (404/410) is PRUNED, exactly as `PushPipeline.deliver`
- * does — a stale subscription left by a cleared PWA install produced a real 410
- * in this project, and retrying it forever is pure waste.
+ * Time-sensitive by nature, so every send goes out at `urgency: 'high'` (wakes a
+ * dozing device — D29) with a TTL bounded by the window reset, so an
+ * undeliverable "you crossed 80%" EXPIRES rather than arriving after the reset.
+ *
+ * Every attempt is EVENTED as `meter_push_outcome` — success, failure, and the
+ * no-subscription case ("attempted: false") — so the log can always say whether a
+ * push was even tried, the exact gap D29 closes. A gone subscription (404/410) is
+ * PRUNED, exactly as `PushPipeline.deliver` does — a stale subscription left by a
+ * cleared PWA install produced a real 410 in this project, and retrying it
+ * forever is pure waste.
  */
 export async function sendMeterAlertPush(
   alert: MeterAlertPayload,
@@ -185,21 +229,45 @@ export async function sendMeterAlertPush(
       console.warn(message);
     });
   const payloadJson = JSON.stringify(buildMeterAlertPushPayload(alert, nowIso));
+  const sendOptions: PushSendOptions = {
+    urgency: 'high',
+    ttlSeconds: ttlSecondsUntilReset(alert.resetsAt ?? null, nowIso),
+  };
   const subscriptions: PushSubscriptionRecord[] = deps.subscriptions.all();
+  if (subscriptions.length === 0) {
+    // Nobody to notify — record that NO push was attempted, so the log
+    // distinguishes "no subscription" from "tried and failed".
+    deps.emit([meterPushOutcome({ meterId: alert.meterId, attempted: false })]);
+    return;
+  }
   for (const subscription of subscriptions) {
     let outcome: { ok: boolean; statusCode?: number };
     try {
-      outcome = await deps.sender.send(subscription, payloadJson);
+      outcome = await deps.sender.send(subscription, payloadJson, sendOptions);
     } catch {
       // The sender contract is not to throw, but stay defensive.
       outcome = { ok: false };
     }
     if (outcome.ok) {
+      deps.emit([
+        meterPushOutcome(
+          outcome.statusCode === undefined
+            ? { meterId: alert.meterId, attempted: true, outcome: 'sent' }
+            : { meterId: alert.meterId, attempted: true, outcome: 'sent', statusCode: outcome.statusCode },
+        ),
+      ]);
       continue;
     }
     warn(
       `vimes-daemon: meter alert push failed for ${alert.meterId} (status ${outcome.statusCode ?? 'none'})`,
     );
+    deps.emit([
+      meterPushOutcome(
+        outcome.statusCode === undefined
+          ? { meterId: alert.meterId, attempted: true, outcome: 'failed' }
+          : { meterId: alert.meterId, attempted: true, outcome: 'failed', statusCode: outcome.statusCode },
+      ),
+    ]);
     if (outcome.statusCode === 404 || outcome.statusCode === 410) {
       deps.subscriptions.remove(subscription.endpoint);
     }

@@ -76,6 +76,16 @@ export const EVENT_TYPES = {
   // record per fact (principle 9). Lives on the 'usage' stream beside
   // `meter_sample`.
   meterAlert: 'meter_alert',
+  // Slice-5 D29: the delivery outcome of a meter-alert push, on the 'usage'
+  // stream. Its sibling `push_sent`/`push_failed` are SESSION-scoped (they carry
+  // an `appSessionId`), and a meter belongs to no session — so a meter alert used
+  // to leave NO delivery trail at all. The consequence, felt live (calibration.md
+  // 2026-07-21): when a meter push failed, the log could not even say whether the
+  // push was ATTEMPTED. This event closes that gap without widening the
+  // session-scoped payloads (rule 0.5). PRIVACY: like its siblings, it NEVER
+  // carries the subscription endpoint or key material — only the meterId, whether
+  // a send was attempted, and (when attempted) the outcome + any HTTP status.
+  meterPushOutcome: 'meter_push_outcome',
 } as const;
 
 export const SYSTEM_STREAM = 'system';
@@ -311,6 +321,23 @@ export const meterAlertPayloadSchema = z.object({
   disposition: meterAlertDispositionSchema,
 });
 
+// meter_push_outcome (slice-5 D29) — the delivery outcome of ONE meter-alert push
+// attempt, on the 'usage' stream. `attempted` is false ONLY when there was no
+// subscription to send to (nobody to notify); when true, `outcome` records
+// whether the push service accepted ('sent') or rejected ('failed') it, and
+// `statusCode` carries the HTTP status the push service returned when it gave one
+// (a 404/410 is the daemon's cue to prune the dead subscription). No endpoint or
+// key material is ever carried here.
+export const meterPushOutcomeResultSchema = z.enum(['sent', 'failed']);
+export const meterPushOutcomePayloadSchema = z.object({
+  meterId: z.string(),
+  attempted: z.boolean(),
+  // Present iff `attempted` is true.
+  outcome: meterPushOutcomeResultSchema.optional(),
+  // Present only when the push service returned an HTTP status.
+  statusCode: z.number().optional(),
+});
+
 export const EVENT_PAYLOAD_SCHEMAS = {
   [EVENT_TYPES.sessionCreated]: sessionCreatedPayloadSchema,
   [EVENT_TYPES.livenessChanged]: livenessChangedPayloadSchema,
@@ -345,6 +372,7 @@ export const EVENT_PAYLOAD_SCHEMAS = {
   [EVENT_TYPES.pushSent]: pushSentPayloadSchema,
   [EVENT_TYPES.pushFailed]: pushFailedPayloadSchema,
   [EVENT_TYPES.meterAlert]: meterAlertPayloadSchema,
+  [EVENT_TYPES.meterPushOutcome]: meterPushOutcomePayloadSchema,
 } as const;
 
 export type SessionCreatedPayload = z.infer<typeof sessionCreatedPayloadSchema>;
@@ -373,6 +401,8 @@ export type PushSentPayload = z.infer<typeof pushSentPayloadSchema>;
 export type PushFailedPayload = z.infer<typeof pushFailedPayloadSchema>;
 export type MeterAlertPayload = z.infer<typeof meterAlertPayloadSchema>;
 export type MeterAlertDisposition = z.infer<typeof meterAlertDispositionSchema>;
+export type MeterPushOutcomePayload = z.infer<typeof meterPushOutcomePayloadSchema>;
+export type MeterPushOutcomeResult = z.infer<typeof meterPushOutcomeResultSchema>;
 
 // Discriminated union over the vocabulary — the domain-event value space.
 export type DomainEvent =
@@ -408,7 +438,8 @@ export type DomainEvent =
   | { type: typeof EVENT_TYPES.resyncMarker; payload: ResyncMarkerPayload }
   | { type: typeof EVENT_TYPES.pushSent; payload: PushSentPayload }
   | { type: typeof EVENT_TYPES.pushFailed; payload: PushFailedPayload }
-  | { type: typeof EVENT_TYPES.meterAlert; payload: MeterAlertPayload };
+  | { type: typeof EVENT_TYPES.meterAlert; payload: MeterAlertPayload }
+  | { type: typeof EVENT_TYPES.meterPushOutcome; payload: MeterPushOutcomePayload };
 
 // Maps each attention-setting event type to the needsAttention reason it sets.
 const ATTENTION_SETTER_REASON: Readonly<Record<string, AttentionReason>> = {
@@ -498,6 +529,11 @@ export function meterThresholdCrossed(payload: MeterThresholdCrossedPayload): Ev
 export const METER_ALERT_TYPE = EVENT_TYPES.meterAlert;
 export function meterAlert(payload: MeterAlertPayload): EventInput {
   return { stream: 'usage', type: EVENT_TYPES.meterAlert, payload };
+}
+// Same 'usage' stream as `meter_alert` and `meter_sample`; literal for the same
+// reason (the vocabulary module stays free-standing).
+export function meterPushOutcome(payload: MeterPushOutcomePayload): EventInput {
+  return { stream: 'usage', type: EVENT_TYPES.meterPushOutcome, payload };
 }
 export function dispatchRefused(payload: DispatchRefusedPayload): EventInput {
   return { stream: 'tasks', type: EVENT_TYPES.dispatchRefused, payload };

@@ -10,6 +10,7 @@ import {
   attentionCleared,
   gateFired,
   notificationTrigger,
+  runCompleted,
   seen,
   sessionCreated,
   withNotificationTrigger,
@@ -20,7 +21,8 @@ import type { AccessVerifier } from './auth.js';
 import { createDaemon, type Daemon } from './app.js';
 import type { DaemonConfig } from './config.js';
 import { shouldSuppressPush } from './pushPipeline.js';
-import type { PushSender, PushSubscriptionRecord } from './pushService.js';
+import { DEFAULT_PUSH_TTL_SECONDS } from './pushService.js';
+import type { PushSender, PushSendOptions, PushSubscriptionRecord } from './pushService.js';
 
 const temporaryDirectory = mkdtempSync(join(tmpdir(), 'vimes-push-pipe-'));
 let databaseFileCounter = 0;
@@ -64,16 +66,22 @@ function buildConfig(dbPath: string): DaemonConfig {
 interface RecordedSend {
   endpoint: string;
   payloadJson: string;
+  options?: PushSendOptions;
 }
 
 // The injected fake sender — a real push service NEVER runs in CI (spec §7). It
-// records each send and returns a configurable outcome per endpoint.
+// records each send (with the caller's urgency/TTL choice) and returns a
+// configurable outcome per endpoint.
 class FakePushSender implements PushSender {
   readonly sends: RecordedSend[] = [];
   outcomeFor: (endpoint: string) => { ok: boolean; statusCode?: number } = () => ({ ok: true, statusCode: 201 });
 
-  async send(subscription: PushSubscriptionRecord, payloadJson: string): Promise<{ ok: boolean; statusCode?: number }> {
-    this.sends.push({ endpoint: subscription.endpoint, payloadJson });
+  async send(
+    subscription: PushSubscriptionRecord,
+    payloadJson: string,
+    options?: PushSendOptions,
+  ): Promise<{ ok: boolean; statusCode?: number }> {
+    this.sends.push({ endpoint: subscription.endpoint, payloadJson, options });
     return this.outcomeFor(subscription.endpoint);
   }
 }
@@ -235,6 +243,35 @@ describe('push pipeline — I5 end-to-end (real daemon, fake sender)', () => {
       expect(allPayloads).not.toContain('auth-key');
     } finally {
       rawDatabase.close();
+    }
+  });
+
+  it('sends a blocking gate at HIGH urgency but a routine completion at NORMAL (D29), both with a bounded TTL', async () => {
+    const sender = new FakePushSender();
+    const daemon = await startDaemon(nextDatabasePath(), sender);
+    try {
+      daemon.pushSubscriptions.save(SUBSCRIPTION);
+      daemon.router.emit([
+        sessionCreated({ appSessionId: 'app-u', channel: 'sdk', cwd: '/x', name: 'urgency probe', forkedFrom: null, taskRef: null }),
+      ]);
+      daemon.pushPipeline.watch('app-u');
+
+      // A gate blocks on the human → HIGH (wakes the radio).
+      daemon.router.emit(withNotificationTrigger(gateFired({ appSessionId: 'app-u', prompt: 'approve?', requestId: 'req-g' })));
+      await flush();
+      expect(sender.sends).toHaveLength(1);
+      expect(sender.sends[0]!.options?.urgency).toBe('high');
+      expect(sender.sends[0]!.options?.ttlSeconds).toBe(DEFAULT_PUSH_TTL_SECONDS);
+
+      // Ack it, then a run COMPLETED → informational ("merely true") → NORMAL.
+      daemon.router.emit([seen({ appSessionId: 'app-u' })]);
+      daemon.router.emit(withNotificationTrigger(runCompleted({ appSessionId: 'app-u' })));
+      await flush();
+      expect(sender.sends).toHaveLength(2);
+      expect(sender.sends[1]!.options?.urgency).toBe('normal');
+      expect(sender.sends[1]!.options?.ttlSeconds).toBe(DEFAULT_PUSH_TTL_SECONDS);
+    } finally {
+      await daemon.stop();
     }
   });
 

@@ -22,13 +22,56 @@ export interface PushSubscriptionRecord {
   [key: string]: unknown;
 }
 
+// Web-push urgency (RFC 8030 §5.3). Mirrors @types/web-push `Urgency`; a redeclare
+// keeps the send seam free of a web-push type import (the core never sees it).
+export type PushUrgency = 'very-low' | 'low' | 'normal' | 'high';
+
+// Per-send delivery knobs the CALLER decides (D29). `urgency` maps to FCM
+// priority — 'high' wakes a dozing device (and costs battery), so it belongs on
+// time-sensitive sends only, never routine traffic. `ttlSeconds` bounds how long
+// the push service holds an undeliverable message before dropping it, so a stale
+// number never arrives late. Both optional: omitted → web-push's defaults
+// (urgency 'normal', TTL four weeks).
+export interface PushSendOptions {
+  urgency?: PushUrgency;
+  ttlSeconds?: number;
+}
+
+// A bounded default TTL (seconds) for sends with no natural deadline — a gate or
+// attention push whose relevance is measured in hours, not web-push's four-week
+// default. 24h keeps such a push deliverable across one sleep cycle without
+// lingering for weeks. NOTE: a sane default, not a calibrated ⟨tune⟩ band.
+export const DEFAULT_PUSH_TTL_SECONDS = 86_400;
+
 // The one send seam. Resolves with the outcome; NEVER throws (a transport error
 // resolves to { ok: false }), so the fire-and-forget pipeline can classify it.
 export interface PushSender {
   send(
     subscription: PushSubscriptionRecord,
     payloadJson: string,
+    options?: PushSendOptions,
   ): Promise<{ ok: boolean; statusCode?: number }>;
+}
+
+// Which attention reason is time-sensitive enough to wake the radio (D29). HIGH
+// is reserved for "the human is needed NOW" — a blocking gate or an unanswered
+// question — plus the rule-0.5-reserved rate-limited/brake (action-required, no
+// producer yet). The informational reasons ("this is merely true": a finished or
+// stuck run, a quarantine FYI) stay NORMAL so they do not cost battery.
+export function urgencyForAttentionReason(reason: AttentionReason): PushUrgency {
+  switch (reason) {
+    case 'gate':
+    case 'question':
+    case 'rate-limited':
+    case 'brake':
+      return 'high';
+    case 'completed':
+    case 'stale':
+    case 'quarantined':
+      return 'normal';
+    default:
+      return 'normal';
+  }
 }
 
 export interface VapidKeys {
@@ -85,18 +128,27 @@ export function loadOrCreateVapidKeys(dataDir: string): VapidKeys {
 // service. NEVER constructed in CI (deps.pushSender injects a fake).
 export function createWebPushSender(args: { vapid: VapidKeys; subject: string }): PushSender {
   return {
-    async send(subscription, payloadJson) {
+    async send(subscription, payloadJson, options) {
       try {
+        const requestOptions: webpush.RequestOptions = {
+          vapidDetails: {
+            subject: args.subject,
+            publicKey: args.vapid.publicKey,
+            privateKey: args.vapid.privateKey,
+          },
+        };
+        // Thread the caller's choice through; omit each when unset so web-push
+        // applies its own default rather than us pinning one here.
+        if (options?.urgency !== undefined) {
+          requestOptions.urgency = options.urgency;
+        }
+        if (options?.ttlSeconds !== undefined) {
+          requestOptions.TTL = options.ttlSeconds;
+        }
         const result = await webpush.sendNotification(
           subscription as unknown as webpush.PushSubscription,
           payloadJson,
-          {
-            vapidDetails: {
-              subject: args.subject,
-              publicKey: args.vapid.publicKey,
-              privateKey: args.vapid.privateKey,
-            },
-          },
+          requestOptions,
         );
         return { ok: true, statusCode: result.statusCode };
       } catch (error) {
