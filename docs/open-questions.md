@@ -37,12 +37,22 @@ with dispatcher-serialized write phases.
 <!-- D7 moved to decisions.md 2026-07-19 — decided: hooks-first correlation,
      -n demoted to unused fallback. -->
 
-## D8 — Usage endpoint adapter ⚠ *(trigger: slice 5 spike)*
+## D8 — Usage endpoint adapter ⚠ *(trigger: slice 5 spike — VERIFY DONE 2026-07-21)*
 
 Capture what the CLI's `/usage` calls; wrap it as a clearly-marked fragile
-adapter for authoritative percentages and reset times. **Lean (2026-07-13):**
-do it; meters degrade to JSONL+OTel sources when it breaks. Reopens (happily)
-if Anthropic ships the requested official endpoint.
+adapter for authoritative percentages and reset times. ~~**Lean (2026-07-13):**
+do it; meters degrade to JSONL+OTel sources when it breaks.~~
+
+**⚠ The verify half is DONE and it CORRECTED the lean (spike U1/U3,
+2026-07-21).** The endpoint is alive (`GET /api/oauth/usage`, the CLI's own
+`fetchUtilization`) and its shape is fixtured. But the degradation clause was
+**wrong**: U3 showed JSONL and OTel are **account-blind** — they see only the
+sessions VIMES hosts, while the limits are account-wide, so neither can
+substitute for headroom when the endpoint breaks. **Corrected lean:** build the
+fragile adapter as the SOLE headroom authority; when it breaks, headroom
+degrades to **unknown** (local sources keep serving attribution/burn/cost, and
+are never promoted to fill the headroom gap). Settles into decisions.md when the
+step-3 adapter lands. Reopens (happily) if Anthropic ships an official endpoint.
 
 <!-- D10 moved to decisions.md 2026-07-19 — decided: mirrored custody,
      adopt on resume or SessionEnd; attention never fires for mirrored. -->
@@ -88,31 +98,11 @@ check whether it already does before slice 4/5.
      resolved: inherited CLAUDE* env suppresses transcripts; PTY channel
      scrubs env; tailer trusted on that basis. -->
 
-## D24 — billing-bucket classification: not derivable from the usage block alone *(trigger: slice 4 cache observability; surfaced designing step 2, 2026-07-20)*
-
-Slice 4 wants a **billing-bucket badge** (the interactive 5-hour window vs the
-$100 non-interactive monthly credit — spec §3.6) to answer Wes's standing
-question "did the dongfu runs burn the 5-hour limit or the $100 automation
-bucket?" **Finding while designing step 2:** the bucket is NOT cleanly
-derivable from a `usage_block` alone. Spike-C's real sample carries
-`service_tier: "standard"` — a *service tier*, not the *billing bucket*.
-Whether a run draws on the $100 non-interactive credit depends on session
-**interactivity / how it was spawned** (headless automation vs interactive),
-which is a SESSION property, not a usage-block field. Classifying a bucket
-from `service_tier` alone would be declared-truth guessing — exactly what rule
-0.7 forbids.
-**Lean (2026-07-20):** step 2 classifies **TTL tier** (cleanly observable) +
-numeric cache stats, and captures `service_tier` **raw** as an observed field,
-but emits **no fabricated bucket label**. The bucket classifier waits for an
-observation spike that correlates `service_tier` × session interactivity ×
-known-ground-truth billing (the dongfu automation runs are in `events.db` —
-candidate spike data, though ground-truth attribution is the missing piece).
-The reserved `billing_bucket_observed` event + session `observedBillingBucket`
-field stay stubbed until that spike lands. Settle into a decision (which signal
-combination classifies the bucket) when the spike runs — likely slice 5 with
-the meter system, where billing buckets become first-class.
-
-Related: **D17** (usage_block granularity) is now BINDING on step 2 — the
-cache-observability projection MUST dedupe usage snapshots by `message.id`
-(identical snapshots repeat within a turn; naive summation double-counts).
-
+<!-- D24 (billing-bucket classification) moved to decisions.md 2026-07-21 —
+     decided: Claude Code usage, interactive or headless, consumes the standard
+     account-wide 5h/weekly windows; there is no separate automation credit;
+     seven_day_oauth_apps is presumed third-party OAuth apps. Settled by slice-5
+     spikes U1-U3 plus a correlation experiment; ratified by Wes.
+     (D17 remains open above and is now implemented + validated in the slice-4
+     cache-observability projection: 47% of real usage_block events were
+     duplicate message.ids.) -->

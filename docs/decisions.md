@@ -338,3 +338,61 @@ button in the diff view** that opens the CM6 editor on that file, and on
 back-out returns to the diff *with the diff refreshed* — closing the
 review→fix→re-review loop inside one surface. This is the review loop of
 design-directions' dispatcher vision, in miniature and human-driven.
+
+## D24 — Billing bucket: Claude Code consumes the standard windows; there is no separate automation credit
+
+*2026-07-21 (opened as a slice-4 design finding when the bucket proved underivable
+from `usage_block` alone; settled by the slice-5 spikes U1–U3 plus a correlation
+experiment; **ratified by Wes**). Moved from open-questions.md.*
+
+**Decision: Claude Code usage — interactive OR headless — draws on the same
+account-wide 5-hour and weekly windows. There is no separate "automation" or
+non-interactive credit in play on this plan.** The `seven_day_oauth_apps` bucket
+is presumed to cover **third-party OAuth applications**; first-party Claude Code
+(including `claude -p`) is not one, and VIMES-spawned SDK sessions are not one.
+
+**Evidence (rule 0.7 — observed, never documented):**
+- U1: `GET /api/oauth/usage` returns `limits[]` with `session`, `weekly_all`,
+  `weekly_scoped`; `seven_day_oauth_apps` is null, `extra_usage.is_enabled` is
+  false and `can_purchase_credits` is false (plan `max` /
+  `default_claude_max_5x`).
+- U2: OTel independently labels a session `terminal.type:
+  interactive | non-interactive` — the interactivity signal `usage_block` lacks.
+- Correlation: a run confirmed non-interactive by U2's own label moved the
+  standard `session` window while `seven_day_oauth_apps` stayed null and no new
+  bucket appeared.
+- **Honest limit of the evidence:** the orchestrator's own session consumed the
+  same window between probes, so the *magnitude* of movement is confounded; the
+  *direction* (no separate bucket materialised) is what this rests on. Revisit
+  if a plan change or a genuine third-party OAuth app enters the picture.
+
+**Consequences.** Slice 4's refusal to fabricate a bucket label from
+`service_tier` was correct and stands — the classification never lived in the
+usage block at all. Slice 5 models the three real windows and does NOT model a
+phantom automation credit. **This answers the standing question about the dongfu
+automation runs: they burned the 5-hour and weekly windows, not a $100 bucket.**
+
+## D26 — `MeterRecord` carries percent + unit; absolute usage is never invented
+
+*2026-07-21 (Gate-D: spike U1 observed the shape, Wes signed off before
+construction — calibrate → sign off → pin, rule 0.2).*
+
+The authoritative source reports **percentages only**: `limits[]` entries carry
+`percent`, and `limit_dollars` / `used_dollars` / `remaining_dollars` are null.
+The slice-0 reserved `MeterRecord {used, limit}` (spec §5) assumes absolutes.
+
+**Decision: widen `MeterRecord` with an explicit `percent` and `unit`, and make
+`used`/`limit` optional — present only when a source actually supplies them.**
+Rejected: collapsing a percentage into `used = 29, limit = 100`, which would
+manufacture an absolute the source never gave and let downstream consumers
+believe we know token counts we do not. Under pillar 4 a meter that overstates
+its own precision is a meter that lies, and the whole slice exists to prevent
+that.
+
+Carried alongside, because the endpoint supplies them free and they beat
+anything we would invent: `severity` (the server's own judgement, preferred over
+a local ⟨tune 80%⟩ threshold where present), `isActive` (which limit is
+currently BINDING), and `scope` (e.g. the model a weekly cap is scoped to).
+`source` + `observedAt` stay mandatory on every sample so freshness is always
+derivable — freshness itself is DERIVED by a pure function, never stored, so a
+stale record can never masquerade as fresh.
