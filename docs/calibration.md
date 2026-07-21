@@ -549,6 +549,64 @@ first-party Claude Code, `-p` or not, is not. **This answers Wes's standing
 dongfu question: those runs burned the 5-hour/weekly windows, not a $100
 automation bucket.** Promote D24 to a decision on his sign-off.
 
+### 2026-07-21 — C2 Fable-1h: cell CLOSED exact; plus `--model` is a REQUEST, and one case where JSONL's tier split is NOT what Anthropic bills
+
+**The gap is closed.** One `claude-fable-5` session forced onto the 1h tier
+(verified `ephemeral_1h_input_tokens` 17,668 / `ephemeral_5m` 0, across a cold
+turn plus a `--resume` turn exercising 17,321 cache-read tokens):
+
+```
+table $0.371021   vs   OTel claude_code.cost.usage $0.371021
+delta $0.000000   rel err 0.000000%   (exact in integer micro-dollars)
+```
+
+Solving OTel for the single unknown gives an **implied 1h write rate of
+$20.00000000/MTok = exactly 2.00000000× base**. The 1h write is 95.24% of that
+session's dollars, so the rate is pinned to ±0.0003%. Published Fable row
+re-verified live and unchanged ($10 / $12.50 / $20 / $1 / $50) — and, unlike
+Sonnet 5, **matched by actual billing**. **$1,282 of the $2,893 corpus comes off
+analogy.**
+
+**Finding A — `--model` is a REQUEST, not a fact.** Three `--model
+claude-fable-5` runs did not run Fable: a `type: "system"`, `subtype:
+"model_refusal_fallback"` record shows Fable's safeguards flagging the message
+and **switching to Opus 4.8 mid-session** — triggered even by *"What is 2 plus
+2?"*. So no session-level model attribute can be trusted for pricing; **price per
+assistant message from `message.model`.** Our JSONL path already does, and OTel's
+`model` attribute splits correctly too, so this confirms binding rule 10 rather
+than breaking it. (Workaround that made Fable run: `--disable-slash-commands
+--disallowed-tools "WebSearch WebFetch Task Agent"`, implicating this box's
+skill/agent listing in the system prompt as the trigger.)
+
+**⚠ Finding B — rule-0.1: a fallback-retry message is BILLED at the 5m rate while
+JSONL labels it 1h.** The three Opus-fallback sessions priced **+6.27% / +23.44%
+/ +46.87% HIGH**. Per-message decomposition resolves it exactly: the
+refusal-retry message bills at **1.25× base despite reporting
+`ephemeral_1h_input_tokens` with `ephemeral_5m: 0`**; every later message bills
+at 2.00×. Repricing only that message reconciles all three to 0.0000%.
+
+**This is the first observed case where the JSONL tier split is not what
+Anthropic bills** — and it matters because the entire dollar half of slice 5b
+prices from that split. It is bounded (one message, in sessions that hit a model
+refusal) and one-directional (we over-price), but it is a real ceiling on
+"validated to the micro-dollar".
+
+**Mechanism is confounded and the agent said so** rather than coding a rule: the
+refusal hit turn 1 in all three sessions, so "the retry message" and "the first
+turn of a fallback session" are not yet distinguishable. **A ~$0.10 run
+provoking a refusal on turn 2 disambiguates, and should happen before any rule is
+written.** Queued, not urgent — a dollars-only ledger that over-prices refusal
+sessions by <1% of corpus volume is still worth shipping, with the caveat
+recorded.
+
+**Note the shape:** OTel *token* points matched deduped JSONL exactly in all four
+buckets. Only *cost* diverged. Tokens are ground truth; the tier→price mapping is
+the fragile part.
+
+**Cost of the exercise: $1.110255** — $0.371 on the measurement and $0.739 burned
+on the three refusal-fallback runs before the cause was found. Over the ~$0.50
+guide, and it bought Finding B.
+
 ### 2026-07-21 — FINDING (SHIPPED, live): `resets_at` sub-second jitter re-arms the alert every poll
 
 **Wes, in production:** *"I just got a second push notification 'Rolling window
