@@ -921,6 +921,59 @@ cheap and correct regardless of which deferral mechanism is responsible.
    either. That silence turned a five-minute diagnosis into an inference.
    Needs a non-session-scoped delivery-outcome event.
 
+### 2026-07-21 — PINNED (Gate-D sign-off, Wes): the slice-5b price table
+
+Calibrated by C2 (all 11 buckets reconciled to $0.000000), assembled by the
+orchestrator from the part-4 appendix + the C2 corrections, **signed off by Wes**,
+now pinned. **$/MTok, corpus-period 2026-07-21 prices**, cache tiers derived from
+base input by the confirmed multipliers **5m ×1.25 / 1h ×2.00 / read ×0.10**;
+output independent (5× input on every current model).
+
+| model | base input | output | 5m write | 1h write | cache read | status |
+|---|---|---|---|---|---|---|
+| `claude-opus-4-8` | 15.00 | 75.00 | 18.75 | 30.00 | 1.50 | ✅ validated (C2, frac 0.801) |
+| `claude-sonnet-5` | 3.00 | 15.00 | 3.75 | 6.00 | 0.30 | ✅ validated — BILLED standard, not the documented $2/$10 intro |
+| `claude-haiku-4-5` | 1.00 | 5.00 | 1.25 | 2.00 | 0.10 | ✅ validated (C2, exact fixture) |
+| `claude-fable-5` | 10.00 | 50.00 | 12.50 | 20.00 | 1.00 | ✅ validated (C2 + Fable-1h closed exact) |
+| `claude-sonnet-4-6` | 3.00 | 15.00 | 3.75 | 6.00 | 0.30 | ⚠️ UNVALIDATED — retired 2026-06-30, $23.57 by analogy only |
+
+**Assumptions pinned WITH the numbers (never bare):**
+- **Restated at current prices, labelled.** The whole ledger prices at the
+  validated 2026-07-21 snapshot; historical price changes (`opus-4-8` launched
+  $5/$25; `sonnet-5` intro/standard) are NOT re-priced per-date — only the current
+  rates are billing-validated. Every figure carries "at 2026-07-21 prices"; the
+  table schema is effective-DATED (rule 0.5) so a future validated historical row
+  can drop in without a rewrite.
+- **Sonnet-5 is the live trap** (rule 0.7): price what billing charges ($3/$15),
+  not what the docs/`claude-api` skill say ($2/$10). The "+50% on 2026-09-01"
+  tripwire inverts — the risk is NOW.
+- **`sonnet-4-6` unvalidated** — priced by same-family analogy, must surface as
+  such, not as a confirmed figure.
+- **Riders carried:** Finding B (refusal-retry billed 5m while JSONL says 1h,
+  <1% corpus, over-prices — a ~$0.10 turn-2-refusal run disambiguates before any
+  rule); absent price-modifiers (speed/service_tier/inference_geo) are ASSERTED
+  against the validated set {standard, absent}, never defaulted (rule 8) — an
+  out-of-set value flags the row, never silently prices standard.
+
+### 2026-07-21 — FINDING (rule 0.1, SIGNED OFF): `inference_geo` is the sentinel `"not_available"`, not absent
+
+Step 2's work order pinned the validated price-modifier set as `{null,'standard'}`
+for speed / service_tier / inference_geo, and asserted the corpus carried "zero
+geo". **The live ledger falsified that:** all 20,264 rows carry
+`inference_geo: "not_available"` — not null, not `standard`. It is the CLI's
+sentinel for "no geographic routing applied", i.e. the geo field's spelling of
+*base* (there is no geo premium to charge), and C2's exact reconciliation
+necessarily priced these same rows at base. speed (`standard`/null) and
+service_tier (`standard`) matched the pinned set as-is.
+
+**Decision (Wes): admit `"not_available"` to the geo validated set as a no-op**
+(base price). A genuinely routed geo (`us`, `eu`, …) still **flags** — those really
+would change the price. The set stays PER-FIELD so the guard is as tight as observed
+truth allows. Rule 0.7 in the flesh again: the spec's declared set was wrong, the
+data is right. **General note banked:** a price modifier's "no premium" state may be
+a *sentinel string*, not `null` — assert against the observed value set, never
+against an assumed one.
+
 ### 2026-07-21 — SPIKE C2 (widening): PASS, after a rule-0.1 finding that the DOCUMENTED Sonnet-5 price is wrong
 
 Experiment, not analysis: a local OTLP receiver plus 13 `claude -p` runs → 9

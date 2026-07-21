@@ -88,4 +88,35 @@ export {
 } from './transcript/tail.js';
 export { mapTranscriptOutputs } from './transcript/mapper.js';
 
+export {
+  SLICE_5B_PRICE_TABLE,
+  PRICE_TABLE_EFFECTIVE_DATE,
+  PINNED_MODEL_BASE_PRICES,
+  NANO_DOLLARS_PER_DOLLAR,
+  NANO_DOLLARS_PER_MICRO_DOLLAR,
+  CACHE_WRITE_5M_MULTIPLIER,
+  CACHE_WRITE_1H_MULTIPLIER,
+  CACHE_READ_MULTIPLIER,
+  buildPriceTable,
+  deriveModelRateSet,
+  dollarsPerMTokToNanoPerToken,
+  applyCacheMultiplier,
+  normalizeModelToKey,
+  nanoDollarsToMicroDollars,
+  formatUsd,
+  type PriceTable,
+  type ModelRateSet,
+  type PinnedModelBasePrice,
+  type CacheMultiplier,
+} from './pricing/priceTable.js';
+export {
+  priceUsageRow,
+  totalNanoDollars,
+  type PriceableUsageRow,
+  type PricedRow,
+  type PriceStatus,
+  type PriceFlagReason,
+  type PricedCategoryAmounts,
+} from './pricing/priceUsageRow.js';
+
 export * from './harness/index.js';
