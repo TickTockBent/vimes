@@ -111,6 +111,12 @@ finding, not noise to average out**).
 ## Scope
 
 **In:**
+- **Ingestion reads TRANSCRIPTS, not the event log** (settled by the spawn-path
+  check, 2026-07-21). VIMES's tailer attaches at current head, so the event log
+  holds only what VIMES was watching when it happened — one observed session
+  shows 5 message events against a transcript carrying 449 usage rows, all
+  predating the attach. The event log is authoritative for LIVE state and wrong
+  for ACCOUNTING; the retrospective corpus exists only in the transcripts.
 - **A durable cost store.** The ledger copies usage rows into its own storage.
   Non-negotiable (see the retention finding): transcripts are pruned, and
   `cleanupPeriodDays: 365` is a mitigation that can be changed back or defaulted

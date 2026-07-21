@@ -549,6 +549,63 @@ first-party Claude Code, `-p` or not, is not. **This answers Wes's standing
 dongfu question: those runs burned the 5-hour/weekly windows, not a $100
 automation bucket.** Promote D24 to a decision on his sign-off.
 
+### 2026-07-21 — spawn-path check: 3 of 4 paths confirmed; the tailer's attach-at-head is the ledger's real constraint
+
+Run because a spawn path that writes no usage rows would be a silent hole in
+slice 5b's attribution, independent of C1. **D15's premise turns out not to
+apply to the CLI as it stands today.**
+
+| path | transcript written? | usage rows? | verdict |
+|---|---|---|---|
+| `claude -p`, **inherited** `CLAUDE*` env | yes | 1 row, full token detail | ✅ visible |
+| `claude -p`, **scrubbed** env (the VIMES PTY condition) | yes | 1 row, full token detail | ✅ visible |
+| SDK-hosted (VIMES) | yes | `usage_block` on **all 7** SDK sessions | ✅ visible |
+| PTY-hosted session (VIMES) | yes | **0** `usage_block` — but see below | ⚠️ **unproven, NOT disproven** |
+
+**D15 is stale, in our favour.** That decision recorded that inherited `CLAUDE*`
+env *suppresses* transcripts, and VIMES scrubs env on the PTY channel on that
+basis. Tested directly today from a shell carrying **9 inherited `CLAUDE*`
+vars**: the transcript was written anyway, with usage. The suppression behavior
+either changed with a CLI version or was narrower than recorded. **The env
+scrubbing is now belt-and-braces rather than load-bearing** — harmless, worth
+keeping, no longer the thing standing between us and a blind spot.
+
+**The PTY zero is CORRECT behavior, not a defect — and I nearly filed it as
+one.** The single PTY-channel session shows 0 `usage_block` against a transcript
+holding **449 usage-carrying records**, which reads exactly like a tailer that
+ignores usage on PTY sessions. It is not:
+
+```
+VIMES attached (session_created):   2026-07-19T23:25:51Z
+transcript's LAST usage row:        2026-07-18T21:59:51Z
+```
+
+**Every usage row in that transcript predates the attach by over a day.** The
+tailer subscribes at current head — so emitting nothing was right. We simply
+have **no positive evidence** that a PTY session produces `usage_block`, because
+no PTY session has done fresh work under observation. Closing it needs one live
+PTY session doing real work, which is cheap the next time a vimes terminal is
+open.
+
+**The finding that actually matters, and it decides a slice-5b design
+question.** Attach-at-head means **VIMES's event log contains only work done
+after VIMES was watching** — 5 message events from a 1,260-line transcript, and
+none of its 449 usage rows. A cost ledger built on the event log would therefore
+hold no history at all before its own deployment, and would silently miss any
+work done while the daemon was down.
+
+> **Therefore: slice 5b's ingestion reads TRANSCRIPTS directly, not the event
+> log.** The event log is the right source for *live* state (it is authoritative
+> about what VIMES did) and the wrong source for *accounting* (it is a record of
+> what VIMES witnessed). Those are different questions, and the retrospective
+> corpus — the entire reason this ledger can ship with history — lives only in
+> the transcripts.
+
+**Method note.** Three separate times today an alarming reading turned out to be
+benign or vice-versa, and the discriminator was always the same: *check what the
+code could have seen before judging what it did.* Here the tell was a timestamp
+comparison that took one query.
+
 ### 2026-07-21 — SPIKE C1 (slice 5b): KILL CRITERION FIRED — share-of-window is not estimable; 5b ships dollars-only
 
 Read-only analysis over 60 session-meter samples (13:07–17:13 Z, one clean
