@@ -549,6 +549,65 @@ first-party Claude Code, `-p` or not, is not. **This answers Wes's standing
 dongfu question: those runs burned the 5-hour/weekly windows, not a $100
 automation bucket.** Promote D24 to a decision on his sign-off.
 
+### 2026-07-21 — FINDING (SHIPPED, live): `resets_at` sub-second jitter re-arms the alert every poll
+
+**Wes, in production:** *"I just got a second push notification 'Rolling window
+at 88%'."* The log shows **five `meter_alert` events, all `thresholdPercent: 80`,
+same meter, same window**, at 18:08:14, 18:08:44, 18:13:44, 18:14:16, 18:16:39.
+Edge-triggering — the property the whole alert design rests on — **does not hold
+against the real endpoint.**
+
+**Root cause, visible in the payloads:**
+
+```
+resetsAt  2026-07-21T20:39:59.374302+00:00
+resetsAt  2026-07-21T20:39:59.418056+00:00
+resetsAt  2026-07-21T20:39:59.375408+00:00
+resetsAt  2026-07-21T20:39:59.900385+00:00
+resetsAt  2026-07-21T20:39:59.746564+00:00
+```
+
+**The endpoint recomputes `resets_at` on every request with sub-second jitter.**
+`firedAlertIsStillBinding` compares it by **string equality** — so every poll
+looks like a new window, the fired alert is re-armed, and the threshold fires
+again. Percent rose monotonically throughout (81→82→87→87→88), so the
+percent-drop signal correctly reported *same window* and was **overruled by
+jitter in the other signal**, because the two are OR'd for re-arming.
+
+**This is the morning's bounded-history finding wearing different clothes — and
+this one SHIPPED.** That one re-alerted every ~5h20m and was caught in
+verification. This one re-alerts **every 5 minutes** and reached the user's
+phone. Same family: *a reset signal firing when no reset occurred.* We hardened
+one branch and left the other reading raw strings.
+
+**Two failures of process, both worth naming:**
+1. **Every test uses clean fixed ISO literals for `resetsAt`.** The unit tests,
+   and the rebuilt `budget-wall` profile, all construct timelines by hand. **No
+   test ever fed the alert path a value that differs only in its microseconds** —
+   so the suite could not fail on this, exactly like `budget-wall` could not fail
+   before it was rebuilt. A fixture that is tidier than production is a fixture
+   that tests something other than production.
+2. **The evidence was on screen hours earlier and went unread.** The 15:20
+   rollover dump printed `15:19:59.779964`, `15:19:59.801817`,
+   `15:20:00.814087` — three different `resets_at` for one window — and the
+   orchestrator read those lines while confirming a *different* property. Data
+   was gathered, displayed, and not looked at for what else it showed.
+
+**Fix direction (a NEW agent, not a patch — rule 0.1):** compare window identity
+with **tolerance**, not string equality. Truncate to whole seconds, or treat
+`resetsAt` values within a small ⟨tune⟩ window as the same window. Prefer the
+narrowest change that makes the property hold, and — binding this time —
+**every alert-path test must use jittered `resetsAt` values**, because the clean
+ones demonstrably prove nothing. Add a live-shaped fixture derived from these
+five real payloads.
+
+**Also revealed:** the re-arm signals are OR'd, so **the noisier signal wins**.
+Worth revisiting whether `resetsAt`-changed should be able to re-arm *alone*, or
+should require corroboration from the percent-drop signal it is meant to back up.
+The step-4a agent flagged the OR as a coverage gap in its own report ("disabling
+only the resetsAt signal leaves the profile green") and it turned out to be a
+design gap too.
+
 ### 2026-07-21 — the 80% alert FIRED correctly, and a delivery FINDING: pushes are sent at default urgency
 
 **The alert path works.** First real threshold crossing, unprompted, on a live
