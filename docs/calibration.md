@@ -331,6 +331,38 @@ WS reconnect, which D23 already covers) therefore has an acceptable UX today —
 no polish item filed. Relevant to the hot-reload design direction: the cost of a
 daemon restart is a dead shell with intact scrollback, not a broken client.
 
+### 2026-07-21 — FINDING: no `Cache-Control` on static files (stale assets survive deploys)
+
+**Found while chasing "the new icon is still a blue square."** Replacing the
+placeholder icon and deploying did NOT change what the phone showed — and
+critically, **not even at the asset's direct URL**, which ruled out the PWA
+install cache and pointed upstream.
+
+**Mechanism:** the daemon's static handler (`app.ts`) sets **only
+`content-type`** — no `Cache-Control`, no `ETag`, no `Last-Modified`. With no
+cache directives, three independent caches each hold the old bytes:
+1. **Cloudflare** edge-caches `.png` (and other static extensions) by extension
+   under the Standard cache level, regardless of origin headers.
+2. The **service worker** precaches by EXACT URL — a replaced file at a stable
+   name keeps its old precache entry until the new SW activates.
+3. **Android** bakes the manifest icon into a generated WebAPK it refreshes on
+   its own schedule (~daily), so even uninstall/reinstall can reuse it.
+A stable filename is therefore served stale by all three, indefinitely.
+
+**Immediate fix (icons only, no daemon restart):** icon filenames now carry an
+`ICON_VERSION` (`icon-512.v2.png`, `scripts/make-icons.mjs`), referenced from
+the manifest + index.html. Changing the URL defeats all three caches at once,
+and the changed manifest is also what prompts Android to regenerate the WebAPK.
+
+**The larger exposure — QUEUED, needs a daemon change (restart):** Vite
+content-hashes JS/CSS, so those are safe. But **`index.html`, `sw.js` and
+`manifest.webmanifest` are unhashed AND uncached-headered** — Cloudflare may
+serve a STALE APP SHELL after a deploy, which would present as "my deploy didn't
+land" with no obvious cause. Fix: set `Cache-Control` in the static handler —
+`no-cache` (revalidate) for `index.html` / `sw.js` / `manifest.webmanifest`,
+long-lived `immutable` for content-hashed `/assets/*`. Schedule with the next
+daemon-touching work; it is a correctness/operability fix, not a tuning knob.
+
 ## Budget table (`--report`)
 
 Design-intent targets from spec §8, listed so nothing gets pinned from memory.
