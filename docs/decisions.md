@@ -506,3 +506,54 @@ documentation; this correction comes from preferring a *better* observation to
 an earlier one. An attribute's NAME is documentation too — `terminal.type` read
 like a mode because it was named like one, and nobody tested what actually
 populated it until a spike ran `TERM=dumb`.
+
+## D29 — Push urgency/TTL signed off; and the operator's 95% wind-down brake
+
+*2026-07-21. Wes, on the evening of the first real threshold crossing.*
+
+**Two decisions, and the second one turns out to specify a feature.**
+
+### 1. Push delivery fixes — APPROVED, deferred to after the window reset
+The threshold alert fired correctly but did not reach the phone until the app
+was opened, because `createWebPushSender` sends with **no `urgency` and no
+`TTL`** (see calibration.md). Signed off:
+- **`urgency: 'high'` on time-sensitive sends only** — attention gates and
+  threshold alerts. Not on routine traffic: high urgency wakes the radio, so the
+  distinction between "the human is needed now" and "this is merely true" becomes
+  an HTTP header. Pillar 5, made concrete.
+- **A bounded `TTL`** so an undeliverable threshold alert **expires rather than
+  arriving late**. A "you crossed 80%" push landing after the window resets is a
+  stale number wearing a notification — forbidden everywhere else in slice 5, and
+  it must be forbidden here too. Natural value: seconds until `resetsAt`.
+- **A non-session-scoped delivery-outcome event.** Meter alerts emit no
+  `push_sent`/`push_failed` because those payloads carry an `appSessionId` and a
+  meter belongs to no session. The consequence, felt immediately: when delivery
+  actually failed, **the log could not say whether the push was even attempted.**
+
+**Scheduling: after the 5-hour window resets (20:39:59Z).** These are daemon
+changes and need a restart; doing it mid-window during a deliberate burn would
+interrupt in-flight work for no benefit.
+
+### 2. The 95% wind-down brake — a NEW operating rule
+> *"I'm going to rule that if we hit 95% of the window, gently shut down anything
+> in-flight."*
+
+Binding from now: **at ⟨tune 95% PREVIEW⟩ of the binding window, in-flight agents
+are wound down gently** — finish the current unit, write the checkpoint, stop; do
+not start the next unit. Not killed: **held.**
+
+**This is the spend brake, specified by the operator in his own words.** The
+prior-art mining recommended exactly this shape from Codor — *work is held, not
+failed; release is the human's; the meter is always visible so the brake is never
+the first you hear of it* — and it was reserved (rule 0.5) as
+`disposition: 'hold'` with no producer. **Wes arrived at the same design
+independently, from use, before seeing the implementation.** That is the
+strongest signal available that the reserved vocabulary is the right shape, and
+slice 7's brake should be built to THIS description rather than to the
+orchestrator's design guess.
+
+**Note the two ceilings are different things.** 95% is the operator's brake — a
+choice, tunable, about protecting remaining headroom for work he cares about.
+100% is Anthropic's wall — not a choice, and in-flight work fails on their terms
+regardless of what any rule here says. The brake exists to keep us from meeting
+the wall.
