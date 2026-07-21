@@ -47,6 +47,25 @@ byte-channel total, exercised-never-parsed per rule 0.8; `snapshot-bytes` = sum
 of the three mid-log projection snapshots. ¹ cold-restart re-observed same day
 after D13 added the spawning-at-crash session to the profile — was 14/3/838.)
 
+**Re-measured 2026-07-21** (`scenarios --report`, after the budget-wall rebuild).
+The 2026-07-13 row above is retained as the slice-0 baseline; this is the current
+reading. Snapshot-bytes drifted on every profile as projections gained fields
+across slices 1–5 — expected, and the reason these were never pinned.
+
+| profile | events | streams | replay-window | quarantines | raw-bytes | snapshot-bytes |
+|---|---|---|---|---|---|---|
+| happy-path-desktop | 12 | 1 | 12 | 0 | 0 | 847 |
+| flaky-mobile | 309 | 1 | 309 | 0 | 0 | 902 |
+| concurrent-clash | 9 | 2 | 8 | 0 | 0 | 897 |
+| cold-restart | 18 | 4 | 8 | 0 | 0 | 1414 |
+| hostile-input | 14 | 1 | 14 | 3 | 60 | 998 |
+| **budget-wall** | **91** | **4** | **83** | **0** | **0** | **4589** |
+
+budget-wall's jump (14 → 91 events, 1298 → 4589 snapshot-bytes) is the rebuild:
+it now drives the real slice-5 path instead of hand-emitting four events. **The
+size increase IS the finding's remedy** — the old profile was small because it
+did nothing.
+
 ### 2026-07-14 — first real gate round-trip (smoke S5/S6, live daemon)
 
 Real SDK session on Dongfu through the deployed daemon + Access + browser:
@@ -530,6 +549,189 @@ first-party Claude Code, `-p` or not, is not. **This answers Wes's standing
 dongfu question: those runs burned the 5-hour/weekly windows, not a $100
 automation bucket.** Promote D24 to a decision on his sign-off.
 
+### 2026-07-21 — D27 groundwork: three parallel read-only surveys of the real corpus
+
+Run as productive load during a deliberate usage burn. Three agents, independent
+partitions, corroborating where they overlap. Full reports in the session
+scratchpad (`d27-part1-vimes.md`, `d27-part2-projects.md`,
+`d27-part3-attribution.md`).
+
+**⚠ THE URGENT ONE — the corpus is SLIDING and will be eaten.** Oldest surviving
+session transcript is ~29–40 days old; `~/.claude/settings.json` sets no
+`cleanupPeriodDays`, so the CLI's default prune is running. Corroborating
+evidence: **29 of 46 project directories hold `memory/` and
+`sessions-index.json` sidecars dated January–February 2026 with ZERO
+transcripts** — those projects' transcripts have already been deleted.
+**Consequence: "the ledger ships with retrospective history on day one" is true
+for about one month, and only if the ledger COPIES usage rows into its own store
+before retention reaches them.** That is a requirement, not a nicety, and it is
+the strongest argument for starting a minimal capture ahead of the full slice.
+
+**Scale and skew.** 16–17 projects with transcripts; 59 parent sessions; 593
+subagent transcripts; ~2.5B tokens outside VIMES plus ~478M inside. Top 2
+projects are 60% of tokens, top 6 are 96%; **top 5 sessions are 76%**. Deduped,
+the whole corpus is ~16K rows — **the design problem is SKEW, not scale**; cost
+is in the parse (~275 MB), not the query.
+
+**Token mix — the shape that invalidates a naive UI.** cache_read **96–97%**,
+cache_create ~3%, output ~0.65%, base input ~0.15%. A typical record shows
+`input_tokens: 2`. An input/output-only readout displays a number roughly four
+orders of magnitude too small.
+
+**Subagents are 47–55% of all tokens** (79% in dongfu, 72% protocol-omega, 69%
+content-death). **A parent-only ledger reports half the cost, and is most wrong
+on exactly the orchestration-heavy work VIMES exists to run.**
+
+**Nesting is real, and the path does NOT encode it.** 321 subagent transcripts
+sit flat under `subagents/`, **272 more under `subagents/workflows/wf_*/`**.
+Worse, within a session the agent→agent edge is **not in the directory at all** —
+one session shows depth 1/2/3 at 129/44/4. It is recoverable from
+`toolUseResult.agentId` for only **46%** of agents; `Workflow`-spawned agents
+record it solely in a sibling `journal.jsonl`. **The ledger needs a tree and a
+join key, not a two-level directory walk.** (Trap: the spawn tool is named
+`Agent` now, `Task` in older records, `Workflow` for fan-outs — grepping only
+`Task` concludes "no nesting" and is wrong.)
+
+**Double-counting: one premise holds, two new ones bite.**
+- **Parent↔subagent `message.id` overlap is exactly ZERO** across all sessions
+  and 580 agent files — subagent results land in the parent as `tool_result`
+  rows carrying no `usage`. Parent + child summing is safe. Cross-project id
+  collisions are also zero, so dedupe may be global.
+- **`subagent_type: 'fork'` copies the spawner's usage rows** into the fork's own
+  file.
+- **Forked/compacted sessions copy the whole ancestor prefix** — 394 message ids
+  appear in more than one session file, inflating a project rollup **+6–13%**.
+- **`usage.iterations[]` is already rolled into the top-level fields** — summing
+  it double-counts.
+
+**The most decision-useful axis nobody asked for: `attributionSkill`.** Session
+records carry it (`book-genesis`, `software-orchestration`), and
+`attributionAgent` is present on 569/580 subagent files (general-purpose,
+workflow-subagent, fork, Explore, …). **Cost-per-skill and cost-per-agent-type
+are directly derivable** — which is much closer to Wes's actual question ("the
+last similar task cost 8% usage") than cost-per-session is.
+
+**Reliable:** timestamps (43,197 usage rows, 0 missing, 0 non-monotonic,
+uniform ISO-8601 Z); `sessionId` in-record matching its directory (0 mismatches
+across 593 files); zero malformed lines in 72,465; zero records with usage but no
+`message.id` on the JSONL path. **Pricing must be per-message** — 31 files mix
+models within one agent.
+
+**`isSidechain` is the subagent flag, not a third category:** 47,442 `true`
+records, **every one in a subagent transcript, none in any session transcript**.
+Orchestrator note: my earlier "0 sidechain records anywhere" was a **glob
+artifact** — `*/*.jsonl` does not reach `<session>/subagents/`. Recount: 580
+files contain them. Second counting error of the day from the same root cause
+(a glob that silently under-reaches), after the 641-vs-59 session miscount.
+**Both were caught by agents refusing to accept a stated number.**
+
+### 2026-07-21 — FINDING: D17's dedupe rule is UNDER-SPECIFIED — "skip the repeat" silently undercounts output up to 6.5×
+
+Raised by the D27 rollup agent, verified independently by the orchestrator
+against both raw transcripts and the live event log. **Slice 4 is NOT broken —
+but it is correct by coincidence, and D27 would have inherited the defect.**
+
+**The observation.** Repeated `message.id` records are **not identical copies.**
+The transcript writes one record per content block carrying a *partial* usage
+snapshot, then a final record with the settled figure. Independent check over 40
+subagent transcripts: **1276 message ids repeated; 1123 of them have DIFFERING
+`output_tokens`.** Every observed sequence is monotonically non-decreasing, and
+the settled record is identifiable by a **populated `usage.iterations`**:
+
+```
+msg_011Cd2qYY7Q8… output_tokens: [5, 5, 455]      iterations: [F, F, T]
+msg_011Cd2qZ1bPD… output_tokens: [2, 2, 2, 2, 349] iterations: [F, F, F, F, T]
+```
+
+Keep-first reads **5** where the truth is **455**.
+
+**Measured consequence** (D27 agent, VIMES project, output tokens): no-dedupe
+4,516,046 / keep-first 1,268,909 / **keep-max 2,829,180**. Keep-first undercounts
+output **2.23× project-wide**, and the error lands almost entirely on subagents
+(283K → 1,852K, a **6.5× correction**).
+
+**Why slice 4 is nevertheless correct today.** The shipped
+`cacheObservability` projection uses keep-first ("a repeat messageId refreshes
+tier/serviceTier but never re-adds tokens"). Checked against the LIVE event log:
+57 `usage_block` events, 14 unique messageIds, 11 repeated, and **0 of the 11
+have differing `outputTokens`.** The daemon tails SDK-hosted *parent* sessions,
+whose transcripts happen to repeat the FINAL usage on every block; the partial-
+snapshot shape appears in *subagent* transcripts, which the daemon does not read.
+**No regression, no patch needed — and no license to leave the rule as written.**
+
+**The corrected rule, binding on D27 and on any future JSONL consumer:**
+**dedupe by `message.id` taking the ELEMENTWISE MAX, never first-wins.**
+(Equivalently: prefer the record with a populated `usage.iterations`. Max is the
+safer primitive — it does not depend on that field continuing to exist, rule
+0.6.) D17's lean is updated accordingly.
+
+**The pattern this makes three-for-three today.** The 5-hour meter's reset
+detection was right only because the history bound happened to approximate the
+window. `budget-wall` passed only because it tested nothing. D17's dedupe is
+right only because the daemon happens not to read the shape that breaks it.
+**Every one of them was correct-by-coincidence, and in every case the coincidence
+was invisible from inside the passing test.** The general defense is the one that
+found all three: check the claim against data the code has never seen, not
+against the data it was written for.
+
+### 2026-07-21 — FINDING: slice-5's machine exit gate is GREEN AND VACUOUS
+
+Ran the machine half of the slice-5 exit gate on request. `budget-wall` passes,
+double-run byte-identical, as it has all day. **It proves nothing about slice 5.**
+
+**What the gate says:** *"the `budget-wall` scenario profile runs green against
+the live adapters in replay (meter reads, threshold crossing, staleness
+degradation)."*
+
+**What `budget-wall` actually exercises** — checked symbol by symbol against the
+profile source:
+
+| slice-5 machinery | used by budget-wall? |
+|---|---|
+| `usageEndpoint` / `parseUsageResponse` | no |
+| `evaluateMeterAlerts` / `meterAlert` | no |
+| `evaluateHeadroomGate` | no |
+| `meterFreshness` | no |
+| `burnRatePercentPerHour` / `projectedExhaustion` | no |
+
+It is the **slice-0 stub**, untouched by the slice it is supposed to gate. It
+emits `used`/`limit` absolutes in `tokens` from `source: 'jsonl'` — the exact
+shape D26 established the endpoint never provides — carries the deprecated
+stored `stale: false` flag, and uses its own local `checkHeadroomGate` stub
+rather than core's `evaluateHeadroomGate`. Its "threshold crossing" is a
+hand-emitted event, not a decision any production code path would make.
+
+**So the profile passing is not evidence.** A gate that cannot fail when the
+thing it gates is broken is not a gate. Rule 0.1: this halts the machine half
+rather than being quietly recorded as passed.
+
+**Second defect found in the same pass: two events for one fact (principle 9).**
+`meter_threshold_crossed` (slice-0 reserved) and `meter_alert` (slice 5) both
+mean "a meter crossed a line". `meter_threshold_crossed` has **exactly one
+producer in the entire codebase — the `budget-wall` profile itself**; nothing in
+the daemon or core emits it. `meter_alert` is the real one, and it carries the
+window identity and reserved disposition that suppression and slice-7 brakes
+need.
+
+**Proposed remedy (needs sign-off, not to be self-applied):**
+1. Rebuild `budget-wall` to drive the REAL path end to end in replay:
+   `parseUsageResponse` over the golden fixture → `meter_sample` events → the
+   meters projection → the pure derivations → `evaluateMeterAlerts` producing a
+   real `meter_alert` → an injected-clock jump proving staleness degradation
+   (`displayPercent`/headroom go unknown, and NO alert fires on a stale
+   reading) → `evaluateHeadroomGate` refusing. Determinism is preserved: the
+   fixture is a file and the clock is already injected, so double-run
+   byte-identity survives.
+2. Deprecate `meter_threshold_crossed` — retain the schema so historical events
+   validate (as `stale` was retained), remove the producer, and state
+   `meter_alert` as the single source of record.
+
+**Note on instrument comparability:** scenario profiles are measurement
+instruments, and rewriting one loses continuity with prior runs. Accepted here
+because slice 5's own assertions name `budget-wall` as the instrument that must
+grow into this — and because an instrument measuring nothing has no continuity
+worth preserving.
+
 ### 2026-07-21 — operational: CLI pin bumped 2.1.215 → 2.1.216 (Wes's call, rule 0.7)
 
 The box auto-updated 2.1.215 → 2.1.216 and the daemon had been warning on every
@@ -698,8 +900,23 @@ path:
     <sessionId>/subagents/agent-<agentId>.jsonl ← its subagents
 ```
 
-**Volume: 641 session transcripts; 584 subagent transcripts across 10
-projects.** Subagent transcripts are durable — the `/tmp/claude-*/…/tasks/
+**Volume (CORRECTED 2026-07-21 — see the correction note below): 652 transcripts
+in total, of which 593 are SUBAGENT transcripts and 59 are top-level sessions.**
+
+> **Correction.** This entry originally read "641 session transcripts; 584
+> subagent transcripts", which double-counted: 641 was the output of
+> `find -name '*.jsonl'`, which **recurses into `subagents/`** and is therefore
+> the TOTAL, not the session count. The orchestrator wrote the total in the
+> sessions slot. Caught by the D27 pricing agent, which counted independently and
+> refused to accept the stated figure. Live recount: 652 total / 593 subagent /
+> 59 session (grown from 641/584/57 by the same day's work).
+>
+> **The correction sharpens the design point rather than weakening it:**
+> subagent transcripts outnumber sessions roughly **10 to 1**. A ledger that
+> models sessions and treats subagents as a detail has the proportions exactly
+> backwards.
+
+Subagent transcripts are durable — the `/tmp/claude-*/…/tasks/
 <agentId>.output` path a running session sees is a **symlink** into the
 `subagents/` directory above, not ephemeral scratch as first assumed.
 

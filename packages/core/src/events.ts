@@ -29,6 +29,16 @@ export const EVENT_TYPES = {
   hostStopped: 'host_stopped',
   // The two sanctioned slice-0 vocabulary additions (step 4, budget-wall
   // profile): a meter crossing its threshold, and the dispatcher stub refusing.
+  //
+  // **`meter_threshold_crossed` is DEPRECATED** (calibration.md 2026-07-21). It
+  // and `meter_alert` both mean "a meter crossed a line" — two events for one
+  // fact (principle 9) — and `meter_alert` is the real one: it carries the
+  // window identity and the reserved disposition that suppression and slice-7's
+  // brake need. Its ONLY producer was the slice-0 budget-wall profile, which no
+  // longer emits it; nothing in core, the daemon or the UI produces it now.
+  // The type, schema and factory are RETAINED (never deleted) so historical
+  // events still validate, exactly as the deprecated `stale` field was retained.
+  // DO NOT EMIT IT. Emit `meterAlert` instead.
   meterThresholdCrossed: 'meter_threshold_crossed',
   dispatchRefused: 'dispatch_refused',
   // Slice-2 hook ingress vocabulary (B). One event per observed hook (fixtures/
@@ -257,7 +267,9 @@ export const pushFailedPayloadSchema = z.object({
 });
 
 // meter_threshold_crossed lives on the 'usage' stream; pct is the observed
-// used/limit percentage at the crossing (0..100+). dispatch_refused lives on the
+// used/limit percentage at the crossing (0..100+). DEPRECATED — superseded by
+// `meterAlertPayloadSchema` below; retained for historical events only (see the
+// note on EVENT_TYPES.meterThresholdCrossed). dispatch_refused lives on the
 // 'tasks' stream; reason names why the dispatcher stub declined.
 export const meterThresholdCrossedPayloadSchema = z.object({
   meterId: z.string(),
@@ -474,6 +486,9 @@ export function hostStopped(): EventInput {
 }
 // 'usage' matches meters' USAGE_STREAM; literal here keeps the vocabulary module
 // free-standing (no dependency on the meters projection).
+//
+// @deprecated Use `meterAlert`. Retained so historical `meter_threshold_crossed`
+// records still validate; it has no producer anywhere in the codebase.
 export function meterThresholdCrossed(payload: MeterThresholdCrossedPayload): EventInput {
   return { stream: 'usage', type: EVENT_TYPES.meterThresholdCrossed, payload };
 }

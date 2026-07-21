@@ -36,4 +36,9 @@ export {
   hostileInput,
   budgetWall,
 } from './profiles/index.js';
-export { checkHeadroomGate, checkDeferGate } from './profiles/budgetWall.js';
+// `checkHeadroomGate` is GONE (calibration.md 2026-07-21): budget-wall's local
+// stub was replaced by core's real `evaluateHeadroomGate` (meterDerivations.ts),
+// which is the single source of record for the headroom verdict. `checkDeferGate`
+// remains — slice 6 owns the real dispatcher, and nothing in core evaluates a
+// deferral yet.
+export { checkDeferGate } from './profiles/budgetWall.js';

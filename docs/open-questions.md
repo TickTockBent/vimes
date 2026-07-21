@@ -93,6 +93,19 @@ not payload equality (equality is the weaker proxy we guessed). Binding on
 the slice-5 usage adapter from its first line; the host's `usage_block`
 payload should carry `message.id` through so consumers can key on it —
 check whether it already does before slice 4/5.
+**SHARPENED 2026-07-21 — the KEY was right, the COMBINE was under-specified.**
+Repeated `message.id` records are **not identical copies**: the transcript writes
+a partial usage snapshot per content block, then a settled one (flagged by a
+populated `usage.iterations`). Observed: 1123 of 1276 repeated ids carry
+DIFFERING `output_tokens`, monotonically non-decreasing — e.g. `[5, 5, 455]`.
+**Skip-the-repeat therefore undercounts output 2.23× overall and 6.5× on
+subagents.** The corrected rule, binding on D27 and every future JSONL consumer:
+**dedupe by `message.id` taking the ELEMENTWISE MAX, never first-wins.** Slice
+4's shipped keep-first projection is NOT a regression — verified against the live
+event log, where 0 of 11 repeated ids differ, because the daemon tails only
+parent sessions whose transcripts repeat the FINAL usage on every block. It is
+correct by coincidence, and the coincidence ends the moment anything reads a
+subagent transcript. Full evidence in calibration.md.
 
 <!-- D15 (PTY transcript absence) moved to decisions.md 2026-07-13 —
      resolved: inherited CLAUDE* env suppresses transcripts; PTY channel
@@ -115,8 +128,11 @@ gate mid-slice.
 
 **The raw material exists and is retroactive** (observed 2026-07-21, rule 0.7 —
 see calibration.md): `~/.claude/projects/<project-slug>/<sessionId>.jsonl` plus
-`<sessionId>/subagents/agent-<agentId>.jsonl`. **641 session transcripts, 584
-subagent transcripts across 10 projects**, each message carrying `usage` with
+`<sessionId>/subagents/agent-<agentId>.jsonl`. **652 transcripts in total — 593
+SUBAGENT transcripts and 59 top-level sessions** (corrected 2026-07-21; the
+original "641 sessions" was the recursive total written into the sessions slot —
+subagents outnumber sessions ~10:1, so a ledger that treats subagents as a detail
+has the proportions backwards), each message carrying `usage` with
 cache tiers split (`ephemeral_5m` / `ephemeral_1h`), `model`, and `message.id`
 for the D17 dedupe. The parent→child link is the directory path. So project,
 session and subagent are all derivable **for work already done**, not only from
