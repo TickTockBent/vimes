@@ -51,6 +51,39 @@ is a perfectly good slice. Do not rescue it with a plausible number.
 *Material already banked:* today's deliberate burn (5% → 16% under known load),
 the observed rollover, and every poll in `usage-observations.jsonl`.
 
+**⚠ The specific mechanism C1 must rule in or out (Wes, 2026-07-21):**
+> *"I suspect we won't be able to do it precisely because Anthropic fluctuates
+> usage/token ratios depending on available compute."*
+
+**If true, C1 does not fail noisily — it fails STRUCTURALLY.** A noisy constant
+can be estimated with a wider band and still be useful; a quantity that *moves
+with load* is not a constant at all, and no amount of sampling converges on it.
+A band computed from last week's ratio would then be confidently wrong in
+exactly the moments of high demand — which is precisely when the "is it safe to
+fire this?" question gets asked. **That failure mode is worse than no estimate**,
+and it is the one this project exists to refuse.
+
+So C1 reports THREE possible verdicts, not two:
+1. **Stable enough** — ratio is constant within a defensible band → build the
+   percent half, labelled with that band.
+2. **Noisy but stationary** — wide band, no trend or load-correlation → build it
+   with the honest (wide) band, or defer; Wes's call.
+3. **Non-stationary** — the ratio moves systematically (with time of day, load,
+   or model mix) → **the percent half is cut**, and the reason is recorded as a
+   property of the system, not a limitation of our sampling.
+
+Verdict 3 must be *tested for*, not concluded by default: check the ratio for
+trend and for variance beyond sampling error across intervals, not just its mean.
+Note the confound that cuts the other way — **VIMES sees only what it hosts**
+(U3), so unobserved concurrent work inflates Δpercent per observed token and can
+masquerade as instability. Distinguishing "the ratio moved" from "someone else
+was burning" is the spike's hardest job, and if it cannot be distinguished, say
+so plainly rather than picking the more interesting explanation.
+
+**Fallback is already agreed (Wes, 2026-07-21):** *"that doesn't kill the whole
+idea, we just fall back to raw api-dollar accounting."* Dollars are validated,
+first-party-checkable, and answer the scoping question well on their own.
+
 **C2 — does a price table survive validation against OTel? ✅ SUBSTANTIALLY
 ANSWERED 2026-07-21, needs widening.** The OTLP fixture's session was found in
 the transcripts and priced from JSONL tokens: **$0.050549 computed vs $0.050549

@@ -436,3 +436,40 @@ portal); the machine half rebuilt into an instrument proven to fail under seven
 sabotages. **Still missing: a real threshold crossing** — the deliberate burn
 reached 16% of a fresh window before the load stopped, and the 80% line has not
 yet been crossed in anger.
+
+## D8 — The usage endpoint is the SOLE headroom authority; local sources never substitute
+
+*2026-07-21. Opened 2026-07-13 as an open question with a lean; the verify half
+ran as slice-5 spikes U1/U3 and CORRECTED that lean; settled by the adapter
+actually shipping (`cc3c009`) and running in production. Moved from
+open-questions.md.*
+
+**Decision: wrap `GET https://api.anthropic.com/api/oauth/usage` — the CLI's own
+`fetchUtilization` — as a clearly-marked fragile adapter (rule 0.6), and treat it
+as the ONLY source that may produce a headroom number. When it breaks, headroom
+degrades to `unknown`. Local sources are never promoted to fill the gap.**
+
+**The original lean was wrong and the spikes said so.** It read: *"do it; meters
+degrade to JSONL+OTel sources when it breaks."* U3 disproved the degradation
+clause — **JSONL and OTel are account-blind.** They see only the sessions VIMES
+hosts, while the limits are account-wide (every Claude Code invocation anywhere,
+including the orchestrator's own session). Observed directly: the endpoint
+reported the 5-hour window at 29–35% consumed while VIMES's JSONL held **zero**
+`usage_block` events for that same window.
+
+**So source precedence is a TYPE DISTINCTION, not a preference.** Local sources
+supply attribution, burn and cost for VIMES-hosted work — which is real and
+valuable, and became slice 5b — but they are structurally incapable of answering
+"how much headroom does this ACCOUNT have", and must never be allowed to
+impersonate an answer. One authoritative source per `meterId` (principle 9);
+corroboration, never a silent merge.
+
+**Consequences, all now shipped.** The adapter consumes `limits[]` only and
+ignores the churning codenamed buckets; a 401 at ~6h token roll is the NORMAL
+daily failure and emits nothing rather than a placeholder; freshness is derived,
+never stored; and `unknown` never collapses into `pass` or `0`.
+
+**Reopens (happily) if Anthropic ships an official endpoint.** Until then the
+fragile-adapter boundary and the usage observation log — which fingerprints every
+response shape and stores the first sighting of any new one — are how we find out
+that it moved.

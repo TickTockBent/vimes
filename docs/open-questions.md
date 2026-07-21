@@ -37,22 +37,11 @@ with dispatcher-serialized write phases.
 <!-- D7 moved to decisions.md 2026-07-19 — decided: hooks-first correlation,
      -n demoted to unused fallback. -->
 
-## D8 — Usage endpoint adapter ⚠ *(trigger: slice 5 spike — VERIFY DONE 2026-07-21)*
-
-Capture what the CLI's `/usage` calls; wrap it as a clearly-marked fragile
-adapter for authoritative percentages and reset times. ~~**Lean (2026-07-13):**
-do it; meters degrade to JSONL+OTel sources when it breaks.~~
-
-**⚠ The verify half is DONE and it CORRECTED the lean (spike U1/U3,
-2026-07-21).** The endpoint is alive (`GET /api/oauth/usage`, the CLI's own
-`fetchUtilization`) and its shape is fixtured. But the degradation clause was
-**wrong**: U3 showed JSONL and OTel are **account-blind** — they see only the
-sessions VIMES hosts, while the limits are account-wide, so neither can
-substitute for headroom when the endpoint breaks. **Corrected lean:** build the
-fragile adapter as the SOLE headroom authority; when it breaks, headroom
-degrades to **unknown** (local sources keep serving attribution/burn/cost, and
-are never promoted to fill the headroom gap). Settles into decisions.md when the
-step-3 adapter lands. Reopens (happily) if Anthropic ships an official endpoint.
+<!-- D8 moved to decisions.md 2026-07-21 — decided: the usage endpoint is the
+     SOLE headroom authority; local sources (JSONL/OTel) are account-blind (U3)
+     and supply attribution only, never headroom. The 2026-07-13 lean's
+     "degrade to JSONL+OTel" clause was disproved by the spike and is recorded
+     as corrected in the decision. Settled by the adapter shipping (cc3c009). -->
 
 <!-- D10 moved to decisions.md 2026-07-19 — decided: mirrored custody,
      adopt on resume or SessionEnd; attention never fires for mirrored. -->
