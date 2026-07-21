@@ -594,7 +594,33 @@ trend, no time-of-day pattern, no model correlation, plus one infinite-rate
 interval no multiplicative model can produce. **Bursty hidden burn and a jumpy
 exchange rate are observationally identical in this data.**
 
-**The verdict does not depend on resolving it — both are fatal in the same way.**
+**⚠ CONFOUND RESOLVED SAME DAY — by Wes, not by analysis.** On reading the
+result he said:
+
+> *"Well I do use the chat interface as well which leaves no transcripts here,
+> which is probably making our data dirty and it all comes out of the same usage
+> pool."*
+
+**Hypothesis (a) is confirmed and (b) is unnecessary.** The +10-points-in-five-
+minutes interval was real account burn from **claude.ai**, which draws on the
+same account-wide windows and leaves **no local artifact of any kind**. The
+exchange rate may well be perfectly stable — we simply cannot see the numerator.
+
+**This is a better answer than "the rate moves," and it strengthens the cut
+rather than weakening it.** A moving rate might be trackable with enough
+sampling; a *structurally invisible source of consumption* cannot be, by any
+amount of local observation. And the controlled quiet-period experiment the
+spike proposed is now known to be impractical rather than merely expensive: it
+would require Wes to stop using the chat interface for a full five-hour window,
+twice — abstaining from a tool he uses daily to measure a number we have already
+decided not to ship.
+
+**No amount of analysis could have produced this.** The data was genuinely
+ambiguous between the two hypotheses; one sentence of user testimony settled it.
+Worth remembering the next time a spike returns "cannot distinguish" — the
+cheapest remaining experiment may be **asking the human what they were doing.**
+
+**The verdict stood before this and stands after — both branches were fatal in the same way.**
 (a) means the quantity is structurally unseeable from here; (b) means there is no
 constant to converge on. Wes's compute-fluctuation hypothesis is therefore
 neither confirmed nor refuted, and **did not need to be** for the kill criterion

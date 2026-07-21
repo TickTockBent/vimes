@@ -126,6 +126,15 @@ finding, not noise to average out**).
 - **History over time**, per project and per session.
 - **Cost per `attributionSkill` / `attributionAgent`** — derivable today, and
   closer to Wes's actual question than per-session is.
+- **An honest SCOPE LABEL on every total.** Confirmed 2026-07-21: Wes also uses
+  **claude.ai**, which draws on the same account-wide windows and leaves **no
+  local artifact whatsoever**. The ledger therefore reports *"what VIMES-hosted
+  work cost"*, and must never be phrased or read as *"what you spent."* The gap
+  is not a bug to close — it is unclosable from here — so it must be **stated on
+  the surface**, not left for the user to infer from a total that looks
+  authoritative. This is D8's account-blindness rule (U3) applied to the dollar
+  half: a figure that overstates its own SCOPE lies exactly like one that
+  overstates its precision.
 
 **Out (explicit):**
 - Headroom. That is slice 5's, endpoint-only, and no local source may impersonate
@@ -169,6 +178,8 @@ finding, not noise to average out**).
 
 ## Assertions
 - Rollups reconcile: Σ(children) + parent === node total, on real data.
+- Every total carries its scope label; no surface presents a VIMES-hosted figure
+  as an account-wide one.
 - Dedupe is max-wins, asserted against a known progressive-snapshot message.
 - A fork does not double-count (the +6–13% inflation is provably absent).
 - Dollars for the C2 fixture session reproduce OTel to within the agreed bar.
