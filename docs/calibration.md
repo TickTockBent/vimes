@@ -955,6 +955,36 @@ output independent (5× input on every current model).
   against the validated set {standard, absent}, never defaulted (rule 8) — an
   out-of-set value flags the row, never silently prices standard.
 
+### 2026-07-21 — FINDING (rule 0.1, OPEN — awaiting Wes): the subagent-tree edge was dropped by Step 1; the real tree is FLAT
+
+Step 3 (tree + rollups) is correct and reconciles the live corpus EXACTLY (0
+violations, grand total $7,007.06 === independent flat priced sum === Σ of both
+attribution groupings — proof the tree neither double-counts nor drops). **But on
+the real corpus every one of 587 agents lands at depth 1** — the observed
+attributed/session-root fraction is **0/100, not the survey's 46/54**.
+
+**Root cause is upstream in Step 1, not Step 3.** The agent→agent parent edge lives
+only on `toolUseResult.agentId`, which appears on `type:user` tool-result records
+that carry **no `message.usage`** (verified: 305 such records, 0 with usage). Step 1
+ingests usage-bearing rows only, so the join key is dropped before the store —
+`toolUseResultAgentId` is null on all 20,323 stored rows (I re-verified against the
+db), even though `costCorpus.ts` extracts it and the schema has the column. Step 3's
+parent map is correct (synthetic tests exercise real edges + depth-3 nesting and
+reconcile through both hops); it simply has no edge data to consume and correctly
+degrades to the honest session-root fallback (`parentResolved=false`).
+
+**Consequence:** cost rolls up correctly to project→session→agent-TYPE, but the
+subagent NESTING ("which agent spawned which") is empty until the edge is persisted.
+Dollars are unaffected and exact.
+
+**Decision needed (queued for Wes, NOT decided solo — night-shift rail):** persist
+the parent edge in Step 1 — as edge-only rows, a side table, or by enriching the
+usage row from its spawning record — then the tree nests automatically (Step 3
+already consumes it). Re-ingestion required. **Recommendation:** a small side table
+`cost_agent_edges(childAgentId, parentAgentId, sessionId)` harvested from the
+type:user records during the same walk — keeps usage rows unchanged, is idempotent,
+and Step 3 reads it as the parent map. Sign-off + shape are Wes's call.
+
 ### 2026-07-21 — FINDING (rule 0.1, SIGNED OFF): `inference_geo` is the sentinel `"not_available"`, not absent
 
 Step 2's work order pinned the validated price-modifier set as `{null,'standard'}`

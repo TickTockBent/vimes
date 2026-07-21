@@ -118,5 +118,27 @@ export {
   type PriceFlagReason,
   type PricedCategoryAmounts,
 } from './pricing/priceUsageRow.js';
+export {
+  buildCostTree,
+  buildParentMap,
+  resolveProjectKey,
+  findReconciliationViolations,
+  assertTreeReconciles,
+  OUTSIDE_ROOTS_PROJECT_KEY,
+  UNKNOWN_SESSION_KEY,
+  ABSENT_ATTRIBUTION_KEY,
+  type CostTreeInputRow,
+  type CostTree,
+  type ProjectNode,
+  type SessionNode,
+  type AgentNode,
+  type AttributionGroup,
+  type RollupTotals,
+  type RowTokenCounts,
+  type PriceStatusCounts,
+  type AgentParentEdge,
+  type BuildCostTreeOptions,
+  type ReconciliationViolation,
+} from './pricing/costTree.js';
 
 export * from './harness/index.js';
