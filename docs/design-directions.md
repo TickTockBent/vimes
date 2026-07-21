@@ -118,6 +118,44 @@ the slice-6 dispatcher, unified. Build the dispatcher's stage-runner so
 "review" and "fix" are distinct dispatch verbs with the independence rule
 baked in.
 
+## Hot reload without destroying shells (zero-downtime deploy)
+
+*(Wes, 2026-07-21, immediately after a deploy killed the vimes terminal he was
+working in.)* "We're going to want a way to do hot reloads in the future without
+destroying shells."
+
+The problem: PTY terminals (and SDK session children) are processes owned by
+`vimes.service`; `systemctl restart` kills the whole tree. Now that VIMES hosts
+the work that builds VIMES (the north star), every daemon deploy costs the
+operator their live shells — the bootstrap tax recorded in CLAUDE.md.
+
+**Immediate mitigation (already true, worth exploiting):** the daemon serves the
+UI from `packages/ui/dist` **read per request** — so a **UI-only change needs NO
+restart at all**. Rebuild, hard-refresh, done; shells survive. Only changes to
+daemon code require the restart. Splitting the deploy procedure into "UI-only
+(rebuild)" vs "daemon (restart)" removes most of the pain for free. (Today's
+deploy needed a restart only because it carried a new daemon endpoint.)
+
+Candidate designs for the real thing, in rough order of cost:
+- **Split the PTY host out of the daemon process.** Terminals owned by a small,
+  rarely-changing supervisor process that outlives daemon restarts; the daemon
+  reattaches to its pty fds on boot. Cleanest conceptually — the session/terminal
+  lifetime stops being coupled to the code that changes most often. Biggest
+  refactor; interacts with I9 ring buffers and the custody model (D10).
+- **systemd socket activation + graceful handover** — the new process inherits
+  the listening socket, old connections drain. Solves connection continuity, NOT
+  child-process survival (the pty children still belong to the old unit unless
+  they're re-parented). Partial fix only.
+- **Re-exec in place preserving fds** — the daemon `execve`s the new build while
+  holding pty master fds open. Keeps children alive without a second process, but
+  demands strict fd hygiene and a state handoff; subtle failure modes.
+- **Accept + soften:** keep restarting, but make reconnect seamless enough that a
+  killed shell is cheap — terminals are already persistent + re-enterable across
+  WS reconnects (D23); the gap is process death, which no reconnect can fix.
+  Pairs with a "deploy will kill N shells — proceed?" pre-flight in the UI.
+Parked; schedule when daemon-deploy frequency starts costing real work. Related:
+the two-halves deploy pre-flight (sessions AND terminals) in CLAUDE.md.
+
 ## A simple "alert my phone" API — for callers outside VIMES
 
 *(Wes, 2026-07-20.)* Right now the orchestrator buzzes Wes's phone via a
