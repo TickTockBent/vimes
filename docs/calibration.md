@@ -549,6 +549,36 @@ first-party Claude Code, `-p` or not, is not. **This answers Wes's standing
 dongfu question: those runs burned the 5-hour/weekly windows, not a $100
 automation bucket.** Promote D24 to a decision on his sign-off.
 
+### 2026-07-21 — human gate, first half: VIMES displaced the official portal
+
+Unprompted, on the deployed build, hours after the meters UI shipped. Wes:
+
+> *"Just the fact that I can hit vimes and refresh to see the window is huge.
+> Normally I would have to log in to anthropic's portal and go through
+> options→usage — This is far better."*
+
+**The first time VIMES beat the first-party tool at something.** Worth recording
+as a design signal, not just a compliment: the slice's whole premise is that
+"can I afford to start this?" should be answerable from the home screen (pillar
+4), and the evidence that it works is a human reaching for it *instead of* the
+authoritative source.
+
+**Why the refresh button turned out to be load-bearing.** Anthropic's portal is
+current by construction; VIMES polls on a ⟨tune 5 min⟩ cadence. Without a way to
+force a poll, "better than the portal" would have been FALSE precisely when it
+matters most — in the moments before committing to expensive work, which is
+exactly when a five-minute-old number is worth least. Wes proposed the button as
+a small idea ("a refresh button or a 'last fetched' timestamp or both"); it is
+what makes the comparison honest, and it only works because forced refresh polls
+for real rather than re-serving the last sample.
+
+**Explicitly NOT the exit gate.** This validates that the meters are USEFUL and
+reachable. It says nothing about whether they are CORRECT, which is what the
+human half of the gate actually measures (meters matching `/usage` within
+⟨tune 5% PREVIEW⟩ across real use, including window rollovers). A meter that is
+pleasant to reach and wrong is worse than the portal, not better — it fails more
+comfortably. The accuracy half still wants elapsed time.
+
 ### 2026-07-21 — D27 groundwork: three parallel read-only surveys of the real corpus
 
 Run as productive load during a deliberate usage burn. Three agents, independent
