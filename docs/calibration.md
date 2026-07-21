@@ -549,7 +549,50 @@ first-party Claude Code, `-p` or not, is not. **This answers Wes's standing
 dongfu question: those runs burned the 5-hour/weekly windows, not a $100
 automation bucket.** Promote D24 to a decision on his sign-off.
 
-### 2026-07-21 — FINDING: work done in a VIMES **terminal** is INVISIBLE to VIMES's event log
+### 2026-07-21 — CORRECTION (same day): the terminal result was mis-framed, and the orchestrator's own check was broken
+
+Two corrections to the entry below, both raised within the hour.
+
+**1. A terminal is a PASSTHROUGH, so not recording it is the design working.**
+Wes, on reading the entry: *"I wouldn't expect vimes to record activity performed
+through a terminal shell. It's a passthrough, isn't it?"* He is right, and
+**rule 0.8 says so explicitly** — PTY bytes are relayed verbatim and never parsed
+for meaning. Calling the terminal result a "hole" or a "blind spot" overstated
+it: VIMES declines to know what happens in a terminal *on purpose*. The entry
+below is retained (the observation is accurate and the ingestion consequence
+stands) but its framing as a defect is **withdrawn**. The correct statement is a
+boundary, not a gap: *the event log describes what VIMES hosts as sessions; a
+terminal is deliberately opaque to it, and a ledger therefore cannot be built on
+the event log.*
+
+**2. VIMES sessions DO track usage — and the check that "cleared" slice 4
+earlier was reading a field that does not exist.** Wes ran the right test
+(opened a session, had it do the same work → `~/pty-gate2.md`): session
+`d2419e0f` (`channel: sdk`, cwd `~/projects`, 17:43:57Z) recorded **3
+`usage_block` events**. Expectation confirmed.
+
+But inspecting that session exposed a methodology failure of my own. The
+`usage_block` payload is `{ appSessionId, usage: {…} }` — tokens are **nested
+under `usage`**, and my earlier D17 safety check read `p.outputTokens`, **a
+field that has never existed**. Every value it compared was `undefined`, so
+"0 of 11 repeated ids differ" was **trivially true and evidentially worthless**.
+
+**Redone correctly:** 60 `usage_block` events; **44 carry a `messageId`, 16 do
+not** (matching U3's undedupable residual exactly); 16 unique ids; 12 repeated;
+and **0 with differing `output_tokens`.** The conclusion stands — **slice 4's
+keep-first dedupe is genuinely safe** — but it now rests on a measurement that
+could have failed.
+
+**This is the fourth "correct by coincidence" of the day, and the first one that
+was mine.** The 5-hour meter, `budget-wall`, and D17's dedupe rule were all right
+for reasons that had nothing to do with why we believed them. So was this check.
+The lesson generalises past code: **a verification that cannot fail is worth
+exactly as much as a test that cannot fail** — and the tell is the same in both
+cases, an all-clear that arrives without ever having been at risk. Concretely:
+when a check returns a clean zero, confirm the field it read actually exists
+before believing it.
+
+### 2026-07-21 — FINDING (framing WITHDRAWN above; observation stands): work done in a VIMES **terminal** is not recorded in the event log
 
 Wes ran the closing half of the spawn-path check on request: opened a vimes
 terminal shell and had Sonnet write a file. The result answered a bigger question
