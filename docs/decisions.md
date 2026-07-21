@@ -473,3 +473,36 @@ never stored; and `unknown` never collapses into `pass` or `0`.
 fragile-adapter boundary and the usage observation log — which fingerprints every
 response shape and stores the first sighting of any new one — are how we find out
 that it moved.
+
+## D24 — CORRECTION (2026-07-21, same day): the conclusion stands, one cited mechanism does not
+
+D24 concluded that Claude Code usage — interactive or headless — consumes the
+standard account-wide windows, with no separate automation credit. **That
+conclusion is unchanged and still supported.**
+
+But it cited, as supporting evidence, that *"U2: OTel independently labels a
+session `terminal.type: interactive | non-interactive` — the interactivity
+signal `usage_block` lacks."* **Spike C2 disproved that reading of the
+attribute.** `terminal.type` is not an interactivity classification at all — it
+is **the value of `$TERM`**, defaulting to the literal string
+`non-interactive` when unset. Run the same headless command with `TERM=dumb` and
+OTel reports `terminal.type: "dumb"`.
+
+**Consequences:**
+- **Anything keying on `terminal.type === 'non-interactive'` will misclassify**
+  — it is a terminal-capability string, not a mode flag. Nothing in VIMES does
+  today; this records why nothing should start.
+- D24's evidence base narrows to U1's `limits[]` shape and the correlation
+  experiment (a run moved the standard `session` window while
+  `seven_day_oauth_apps` stayed null and no new bucket appeared). Both stand on
+  their own, so **the decision does not reopen.**
+- **The honest caveat already recorded in D24 gets sharper:** its magnitude
+  evidence was confounded by the orchestrator's own session, and now one of its
+  three legs is gone too. It remains the right call on the evidence, and it is a
+  thinner-legged call than it looked on the day.
+
+**Rule 0.7 cuts both ways.** D24 was built by preferring observation to
+documentation; this correction comes from preferring a *better* observation to
+an earlier one. An attribute's NAME is documentation too — `terminal.type` read
+like a mode because it was named like one, and nobody tested what actually
+populated it until a spike ran `TERM=dumb`.

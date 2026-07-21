@@ -549,6 +549,73 @@ first-party Claude Code, `-p` or not, is not. **This answers Wes's standing
 dongfu question: those runs burned the 5-hour/weekly windows, not a $100
 automation bucket.** Promote D24 to a decision on his sign-off.
 
+### 2026-07-21 — SPIKE C2 (widening): PASS, after a rule-0.1 finding that the DOCUMENTED Sonnet-5 price is wrong
+
+Experiment, not analysis: a local OTLP receiver plus 13 `claude -p` runs → 9
+sessions → **11 (session, model) buckets**, ~$1.38 spent. Models haiku-4-5,
+sonnet-5, opus-4-8 each at 5m-only, 1h-only **and** within-session mixed, plus
+fable-5 at 5m. 404,952 cache-read tokens; one subagent spawn.
+
+**Both cache tiers were provoked deliberately, not caught by luck.** The 2.1.216
+bundle honours `FORCE_PROMPT_CACHING_5M=1` and `ENABLE_PROMPT_CACHING_1H=1`.
+Absent those, the tier is a function of `querySource` against an allowlist
+(`repl_main_thread*`, `sdk`, `auto_mode`, `memdir_relevance`) — **subagents are
+not on it**, which mechanically explains the corpus's ~47% 5m-Opus mix. That
+allowlist is **remote-config driven, so our 1h/5m mix is server-steerable** —
+a rule-0.6 surface, logged as such.
+
+**⚠ THE FINDING — the documented Sonnet-5 price is 33% low, right now.**
+Uncorrected, **every Sonnet-5 bucket came back at exactly −33.3333%** (= 2/3)
+across all five price categories. Anthropic's published pricing — and the
+in-environment `claude-api` skill — record Sonnet 5 on **introductory
+$2/$10 through 2026-08-31**. Anthropic's own `claude_code.cost.usage` **bills it
+at standard $3 / $3.75 / $6 / $0.30 / $15 today, inside that window.**
+
+An exact 1.5× on every category simultaneously is a price-row error, not noise.
+**This is rule 0.7 in the flesh: the documentation is the wrong source, the
+billing signal is the right one.** It is also precisely why C2 exists — the
+prior art's price table was rejected as an *unverifiable fiction*, and this is
+what unverified would have shipped.
+
+Consequences: the part-4 appendix understates Sonnet 5 by 33% (**$74.78 →
+~$112.17**, corpus total **~$2,930.45**), and its "silent +50% inflation on
+2026-09-01" tripwire **inverts — the danger is NOW, not September.**
+
+**With the corrected row: all 11 buckets reconcile to $0.000000.**
+p50 = p95 = max |rel err| = **0.000000%**; aggregate $1.375741 vs $1.375741.
+Residuals are 0–2.8×10⁻¹⁷ — float dust; integer micro-dollars would be exactly
+zero.
+
+**Tier correlation: absent, and the test was shown to HAVE POWER.** The
+1h-fraction spans 0.000 / 0.149 / 0.665 / 0.801 / 1.000 with zero residual at
+every point, so a correlation coefficient there would be computed on rounding
+noise — the agent declined to dress that up as a measurement, and instead
+**sabotaged it**: pricing all cache-creation at 5m drives p95 to **31.4%**, max
+**35.4%**, and **r = −0.942 monotone in the 1h fraction.** The check fails with
+exactly the predicted signature, so **5m ×1.25 and 1h ×2.00 are confirmed against
+first-party billing.** (Same discipline as the budget-wall rebuild: a check that
+has never been observed failing is not yet a check.)
+
+**Also established:** OTel token points match deduped JSONL exactly on all 11
+buckets including resumed and mixed-model sessions; `query_source` splits cost
+cleanly (parent $0.0115724 / subagent $0.0199971, each reproduced independently,
+**zero `message.id` overlap** — binding rule 3 holds on data the code has never
+seen); and the CLI's own `total_cost_usd` agrees with OTel throughout, a free
+third source.
+
+**One usage row carried NO `speed` field** — so the ledger must treat *absent* ≠
+*standard* and **assert** rather than `?? 'standard'`.
+
+**Could not test, stated plainly:** `claude-sonnet-4-6` (retired from the
+workload; its $23.57 is unvalidated) and — the biggest open cell —
+**`claude-fable-5` at the 1h tier, which covers $1,282 of the $2,893 corpus and
+is currently validated only by analogy.** One ~$0.50 run closes it. It was
+skipped to spare the weekly cap.
+
+**The lesson to carry:** n=1 looked perfect while the table was 33% wrong on a
+different model. **This table's failure mode is per-row and silent, so MODEL
+COVERAGE — not sample size — is the control.**
+
 ### 2026-07-21 — CORRECTION (same day): the terminal result was mis-framed, and the orchestrator's own check was broken
 
 Two corrections to the entry below, both raised within the hour.
