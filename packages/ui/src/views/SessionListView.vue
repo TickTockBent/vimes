@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { useVimesStore } from '../stores/vimesStore.js';
 import { deriveSessionRow } from '../lib/sessionRow.js';
 import {
@@ -10,6 +10,12 @@ import {
 } from '../lib/killConfirm.js';
 import { isBellActionable, pushStateLabel } from '../lib/pushState.js';
 import { deriveCacheBadge, ttlTierLabel, ttlTierTone, type CacheTtlTone } from '../lib/cacheBadge.js';
+import {
+  deriveMeterRows,
+  METER_STALE_AFTER_MS_PREVIEW,
+  type MeterRow,
+  type MeterTone,
+} from '../lib/meterDisplay.js';
 
 const emit = defineEmits<{
   open: [appSessionId: string];
@@ -137,8 +143,77 @@ function cacheBadgeFor(appSessionId: string) {
   };
 }
 
+// ── Usage meters strip (slice 5 step 3) — "can I afford to start this?" on the
+// home screen. Every derivation is in lib/meterDisplay.ts; this block only maps
+// semantic tone keys to colour classes and owns the ticking clock.
+//
+// THE INTEGRITY RULE, enforced in the template below: a percentage figure is
+// rendered ONLY where `displayPercent !== null`, and that is null for anything
+// not freshly observed. Stale/unknown rows say so in words and show no number,
+// no bar fill, and no absolute (D26: the source has no absolutes to show).
+
+// The countdown needs a moving "now"; the derivations take it injected, so the
+// clock lives here at the edge (rule 0.3). A minute is well under the shortest
+// countdown unit displayed, so nothing visibly lags.
+const METER_CLOCK_TICK_MS = 60_000;
+const nowMs = ref(Date.now());
+let meterClockHandle: ReturnType<typeof setInterval> | null = null;
+
+const metersExpanded = ref(false);
+
+const meterRows = computed<MeterRow[]>(() =>
+  // Binding meter first — it is the one that answers the question.
+  deriveMeterRows({ meters: store.meters }, nowMs.value, METER_STALE_AFTER_MS_PREVIEW),
+);
+const bindingMeter = computed<MeterRow | null>(() => meterRows.value[0] ?? null);
+const secondaryMeters = computed<MeterRow[]>(() => meterRows.value.slice(1));
+
+const METER_TONE_BAR_CLASS: Readonly<Record<MeterTone, string>> = {
+  normal: 'bg-emerald-500',
+  elevated: 'bg-amber-500',
+  high: 'bg-rose-500',
+  unknown: 'bg-slate-300 dark:bg-slate-600',
+};
+
+const METER_TONE_TEXT_CLASS: Readonly<Record<MeterTone, string>> = {
+  normal: 'text-emerald-700 dark:text-emerald-300',
+  elevated: 'text-amber-700 dark:text-amber-300',
+  high: 'text-rose-700 dark:text-rose-300',
+  unknown: 'text-slate-500 dark:text-slate-400',
+};
+
+// The ONLY place a meter's figure becomes text. A null displayPercent never
+// yields a number — it yields the honest word for why we have none.
+function meterValueLabel(row: MeterRow): string {
+  if (row.displayPercent !== null) {
+    return `${row.displayPercent}%`;
+  }
+  return row.freshness === 'stale' ? 'stale' : 'usage unknown';
+}
+
+// Bar fill width. Unknown/stale rows get no fill at all — an empty bar plus the
+// word "stale" cannot be misread as 0% the way a zero-width *numeric* bar could.
+function meterBarStyle(row: MeterRow): Record<string, string> {
+  return { width: row.displayPercent === null ? '0%' : `${row.displayPercent}%` };
+}
+
+function toggleMetersExpanded(): void {
+  metersExpanded.value = !metersExpanded.value;
+}
+
 onMounted(() => {
   void store.fetchCacheObservability();
+  void store.fetchMeters();
+  meterClockHandle = setInterval(() => {
+    nowMs.value = Date.now();
+  }, METER_CLOCK_TICK_MS);
+});
+
+onUnmounted(() => {
+  if (meterClockHandle !== null) {
+    clearInterval(meterClockHandle);
+    meterClockHandle = null;
+  }
 });
 </script>
 
@@ -209,6 +284,60 @@ onMounted(() => {
     <p v-else-if="store.pushState === 'denied'" class="-mt-2 text-xs text-rose-500">
       Notifications are blocked — re-enable them in your browser settings.
     </p>
+
+    <!-- Usage meters strip (slice 5 step 3). Principle 11: this INFORMS, it must
+         not dominate the session list — one compact line, tap to expand inline
+         (no new route). A stale/unknown meter shows words, never a figure. -->
+    <section class="rounded-lg border border-slate-200 dark:border-slate-800" aria-label="Usage meters">
+      <button
+        v-if="bindingMeter !== null"
+        type="button"
+        class="flex min-h-[44px] w-full flex-col gap-1 px-3 py-2 text-left"
+        :aria-expanded="metersExpanded"
+        @click="toggleMetersExpanded()"
+      >
+        <div class="flex items-baseline justify-between gap-2">
+          <span class="flex min-w-0 items-baseline gap-1.5">
+            <span class="truncate text-sm font-semibold">{{ bindingMeter.label }}</span>
+            <span
+              v-if="bindingMeter.isBinding"
+              class="shrink-0 rounded-full bg-sky-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-sky-800 dark:bg-sky-900/50 dark:text-sky-200"
+            >
+              binding
+            </span>
+          </span>
+          <span class="shrink-0 text-sm font-semibold" :class="METER_TONE_TEXT_CLASS[bindingMeter.tone]">
+            {{ meterValueLabel(bindingMeter) }}
+          </span>
+        </div>
+        <div class="h-1.5 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-slate-800">
+          <div class="h-full rounded-full" :class="METER_TONE_BAR_CLASS[bindingMeter.tone]" :style="meterBarStyle(bindingMeter)"></div>
+        </div>
+        <div class="flex items-center justify-between gap-2 text-xs text-slate-500 dark:text-slate-400">
+          <span class="truncate">{{ bindingMeter.resetLabel ?? 'reset time unknown' }}</span>
+          <span class="shrink-0">{{ metersExpanded ? '▴' : `▾ ${meterRows.length} meters` }}</span>
+        </div>
+      </button>
+
+      <!-- Fresh install, poller disabled, or the endpoint dead since boot: one
+           honest line, never an empty gap and never zeros. -->
+      <p v-else class="px-3 py-3 text-sm text-slate-500 dark:text-slate-400">Usage unknown — no meters observed yet.</p>
+
+      <ul v-if="metersExpanded && secondaryMeters.length > 0" class="flex flex-col gap-2 border-t border-slate-200 px-3 py-2 dark:border-slate-800">
+        <li v-for="meter in secondaryMeters" :key="meter.meterId" class="flex flex-col gap-1">
+          <div class="flex items-baseline justify-between gap-2 text-xs">
+            <span class="truncate text-slate-600 dark:text-slate-300">{{ meter.label }}</span>
+            <span class="shrink-0 font-semibold" :class="METER_TONE_TEXT_CLASS[meter.tone]">
+              {{ meterValueLabel(meter) }}
+            </span>
+          </div>
+          <div class="h-1 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-slate-800">
+            <div class="h-full rounded-full" :class="METER_TONE_BAR_CLASS[meter.tone]" :style="meterBarStyle(meter)"></div>
+          </div>
+          <span class="text-[11px] text-slate-500 dark:text-slate-400">{{ meter.resetLabel ?? 'reset time unknown' }}</span>
+        </li>
+      </ul>
+    </section>
 
     <ul class="flex flex-col gap-2">
       <li

@@ -5,6 +5,7 @@ import { advanceOffset, deframeTerminalOutput, frameTerminalInputText } from '..
 import { parseRootsPayload } from '../lib/treeNode.js';
 import type { TerminalListItem } from '../lib/terminalList.js';
 import type { CacheObservabilityRecord } from '../lib/cacheBadge.js';
+import type { MeterRecord } from '../lib/meterDisplay.js';
 import type { GitStatus, GitFileDiff, GitRepoEntry, GitDiffContext } from '../lib/gitReview.js';
 import type { EventRecord, SessionRecord } from '../lib/types.js';
 import { derivePushState, type PushUiState } from '../lib/pushState.js';
@@ -106,6 +107,13 @@ export const useVimesStore = defineStore('vimes', () => {
   // wherever refreshSessions() already runs (session-list mount, WS reconnect,
   // a session-affecting event, discover) — no separate polling loop.
   const cacheObservability = ref<Record<string, CacheObservabilityRecord>>({});
+  // ── Usage meters (slice 5 step 3) — the home-screen "can I afford to start
+  // this?" strip, reading the step-1 meters projection
+  // (GET /api/projections/meters). Same plain REST-into-ref shape as
+  // cacheObservability, refreshed on the existing refreshSessions() cadence —
+  // no new polling loop. An empty map means we have observed NOTHING, which the
+  // strip renders as "usage unknown", never as zeros (pillar 4).
+  const meters = ref<Record<string, MeterRecord>>({});
   // ── Git review (slice 4 step 3) — the primary-human-job surface (spec §3.4) ──
   // Plain REST-into-ref, mirroring fetchTerminals: fetch, credentials
   // same-origin, tolerant of transient failure. The daemon's /api/git/* endpoints
@@ -183,6 +191,9 @@ export const useVimesStore = defineStore('vimes', () => {
     // (mount, WS reconnect, a session-affecting event, discover) rather than
     // running a separate polling loop — same cadence as the sessions list.
     void fetchCacheObservability();
+    // Same reasoning for the usage meters (slice 5 step 3): they ride the
+    // sessions refresh cadence rather than owning a polling loop of their own.
+    void fetchMeters();
   }
 
   // Refreshed on load and after a spawn/discover — the only ops that can widen
@@ -234,6 +245,25 @@ export const useVimesStore = defineStore('vimes', () => {
       }
       const parsed = (await response.json()) as { perSession?: Record<string, CacheObservabilityRecord> };
       cacheObservability.value = parsed.perSession ?? {};
+    } catch {
+      // Transient network hiccup — the next refreshSessions() retries.
+    }
+  }
+
+  // GET /api/projections/meters — the usage-meters projection (slice 5 step 3).
+  // Mirrors fetchCacheObservability exactly: plain same-origin REST into a ref,
+  // tolerant of transient failure, no polling loop of its own. A failure leaves
+  // the previous records in place ON PURPOSE — they carry their own observedAt,
+  // so meterDisplay derives them as stale and the strip stops showing figures
+  // by itself. Freshness is never faked by the fetch layer.
+  async function fetchMeters(): Promise<void> {
+    try {
+      const response = await fetch('/api/projections/meters', { credentials: 'same-origin' });
+      if (!response.ok) {
+        return;
+      }
+      const parsed = (await response.json()) as { meters?: Record<string, MeterRecord> };
+      meters.value = parsed.meters ?? {};
     } catch {
       // Transient network hiccup — the next refreshSessions() retries.
     }
@@ -1022,6 +1052,9 @@ export const useVimesStore = defineStore('vimes', () => {
     // Cache observability (slice 4 step 4)
     cacheObservability,
     fetchCacheObservability,
+    // Usage meters (slice 5 step 3)
+    meters,
+    fetchMeters,
     // Git review (slice 4 step 3)
     gitStatus,
     gitDiffFiles,
