@@ -77,6 +77,9 @@ import {
   defaultUsageObservationLogPath,
 } from './usageObservationLog.js';
 import { MeterAlertLedger, sendMeterAlertPush } from './meterAlerts.js';
+import { SqliteCostStore } from './sqliteCostStore.js';
+import { ingestCostCorpus, defaultCostLedgerPath } from './costIngest.js';
+import { nodeCorpusFileSystem, type CorpusFileSystem } from './costCorpus.js';
 
 // How often the inactivity reaper wakes to check for idle terminals. This is the
 // detection CADENCE, not the tuned window: config.terminalIdleReapMs is the
@@ -148,6 +151,15 @@ export interface DaemonDeps {
   // the event DB in the data dir. INJECTED by every test so none of them ever
   // writes into the real data dir.
   usageObservationLogPath?: string;
+  // Cost-ledger seams (slice 5b). Absent → the real ledger db beside events.db
+  // and the real fs corpus reader over ~/.claude/projects. INJECTED by tests: a
+  // fake CorpusFileSystem + a :memory: or temp store path, so no test reads
+  // ~/.claude or writes a real ledger db.
+  costLedgerPath?: string;
+  costCorpusFileSystem?: CorpusFileSystem;
+  // Test seam: inject a store that fails its writes, so the daemon's non-fatal
+  // ingest guard can be exercised — absent in prod.
+  costLedgerStore?: SqliteCostStore;
 }
 
 export interface Daemon {
@@ -168,6 +180,10 @@ export interface Daemon {
   // One usage-endpoint poll, awaited. The poller's timer calls exactly this;
   // tests call it directly so a poll is deterministic rather than clock-raced.
   pollUsageOnce(): Promise<void>;
+  // One cost-ledger ingest scan, awaited. The ingester's timer calls exactly
+  // this; tests call it directly so a scan is deterministic rather than
+  // clock-raced (mirrors pollUsageOnce). A no-op when ingestion is disabled.
+  ingestCostOnce(): Promise<void>;
   // The derived usage read model as GET /api/usage/derived would serve it, with
   // `nowIso` stamped from the injected clock. Exposed so tests can assert the
   // shape without a round trip.
@@ -624,6 +640,48 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     await runUsagePoll();
   };
 
+  // ─── cost-ledger ingester (slice 5b) ──────────────────────────────────────
+  // Pure daemon I/O wiring (rule 0.3): the scan + the durable store already
+  // exist and are correct; this only SCHEDULES the scan and owns its lifecycle.
+  // Gated symmetrically with the usage poller — a costIngestIntervalMs of 0
+  // disables the whole feature, so no store is opened and no db file is created.
+  // The ledger is its own SQLite file BESIDE events.db (max-wins is an UPDATE;
+  // events.db carries ABORT triggers), injectable so tests never write a real
+  // db. The corpus reader is injectable too so tests never read ~/.claude.
+  const costLedgerStore =
+    config.costIngestIntervalMs > 0
+      ? (deps.costLedgerStore ??
+        new SqliteCostStore({
+          path: deps.costLedgerPath ?? defaultCostLedgerPath(config.dataDir),
+        }))
+      : null;
+  const costCorpusFileSystem = deps.costCorpusFileSystem ?? nodeCorpusFileSystem;
+
+  // One ingest scan. NEVER throws outward: a dead or unreadable corpus, or any
+  // store/IO failure, is swallowed and logged as a single line (never a payload
+  // dump), exactly like a failed usage poll. A bad scan must never take the
+  // daemon down — the next tick retries. A no-op when ingestion is disabled.
+  const ingestCostOnce = async (): Promise<void> => {
+    if (costLedgerStore === null) {
+      return;
+    }
+    try {
+      await ingestCostCorpus({
+        store: costLedgerStore,
+        projectRoots: config.projectRoots,
+        fileSystem: costCorpusFileSystem,
+        // clock.now() returns an ISO string; stamped only onto the watermark.
+        nowIso: () => clock.now(),
+      });
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        'vimes-daemon: cost ingest failed:',
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+  };
+
   // ─── forced refresh, debounced ────────────────────────────────────────────
   interface UsageRefreshOutcome {
     // Did this request actually hit the endpoint?
@@ -692,6 +750,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
   let snapshotTimer: ReturnType<typeof setInterval> | null = null;
   let terminalReapTimer: ReturnType<typeof setInterval> | null = null;
   let usagePollTimer: ReturnType<typeof setInterval> | null = null;
+  let costIngestTimer: ReturnType<typeof setInterval> | null = null;
 
   return {
     httpServer,
@@ -714,6 +773,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     },
     serializeProjection,
     pollUsageOnce,
+    ingestCostOnce,
     derivedUsage: currentDerivedUsage,
     usageObservationLog,
 
@@ -795,6 +855,26 @@ export function createDaemon(deps: DaemonDeps): Daemon {
         }, config.usagePollIntervalMs);
         usagePollTimer.unref();
       }
+      // Cost-ledger ingester (slice 5b). The DAEMON boundary owns the periodic
+      // timer, exactly like the poller above (rule 0.3) — the scan and the store
+      // stay pure/injected. An interval of 0 disables ingestion entirely: no
+      // store was opened and the timer is never created. unref'd so it never
+      // keeps the process alive, and cleared on stop() so no handle leaks.
+      if (config.costIngestIntervalMs > 0) {
+        // Fire one scan immediately (fire-and-forget, NEVER awaited): the first
+        // full scan is ~320 MB and must not block boot. Never fatal — a failed
+        // scan is swallowed inside ingestCostOnce and the interval retries.
+        void ingestCostOnce().catch(() => {
+          // Belt-and-braces: ingestCostOnce never rejects, but an unexpected
+          // throw must never become an unhandled rejection.
+        });
+        costIngestTimer = setInterval(() => {
+          void ingestCostOnce().catch(() => {
+            // See above: never fatal, the next tick retries.
+          });
+        }, config.costIngestIntervalMs);
+        costIngestTimer.unref();
+      }
     },
 
     async stop(): Promise<void> {
@@ -809,6 +889,12 @@ export function createDaemon(deps: DaemonDeps): Daemon {
       if (usagePollTimer !== null) {
         clearInterval(usagePollTimer);
         usagePollTimer = null;
+      }
+      // Clear the ingest timer BEFORE the store is disposed below, so no in-flight
+      // interval callback can touch a closed store.
+      if (costIngestTimer !== null) {
+        clearInterval(costIngestTimer);
+        costIngestTimer = null;
       }
       // host_stopped + kill children (they die with the daemon, §3.10) and stop
       // watching transcripts BEFORE the final snapshot, so the log/watchers are
@@ -836,6 +922,11 @@ export function createDaemon(deps: DaemonDeps): Daemon {
       store.dispose();
       snapshotStore.dispose();
       pushSubscriptions.dispose();
+      // Close the cost ledger in the same shutdown phase the other stores close.
+      // Null when ingestion is disabled (no store was ever opened). stop() is
+      // idempotent: dispose() on an already-closed better-sqlite3 handle is a
+      // no-op, and a second stop() sees costIngestTimer already null.
+      costLedgerStore?.dispose();
     },
   };
 }

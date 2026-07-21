@@ -13,6 +13,13 @@ export function defaultCostProjectsRoot(): string {
   return join(homedir(), '.claude', 'projects');
 }
 
+// The ledger lives BESIDE events.db in the data dir, never inside it (step 1
+// settled: max-wins is an UPDATE, and events.db carries the I12 ABORT triggers,
+// so the ledger must be a SEPARATE database file — see SqliteCostStore's header).
+export function defaultCostLedgerPath(dataDir: string): string {
+  return join(dataDir, 'cost-ledger.db');
+}
+
 export interface CostIngestOptions {
   store: SqliteCostStore;
   projectsRoot?: string;

@@ -95,6 +95,7 @@ function buildConfig(overrides: Partial<DaemonConfig> = {}): DaemonConfig {
     usageBaseUrl: 'http://usage.invalid',
     usageAlertPercents: [],
     usageForcedRefreshMinIntervalMs: 0,
+    costIngestIntervalMs: 0,
     ...overrides,
   };
 }
