@@ -7,6 +7,7 @@ import { collapseConsecutiveUsageEvents } from '../lib/usageCollapse.js';
 import { clampTextareaHeight, type TextareaMetrics } from '../lib/textareaGrow.js';
 import { initialKeyboardOffsetState, reduceKeyboardOffset, type KeyboardOffsetState } from '../lib/keyboardOffset.js';
 import { shouldSendSeenOnMount, shouldSendSeenOnVisibility } from '../lib/seenOnView.js';
+import { deriveCacheBadge, ttlTierLabel } from '../lib/cacheBadge.js';
 import GateCard from '../components/GateCard.vue';
 import type { EventRecord } from '../lib/types.js';
 
@@ -118,6 +119,20 @@ const mirrored = computed(() => session.value?.custody === 'external');
 // D9: attention badge in the header — a glance never clears it; only the explicit
 // dismiss tap does (→ clear_attention).
 const attention = computed(() => session.value?.needsAttention ?? null);
+
+// Slice 4 step 4: the fuller cache-observability line under the header — tier +
+// hit-rate % + raw service_tier (D24, never a fabricated billing-bucket label)
+// + tokensLabel. The list-row chip is the required deliverable; this is the
+// optional richer view for a session already open.
+const cacheBadge = computed(() => deriveCacheBadge(store.cacheObservability[props.appSessionId]));
+const cacheDetailLabel = computed(() => {
+  const badge = cacheBadge.value;
+  if (badge === null) {
+    return null;
+  }
+  const serviceTierLabel = badge.serviceTier ?? 'unknown tier';
+  return `${ttlTierLabel(badge.ttlTier)} · ${badge.hitRatePercent}% hit · ${serviceTierLabel} · ${badge.tokensLabel}`;
+});
 
 function dismissAttention(): void {
   store.clearAttention(props.appSessionId);
@@ -236,6 +251,12 @@ function resume(): void {
         {{ attention.reason }} · dismiss
       </button>
     </header>
+    <p
+      v-if="cacheDetailLabel !== null"
+      class="truncate border-b border-slate-100 px-3 py-1 text-xs text-slate-500 dark:border-slate-900 dark:text-slate-400"
+    >
+      {{ cacheDetailLabel }}
+    </p>
 
     <main class="flex-1 space-y-2 p-3">
       <template v-for="event in events" :key="event.eventId">

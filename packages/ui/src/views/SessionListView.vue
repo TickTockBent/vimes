@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import { useVimesStore } from '../stores/vimesStore.js';
 import { deriveSessionRow } from '../lib/sessionRow.js';
 import {
@@ -9,6 +9,7 @@ import {
   type KillConfirmState,
 } from '../lib/killConfirm.js';
 import { isBellActionable, pushStateLabel } from '../lib/pushState.js';
+import { deriveCacheBadge, ttlTierLabel, ttlTierTone, type CacheTtlTone } from '../lib/cacheBadge.js';
 
 const emit = defineEmits<{
   open: [appSessionId: string];
@@ -34,7 +35,10 @@ const rows = computed(() =>
   Object.values(store.sessions)
     .slice()
     .sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0))
-    .map(deriveSessionRow),
+    .map((session) => ({
+      ...deriveSessionRow(session),
+      cacheBadge: cacheBadgeFor(session.appSessionId),
+    })),
 );
 
 function spawn(): void {
@@ -110,6 +114,32 @@ function bellIcon(): string {
       return '🔔';
   }
 }
+
+// ── Cache-observability badge (slice 4 step 4) — a compact TTL-tier + hit-rate
+// chip joining the step-2 projection to this row by appSessionId. Small on
+// purpose (principle 11): it informs, it doesn't dominate the row. Only the
+// tone KEY comes from cacheBadge.ts — the color mapping lives here.
+const TONE_CLASS: Readonly<Record<CacheTtlTone, string>> = {
+  green: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/50 dark:text-emerald-200',
+  amber: 'bg-amber-100 text-amber-800 dark:bg-amber-900/50 dark:text-amber-200',
+  sky: 'bg-sky-100 text-sky-800 dark:bg-sky-900/50 dark:text-sky-200',
+  slate: 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300',
+};
+
+function cacheBadgeFor(appSessionId: string) {
+  const badge = deriveCacheBadge(store.cacheObservability[appSessionId]);
+  if (badge === null) {
+    return null;
+  }
+  return {
+    label: `${ttlTierLabel(badge.ttlTier)} · ${badge.hitRatePercent}%`,
+    toneClass: TONE_CLASS[ttlTierTone(badge.ttlTier)],
+  };
+}
+
+onMounted(() => {
+  void store.fetchCacheObservability();
+});
 </script>
 
 <template>
@@ -206,7 +236,17 @@ function bellIcon(): string {
             </span>
           </div>
           <div class="flex items-center justify-between gap-2 text-sm text-slate-500 dark:text-slate-400">
-            <span class="truncate">{{ row.channel }} · {{ row.cwdTail }}</span>
+            <span class="flex min-w-0 items-center gap-1.5">
+              <span class="truncate">{{ row.channel }} · {{ row.cwdTail }}</span>
+              <span
+                v-if="row.cacheBadge !== null"
+                class="shrink-0 rounded-full px-1.5 py-0.5 text-xs font-semibold"
+                :class="row.cacheBadge.toneClass"
+                :title="`cache: ${row.cacheBadge.label}`"
+              >
+                {{ row.cacheBadge.label }}
+              </span>
+            </span>
             <span
               v-if="row.attention.visible"
               class="shrink-0 rounded-full bg-orange-100 px-2 py-0.5 text-xs font-semibold text-orange-800 dark:bg-orange-900/50 dark:text-orange-200"
