@@ -128,7 +128,17 @@ approach before the dispatcher (slice 6) is built to depend on it.
 | 1 | Git adapter + API | opus | `GitAdapter` (subprocess + parse, fragile boundary, root-scoped), REST/WS status/diff/branches/worktrees/stage/unstage/commit, git-repo test fixture + hostile-input probes |
 | 2 | Cache-observability projection + tags | opus | pure per-session projection over `usage_block` (TTL tier / hit rate / tokens / billing bucket), reserved session tags (rule 0.7), snapshot+replay assertions over real-shaped samples |
 | 3 | Git diff UI (mobile hunk view) + stage/commit | opus | per-hunk unified diff (mobile-legible, principle 11), tap-to-stage, commit composer, branch/worktree list; **kill-criterion smoke to Wes early** |
-| 4 | Cache/billing badges + vandal warnings + polish | sonnet | TTL/billing badges + hit-rate on session header/row, cache-vandal confirm, `--report` additions (diff parse latency, projection counts) |
+| 4 | Cache badges + polish | sonnet | TTL-tier + hit-rate + raw service_tier badges joining the cache-observability projection to the session list/stream by appSessionId |
+
+**Step-4 scope call (2026-07-20, night shift — rule 0.5):** the **cache-vandal
+warning** is RESERVED, not built. It guards cache-busting actions (model switch;
+MCP churn on a live session) — but the MVP UI has NO such action (the spawn
+envelope is `{op:'spawn', channel, cwd, name?}` — no model choice, no
+live-model-switch, no MCP-churn surface). Machinery with no live consumer waits
+for its first consumer (D11 is the worked example); the warning gets built when
+the orchestration layer (post-MVP) introduces an action that busts cache.
+`--report` additions likewise deferred (low-value polish; the exit gate doesn't
+need them). Step 4 = the badges (a real consumer of the step-2 projection).
 
 ## What would be a finding
 - Any git op reachable outside the allowlist (halt — arbitrary-command threat).
