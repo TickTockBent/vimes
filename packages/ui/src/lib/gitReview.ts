@@ -70,6 +70,53 @@ export interface GitFileDiff {
   hunks: GitDiffHunk[];
 }
 
+// ── repo picking (the escape hatch beside the abstraction, pillar 7) ──
+//
+// GATE FINDING (2026-07-21): the panel used to offer the configured project
+// ROOTS. But VIMES_PROJECT_ROOTS is a CONTAINER of repos (D21: ~/projects), so
+// the picker could never name an actual repository and the diff surface was
+// unreachable. The picker now lists DISCOVERED repos (GET /api/git/repos), with
+// a free-text path field beside it — the same shape that fixed the identical gap
+// for the terminal (lib/terminalStart.ts's decideStartCwd).
+
+// One discovered repository (mirrors the daemon's GitRepoEntry).
+export interface GitRepoEntry {
+  path: string;
+  name: string;
+}
+
+export interface GitRootChoice {
+  ok: true;
+  root: string;
+}
+export interface GitRootProblem {
+  ok: false;
+  error: string;
+}
+export type GitRootDecision = GitRootChoice | GitRootProblem;
+
+// Compose the repo root the panel operates on from the editable free-text field,
+// with the selected discovered repo as the fallback. A non-empty (trimmed) field
+// WINS — that is how the user reaches a repo discovery did not surface (too deep,
+// behind an unreadable parent, a fresh clone). An empty field falls back to the
+// dropdown selection; neither present is a visible message, never a silent no-op.
+//
+// NO client-side path validation beyond non-empty: the daemon's resolveWithinRoots
+// + repoRootFor are the authoritative wall, and their refusal already surfaces
+// through the store's gitError. Duplicating a weaker check here would only invent
+// a second, wronger boundary.
+export function decideGitRoot(pathFieldValue: string, selectedRepoPath: string): GitRootDecision {
+  const trimmedFieldValue = pathFieldValue.trim();
+  if (trimmedFieldValue.length > 0) {
+    return { ok: true, root: trimmedFieldValue };
+  }
+  const trimmedSelection = selectedRepoPath.trim();
+  if (trimmedSelection.length > 0) {
+    return { ok: true, root: trimmedSelection };
+  }
+  return { ok: false, error: 'Pick a repository, or type a path inside your project roots.' };
+}
+
 // ── changed-files list (the tap-a-file-to-see-its-diff rail) ──
 
 // The three review buckets, in most-meaningful order: what is ready to commit

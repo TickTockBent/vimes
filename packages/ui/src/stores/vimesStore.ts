@@ -5,7 +5,7 @@ import { advanceOffset, deframeTerminalOutput, frameTerminalInputText } from '..
 import { parseRootsPayload } from '../lib/treeNode.js';
 import type { TerminalListItem } from '../lib/terminalList.js';
 import type { CacheObservabilityRecord } from '../lib/cacheBadge.js';
-import type { GitStatus, GitFileDiff } from '../lib/gitReview.js';
+import type { GitStatus, GitFileDiff, GitRepoEntry } from '../lib/gitReview.js';
 import type { EventRecord, SessionRecord } from '../lib/types.js';
 import { derivePushState, type PushUiState } from '../lib/pushState.js';
 import { decideReconnectAction, shouldProbeHealth, type HealthProbeOutcome } from '../lib/reconnectDecision.js';
@@ -116,6 +116,13 @@ export const useVimesStore = defineStore('vimes', () => {
   const gitStatus = ref<{ repoRoot: string; status: GitStatus } | null>(null);
   const gitDiffFiles = ref<GitFileDiff[]>([]);
   const gitError = ref<string | null>(null);
+  // The repos DISCOVERED beneath the allowlist (GET /api/git/repos). The
+  // configured project root is a container of repos, not a repo — the panel
+  // picks from these, not from the roots (2026-07-21 gate finding).
+  const gitRepos = ref<GitRepoEntry[]>([]);
+  // The last repo root the panel actually loaded, remembered across mounts so a
+  // return visit lands where the reviewer left off.
+  const lastGitRoot = ref<string>('');
 
   let terminalId: string | null = null;
   let terminalTag: number | null = null;
@@ -239,6 +246,23 @@ export const useVimesStore = defineStore('vimes', () => {
       return typeof body.detail === 'string' && body.detail.length > 0 ? `${reason}: ${body.detail}` : reason;
     } catch {
       return `git request failed (${response.status})`;
+    }
+  }
+
+  // GET /api/git/repos — the repos discovered beneath the allowlist, for the
+  // panel's picker. Depth-bounded server-side; every returned path is
+  // allowlist-verified there. A transient failure leaves the previous list in
+  // place (the free-text path field still reaches any repo regardless).
+  async function fetchGitRepos(): Promise<void> {
+    try {
+      const response = await fetch('/api/git/repos', { credentials: 'same-origin' });
+      if (!response.ok) {
+        return;
+      }
+      const parsed = (await response.json()) as { repos?: GitRepoEntry[] };
+      gitRepos.value = Array.isArray(parsed.repos) ? parsed.repos : [];
+    } catch {
+      // Transient network hiccup — the next panel mount retries.
     }
   }
 
@@ -996,6 +1020,9 @@ export const useVimesStore = defineStore('vimes', () => {
     gitStatus,
     gitDiffFiles,
     gitError,
+    gitRepos,
+    lastGitRoot,
+    fetchGitRepos,
     fetchGitStatus,
     fetchGitDiff,
     clearGitDiff,

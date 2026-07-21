@@ -1,4 +1,6 @@
 import type { Hono, Context } from 'hono';
+import { readdir } from 'node:fs/promises';
+import { basename, join, relative } from 'node:path';
 import { resolveWithinRoots, realpathProbe, type RealpathProbe } from './filePaths.js';
 import {
   GitAdapter,
@@ -69,6 +71,16 @@ export interface GitStageResponse {
 export interface GitCommitResponse {
   repoRoot: string;
   ok: true;
+}
+// One discovered repository: an ALLOWLIST-VERIFIED absolute path plus a short
+// label for the picker (the path relative to the root it was found under, or the
+// basename when the repo IS a root).
+export interface GitRepoEntry {
+  path: string;
+  name: string;
+}
+export interface GitReposResponse {
+  repos: GitRepoEntry[];
 }
 // A clean 4xx/5xx refusal — a classified reason, never a path echo, never a 500.
 export interface GitRefusalResponse {
@@ -151,6 +163,112 @@ function resolvePathParam(
   return { ok: true, absolute: resolved.absolute };
 }
 
+// ── repo discovery (GET /api/git/repos) ──────────────────────────────────────
+//
+// The configured project root is typically a CONTAINER of repos (D21:
+// VIMES_PROJECT_ROOTS = ~/projects), not a repo itself — so the review panel
+// needs the set of repos BENEATH the allowlist, not the allowlist. This walk is
+// pure fs (no git subprocess): a directory is a repo when it contains a `.git`
+// ENTRY, which may be a directory OR a FILE (worktrees and submodules write a
+// `.git` file holding a gitdir: pointer).
+//
+// Bounds, deliberately conservative — this runs on every panel mount:
+//   • depth ≤ MAX_REPO_SCAN_DEPTH levels BELOW each root (roots/a/b/c is found,
+//     one level deeper is not).
+//   • once a repo is found we do NOT descend into it (nested submodules are not
+//     listed as separate top-level repos, and a repo's own tree is never walked).
+//   • `node_modules`, `.git` and every dot-directory are skipped entirely.
+//   • only real directories are descended (a symlinked entry reports
+//     isDirectory() === false), so the walk cannot loop through a symlink cycle.
+//   • an unreadable or vanished directory (EACCES/ENOENT) is SKIPPED, never
+//     thrown — discovery degrades to fewer results, never to a 500.
+//
+// EVERY returned path is re-verified through resolveWithinRoots before it enters
+// the response, exactly like a request-derived root: nothing is handed back that
+// was not proven to sit within the allowlist.
+const MAX_REPO_SCAN_DEPTH = 3;
+const SKIPPED_DIRECTORY_NAMES = new Set(['node_modules', '.git']);
+
+async function scanDirectoryForRepos(
+  directoryPath: string,
+  remainingDepth: number,
+  rootCanonicalPath: string,
+  allowedRoots: readonly string[],
+  realpath: RealpathProbe,
+  discoveredByPath: Map<string, GitRepoEntry>,
+): Promise<void> {
+  let directoryEntries;
+  try {
+    directoryEntries = await readdir(directoryPath, { withFileTypes: true });
+  } catch {
+    // EACCES / ENOENT / ENOTDIR — skip this branch of the tree entirely.
+    return;
+  }
+
+  // A `.git` entry of ANY type (dir or file) marks a repository.
+  const containsGitEntry = directoryEntries.some((entry) => entry.name === '.git');
+  if (containsGitEntry) {
+    // Allowlist-verify before recording — never return an unverified path.
+    const verifiedRepo = resolveWithinRoots(directoryPath, allowedRoots, realpath);
+    if (verifiedRepo.ok && !discoveredByPath.has(verifiedRepo.absolute)) {
+      const relativeLabel = relative(rootCanonicalPath, verifiedRepo.absolute);
+      discoveredByPath.set(verifiedRepo.absolute, {
+        path: verifiedRepo.absolute,
+        name: relativeLabel === '' ? basename(verifiedRepo.absolute) : relativeLabel,
+      });
+    }
+    // Do not descend INTO a repository.
+    return;
+  }
+
+  if (remainingDepth <= 0) {
+    return;
+  }
+  for (const entry of directoryEntries) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+    if (SKIPPED_DIRECTORY_NAMES.has(entry.name) || entry.name.startsWith('.')) {
+      continue;
+    }
+    await scanDirectoryForRepos(
+      join(directoryPath, entry.name),
+      remainingDepth - 1,
+      rootCanonicalPath,
+      allowedRoots,
+      realpath,
+      discoveredByPath,
+    );
+  }
+}
+
+export async function discoverGitRepos(
+  allowedRoots: readonly string[],
+  realpath: RealpathProbe,
+): Promise<GitRepoEntry[]> {
+  const discoveredByPath = new Map<string, GitRepoEntry>();
+  for (const root of allowedRoots) {
+    // The root itself goes through the same gate (a root that no longer exists,
+    // or that canonicalizes outside the allowlist, is simply not scanned).
+    const verifiedRoot = resolveWithinRoots(root, allowedRoots, realpath);
+    if (!verifiedRoot.ok) {
+      continue;
+    }
+    await scanDirectoryForRepos(
+      verifiedRoot.absolute,
+      MAX_REPO_SCAN_DEPTH,
+      verifiedRoot.absolute,
+      allowedRoots,
+      realpath,
+      discoveredByPath,
+    );
+  }
+  // Path-sorted for a stable, jitter-free picker order between fetches.
+  return [...discoveredByPath.values()].sort((first, second) =>
+    first.path < second.path ? -1 : first.path > second.path ? 1 : 0,
+  );
+}
+
 async function readJsonBody(context: Context): Promise<Record<string, unknown> | null> {
   try {
     const body: unknown = await context.req.json();
@@ -166,6 +284,15 @@ async function readJsonBody(context: Context): Promise<Record<string, unknown> |
 export function registerGitApi(app: Hono, deps: GitApiDeps): void {
   const realpath = deps.realpath ?? realpathProbe;
   const adapter = new GitAdapter({ runner: deps.runner });
+
+  // GET /api/git/repos — the repos discovered beneath the allowlist. Pure fs
+  // (no git subprocess), so there is no op-error surface: an unreadable subtree
+  // yields fewer repos, never a failure.
+  app.get('/api/git/repos', async (context) => {
+    const repos = await discoverGitRepos(deps.getAllowedRoots(), realpath);
+    const response: GitReposResponse = { repos };
+    return context.json(response);
+  });
 
   // GET /api/git/status?root=<r>
   app.get('/api/git/status', async (context) => {

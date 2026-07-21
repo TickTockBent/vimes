@@ -1,8 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue';
 import { useVimesStore } from '../stores/vimesStore.js';
-import { effectiveRoots } from '../lib/treeNode.js';
-import { diffLineStyle, groupStatusRows, summarizeDiffStat, type GitStatusRow } from '../lib/gitReview.js';
+import { decideGitRoot, diffLineStyle, groupStatusRows, summarizeDiffStat, type GitStatusRow } from '../lib/gitReview.js';
 
 // Git review panel — the PRIMARY HUMAN JOB (spec §3.4: reviewing agent diffs) and
 // the slice-4 KILL CRITERION: the mobile hunk diff must be legible enough to
@@ -17,12 +16,23 @@ import { diffLineStyle, groupStatusRows, summarizeDiffStat, type GitStatusRow } 
 const emit = defineEmits<{ back: [] }>();
 const store = useVimesStore();
 
-// Root candidates prefer the daemon's fetched allowlist, falling back to live-
-// session cwds — the same union the terminal/file/search views use. The daemon
-// re-resolves every root/path against the allowlist server-side, so no client-
-// side path validation beyond a non-empty selection.
-const roots = computed(() => effectiveRoots(store.roots, store.sessions));
-const selectedRoot = ref<string>('');
+// The repo picker (2026-07-21 gate finding). The panel used to offer the
+// configured project ROOTS — but VIMES_PROJECT_ROOTS is a CONTAINER of repos
+// (D21: ~/projects), so no entry was ever a repository and the diff surface was
+// unreachable. It now picks from DISCOVERED repos (GET /api/git/repos), with the
+// free-text path field beside it as the escape hatch (pillar 7) for a repo
+// discovery didn't surface — exactly the shape that fixed the terminal's
+// identical gap. The daemon re-resolves every root against the allowlist, so
+// there is NO client-side path validation beyond non-empty (see decideGitRoot).
+const repos = computed(() => store.gitRepos);
+const selectedRepoPath = ref<string>('');
+const rootPathField = ref<string>('');
+// The root actually loaded — only ever set through decideGitRoot, so the status
+// fetches never chase keystrokes in the free-text field.
+const activeRoot = ref<string>('');
+// A local (client-side) notice for "you picked nothing" — daemon refusals go to
+// store.gitError, which stays the authoritative channel.
+const rootNotice = ref<string | null>(null);
 
 // The file whose diff is on screen (null = the changed-files list). Two-step back,
 // like TerminalView: from a diff, return to the list; from the list, leave home.
@@ -74,18 +84,36 @@ const changedFileCount = computed(
 const activeDiffStat = computed(() => summarizeDiffStat(store.gitDiffFiles));
 
 async function refreshStatus(): Promise<void> {
-  if (selectedRoot.value === '') {
+  if (activeRoot.value === '') {
     return;
   }
-  await store.fetchGitStatus(selectedRoot.value);
+  await store.fetchGitStatus(activeRoot.value);
+}
+
+// Apply the current picker + field state as the repo root under review. The
+// free-text field wins when non-empty; otherwise the dropdown selection. An
+// unusable pair surfaces a visible notice, never a silent no-op.
+async function applyRoot(): Promise<void> {
+  const decision = decideGitRoot(rootPathField.value, selectedRepoPath.value);
+  if (!decision.ok) {
+    rootNotice.value = decision.error;
+    return;
+  }
+  rootNotice.value = null;
+  activeRoot.value = decision.root;
+  store.lastGitRoot = decision.root;
+  activeFilePath.value = null;
+  store.clearGitDiff();
+  commitNotice.value = null;
+  await refreshStatus();
 }
 
 // Load (or reload) the active file's diff for the current worktree/staged toggle.
 async function loadActiveDiff(): Promise<void> {
-  if (selectedRoot.value === '' || activeFilePath.value === null) {
+  if (activeRoot.value === '' || activeFilePath.value === null) {
     return;
   }
-  await store.fetchGitDiff(selectedRoot.value, activeFilePath.value, diffShowsStaged.value);
+  await store.fetchGitDiff(activeRoot.value, activeFilePath.value, diffShowsStaged.value);
 }
 
 // Tap a file → open its diff. Default to whichever side has content: if the file
@@ -102,29 +130,29 @@ function backToList(): void {
 }
 
 async function stageRow(row: GitStatusRow): Promise<void> {
-  if (selectedRoot.value === '') {
+  if (activeRoot.value === '') {
     return;
   }
   commitNotice.value = null;
-  await store.stageGitPath(selectedRoot.value, row.path);
+  await store.stageGitPath(activeRoot.value, row.path);
 }
 
 async function unstageRow(row: GitStatusRow): Promise<void> {
-  if (selectedRoot.value === '') {
+  if (activeRoot.value === '') {
     return;
   }
   commitNotice.value = null;
-  await store.unstageGitPath(selectedRoot.value, row.path);
+  await store.unstageGitPath(activeRoot.value, row.path);
 }
 
 async function commit(): Promise<void> {
   const message = commitMessage.value.trim();
-  if (message === '' || committing.value || selectedRoot.value === '') {
+  if (message === '' || committing.value || activeRoot.value === '') {
     return;
   }
   committing.value = true;
   commitNotice.value = null;
-  const result = await store.commitGit(selectedRoot.value, message);
+  const result = await store.commitGit(activeRoot.value, message);
   committing.value = false;
   if (result.ok) {
     commitMessage.value = '';
@@ -132,12 +160,15 @@ async function commit(): Promise<void> {
   }
 }
 
-// Selecting a different root resets the view to that repo's list and refetches.
-watch(selectedRoot, () => {
-  activeFilePath.value = null;
-  store.clearGitDiff();
-  commitNotice.value = null;
-  void refreshStatus();
+// Picking a repo from the dropdown prefills the free-text field with it (so the
+// field always shows what will be used, and stays editable for a subpath) and
+// loads that repo immediately — a tap is the whole interaction on mobile.
+watch(selectedRepoPath, (repoPath) => {
+  if (repoPath === '') {
+    return;
+  }
+  rootPathField.value = repoPath;
+  void applyRoot();
 });
 
 // Flipping the worktree/staged toggle reloads the active file's diff.
@@ -145,9 +176,24 @@ watch(diffShowsStaged, () => {
   void loadActiveDiff();
 });
 
-onMounted(() => {
-  if (roots.value.length > 0) {
-    selectedRoot.value = roots.value[0]!;
+onMounted(async () => {
+  await store.fetchGitRepos();
+  // Prefer the repo the reviewer was last on (remembered in the store across
+  // mounts); otherwise the first discovered repo. Neither → the free-text field
+  // is the way in, and the template says so.
+  const rememberedRoot = store.lastGitRoot;
+  const remembered = repos.value.find((repo) => repo.path === rememberedRoot);
+  if (remembered !== undefined) {
+    selectedRepoPath.value = remembered.path;
+    return;
+  }
+  if (rememberedRoot !== '') {
+    rootPathField.value = rememberedRoot;
+    await applyRoot();
+    return;
+  }
+  if (repos.value.length > 0) {
+    selectedRepoPath.value = repos.value[0]!.path;
   }
 });
 </script>
@@ -184,19 +230,48 @@ onMounted(() => {
     <div v-if="!activeFilePath" class="min-h-0 flex-1 overflow-y-auto p-4">
       <div class="mx-auto flex max-w-2xl flex-col gap-4">
         <section class="flex flex-col gap-2">
-          <label class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
-            Repository root
+          <label for="git-repo-picker" class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+            Repository
           </label>
           <select
-            v-model="selectedRoot"
+            v-if="repos.length > 0"
+            id="git-repo-picker"
+            v-model="selectedRepoPath"
             class="min-h-[44px] w-full rounded-md border border-slate-300 bg-white px-2 text-sm dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
           >
-            <option v-for="root in roots" :key="root" :value="root">{{ root }}</option>
+            <option v-for="repo in repos" :key="repo.path" :value="repo.path">{{ repo.name }}</option>
           </select>
-          <p v-if="roots.length === 0" class="text-sm text-slate-500 dark:text-slate-400">
-            No workspace roots yet. Start or discover a session first — its working directory becomes a repo you can review.
+          <p v-else class="text-sm text-slate-500 dark:text-slate-400">
+            No git repos found under your project roots — type a path below.
           </p>
-          <p v-else class="text-xs text-slate-500 dark:text-slate-400">
+          <!-- The escape hatch beside the abstraction: any path the daemon's
+               allowlist accepts, including a repo discovery didn't reach. -->
+          <label class="flex flex-col gap-1 text-xs text-slate-500 dark:text-slate-400">
+            Repository path (edit to reach a repo not listed above)
+            <input
+              v-model="rootPathField"
+              type="text"
+              inputmode="url"
+              autocapitalize="off"
+              autocorrect="off"
+              spellcheck="false"
+              placeholder="/home/you/projects/some/repo"
+              class="min-h-[44px] w-full rounded-md border border-slate-300 px-2 font-mono text-sm dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+              @keyup.enter="applyRoot"
+            />
+          </label>
+          <div class="flex items-center gap-3">
+            <button
+              type="button"
+              class="min-h-[44px] rounded-md border border-slate-300 px-4 text-sm font-semibold text-slate-700 active:bg-slate-100 dark:border-slate-700 dark:text-slate-200 dark:active:bg-slate-800"
+              @click="applyRoot"
+            >
+              Load repo
+            </button>
+            <span v-if="activeRoot" class="truncate font-mono text-xs text-slate-500 dark:text-slate-400">{{ activeRoot }}</span>
+          </div>
+          <p v-if="rootNotice" class="text-sm text-amber-700 dark:text-amber-300">{{ rootNotice }}</p>
+          <p v-if="activeRoot" class="text-xs text-slate-500 dark:text-slate-400">
             <span class="font-medium text-slate-700 dark:text-slate-300">{{ branchLabel || '—' }}</span>
             · {{ changedFileCount }} changed {{ changedFileCount === 1 ? 'file' : 'files' }}
           </p>
@@ -267,7 +342,7 @@ onMounted(() => {
         </template>
 
         <!-- Commit composer -->
-        <section v-if="roots.length > 0" class="flex flex-col gap-2 rounded-lg border border-slate-200 p-3 dark:border-slate-800">
+        <section v-if="activeRoot" class="flex flex-col gap-2 rounded-lg border border-slate-200 p-3 dark:border-slate-800">
           <label for="git-commit-message" class="text-sm font-medium">Commit staged changes</label>
           <textarea
             id="git-commit-message"
