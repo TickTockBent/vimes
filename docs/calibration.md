@@ -549,6 +549,83 @@ first-party Claude Code, `-p` or not, is not. **This answers Wes's standing
 dongfu question: those runs burned the 5-hour/weekly windows, not a $100
 automation bucket.** Promote D24 to a decision on his sign-off.
 
+### 2026-07-21 — Unit A shipped: window identity tolerates resets_at jitter; tolerance + OR both signed off
+
+Fix for the 33-notification bug (`7e696c4`). `firedAlertIsStillBinding` no longer
+string-compares `resetsAt`; it calls `sameWindowIdentity`, which absorbs
+sub-second jitter with a tolerance band while treating a null↔non-null transition
+(a real rollover, where the endpoint DROPS the field) as a hard change never
+covered by tolerance.
+
+**Tolerance signed off: `WINDOW_IDENTITY_TOLERANCE_MS_PREVIEW = 60_000`
+(⟨tune PREVIEW⟩, unpinned).** Chosen against measured reality, not guessed. Worst
+intra-window `resets_at` spread across all 325 live samples — **1.877 s**
+(session, 20:40 window), which straddles a whole-second boundary, so
+truncate-to-seconds and a 1 s band BOTH still re-fire. 60 s sits ~32× above the
+worst observed jitter and ~1/300 of the shortest real window (5 h), i.e. in the
+middle of the four-order-of-magnitude gap between source noise (~2 s) and a
+genuine window change (5 h / 7 d) rather than just above the noise we happened to
+sample. Stated limit: a meter whose real window advanced by < 60 s would not
+re-arm; no such meter exists in VIMES, and adding one revisits the band.
+
+**Signed off: keep the OR — `resetsAt`-changed may re-arm ALONE; no
+corroboration required.** The defect was a comparison bug, not a fusion bug —
+signal 1 announced "changed" when nothing had; with tolerance it announces change
+only on a >60 s move or an appear/disappear. Requiring AND-corroboration would
+instead reintroduce the step-4a hazard: the percent-drop signal *abstains* when
+no drop sits in bounded history (normal for a weekly meter), and if abstention
+counted as "same window" under an AND, an alert fired last week would stay binding
+**forever** and the new window's crossing would never fire — a **silent** false
+negative (emits no event, invisible in the log). Trading 33 loud false positives
+for an undetectable false negative is the wrong direction for a system built on
+"a meter that lies is worse than no meter". A correctly-scoped AND is a no-op on
+every live case (both real rollovers carried both signals), so it buys nothing now
+and adds a failure mode later.
+
+**Verified by the orchestrator independently** (the fix was committed by a forked
+sibling session — see the process note): full ci-gate green, 844 tests / 66 files,
+6/6 profiles byte-identical; and an INDEPENDENT sabotage — reverting
+`sameWindowIdentity` to `!==` — reproduced the exact production signature ("got
+33") and reddened 11 tests, while the genuine-rollover cases (vanish / reappear /
+percent-drop) stayed green. The tolerance measurement was re-run from the live DB
+and matched (1.877 s worst).
+
+**Deferred, not lost:** the agent's note that if `MeterHistorySample` carried
+`resetsAt` per sample, window identity would become a property of the history and
+the two re-arm signals could collapse into one detector (principle 9). A
+future-slice cleanup, recorded so it is not rediscovered.
+
+### 2026-07-21 — PROCESS FAILURE: a forked session ran a duplicate agent, and I killed the wrong process
+
+**What happened.** Wes works remotely, and a session **fork** left two live
+sessions sharing one id (`ffb57f73…`) and one in-memory cron. At the 16:40 reset
+the cron fired in BOTH, so two Unit A agents ran concurrently in one working tree
+— the exact "never two work-agents in parallel" rule the whole workflow forbids.
+Symptoms the agent reported: its checkpoint file pre-existing, `budgetWall.ts`
+changing under it mid-run, a transient `__probe.test.ts` appearing and vanishing.
+
+**My compounding error.** Told "kill it", I killed PID 3358181 without walking
+`/proc` ancestry first — and it was the session I was talking to Wes THROUGH. I
+had run that exact ancestry check before every daemon restart today specifically
+to avoid self-kill, and did not reach for it when it mattered most. The process
+had started at 16:15:20, one minute before Wes said "arrived at home and opened
+you up here" — I had the evidence to identify it and read it as a stale duplicate.
+
+**Two lessons, both general:**
+1. **A session-only timer in a forked session is not unique.** "Did my scheduled
+   thing survive?" and "is my scheduled thing the ONLY one?" are different
+   questions; I asked only the first. A forked session inherits the cron, so
+   fan-out on fire is the default, not the exception.
+2. **Before killing ANY process, run the same `/proc` ancestry check used before a
+   daemon restart.** The self-kill hazard is not specific to `systemctl restart`;
+   it applies to any `kill`. I had the tool and skipped it.
+
+**Outcome.** The tree survived — the sibling agents were solving the same problem
+from the same evidence and one deliberately backed out its duplicate; the survivor
+committed a fix that the orchestrator then verified from scratch (above). But that
+is luck bounding the blast radius, not process. Recorded so the fork case is
+handled by check, not by luck, next time.
+
 ### 2026-07-21 — the usage endpoint DOES rate-limit (429), and the honest-degradation path proved itself under a REAL failure
 
 **Self-inflicted, which makes it better evidence.** The orchestrator started a
