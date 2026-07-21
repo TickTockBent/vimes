@@ -27,6 +27,21 @@ import { fileURLToPath } from 'node:url';
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));
 const iconDirectory = join(scriptDirectory, '..', 'packages', 'ui', 'public', 'icons');
 
+// ── ICON_VERSION — bump this whenever the artwork changes ────────────────────
+// Icon filenames carry the version because NOTHING else busts the caches in
+// front of them. The daemon serves static files with only a content-type (no
+// Cache-Control), so Cloudflare edge-caches .png by extension; the service
+// worker precaches by exact URL; and Android bakes the manifest icon into a
+// generated WebAPK it refreshes on its own schedule. A stable filename is
+// therefore served stale by all three indefinitely — observed 2026-07-21, when a
+// replaced icon kept returning the old image even at its direct URL.
+// Changing the URL defeats all three at once, and the changed manifest is also
+// what prompts Android to regenerate the WebAPK.
+// After bumping: update the three references in packages/ui/vite.config.ts
+// (manifest icons) and packages/ui/index.html (favicon links) — the script
+// prints them at the end.
+const ICON_VERSION = 'v2';
+
 // ── Geometry + palette (the single source of truth; the SVG and the PNGs are
 // both generated from these, so they can never drift apart). Design space is
 // 512x512; the raster scales it to whatever size is requested.
@@ -234,16 +249,22 @@ function buildSvg() {
 mkdirSync(iconDirectory, { recursive: true });
 
 const outputs = [
-  { file: 'icon-192.png', size: 192, fullBleed: false },
-  { file: 'icon-512.png', size: 512, fullBleed: false },
-  { file: 'icon-512-maskable.png', size: 512, fullBleed: true },
+  { file: `icon-192.${ICON_VERSION}.png`, size: 192, fullBleed: false },
+  { file: `icon-512.${ICON_VERSION}.png`, size: 512, fullBleed: false },
+  { file: `icon-512-maskable.${ICON_VERSION}.png`, size: 512, fullBleed: true },
 ];
 
-writeFileSync(join(iconDirectory, 'icon.svg'), buildSvg(), 'utf8');
-console.log('wrote icon.svg');
+const svgFile = `icon.${ICON_VERSION}.svg`;
+writeFileSync(join(iconDirectory, svgFile), buildSvg(), 'utf8');
+console.log(`wrote ${svgFile}`);
 
 for (const output of outputs) {
   const pixels = renderRgba(output.size, { fullBleed: output.fullBleed });
   writeFileSync(join(iconDirectory, output.file), encodePng(output.size, pixels));
   console.log(`wrote ${output.file} (${output.size}x${output.size}${output.fullBleed ? ', full-bleed maskable' : ''})`);
 }
+
+console.log(`\nICON_VERSION=${ICON_VERSION}. Reference these exact names:`);
+console.log(`  packages/ui/vite.config.ts  manifest.icons -> icons/icon-192.${ICON_VERSION}.png, icons/icon-512.${ICON_VERSION}.png, icons/icon-512-maskable.${ICON_VERSION}.png`);
+console.log(`  packages/ui/index.html      favicon links  -> /icons/${svgFile}, /icons/icon-192.${ICON_VERSION}.png`);
+console.log('Delete any older-version icon files so they are not precached.');
