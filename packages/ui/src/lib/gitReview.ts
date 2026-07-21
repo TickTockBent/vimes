@@ -297,3 +297,102 @@ export function summarizeDiffStat(files: readonly GitFileDiff[]): DiffStat {
   }
   return { filesChanged: files.length, additions, deletions };
 }
+
+// ── edit-from-diff: the review → fix → re-review round trip ──────────────────
+//
+// From the diff screen an Edit button opens the CM6 editor on that file and
+// comes back to a REFRESHED diff. Three decisions live here (pure, tested) so
+// GitPanel.vue and App.vue stay declarative:
+//
+//   1. absoluteRepoFilePath — git status paths are REPO-RELATIVE; the editor
+//      route wants an ABSOLUTE path. Conflating the two is exactly the semantics
+//      bug D25 records, so the join is a named, tested function rather than an
+//      inline concat at the call site.
+//   2. decideEditorReturn — a WHITELIST of return targets (only 'git' today).
+//      Anything absent or unrecognized falls back to the file tree, the
+//      pre-existing behavior, so the normal editor back path cannot regress.
+//      Deliberately NOT a general redirect mechanism.
+//   3. decideDiffRestore — on GitPanel remount, whether the remembered diff
+//      context still names a changed file (restore it) or not (fall back to the
+//      list with a visible reason, never an empty diff screen).
+
+// Join a repo root and a repo-relative path into the absolute path the editor
+// route needs. An input that is ALREADY absolute is returned as-is (the caller
+// may hold either shape); trailing root slashes never produce a double slash;
+// empty inputs degrade to the one non-empty side rather than to '/'-noise.
+export function absoluteRepoFilePath(repoRoot: string, repoRelativePath: string): string {
+  const trimmedRelativePath = repoRelativePath.trim();
+  const trimmedRepoRoot = repoRoot.trim();
+  // Already absolute → the join would be wrong; hand it back untouched.
+  if (trimmedRelativePath.startsWith('/')) {
+    return trimmedRelativePath;
+  }
+  if (trimmedRepoRoot === '') {
+    return trimmedRelativePath;
+  }
+  const rootWithoutTrailingSlash = trimmedRepoRoot.replace(/\/+$/, '');
+  if (trimmedRelativePath === '') {
+    return rootWithoutTrailingSlash === '' ? '/' : rootWithoutTrailingSlash;
+  }
+  // git never emits './x', but a hand-built context might; strip it so the join
+  // cannot produce '/repo/./x'.
+  const relativeWithoutDotPrefix = trimmedRelativePath.replace(/^(?:\.\/+)+/, '');
+  return `${rootWithoutTrailingSlash}/${relativeWithoutDotPrefix}`;
+}
+
+// Where EditorView's `back` should land. 'git' is the ONLY recognized non-default
+// target; every other value (absent, empty, unknown, spoofed in the hash) yields
+// 'files' — today's behavior.
+export type EditorReturnTarget = 'git' | 'files';
+
+export function decideEditorReturn(returnToParam: string | null): EditorReturnTarget {
+  return returnToParam === 'git' ? 'git' : 'files';
+}
+
+// The diff the reviewer left behind when tapping Edit. Lives in the STORE (like
+// lastGitRoot), because GitPanel unmounts for the editor visit.
+export interface GitDiffContext {
+  // The repo root the panel had LOADED (the lastGitRoot-shaped identity), so a
+  // remount against a different repo does not resurrect a foreign file's diff.
+  repoRoot: string;
+  // Repo-relative, exactly as `git status` reported it — the operand the diff /
+  // stage APIs take.
+  repoRelativePath: string;
+  // Which side of the diff toggle was on screen (worktree vs staged).
+  showsStaged: boolean;
+}
+
+export type GitDiffRestoreDecision =
+  // Nothing to restore (no context, or it belongs to another repo). The panel
+  // opens on the changed-files list, unchanged from before this feature.
+  | { action: 'none' }
+  // The remembered file is still changed — reopen its diff on the remembered
+  // side and re-fetch.
+  | { action: 'restore'; repoRelativePath: string; showsStaged: boolean }
+  // The remembered file is no longer in status (the edit made it clean, or it
+  // was committed elsewhere) — show the list plus a reason, never an empty diff.
+  | { action: 'fallback'; repoRelativePath: string };
+
+export function decideDiffRestore(
+  rememberedContext: GitDiffContext | null,
+  loadedRepoRoot: string,
+  changedFilePaths: readonly string[],
+): GitDiffRestoreDecision {
+  if (rememberedContext === null) {
+    return { action: 'none' };
+  }
+  if (rememberedContext.repoRelativePath === '') {
+    return { action: 'none' };
+  }
+  if (rememberedContext.repoRoot !== loadedRepoRoot) {
+    return { action: 'none' };
+  }
+  if (!changedFilePaths.includes(rememberedContext.repoRelativePath)) {
+    return { action: 'fallback', repoRelativePath: rememberedContext.repoRelativePath };
+  }
+  return {
+    action: 'restore',
+    repoRelativePath: rememberedContext.repoRelativePath,
+    showsStaged: rememberedContext.showsStaged,
+  };
+}

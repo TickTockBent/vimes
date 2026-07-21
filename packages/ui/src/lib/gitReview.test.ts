@@ -1,11 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import {
+  absoluteRepoFilePath,
+  decideDiffRestore,
+  decideEditorReturn,
   decideGitRoot,
   deriveGitStatusRow,
   deriveGitStatusRows,
   diffLineStyle,
   groupStatusRows,
   summarizeDiffStat,
+  type GitDiffContext,
   type GitFileDiff,
   type GitStatusEntry,
 } from './gitReview.js';
@@ -202,5 +206,123 @@ describe('decideGitRoot — repo picker + free-text escape hatch', () => {
   it('passes hostile-looking paths through untouched — the daemon is the wall', () => {
     expect(decideGitRoot('../../etc', '/home/wes/projects')).toEqual({ ok: true, root: '../../etc' });
     expect(decideGitRoot('/etc/shadow', '')).toEqual({ ok: true, root: '/etc/shadow' });
+  });
+});
+
+// ── edit-from-diff: the review → fix → re-review round trip ──────────────────
+
+describe('absoluteRepoFilePath', () => {
+  // D25: `git status` paths are REPO-RELATIVE, the editor route wants ABSOLUTE.
+  // Conflating them shipped a broken Edit button once already.
+  it('joins a repo root and a repo-relative path', () => {
+    expect(absoluteRepoFilePath('/home/wes/projects/vimes', 'packages/ui/src/App.vue')).toBe(
+      '/home/wes/projects/vimes/packages/ui/src/App.vue',
+    );
+  });
+
+  it('never produces a double slash when the root has a trailing slash', () => {
+    expect(absoluteRepoFilePath('/home/wes/projects/vimes/', 'README.md')).toBe('/home/wes/projects/vimes/README.md');
+    expect(absoluteRepoFilePath('/home/wes/projects/vimes///', 'README.md')).toBe('/home/wes/projects/vimes/README.md');
+  });
+
+  it('returns an already-absolute path untouched', () => {
+    expect(absoluteRepoFilePath('/home/wes/projects/vimes', '/etc/hosts')).toBe('/etc/hosts');
+    expect(absoluteRepoFilePath('', '/home/wes/notes.md')).toBe('/home/wes/notes.md');
+  });
+
+  it('handles the filesystem root as the repo root', () => {
+    expect(absoluteRepoFilePath('/', 'srv/app.ts')).toBe('/srv/app.ts');
+  });
+
+  it('degrades to the one non-empty side rather than emitting slash noise', () => {
+    expect(absoluteRepoFilePath('', 'src/app.ts')).toBe('src/app.ts');
+    expect(absoluteRepoFilePath('/home/wes/repo', '')).toBe('/home/wes/repo');
+    expect(absoluteRepoFilePath('', '')).toBe('');
+    expect(absoluteRepoFilePath('   ', '  ')).toBe('');
+  });
+
+  it('trims surrounding whitespace on both sides', () => {
+    expect(absoluteRepoFilePath('  /home/wes/repo  ', '  src/app.ts  ')).toBe('/home/wes/repo/src/app.ts');
+  });
+
+  it('strips a leading ./ so the join cannot emit /repo/./file', () => {
+    expect(absoluteRepoFilePath('/home/wes/repo', './src/app.ts')).toBe('/home/wes/repo/src/app.ts');
+  });
+
+  // The daemon re-resolves every path against the allowlist; the helper must not
+  // invent a weaker client-side wall (same stance as decideGitRoot).
+  it('passes traversal-looking segments through — the daemon is the wall', () => {
+    expect(absoluteRepoFilePath('/home/wes/repo', '../../etc/shadow')).toBe('/home/wes/repo/../../etc/shadow');
+  });
+});
+
+describe('decideEditorReturn', () => {
+  it('routes back to the git panel only for the whitelisted value', () => {
+    expect(decideEditorReturn('git')).toBe('git');
+  });
+
+  // The pre-existing file-tree back path must not regress: everything that is not
+  // exactly 'git' lands on the file tree, as it always did.
+  it('falls back to the file tree for absent, empty, or unknown values', () => {
+    expect(decideEditorReturn(null)).toBe('files');
+    expect(decideEditorReturn('')).toBe('files');
+    expect(decideEditorReturn('files')).toBe('files');
+    expect(decideEditorReturn('GIT')).toBe('files');
+    expect(decideEditorReturn(' git ')).toBe('files');
+    expect(decideEditorReturn('https://evil.example')).toBe('files');
+  });
+});
+
+describe('decideDiffRestore', () => {
+  const repoRoot = '/home/wes/projects/vimes';
+  function context(overrides: Partial<GitDiffContext> = {}): GitDiffContext {
+    return { repoRoot, repoRelativePath: 'packages/ui/src/App.vue', showsStaged: false, ...overrides };
+  }
+
+  it('restores the remembered diff when the file is still changed', () => {
+    const decision = decideDiffRestore(context({ showsStaged: true }), repoRoot, [
+      'packages/ui/src/App.vue',
+      'README.md',
+    ]);
+    expect(decision).toEqual({
+      action: 'restore',
+      repoRelativePath: 'packages/ui/src/App.vue',
+      showsStaged: true,
+    });
+  });
+
+  it('does nothing when there is no remembered context', () => {
+    expect(decideDiffRestore(null, repoRoot, ['README.md'])).toEqual({ action: 'none' });
+  });
+
+  // Picking a different repo must not resurrect a foreign file's diff.
+  it('does nothing when the remembered context belongs to another repo', () => {
+    expect(decideDiffRestore(context(), '/home/wes/projects/other', ['packages/ui/src/App.vue'])).toEqual({
+      action: 'none',
+    });
+  });
+
+  it('does nothing for an empty remembered path', () => {
+    expect(decideDiffRestore(context({ repoRelativePath: '' }), repoRoot, [])).toEqual({ action: 'none' });
+  });
+
+  // The edit reverted the file to clean (or it was committed elsewhere): show the
+  // list with a reason, never an empty diff screen.
+  it('falls back to the file list when the remembered file is no longer changed', () => {
+    expect(decideDiffRestore(context(), repoRoot, ['README.md'])).toEqual({
+      action: 'fallback',
+      repoRelativePath: 'packages/ui/src/App.vue',
+    });
+    expect(decideDiffRestore(context(), repoRoot, [])).toEqual({
+      action: 'fallback',
+      repoRelativePath: 'packages/ui/src/App.vue',
+    });
+  });
+
+  it('matches on the exact repo-relative path, not a prefix', () => {
+    expect(decideDiffRestore(context({ repoRelativePath: 'src/app.ts' }), repoRoot, ['src/app.ts.bak'])).toEqual({
+      action: 'fallback',
+      repoRelativePath: 'src/app.ts',
+    });
   });
 });
