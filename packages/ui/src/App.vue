@@ -67,6 +67,16 @@ const showFileTree = computed(() => route.value.routePath === '/files' && editor
 const showSearch = computed(() => route.value.routePath === '/search');
 const showTerminal = computed(() => route.value.routePath === '/terminal');
 const showGit = computed(() => route.value.routePath === '/git');
+// `/#/meters` — the deep-link target of the deployed threshold-notification push
+// (slice 5 step 4b). It used to fall through to SessionListView by ACCIDENT,
+// which was correct only because the meters strip happens to live there. Claim
+// it deliberately: same view, but the strip arrives EXPANDED, because a user who
+// tapped a usage alert wants every meter with its countdown, age, freshness,
+// burn rate and exhaustion projection — not a one-line summary they must then
+// find and tap. Deliberately NOT a separate lazily-loaded view: SessionListView
+// is already statically imported, so this adds no chunk and cannot disturb the
+// build-manifest lazy-chunk gate.
+const showMeters = computed(() => route.value.routePath === '/meters');
 
 function navigateToSession(appSessionId: string): void {
   window.location.hash = `#/session/${encodeURIComponent(appSessionId)}`;
@@ -160,6 +170,7 @@ const bannerText = computed(() => {
     <StreamView v-else-if="activeSessionId" :app-session-id="activeSessionId" @back="navigateHome" />
     <SessionListView
       v-else
+      :expand-meters="showMeters"
       @open="navigateToSession"
       @open-files="navigateToFiles"
       @open-search="navigateToSearch"

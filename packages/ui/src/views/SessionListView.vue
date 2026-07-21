@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useVimesStore } from '../stores/vimesStore.js';
 import { deriveSessionRow } from '../lib/sessionRow.js';
 import {
@@ -11,11 +11,19 @@ import {
 import { isBellActionable, pushStateLabel } from '../lib/pushState.js';
 import { deriveCacheBadge, ttlTierLabel, ttlTierTone, type CacheTtlTone } from '../lib/cacheBadge.js';
 import {
-  deriveMeterRows,
-  METER_STALE_AFTER_MS_PREVIEW,
+  refreshNotice,
+  usageStripModel,
   type MeterRow,
   type MeterTone,
+  type RefreshNoticeTone,
 } from '../lib/meterDisplay.js';
+
+// `expandMeters` is how the `/#/meters` route is claimed (slice 5 step 4c): the
+// threshold-notification push deep-links there, and the user who tapped a usage
+// alert wants every meter, not the one-line summary. It reuses the strip's own
+// expanded state rather than building a second surface — no new component, no
+// new lazy chunk, nothing for the build-manifest gate to trip over.
+const props = withDefaults(defineProps<{ expandMeters?: boolean }>(), { expandMeters: false });
 
 const emit = defineEmits<{
   open: [appSessionId: string];
@@ -143,30 +151,63 @@ function cacheBadgeFor(appSessionId: string) {
   };
 }
 
-// ── Usage meters strip (slice 5 step 3) — "can I afford to start this?" on the
-// home screen. Every derivation is in lib/meterDisplay.ts; this block only maps
-// semantic tone keys to colour classes and owns the ticking clock.
+// ── Usage meters strip (slice 5 step 3, extended in step 4c) — "can I afford to
+// start this?" on the home screen. Every derivation is in lib/meterDisplay.ts;
+// this block only maps semantic tone keys to colour classes and owns the
+// ticking clock.
 //
 // THE INTEGRITY RULE, enforced in the template below: a percentage figure is
 // rendered ONLY where `displayPercent !== null`, and that is null for anything
 // not freshly observed. Stale/unknown rows say so in words and show no number,
 // no bar fill, and no absolute (D26: the source has no absolutes to show).
+//
+// THE SHARPENED INVARIANT (step 4c): every row also renders its AGE, always,
+// and that age counts up on screen. Freshness is a gradient the user can see,
+// not a binary the code decides for them.
 
-// The countdown needs a moving "now"; the derivations take it injected, so the
-// clock lives here at the edge (rule 0.3). A minute is well under the shortest
-// countdown unit displayed, so nothing visibly lags.
-const METER_CLOCK_TICK_MS = 60_000;
-const nowMs = ref(Date.now());
+// The ages and countdowns need a moving "now". One second, because the age line
+// shows seconds and a minute-granularity tick would make it visibly stutter.
+// The tick only bumps a ref that the meter computeds read — the session rows do
+// not depend on it, so nothing else re-renders.
+const METER_CLOCK_TICK_MS = 1_000;
+const localNowMs = ref(Date.now());
 let meterClockHandle: ReturnType<typeof setInterval> | null = null;
 
-const metersExpanded = ref(false);
-
-const meterRows = computed<MeterRow[]>(() =>
-  // Binding meter first — it is the one that answers the question.
-  deriveMeterRows({ meters: store.meters }, nowMs.value, METER_STALE_AFTER_MS_PREVIEW),
+const metersExpanded = ref(props.expandMeters);
+// Arriving on `/#/meters` (a tapped usage alert) while already mounted must
+// still expand — the route is the request.
+watch(
+  () => props.expandMeters,
+  (shouldExpand) => {
+    if (shouldExpand) {
+      metersExpanded.value = true;
+    }
+  },
 );
+
+// `localNowMs` is NOT the clock the ages are measured against: usageStripModel
+// advances the daemon's own `observedNow`/`ageMs` by the LOCAL ELAPSED time
+// since the response landed. A browser clock that is wrong by an hour therefore
+// still shows the true age, because only a difference of two readings of that
+// clock is ever used. This is the whole point of the 4c fix.
+const strip = computed(() => usageStripModel(store.usageSnapshot, localNowMs.value));
+const meterRows = computed<MeterRow[]>(() => strip.value.rows);
+// Order is the DAEMON's (binding first, then meterId) and is preserved as sent.
 const bindingMeter = computed<MeterRow | null>(() => meterRows.value[0] ?? null);
-const secondaryMeters = computed<MeterRow[]>(() => meterRows.value.slice(1));
+
+// The refresh control's honest one-liner: throttled, failed and succeeded are
+// three different messages and never impersonate each other.
+const refreshMessage = computed(() => refreshNotice(store.lastUsageRefresh));
+
+const REFRESH_TONE_CLASS: Readonly<Record<RefreshNoticeTone, string>> = {
+  success: 'text-emerald-700 dark:text-emerald-300',
+  throttled: 'text-slate-500 dark:text-slate-400',
+  failed: 'text-rose-600 dark:text-rose-400',
+};
+
+function tapRefreshUsage(): void {
+  void store.refreshUsage();
+}
 
 const METER_TONE_BAR_CLASS: Readonly<Record<MeterTone, string>> = {
   normal: 'bg-emerald-500',
@@ -203,12 +244,14 @@ function toggleMetersExpanded(): void {
 
 onMounted(() => {
   void store.fetchCacheObservability();
-  void store.fetchMeters();
+  void store.fetchDerivedUsage();
   meterClockHandle = setInterval(() => {
-    nowMs.value = Date.now();
+    localNowMs.value = Date.now();
   }, METER_CLOCK_TICK_MS);
 });
 
+// A leaked interval on a long-lived phone PWA is a real leak, not a theoretical
+// one: this view mounts and unmounts on every navigation home.
 onUnmounted(() => {
   if (meterClockHandle !== null) {
     clearInterval(meterClockHandle);
@@ -285,48 +328,92 @@ onUnmounted(() => {
       Notifications are blocked — re-enable them in your browser settings.
     </p>
 
-    <!-- Usage meters strip (slice 5 step 3). Principle 11: this INFORMS, it must
-         not dominate the session list — one compact line, tap to expand inline
-         (no new route). A stale/unknown meter shows words, never a figure. -->
+    <!-- Usage meters strip (slice 5 step 3, extended in step 4c). Principle 11:
+         this INFORMS, it must not dominate the session list — one compact line,
+         tap to expand inline (no new route; `/#/meters` just arrives expanded).
+         A stale/unknown meter shows words, never a figure, and EVERY reading
+         shows its age so freshness is a gradient the user can see. -->
     <section class="rounded-lg border border-slate-200 dark:border-slate-800" aria-label="Usage meters">
-      <button
-        v-if="bindingMeter !== null"
-        type="button"
-        class="flex min-h-[44px] w-full flex-col gap-1 px-3 py-2 text-left"
-        :aria-expanded="metersExpanded"
-        @click="toggleMetersExpanded()"
-      >
-        <div class="flex items-baseline justify-between gap-2">
-          <span class="flex min-w-0 items-baseline gap-1.5">
-            <span class="truncate text-sm font-semibold">{{ bindingMeter.label }}</span>
-            <span
-              v-if="bindingMeter.isBinding"
-              class="shrink-0 rounded-full bg-sky-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-sky-800 dark:bg-sky-900/50 dark:text-sky-200"
-            >
-              binding
+      <div class="flex items-stretch gap-1">
+        <button
+          v-if="bindingMeter !== null"
+          type="button"
+          class="flex min-h-[44px] min-w-0 flex-1 flex-col gap-1 px-3 py-2 text-left"
+          :aria-expanded="metersExpanded"
+          @click="toggleMetersExpanded()"
+        >
+          <div class="flex items-baseline justify-between gap-2">
+            <span class="flex min-w-0 items-baseline gap-1.5">
+              <span class="truncate text-sm font-semibold">{{ bindingMeter.label }}</span>
+              <span
+                v-if="bindingMeter.isBinding"
+                class="shrink-0 rounded-full bg-sky-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-sky-800 dark:bg-sky-900/50 dark:text-sky-200"
+              >
+                binding
+              </span>
             </span>
-          </span>
-          <span class="shrink-0 text-sm font-semibold" :class="METER_TONE_TEXT_CLASS[bindingMeter.tone]">
-            {{ meterValueLabel(bindingMeter) }}
-          </span>
-        </div>
-        <div class="h-1.5 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-slate-800">
-          <div class="h-full rounded-full" :class="METER_TONE_BAR_CLASS[bindingMeter.tone]" :style="meterBarStyle(bindingMeter)"></div>
-        </div>
-        <div class="flex items-center justify-between gap-2 text-xs text-slate-500 dark:text-slate-400">
-          <span class="truncate">{{ bindingMeter.resetLabel ?? 'reset time unknown' }}</span>
-          <span class="shrink-0">{{ metersExpanded ? '▴' : `▾ ${meterRows.length} meters` }}</span>
-        </div>
-      </button>
+            <span class="shrink-0 text-sm font-semibold" :class="METER_TONE_TEXT_CLASS[bindingMeter.tone]">
+              {{ meterValueLabel(bindingMeter) }}
+            </span>
+          </div>
+          <div class="h-1.5 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-slate-800">
+            <div class="h-full rounded-full" :class="METER_TONE_BAR_CLASS[bindingMeter.tone]" :style="meterBarStyle(bindingMeter)"></div>
+          </div>
+          <div class="flex items-center justify-between gap-2 text-xs text-slate-500 dark:text-slate-400">
+            <!-- The age is never optional and never hidden behind the expander:
+                 a meter that hides how old it is overstates its precision. -->
+            <span class="truncate">{{ bindingMeter.ageLabel }}</span>
+            <span class="shrink-0">{{ metersExpanded ? '▴' : `▾ ${meterRows.length} meters` }}</span>
+          </div>
+          <div class="w-full truncate text-xs text-slate-500 dark:text-slate-400">
+            {{ bindingMeter.resetLabel ?? 'no reset pending' }}
+          </div>
+        </button>
 
-      <!-- Fresh install, poller disabled, or the endpoint dead since boot: one
-           honest line, never an empty gap and never zeros. -->
-      <p v-else class="px-3 py-3 text-sm text-slate-500 dark:text-slate-400">Usage unknown — no meters observed yet.</p>
+        <!-- Fresh install, poller disabled, or the endpoint dead since boot: one
+             honest line, never an empty gap and never zeros. -->
+        <p v-else class="min-w-0 flex-1 px-3 py-3 text-sm text-slate-500 dark:text-slate-400">
+          Usage unknown — no meters observed yet.
+        </p>
 
-      <ul v-if="metersExpanded && secondaryMeters.length > 0" class="flex flex-col gap-2 border-t border-slate-200 px-3 py-2 dark:border-slate-800">
-        <li v-for="meter in secondaryMeters" :key="meter.meterId" class="flex flex-col gap-1">
+        <!-- Forced refresh. Disabled while in flight so an impatient thumb
+             cannot stack requests against an unofficial endpoint. -->
+        <button
+          type="button"
+          class="m-1 min-h-[44px] min-w-[44px] shrink-0 self-start rounded-md border border-slate-300 text-sm font-medium active:bg-slate-100 disabled:opacity-50 dark:border-slate-700 dark:active:bg-slate-900"
+          :disabled="store.usageRefreshInFlight"
+          aria-label="Refresh usage meters"
+          @click="tapRefreshUsage()"
+        >
+          <span aria-hidden="true">{{ store.usageRefreshInFlight ? '⋯' : '↻' }}</span>
+        </button>
+      </div>
+
+      <p v-if="refreshMessage !== null" class="px-3 pb-2 text-xs" :class="REFRESH_TONE_CLASS[refreshMessage.tone]">
+        {{ refreshMessage.message }}
+      </p>
+
+      <!-- No staleness band at all: the daemon says its poller is disabled, so
+           every reading is 'unknown' by construction. Say WHY rather than let it
+           read as a transient hiccup. -->
+      <p v-if="strip.freshnessBandMissing && meterRows.length > 0" class="px-3 pb-2 text-xs text-slate-500 dark:text-slate-400">
+        Usage polling is disabled — freshness cannot be judged.
+      </p>
+
+      <!-- Expanded: EVERY meter with its countdown, age, freshness, burn rate
+           and exhaustion projection. This is also what `/#/meters` lands on. -->
+      <ul v-if="metersExpanded && meterRows.length > 0" class="flex flex-col gap-3 border-t border-slate-200 px-3 py-2 dark:border-slate-800">
+        <li v-for="meter in meterRows" :key="meter.meterId" class="flex flex-col gap-1">
           <div class="flex items-baseline justify-between gap-2 text-xs">
-            <span class="truncate text-slate-600 dark:text-slate-300">{{ meter.label }}</span>
+            <span class="flex min-w-0 items-baseline gap-1.5">
+              <span class="truncate text-slate-600 dark:text-slate-300">{{ meter.label }}</span>
+              <span
+                v-if="meter.isBinding"
+                class="shrink-0 rounded-full bg-sky-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-sky-800 dark:bg-sky-900/50 dark:text-sky-200"
+              >
+                binding
+              </span>
+            </span>
             <span class="shrink-0 font-semibold" :class="METER_TONE_TEXT_CLASS[meter.tone]">
               {{ meterValueLabel(meter) }}
             </span>
@@ -334,7 +421,20 @@ onUnmounted(() => {
           <div class="h-1 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-slate-800">
             <div class="h-full rounded-full" :class="METER_TONE_BAR_CLASS[meter.tone]" :style="meterBarStyle(meter)"></div>
           </div>
-          <span class="text-[11px] text-slate-500 dark:text-slate-400">{{ meter.resetLabel ?? 'reset time unknown' }}</span>
+          <div class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[11px] text-slate-500 dark:text-slate-400">
+            <!-- A meter at 0% with no resetsAt is a NORMAL freshly-rolled window
+                 (observed live 2026-07-21), so this reads calmly, not as a fault. -->
+            <span>{{ meter.resetLabel ?? 'no reset pending' }}</span>
+            <span aria-hidden="true">·</span>
+            <span>{{ meter.ageLabel }}</span>
+            <span aria-hidden="true">·</span>
+            <span>{{ meter.freshness }}</span>
+          </div>
+          <div class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[11px] text-slate-500 dark:text-slate-400">
+            <span>{{ meter.burnRateLabel }}</span>
+            <span aria-hidden="true">·</span>
+            <span>{{ meter.exhaustionLabel }}</span>
+          </div>
         </li>
       </ul>
     </section>
