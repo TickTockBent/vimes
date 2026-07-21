@@ -88,3 +88,31 @@ check whether it already does before slice 4/5.
      resolved: inherited CLAUDE* env suppresses transcripts; PTY channel
      scrubs env; tailer trusted on that basis. -->
 
+## D24 — billing-bucket classification: not derivable from the usage block alone *(trigger: slice 4 cache observability; surfaced designing step 2, 2026-07-20)*
+
+Slice 4 wants a **billing-bucket badge** (the interactive 5-hour window vs the
+$100 non-interactive monthly credit — spec §3.6) to answer Wes's standing
+question "did the dongfu runs burn the 5-hour limit or the $100 automation
+bucket?" **Finding while designing step 2:** the bucket is NOT cleanly
+derivable from a `usage_block` alone. Spike-C's real sample carries
+`service_tier: "standard"` — a *service tier*, not the *billing bucket*.
+Whether a run draws on the $100 non-interactive credit depends on session
+**interactivity / how it was spawned** (headless automation vs interactive),
+which is a SESSION property, not a usage-block field. Classifying a bucket
+from `service_tier` alone would be declared-truth guessing — exactly what rule
+0.7 forbids.
+**Lean (2026-07-20):** step 2 classifies **TTL tier** (cleanly observable) +
+numeric cache stats, and captures `service_tier` **raw** as an observed field,
+but emits **no fabricated bucket label**. The bucket classifier waits for an
+observation spike that correlates `service_tier` × session interactivity ×
+known-ground-truth billing (the dongfu automation runs are in `events.db` —
+candidate spike data, though ground-truth attribution is the missing piece).
+The reserved `billing_bucket_observed` event + session `observedBillingBucket`
+field stay stubbed until that spike lands. Settle into a decision (which signal
+combination classifies the bucket) when the spike runs — likely slice 5 with
+the meter system, where billing buckets become first-class.
+
+Related: **D17** (usage_block granularity) is now BINDING on step 2 — the
+cache-observability projection MUST dedupe usage snapshots by `message.id`
+(identical snapshots repeat within a turn; naive summation double-counts).
+

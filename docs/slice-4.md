@@ -77,18 +77,29 @@ approach before the dispatcher (slice 6) is built to depend on it.
   Human-initiated through the UI (behind Access auth) → **no permission-gate
   card** (gate cards are for *agent* tool calls, not the operator's own taps).
 - **Cache-observability projection (core, pure — rule 0.3):** reduces
-  `usage_block` events per `appSessionId` into `{ observedTtlTier: '1h' | '5m' |
-  'mixed' | 'none', cacheReadTokens, cacheCreateTokens, inputTokens,
-  outputTokens, cacheHitRate, serviceTier, billingBucket }`. TTL classifier
-  (spike-C, from real data): `ephemeral_1h>0 && 5m==0 → '1h'`; `5m>0 && 1h==0 →
-  '5m'`; both>0 → `'mixed'`; both==0 → `'none'`. Hit rate =
-  `cache_read / (cache_read + cache_creation_input + input)`. Snapshot + tail
-  replay, byte-identical (like every projection). No new event capture — the
-  data is already in the spine (rule 0.5 was satisfied upstream by the mapper's
-  `usage_block`).
-- **Reserved tags (rule 0.7):** the observed TTL tier + billing bucket are
-  session **tags** (what the session *did*), classified by runtime observation,
-  never declared. Reserve the tag schema even where the UI is thin.
+  `usage_block` events per `appSessionId` into `{ sampleCount,
+  countedMessageIds, cacheReadTokens, cacheCreateTokens, inputTokens,
+  outputTokens, cacheHitRate, ttlTier: '1h'|'5m'|'mixed'|'none', serviceTier }`.
+  TTL classifier (spike-C, real data): `ephemeral_1h>0 && 5m==0 → '1h'`;
+  `5m>0 && 1h==0 → '5m'`; both>0 → `'mixed'`; both==0 → `'none'`. Hit rate =
+  `cache_read / (cache_read + cache_creation_input + input)`. **D17 dedupe is
+  BINDING:** identical usage snapshots repeat within a turn — the projection
+  dedupes by `message.id` (count each `messageId` once; blocks without a
+  `messageId`, i.e. harness/PTY, count individually). Naive summation
+  double-counts. Snapshot + tail replay byte-identical (like every projection).
+  **No new event capture** — the data is already in the spine (rule 0.5 was
+  satisfied upstream by the mapper's `usage_block`). **This projection is THE
+  single source for cache observability** (principle 9) — one source per fact.
+- **Billing bucket — flagged, NOT fabricated (D24, rule 0.7):** the bucket
+  (5h-window vs $100-automation) is NOT derivable from a usage block alone;
+  `service_tier` is captured RAW but no bucket label is invented. The bucket
+  classifier waits for an interactivity-correlation spike (D24, likely slice 5).
+- **Reserved session tag fields** (`observedTtlTier`/`observedBillingBucket` on
+  the sessions projection) stay **unfed stubs** this slice — the
+  cache-observability projection is the source of truth; the UI joins it to the
+  session list by `appSessionId`. Do NOT emit `ttl_tier_observed` /
+  `billing_bucket_observed` (that would create a second source — principle 9).
+  Whether to later retire the reserved session fields is a cleanup for Wes.
 - **Diff UI (mobile-legible — the primary-human-job surface):** per-hunk unified
   diff, monospace, horizontal-scroll contained (never body-scroll), add/del
   gutters, tap-to-stage a hunk, a commit composer. Real-estate-to-content
