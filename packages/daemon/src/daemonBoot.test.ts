@@ -141,7 +141,12 @@ describe('daemon boot — snapshot+tail cold start over a real sqlite file', () 
       const snapshotRows = rawDatabase
         .prepare('SELECT projectionId, savedAt FROM snapshots ORDER BY projectionId')
         .all() as Array<{ projectionId: string; savedAt: string }>;
-      expect(snapshotRows.map((row) => row.projectionId)).toEqual(['meters', 'sessions', 'tasks']);
+      expect(snapshotRows.map((row) => row.projectionId)).toEqual([
+        'cache-observability',
+        'meters',
+        'sessions',
+        'tasks',
+      ]);
       for (const row of snapshotRows) {
         expect(row.savedAt).toMatch(/^2026-/);
       }
