@@ -549,6 +549,67 @@ first-party Claude Code, `-p` or not, is not. **This answers Wes's standing
 dongfu question: those runs burned the 5-hour/weekly windows, not a $100
 automation bucket.** Promote D24 to a decision on his sign-off.
 
+### 2026-07-21 — the 80% alert FIRED correctly, and a delivery FINDING: pushes are sent at default urgency
+
+**The alert path works.** First real threshold crossing, unprompted, on a live
+account under deliberate load:
+
+```
+18:08:14.185Z   meter_sample   endpoint:session  81%
+18:08:14.400Z   meter_alert    threshold=80  observed=81  disposition=notify
+                               resetsAt 2026-07-21T20:39:59Z
+```
+
+**215 ms** observation → alert. Exactly one alert, on the binding meter, carrying
+the window identity. The two prior samples at 78% (18:03:44 scheduled, and
+**18:04:15 — an off-cadence FORCED REFRESH, i.e. Wes pressing the button**) both
+polled for real and correctly produced nothing. Edge-triggering, freshness, and
+the forced-refresh path all validated in anger rather than in a test.
+
+**⚠ FINDING — the notification did not arrive until Wes OPENED the app.** His
+report: *"I did get the push but only once I opened vimes."* An alert that only
+lands when you are already looking at the app is not an alert; pillar 5's whole
+premise is reaching the human who is NOT looking.
+
+**Not the service worker.** `packages/ui/src/sw.ts` handles `push` correctly —
+`showNotification` inside `event.waitUntil`, textbook.
+
+**Leading hypothesis: default FCM priority plus Android Doze.**
+`createWebPushSender` calls `webpush.sendNotification` with **no `urgency` and no
+`TTL`** — web-push therefore defaults to `urgency: normal`, which maps to FCM
+*normal* priority. **Normal-priority FCM messages are deferred while the device
+is dozing** and delivered at the next maintenance window or when the app is
+opened — precisely the observed behavior. `urgency: 'high'` maps to FCM high
+priority and wakes the device.
+
+**Consistent with the counter-evidence:** earlier one-off buzzes DID arrive with
+the app closed (the one Wes screenshotted mid-meeting). Those went out while he
+was actively using the phone — awake, no Doze to defer them. Same code path, same
+default urgency, different device state. **The bug was invisible for exactly as
+long as the phone happened to be awake** — the fourth "correct by coincidence"
+shape of the day, in a fifth place.
+
+**Not yet proven**, and worth stating: confirming Doze needs device-side evidence
+(FCM diagnostics or a controlled test with the phone locked and idle). The fix is
+cheap and correct regardless of which deferral mechanism is responsible.
+
+**Proposed remedy (needs sign-off; a daemon change, so it rides a restart):**
+1. **`urgency: 'high'` on time-sensitive sends** — threshold alerts and attention
+   gates. NOT on everything: high urgency wakes the radio and costs battery, so
+   it belongs on "the human is needed now" and nowhere else. That distinction is
+   pillar 5 expressed in a header.
+2. **A bounded `TTL`.** Default is four weeks. **A threshold alert that cannot be
+   delivered before its window resets should EXPIRE, not arrive late** — a "you
+   crossed 80%" push landing after the reset is a stale number wearing a
+   notification, which is the exact failure the slice forbids everywhere else.
+   Natural TTL: seconds until `resetsAt`.
+3. **Event the outcome.** Meter alerts deliberately emit no
+   `push_sent`/`push_failed` (those payloads are session-scoped and a meter
+   belongs to no session) — which is why, when it mattered, **we could not tell
+   from the log whether the push was even attempted.** The daemon logged nothing
+   either. That silence turned a five-minute diagnosis into an inference.
+   Needs a non-session-scoped delivery-outcome event.
+
 ### 2026-07-21 — SPIKE C2 (widening): PASS, after a rule-0.1 finding that the DOCUMENTED Sonnet-5 price is wrong
 
 Experiment, not analysis: a local OTLP receiver plus 13 `claude -p` runs → 9
