@@ -437,6 +437,99 @@ current. This is the staleness path, exercised by a real failure mode.
 returns 200 but is policy/compliance flags (`restrictions`,
 `compliance_taints`, `defaults`) — **not** usage. Noted so nobody chases it.
 
+### 2026-07-21 — SPIKE U2 (slice 5): OTel direct ingest works, and carries the interactivity signal
+
+**Method:** confirmed the CLI honors the full `OTEL_*` env set + 
+`CLAUDE_CODE_ENABLE_TELEMETRY` (bundle strings), then ran a minimal
+`claude -p` (haiku, to spare the binding Fable weekly cap) under `env -i` with a
+clean environment, exporting OTLP/HTTP JSON to a throwaway local listener.
+**Direct ingest confirmed — no collector process.** Fixture (identity redacted):
+`fixtures/usage/otlp-metrics-2026-07-21.json`.
+
+**Two streams arrive:** `POST /v1/metrics` and `POST /v1/logs`.
+Metrics observed (all `sum`):
+
+| metric | unit | notes |
+|---|---|---|
+| `claude_code.token.usage` | tokens | 4 points, split by `type`: `input` / `output` / `cacheRead` / `cacheCreation` |
+| `claude_code.cost.usage` | **USD** | a real cost figure ($0.050549 for the test call) — MORE than JSONL gives |
+| `claude_code.session.count` | — | with `start_type` |
+| `claude_code.active_time.total` | s | wall-clock attention |
+
+**Attribute keys are the contract:** `model`, `query_source` (`main` — so
+subagent attribution is available), and — the prize — **`terminal.type`:
+`interactive` | `non-interactive`**. That is exactly the interactivity signal
+`usage_block` lacks and that D24 needs. Resource attributes carry
+`service.version` (= CLI version), a free drift signal.
+`/v1/logs` additionally streams session events (`hook_execution_start`,
+`permission_mode_changed`, `plugin_loaded`, `hook_registered`).
+
+**PII caveat (matters if VIMES ever ships to anyone else):** every data point
+carries `user.email`, `user.id`, `user.account_uuid`, `user.account_id`,
+`organization.id`, `session.id`. On Wes's own box this is his own data; a
+product-ized VIMES ingesting this is handling identity, not just numbers. The
+fixture redacts them.
+
+### 2026-07-21 — SPIKE U3 (slice 5): JSONL accounting is ATTRIBUTION, not headroom — the finding that reshapes the slice
+
+Folded the `usage_block` events already in `events.db` with D17 dedupe.
+
+**1. D17 is load-bearing, empirically.** 57 `usage_block` events → **30 counted,
+27 duplicate `message.id`s skipped (47%)**. Naive summation would have inflated
+every number by nearly 2×. The slice-4 cache projection's dedupe is validated
+against real data, not just reasoning. (16 events carry NO `messageId` —
+harness/PTY paths — and therefore cannot be deduped: a residual, bounded risk.)
+
+**2. THE HEADLINE — local sources are account-BLIND.** The endpoint reports the
+5-hour window at 29–35% consumed. Over that same 5 hours, VIMES's JSONL holds
+**ZERO `usage_block` events** (its whole span is 2026-07-14 → 2026-07-20).
+Reason: VIMES only sees sessions it HOSTS, while the limits are **account-wide**
+— every Claude Code invocation anywhere (other terminals, other machines, the
+web, and this very orchestrator session) draws on the same window.
+
+**This inverts the spec's assumption.** §3.6 calls JSONL accounting
+"bulletproof" — it is, but only for *attribution*: "what did VIMES-hosted work
+consume." It can never answer *"how much headroom do I have?"* And OTel shares
+the same blindness (it only covers sessions VIMES spawns with the env set).
+**Only the `/api/oauth/usage` endpoint is account-wide.**
+
+Consequences, binding on slice-5 design:
+- **Source precedence is not a preference, it is a type distinction.** Headroom
+  comes from the ENDPOINT ONLY. Local sources supply attribution, burn rate and
+  cost. A local source must NEVER be allowed to impersonate a headroom number.
+- **The kill criterion sharpens:** if the endpoint dies, JSONL/OTel cannot
+  substitute. The honest degradation is headroom → **unknown** while attribution
+  keeps working — which is exactly what the `fresh | stale | unknown` staleness
+  model already prescribes. Meters that lie are worse than meters that don't
+  exist (pillar 4).
+
+### 2026-07-21 — D24 correlation experiment: no separate automation bucket
+
+Ran a KNOWN non-interactive session (`claude -p`; OTel independently labelled it
+`terminal.type: non-interactive`) between two endpoint probes.
+
+| meter | before | after |
+|---|---|---|
+| `session` (5-hour) | 29% | **35%** |
+| `weekly_all` | 52% | 52% |
+| `weekly_scoped` (Fable) | 64% | 64% |
+| `seven_day_oauth_apps` | null | **still null** |
+
+**Honest confound:** the orchestrator's own session was consuming the same
+window between probes, so the **+6 magnitude is NOT attributable to the test run
+alone**. The *direction* is what carries evidence: a non-interactive run
+produced **no new bucket** and left `seven_day_oauth_apps` null while the
+standard session window moved.
+
+**Reading (recommended for ratification, not unilaterally decided — rule 0):**
+Claude Code usage, interactive or headless, consumes the **standard 5-hour and
+weekly windows**; there is no separate automation credit on this plan
+(`extra_usage.is_enabled: false`, `can_purchase_credits: false`). The bucket's
+NAME (`oauth_apps`) suggests it covers **third-party OAuth applications** — which
+first-party Claude Code, `-p` or not, is not. **This answers Wes's standing
+dongfu question: those runs burned the 5-hour/weekly windows, not a $100
+automation bucket.** Promote D24 to a decision on his sign-off.
+
 ## Budget table (`--report`)
 
 Design-intent targets from spec §8, listed so nothing gets pinned from memory.

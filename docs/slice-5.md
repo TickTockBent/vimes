@@ -58,18 +58,32 @@ Binding results for construction:
   stale, never crash, never show old numbers as current.
 - Not usage: `/api/claude_code/policy_limits` (policy/compliance flags only).
 
-**Spike U2 — OTel direct ingest.** `CLAUDE_CODE_ENABLE_TELEMETRY=1` with
-`OTEL_EXPORTER_OTLP_PROTOCOL=http/json` pinned into the env of every session the
-host spawns; the daemon ingests OTLP/HTTP **directly** (no collector process,
-spec §3.6). Verify: what metrics actually arrive, at what cadence, with what
-field names. Loose schema by design — unknown fields ride through.
+**Spike U2 — OTel direct ingest. ✅ RUN 2026-07-21 — WORKS.** OTLP/HTTP JSON
+straight to a local listener, no collector. `POST /v1/metrics` + `/v1/logs`.
+Metrics: `claude_code.token.usage` (split `input`/`output`/`cacheRead`/
+`cacheCreation`), **`claude_code.cost.usage` in USD**, `session.count`,
+`active_time.total`. Attribute keys are the contract: `model`, `query_source`
+(subagent attribution), and **`terminal.type: interactive|non-interactive`** —
+the interactivity signal `usage_block` lacks, and what D24 needed. Resource
+carries `service.version` (free CLI-drift signal). Fixture:
+`fixtures/usage/otlp-metrics-2026-07-21.json`. **Caveat:** every point carries
+identity (`user.email`, org/account ids) — fine on Wes's box, a real
+consideration for a product-ized VIMES.
 
-**Spike U3 — JSONL accounting (the bulletproof floor).** Can per-window
-consumption be computed from the transcripts we already tail? Much of this is
-ALREADY in the spine: `usage_block` events with **D17 dedupe by `message.id`**
-(the slice-4 cache projection is the worked example — the same dedupe is binding
-here or every number double-counts). Determines how good the fallback is when
-U1's endpoint is gone, which is half the kill-criterion question.
+**Spike U3 — JSONL accounting. ✅ RUN 2026-07-21 — IT IS ATTRIBUTION, NOT
+HEADROOM.** Two results, the second reshapes the slice:
+1. **D17 is load-bearing empirically:** 57 `usage_block` events → 30 counted,
+   **27 duplicate `message.id`s skipped (47%)**. Naive summation inflates every
+   number by ~2×. (16 events carry no `messageId` and cannot be deduped — a
+   bounded residual risk.)
+2. **Local sources are ACCOUNT-BLIND.** The endpoint reported the 5-hour window
+   at 29–35% consumed while VIMES's JSONL held **zero** `usage_block` events for
+   that same window — because VIMES sees only the sessions it HOSTS, and the
+   limits are **account-wide** (every Claude Code invocation anywhere, including
+   this orchestrator session). OTel shares the blindness (it covers only
+   sessions VIMES spawns with the env set).
+**This inverts §3.6's "bulletproof floor" framing.** JSONL is bulletproof for
+*attribution*, never for *headroom*.
 
 **Rider on U1/U3 — D24 (billing-bucket classification).** Slice 4 deliberately
 declined to fabricate a bucket label from `service_tier`. With a real usage
@@ -115,13 +129,17 @@ automation bucket?").
 - **The core stays pure (rule 0.3):** the meters projection folds `meter_sample`
   events; burn rate / exhaustion / headroom are pure functions over samples with
   the clock INJECTED. Countdown rendering is the UI's job over an injected now.
-- **One source of record per fact (principle 9):** when several adapters can see
-  the same meter, ONE is authoritative per `meterId` with an explicit precedence
-  rule (lean: endpoint > OTel > JSONL, since only the endpoint sees server-side
-  thresholds), and the others become corroboration — never a silent merge.
+- **Source precedence is a TYPE DISTINCTION, not a preference (U3).** Headroom
+  comes from the ENDPOINT ONLY — it is the sole account-wide source. Local
+  sources (OTel, JSONL) supply attribution, burn rate and cost for VIMES-hosted
+  work, and must NEVER be allowed to impersonate a headroom number. One
+  authoritative source per `meterId` (principle 9); corroboration, never a
+  silent merge.
 - **Staleness is a first-class state, not an absence.** A meter is
   `fresh | stale | unknown`; the UI must render the difference. This is the
-  structural expression of the kill criterion.
+  structural expression of the kill criterion — and U3 makes it concrete: if the
+  endpoint dies, headroom degrades to **unknown** while attribution keeps
+  working. Local data must not be promoted to fill the gap.
 
 ## Assertions
 - `budget-wall` profile green against the adapters in replay.
