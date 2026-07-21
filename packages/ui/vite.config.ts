@@ -41,10 +41,15 @@ export default defineConfig({
         // constants (which also emits icon.svg — the favicon). The maskable entry
         // is a SEPARATE full-bleed image: Android crops maskable icons to the
         // device shape, so a rounded-corner source would show clipped corners.
+        // Filenames carry ICON_VERSION (scripts/make-icons.mjs). The daemon serves
+        // static files with no Cache-Control, so Cloudflare edge-caches .png by
+        // extension, the SW precaches by exact URL, and Android bakes the icon
+        // into a WebAPK — a stable filename is served stale by all three
+        // (observed 2026-07-21). Bump the version to change the URL.
         icons: [
-          { src: 'icons/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
-          { src: 'icons/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
-          { src: 'icons/icon-512-maskable.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
+          { src: 'icons/icon-192.v2.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
+          { src: 'icons/icon-512.v2.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
+          { src: 'icons/icon-512-maskable.v2.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
         ],
       },
       devOptions: {
