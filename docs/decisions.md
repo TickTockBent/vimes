@@ -298,3 +298,43 @@ latency to ≤1 min past the window; the window is the behavior-shaping knob.
 Evidence: 491 tests green on the orchestrator's own ci-gate run (+25 new),
 scenarios byte-identical, lazy-chunk gate PASS, `/api/terminals` added to the
 I14 auth matrix. UNDEPLOYED at record time (ships with the polish-pass restart).
+
+## D25 — Slice-4 exit satisfied: the git diff review window is a real tool; slice 4 complete
+
+*2026-07-21 (Wes's kill-criterion verdict, live on his phone through VIMES).*
+The slice-4 kill criterion — "if the mobile hunk-diff view is not legible enough
+to actually review agent diffs on a phone, halt and reassess the diff-rendering
+approach before the dispatcher is built on it" — is **NOT triggered.** Wes:
+"I'm calling this human gate a pass, this is a genuinely useful diff review
+window." The primary-human-job surface (spec §3.4 — reviewing agent diffs) is
+validated in real use, on the device that matters, against a real repo
+(`~/projects/content/vesh`).
+
+**It took three attempts, and the two failures were both mine — in the plumbing
+TO the diff, never the diff itself:**
+1. The repo picker offered only allowlisted ROOTS, but `~/projects` is a
+   *container* of repos — no repo was selectable at all. (Same gap the terminal
+   hit and solved with free-text cwd; the lesson wasn't carried across.) Fixed
+   with depth-bounded repo discovery + a free-text escape hatch.
+2. Repo-relative paths from `git status --porcelain=v2` were resolved against
+   the allowlist root instead of the repo root, so tapping a file read the wrong
+   path (ENOENT). Fixed by anchoring relative paths on the verified repo root.
+
+**The rule both failures share, worth carrying forward:** specifying a path's
+SECURITY property (`resolveWithinRoots`) says nothing about its SEMANTICS. When
+a surface accepts paths from an external tool, pin down *what they are relative
+to* and *whether the configured roots are usable targets or merely containers of
+them*. The wall tells you a path is safe, never what it means.
+
+Like D20/D22, the exit gate's ceremony reframes to "validated in real use +
+continuous daily use going forward" — proven, not on probation. **Slice 4
+(0.2 — git & cache observability) is COMPLETE**: 609 tests, git adapter + API,
+cache-observability projection (D17-deduped), the mobile diff review surface,
+and cache badges, all deployed. Cache-vandal warning stays reserved (rule 0.5,
+no consumer); billing-bucket classification stays deferred (D24).
+
+**Immediately queued from the passing verdict (Wes's one change):** an **Edit
+button in the diff view** that opens the CM6 editor on that file, and on
+back-out returns to the diff *with the diff refreshed* — closing the
+review→fix→re-review loop inside one surface. This is the review loop of
+design-directions' dispatcher vision, in miniature and human-driven.
