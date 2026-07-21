@@ -556,7 +556,22 @@ partitions, corroborating where they overlap. Full reports in the session
 scratchpad (`d27-part1-vimes.md`, `d27-part2-projects.md`,
 `d27-part3-attribution.md`).
 
-**⚠ THE URGENT ONE — the corpus is SLIDING and will be eaten.** Oldest surviving
+**⚠ MITIGATED SAME DAY — `cleanupPeriodDays: 365`.** On Wes's instruction
+("can you extend the cleanup window to 180+ days"), `~/.claude/settings.json`
+now sets `cleanupPeriodDays: 365` (was unset, so the CLI default prune was
+running). Backup at `~/.claude/settings.json.bak-20260721-122402`; one-line
+diff, JSON re-validated. Sizing: 313 MB for ~40 days → ~2.9 GB for a year,
+against 646 GB free — disk is not the constraint, which is why a year rather
+than the 180 asked for.
+
+**This buys time; it does not undo anything.** Transcripts already pruned are
+gone for good (the January–February projects below stay empty), and the setting
+protects only what exists from here. The ledger still needs its own store — a
+setting can be changed back, a retention default can move (rule 0.6), and 365
+days is still a horizon. Copying usage rows out remains the requirement; the
+deadline just moved from weeks to months.
+
+**⚠ THE ORIGINAL FINDING — the corpus was SLIDING and being eaten.** Oldest surviving
 session transcript is ~29–40 days old; `~/.claude/settings.json` sets no
 `cleanupPeriodDays`, so the CLI's default prune is running. Corroborating
 evidence: **29 of 46 project directories hold `memory/` and
