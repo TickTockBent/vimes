@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { EventInput } from './schemas.js';
+import { meterRecordSchema } from './schemas.js';
 
 // The domain event vocabulary (spec §3.3 / slice-0.md). Each type carries a zod
 // payload schema; helper constructors build EventInput records ready for
@@ -55,6 +56,16 @@ export const EVENT_TYPES = {
   // trigger's attention reason so a consumer can tell WHY the push was sent.
   pushSent: 'push_sent',
   pushFailed: 'push_failed',
+  // Slice-5 step 4: an ACCOUNT-WIDE meter crossed a caller-supplied threshold.
+  // Deliberately NOT `notification_trigger`: that payload is keyed to an
+  // appSessionId and its D9 suppression answers "has the user already seen this
+  // session's attention?". A meter threshold crossing belongs to no session, and
+  // its suppression question is a different one — "have we already alerted for
+  // this threshold in THIS window?". Forcing it into a session-shaped event
+  // would either fabricate a session id or corrupt D9's semantics; one source of
+  // record per fact (principle 9). Lives on the 'usage' stream beside
+  // `meter_sample`.
+  meterAlert: 'meter_alert',
 } as const;
 
 export const SYSTEM_STREAM = 'system';
@@ -257,6 +268,37 @@ export const dispatchRefusedPayloadSchema = z.object({
   reason: z.string(),
 });
 
+// meter_alert (slice-5 step 4) — one account-wide meter crossed one threshold,
+// on the 'usage' stream. Every field records what was OBSERVED at the crossing;
+// nothing here is derived-and-stored (D26), and nothing here is a session.
+//
+// `disposition` is a RULE-0.5 SCHEMA RESERVATION (Wes, 2026-07-21). The
+// prior-art mining found codor's brake semantics — work is HELD, not failed,
+// with one-tap release from the phone — which is a better end state than a bare
+// notification. Slice 7 owns that enforcement. The vocabulary is reserved now so
+// slice 7 needs no migration: the field's type is the full 'notify' | 'hold'
+// union, but **NOTHING IN SLICE 5 EVER SETS 'hold'** — exactly like the
+// already-reserved `needsAttention: brake` (ratified 2026-07-20). If you are
+// grepping for the code path that emits a hold, there isn't one yet, and that is
+// deliberate.
+export const meterAlertDispositionSchema = z.enum(['notify', 'hold']);
+export const meterAlertPayloadSchema = z.object({
+  meterId: z.string(),
+  // WHICH threshold was crossed (a caller-supplied ⟨tune⟩ value — core never
+  // pins one, rule 0.2).
+  thresholdPercent: z.number(),
+  // What we actually saw at the crossing, which is >= thresholdPercent and may
+  // overshoot it by a lot when a poll jumps.
+  observedPercent: z.number(),
+  kind: meterRecordSchema.shape.kind,
+  scope: z.string().nullable().optional(),
+  // Identifies the WINDOW this alert belongs to: re-arming compares it.
+  resetsAt: z.string().nullable().optional(),
+  // The observation that triggered the alert (never `now` — rule 0.3).
+  observedAt: z.string(),
+  disposition: meterAlertDispositionSchema,
+});
+
 export const EVENT_PAYLOAD_SCHEMAS = {
   [EVENT_TYPES.sessionCreated]: sessionCreatedPayloadSchema,
   [EVENT_TYPES.livenessChanged]: livenessChangedPayloadSchema,
@@ -290,6 +332,7 @@ export const EVENT_PAYLOAD_SCHEMAS = {
   [EVENT_TYPES.resyncMarker]: resyncMarkerPayloadSchema,
   [EVENT_TYPES.pushSent]: pushSentPayloadSchema,
   [EVENT_TYPES.pushFailed]: pushFailedPayloadSchema,
+  [EVENT_TYPES.meterAlert]: meterAlertPayloadSchema,
 } as const;
 
 export type SessionCreatedPayload = z.infer<typeof sessionCreatedPayloadSchema>;
@@ -316,6 +359,8 @@ export type SessionRenamedPayload = z.infer<typeof sessionRenamedPayloadSchema>;
 export type ResyncMarkerPayload = z.infer<typeof resyncMarkerPayloadSchema>;
 export type PushSentPayload = z.infer<typeof pushSentPayloadSchema>;
 export type PushFailedPayload = z.infer<typeof pushFailedPayloadSchema>;
+export type MeterAlertPayload = z.infer<typeof meterAlertPayloadSchema>;
+export type MeterAlertDisposition = z.infer<typeof meterAlertDispositionSchema>;
 
 // Discriminated union over the vocabulary — the domain-event value space.
 export type DomainEvent =
@@ -350,7 +395,8 @@ export type DomainEvent =
   | { type: typeof EVENT_TYPES.sessionRenamed; payload: SessionRenamedPayload }
   | { type: typeof EVENT_TYPES.resyncMarker; payload: ResyncMarkerPayload }
   | { type: typeof EVENT_TYPES.pushSent; payload: PushSentPayload }
-  | { type: typeof EVENT_TYPES.pushFailed; payload: PushFailedPayload };
+  | { type: typeof EVENT_TYPES.pushFailed; payload: PushFailedPayload }
+  | { type: typeof EVENT_TYPES.meterAlert; payload: MeterAlertPayload };
 
 // Maps each attention-setting event type to the needsAttention reason it sets.
 const ATTENTION_SETTER_REASON: Readonly<Record<string, AttentionReason>> = {
@@ -430,6 +476,13 @@ export function hostStopped(): EventInput {
 // free-standing (no dependency on the meters projection).
 export function meterThresholdCrossed(payload: MeterThresholdCrossedPayload): EventInput {
   return { stream: 'usage', type: EVENT_TYPES.meterThresholdCrossed, payload };
+}
+
+// Mirrors `meterSample()` (projections/meters.ts): same 'usage' stream, literal
+// here for the same reason — the vocabulary module stays free-standing.
+export const METER_ALERT_TYPE = EVENT_TYPES.meterAlert;
+export function meterAlert(payload: MeterAlertPayload): EventInput {
+  return { stream: 'usage', type: EVENT_TYPES.meterAlert, payload };
 }
 export function dispatchRefused(payload: DispatchRefusedPayload): EventInput {
   return { stream: 'tasks', type: EVENT_TYPES.dispatchRefused, payload };

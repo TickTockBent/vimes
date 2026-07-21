@@ -1,3 +1,4 @@
+import type { MeterAlertPayload } from './events.js';
 import type { MeterHistorySample, MetersState } from './projections/meters.js';
 import type { MeterRecord } from './schemas.js';
 
@@ -132,15 +133,32 @@ function usableSamples(history: MeterHistorySample[], nowMs: number): UsableSamp
 // current window. (The history carries only `{observedAt, percent}`; when a
 // future source also carries `resetsAt` per sample, a change in it is the second
 // signal to add here.)
-function currentWindowSegment(usable: UsableSample[]): UsableSample[] {
+//
+// The return is WIDENED with `resetBoundaryObserved`: whether the segment starts
+// at a drop we actually SAW, or merely at the oldest sample the bounded buffer
+// still holds. Those two are not the same fact. History is capped at
+// METER_HISTORY_LIMIT samples, so a window older than the retained span produces
+// a segment that begins at the buffer edge — absence of evidence of a reset, not
+// evidence of one. Callers that need positive evidence (see
+// `currentWindowStartIso`) must check this flag; callers that only need "the
+// freshest contiguous run" (burn rate, exhaustion) can ignore it, which is why
+// this stays ONE detector rather than two that can diverge (principle 9).
+interface CurrentWindowSegment {
+  samples: UsableSample[];
+  resetBoundaryObserved: boolean;
+}
+
+function currentWindowSegment(usable: UsableSample[]): CurrentWindowSegment {
   let segmentStartIndex = 0;
+  let resetBoundaryObserved = false;
   for (let index = usable.length - 1; index > 0; index -= 1) {
     if (usable[index]!.percent < usable[index - 1]!.percent) {
       segmentStartIndex = index;
+      resetBoundaryObserved = true;
       break;
     }
   }
-  return usable.slice(segmentStartIndex);
+  return { samples: usable.slice(segmentStartIndex), resetBoundaryObserved };
 }
 
 export function samplesSinceLastReset(
@@ -151,7 +169,7 @@ export function samplesSinceLastReset(
   if (nowMs === null) {
     return [];
   }
-  return currentWindowSegment(usableSamples(history, nowMs)).map((sample) => ({
+  return currentWindowSegment(usableSamples(history, nowMs)).samples.map((sample) => ({
     observedAt: new Date(sample.observedAtMs).toISOString(),
     percent: sample.percent,
   }));
@@ -170,7 +188,7 @@ export function burnRatePercentPerHour(
   if (nowMs === null) {
     return null;
   }
-  const segment = currentWindowSegment(usableSamples(history, nowMs));
+  const segment = currentWindowSegment(usableSamples(history, nowMs)).samples;
   if (segment.length < 2) {
     return null;
   }
@@ -197,32 +215,84 @@ export function projectedExhaustion(
   history: MeterHistorySample[],
   nowIso: string,
 ): string | null {
+  // Behavior-identical by construction: the reasoned sibling below IS the
+  // implementation, and this wrapper drops the reason. Existing callers and
+  // tests are untouched (rule 0.4).
+  return projectedExhaustionWithReason(meter, history, nowIso).at;
+}
+
+// WHY a bare null was not enough. `projectedExhaustion` collapses five
+// genuinely different situations into one `null`, and a UI cannot tell them
+// apart — yet they mean opposite things to a human deciding whether to start
+// work. "The window resets before you would run out" is REASSURING; "not enough
+// samples yet" is merely uninformative; "already at 100%" is a wall. The
+// slice invariant is that unknown never collapses into pass/0/"fine"; this type
+// is that invariant applied to the projection itself.
+export type ExhaustionReason =
+  // `at` is non-null: a real projected instant.
+  | 'projected'
+  // The meter has never been sampled at all.
+  | 'meter-never-observed'
+  // Sampled, but the source gave no percentage. Absent is UNKNOWN — not 0, and
+  // not 100.
+  | 'percent-unobserved'
+  // Already at or past the cap; there is nothing left to project toward.
+  | 'already-exhausted'
+  // The observation (or the arithmetic over it) is malformed — an unparseable
+  // `observedAt`, or a projection that lands outside representable time.
+  | 'observation-unusable'
+  // Fewer than two usable samples in the current window: we cannot see a rate.
+  // Not "the rate is zero" — that is a different fact, below.
+  | 'burn-rate-unknown'
+  // Usage is flat or falling; at this rate the cap is never reached.
+  | 'burn-rate-non-positive'
+  // The window rolls over before the projection lands: it never exhausts. The
+  // reassuring case, and the one a bare null hid most expensively.
+  | 'resets-first';
+
+export interface ProjectedExhaustion {
+  at: string | null;
+  reason: ExhaustionReason;
+}
+
+export function projectedExhaustionWithReason(
+  meter: Pick<MeterRecord, 'percent' | 'observedAt' | 'resetsAt'> | null | undefined,
+  history: MeterHistorySample[],
+  nowIso: string,
+): ProjectedExhaustion {
+  // The check ORDER below is the original function's order, unchanged, so the
+  // `.at` values stay byte-identical to what callers already depend on.
   if (meter === null || meter === undefined) {
-    return null;
+    return { at: null, reason: 'meter-never-observed' };
   }
   const remainingPercent = headroomPercent(meter);
-  if (remainingPercent === null || remainingPercent <= 0) {
-    return null;
+  if (remainingPercent === null) {
+    return { at: null, reason: 'percent-unobserved' };
+  }
+  if (remainingPercent <= 0) {
+    return { at: null, reason: 'already-exhausted' };
   }
   const observedAtMs = parseIsoToEpochMs(meter.observedAt);
   if (observedAtMs === null) {
-    return null;
+    return { at: null, reason: 'observation-unusable' };
   }
   const burnRate = burnRatePercentPerHour(history, nowIso);
-  if (burnRate === null || burnRate <= 0) {
-    return null;
+  if (burnRate === null) {
+    return { at: null, reason: 'burn-rate-unknown' };
+  }
+  if (burnRate <= 0) {
+    return { at: null, reason: 'burn-rate-non-positive' };
   }
   const hoursToExhaustion = remainingPercent / burnRate;
   const exhaustionMs = Math.round(observedAtMs + hoursToExhaustion * MILLISECONDS_PER_HOUR);
   if (!Number.isFinite(exhaustionMs)) {
-    return null;
+    return { at: null, reason: 'observation-unusable' };
   }
   const resetsAtMs = parseIsoToEpochMs(meter.resetsAt);
   if (resetsAtMs !== null && exhaustionMs > resetsAtMs) {
-    // The window rolls over before the projection lands: it never exhausts.
-    return null;
+    return { at: null, reason: 'resets-first' };
   }
-  return new Date(exhaustionMs).toISOString();
+  return { at: new Date(exhaustionMs).toISOString(), reason: 'projected' };
 }
 
 // I10 GROUNDWORK (slice 6 owns enforcement): does `gate.meterId` currently show
@@ -281,4 +351,218 @@ export function evaluateHeadroomGate(
         headroomPercent: observedHeadroom,
         freshness,
       };
+}
+
+// ---------------------------------------------------------------------------
+// Threshold alerts (slice 5 step 4a) — pure, edge-triggered, reset-aware.
+// ---------------------------------------------------------------------------
+//
+// Pillar 5: attention is the scarce resource. A meter that re-fires on every
+// poll while you sit at 85% is not an alert, it is noise, and it costs more than
+// it gives. So crossing is EDGE-triggered: the first observation at or above a
+// threshold fires, and nothing fires again until the window rolls over.
+//
+// Everything below is pure (rule 0.3): `nowIso` and `staleAfterMs` are
+// parameters, the thresholds are supplied by the caller, and the memory of what
+// already fired is passed in — this function holds no state of its own.
+
+// One already-fired alert, as the daemon reconstructs it by folding past
+// `meter_alert` events. Deliberately a plain serializable shape with no derived
+// fields: it must be DERIVABLE from the log, never separately maintained.
+export interface FiredMeterAlert {
+  thresholdPercent: number;
+  // The window the alert was fired in, copied from the meter at the time.
+  resetsAt: string | null;
+  // The observation that triggered it.
+  observedAt: string;
+}
+
+// meterId → the alerts already fired for that meter, in any order.
+export type MeterAlertMemory = Record<string, FiredMeterAlert[]>;
+
+// The start of the meter's CURRENT window when — and ONLY when — a reset was
+// actually OBSERVED inside the retained history. Null otherwise (UNKNOWN).
+//
+// Reset detection is NOT reimplemented here: it delegates to the one detector,
+// `currentWindowSegment` (principle 9 — one detector, not two that can diverge),
+// and reads the `resetBoundaryObserved` flag that detector now reports.
+//
+// Why the flag is load-bearing (FINDING 2026-07-21): history is bounded at
+// METER_HISTORY_LIMIT samples. When no drop appears inside that span the segment
+// simply begins at the oldest RETAINED sample — a value that slides forward with
+// the buffer rather than marking the window. Treating that as a window start read
+// "the buffer ran out" as "the window rolled over", so every alert older than the
+// retained span looked re-armed and re-fired, forever, at roughly the buffer's
+// span (~5h20m at the default poll cadence — which merely COINCIDES with the
+// 5-hour window and is two orders of magnitude wrong for 7-day weekly caps).
+//
+// So the percent-drop signal ABSTAINS without positive evidence, and `resetsAt`
+// (reliable for weekly meters, and it does change on a genuine rollover) decides
+// alone. Note this is a fix to the reasoning, not to the buffer: enlarging
+// METER_HISTORY_LIMIT would only push the same defect further out.
+function currentWindowStartIso(history: MeterHistorySample[], nowIso: string): string | null {
+  const nowMs = parseIsoToEpochMs(nowIso);
+  if (nowMs === null) {
+    return null;
+  }
+  const windowSegment = currentWindowSegment(usableSamples(history, nowMs));
+  if (!windowSegment.resetBoundaryObserved) {
+    return null;
+  }
+  const oldestSampleInWindow = windowSegment.samples[0];
+  return oldestSampleInWindow === undefined
+    ? null
+    : new Date(oldestSampleInWindow.observedAtMs).toISOString();
+}
+
+// Is a previously-fired alert still binding, or has the window rolled over and
+// re-armed it?
+//
+// Two independent reset signals, and EITHER one re-arms (they are OR'd, so an
+// alert stays binding only when BOTH agree it is the same window):
+//   1. `resetsAt` changed — the source told us directly.
+//   2. the alert was observed before the current window's first sample — the
+//      percent DROPPED after it, which is a rollover (see currentWindowStartIso).
+//      This signal ABSTAINS (windowStartIso === null) whenever no drop was
+//      observed inside the bounded history, leaving signal 1 to decide alone.
+// Sources that supply neither signal (no resetsAt, no observed drop) simply never
+// re-arm, which is the quiet direction: silence beats crying wolf.
+function firedAlertIsStillBinding(
+  firedAlert: FiredMeterAlert,
+  currentResetsAt: string | null,
+  windowStartIso: string | null,
+): boolean {
+  if ((firedAlert.resetsAt ?? null) !== currentResetsAt) {
+    return false;
+  }
+  if (windowStartIso !== null) {
+    const firedAtMs = parseIsoToEpochMs(firedAlert.observedAt);
+    const windowStartMs = parseIsoToEpochMs(windowStartIso);
+    if (firedAtMs !== null && windowStartMs !== null && firedAtMs < windowStartMs) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Decide which meter thresholds should alert right now.
+//
+// `thresholds` is CALLER-SUPPLIED on purpose: the crossing level is a ⟨tune⟩
+// band (⟨tune 80% PREVIEW⟩ per slice-5) and rule 0.2 forbids pinning one here.
+// Core has no default; the daemon (or a test) names the numbers.
+//
+// Returns at most ONE payload per meter, per the multi-threshold rule below.
+export function evaluateMeterAlerts(
+  metersState: MetersState,
+  alreadyAlerted: MeterAlertMemory,
+  thresholds: number[],
+  nowIso: string,
+  staleAfterMs: number,
+): MeterAlertPayload[] {
+  const alerts: MeterAlertPayload[] = [];
+  // Sorted so the output order is a function of the input alone, never of
+  // object insertion order (determinism, rule 0.3).
+  const meterIds = Object.keys(metersState.meters).sort();
+
+  for (const meterId of meterIds) {
+    const meter = metersState.meters[meterId];
+    if (meter === undefined) {
+      continue;
+    }
+
+    // NEVER alert on a number we cannot vouch for. Waking a phone over a stale
+    // or unknown observation is precisely the lying meter pillar 4 forbids —
+    // and it is worse than silence, because the human acts on it.
+    if (meterFreshness(meter.observedAt, nowIso, staleAfterMs) !== 'fresh') {
+      continue;
+    }
+
+    // Absent is UNKNOWN. Not 0 ("plenty of room"), not 100 ("wall") — a number
+    // we cannot see is not a number, so there is nothing to cross.
+    const observedPercent = meter.percent;
+    if (typeof observedPercent !== 'number' || !Number.isFinite(observedPercent)) {
+      continue;
+    }
+
+    const currentResetsAt = meter.resetsAt ?? null;
+    const windowStartIso = currentWindowStartIso(
+      metersState.history[meterId] ?? [],
+      nowIso,
+    );
+    const bindingAlerts = (alreadyAlerted[meterId] ?? []).filter((firedAlert) =>
+      firedAlertIsStillBinding(firedAlert, currentResetsAt, windowStartIso),
+    );
+    // A threshold counts as already fired when ANY binding alert in this window
+    // was fired at that level OR HIGHER. The dominance rule is what makes the
+    // multi-threshold choice below sound, and it is also just true: having
+    // already told you that you passed 90, telling you that you passed 80 is
+    // strictly noise.
+    const highestBindingThreshold = bindingAlerts.reduce(
+      (highest, firedAlert) => Math.max(highest, firedAlert.thresholdPercent),
+      Number.NEGATIVE_INFINITY,
+    );
+
+    // MULTI-THRESHOLD CHOICE (deliberate, per slice-5 step 4a): when one poll
+    // jumps across several thresholds at once (70 → 92 with lines at 80 and 90),
+    // emit ONLY THE HIGHEST crossed threshold — one poll produces one alert.
+    // Two buzzes for one event would be exactly the noise pillar 5 warns about,
+    // and the higher number is the one that carries the information. The lower
+    // thresholds are nonetheless treated as fired from then on, via the
+    // dominance rule above, so none of them can re-fire later in this window.
+    let highestCrossedThreshold: number | null = null;
+    for (const threshold of thresholds) {
+      if (!Number.isFinite(threshold)) {
+        continue;
+      }
+      if (observedPercent < threshold) {
+        continue;
+      }
+      if (threshold <= highestBindingThreshold) {
+        continue;
+      }
+      if (highestCrossedThreshold === null || threshold > highestCrossedThreshold) {
+        highestCrossedThreshold = threshold;
+      }
+    }
+    if (highestCrossedThreshold === null) {
+      continue;
+    }
+
+    alerts.push({
+      meterId,
+      thresholdPercent: highestCrossedThreshold,
+      observedPercent,
+      kind: meter.kind,
+      scope: meter.scope ?? null,
+      resetsAt: currentResetsAt,
+      observedAt: meter.observedAt,
+      // ALWAYS 'notify' in slice 5. 'hold' is reserved vocabulary for slice 7's
+      // brake (rule 0.5); no code path in this package sets it, by design.
+      disposition: 'notify',
+    });
+  }
+
+  return alerts;
+}
+
+// Fold a freshly-emitted alert into an alert memory, returning a new memory.
+// The daemon rebuilds its memory from the event log instead; this exists so a
+// caller evaluating several polls in a row (and every test of edge-triggering)
+// uses the SAME folding rule the log implies, rather than a second one.
+export function rememberMeterAlert(
+  memory: MeterAlertMemory,
+  alert: MeterAlertPayload,
+): MeterAlertMemory {
+  const priorAlerts = memory[alert.meterId] ?? [];
+  return {
+    ...memory,
+    [alert.meterId]: [
+      ...priorAlerts,
+      {
+        thresholdPercent: alert.thresholdPercent,
+        resetsAt: alert.resetsAt ?? null,
+        observedAt: alert.observedAt,
+      },
+    ],
+  };
 }
