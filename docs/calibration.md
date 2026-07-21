@@ -296,6 +296,41 @@ matrix. (2) The panel now picks from DISCOVERED REPOS (one tap on mobile) with a
 free-text path field as the escape hatch (pillar 7), last-used repo remembered.
 603 tests green. Gate test re-armed.
 
+### 2026-07-21 — slice-4 exit-gate test, 2nd finding: repo-relative paths resolved against the wrong base
+
+**Found by Wes, second live gate attempt.** With the repo picker fixed he loaded
+`~/projects/content/vesh` and tapped its modified `manuscript/chapter-01.md` —
+and the daemon tried to read `~/projects/manuscript/chapter-01.md` (ENOENT): the
+repo's own `content/vesh/` prefix was dropped.
+
+**Mechanism:** `git status --porcelain=v2` emits **repo-relative** paths; the UI
+hands them straight back; `resolvePathParam` passed them to `resolveWithinRoots`,
+whose `resolve()` anchors a relative path on the daemon cwd / allowlist root —
+NOT the repo root. Hit `/api/git/diff`, `/api/git/stage` and `/api/git/unstage`
+alike. **Orchestrator's design error:** the step-1 spec said "every request path
+goes through `resolveWithinRoots`" but never said a repo-relative path must FIRST
+be anchored to the resolved repo root. The rule to carry forward: when a surface
+accepts paths from an external tool, pin down *what they are relative to* — the
+wall tells you a path is safe, never what it means.
+
+**Fix (same session):** `resolvePathParam` takes the verified repo toplevel;
+absolute → as-is, relative → `join(verifiedRepoRoot, path)`; the result still
+passes the unchanged `resolveWithinRoots` wall, so a repo-relative traversal
+(`../../../etc/passwd`) still 403s before any git subprocess. Six regression
+tests use a repo NESTED below the allowlisted root (`<root>/content/vesh`) so the
+bug cannot return. 609 tests green.
+
+### 2026-07-21 — observed: PTY shell UX when the daemon restarts under it (validated, no action)
+
+Wes deliberately left a vimes terminal open across a `systemctl restart` to
+observe the failure mode. **Result: clean degradation.** The shell stopped
+responding, a red error bar reported an invalid/unknown shell, the existing
+scrollback REMAINED READABLE, and backing out to the terminals list worked
+normally. No hang, no lost buffer, no stuck view. Process death (as opposed to a
+WS reconnect, which D23 already covers) therefore has an acceptable UX today —
+no polish item filed. Relevant to the hot-reload design direction: the cost of a
+daemon restart is a dead shell with intact scrollback, not a broken client.
+
 ## Budget table (`--report`)
 
 Design-intent targets from spec §8, listed so nothing gets pinned from memory.

@@ -1,6 +1,6 @@
 import type { Hono, Context } from 'hono';
 import { readdir } from 'node:fs/promises';
-import { basename, join, relative } from 'node:path';
+import { basename, isAbsolute, join, relative } from 'node:path';
 import { resolveWithinRoots, realpathProbe, type RealpathProbe } from './filePaths.js';
 import {
   GitAdapter,
@@ -27,7 +27,10 @@ import {
 //      root has a toplevel outside the roots and is refused. A git op reachable
 //      outside the allowlist would be a halting finding; this is the guard.
 //   3. Any request-derived `path` passes through resolveWithinRoots too, and is
-//      handed to git as an absolute operand after a `--` guard.
+//      handed to git as an absolute operand after a `--` guard. A RELATIVE `path`
+//      is interpreted relative to the RESOLVED REPO ROOT first (git's own model —
+//      `git status --porcelain=v2` emits repo-relative paths and the UI hands
+//      them straight back), then still goes through the same wall.
 //   4. The adapter uses execFile with ARRAY args (never a shell) — nothing is
 //      interpolated. See gitAdapter.ts.
 //
@@ -46,6 +49,13 @@ export interface GitApiDeps {
 }
 
 // ── the API contract (rule 0.5 — reserved now, the UI consumes it in step 3) ──
+//
+// PATH SEMANTICS (diff / stage / unstage). A request `path` is REPO-RELATIVE to
+// the resolved repo root — exactly what `git status --porcelain=v2` emits and
+// what the UI hands back unmodified. An ABSOLUTE path is also accepted and used
+// as-is. Either way the final path passes the allowlist wall (resolveWithinRoots)
+// before any git subprocess sees it, and RESPONSES always carry absolute paths
+// (`GitStageResponse.path` is the resolved absolute path).
 
 export interface GitStatusResponse {
   repoRoot: string;
@@ -145,18 +155,32 @@ async function resolveRepoRoot(
   return { ok: true, repoRoot: resolvedToplevel.absolute };
 }
 
-// Resolve an optional request-derived path against the allowlist. Returns the
-// absolute path (handed to git as a `--`-guarded operand), null when absent, or a
-// refusal when the path escapes the roots.
+// Resolve an optional request-derived path against the repo root, then against
+// the allowlist. Returns the absolute path (handed to git as a `--`-guarded
+// operand), undefined when absent, or a refusal when the path escapes the roots.
+//
+// The resolution rule (matching git's own model):
+//   • an ABSOLUTE `path` is used as-is;
+//   • a RELATIVE `path` is repo-relative — joined onto `verifiedRepoRoot`, the
+//     toplevel resolveRepoRoot already allowlist-verified. Anything else drops
+//     the repo's own prefix (the ENOENT bug: an allowlisted root that CONTAINS
+//     the repo, e.g. ~/projects, resolved `manuscript/x.md` against ~/projects
+//     instead of ~/projects/content/vesh).
+//
+// The security wall is unchanged: whatever this rule produces still passes
+// through resolveWithinRoots, so a repo-relative traversal (`../../../etc/passwd`)
+// lands outside every root and is refused 403 before any git subprocess runs.
 function resolvePathParam(
   pathParam: string | undefined,
+  verifiedRepoRoot: string,
   deps: GitApiDeps,
   realpath: RealpathProbe,
 ): { ok: true; absolute: string | undefined } | RepoRefusal {
   if (pathParam === undefined || pathParam === '') {
     return { ok: true, absolute: undefined };
   }
-  const resolved = resolveWithinRoots(pathParam, deps.getAllowedRoots(), realpath);
+  const repoAnchoredPath = isAbsolute(pathParam) ? pathParam : join(verifiedRepoRoot, pathParam);
+  const resolved = resolveWithinRoots(repoAnchoredPath, deps.getAllowedRoots(), realpath);
   if (!resolved.ok) {
     return { ok: false, httpStatus: 403, body: { error: 'path-outside-allowlist' } };
   }
@@ -319,7 +343,7 @@ export function registerGitApi(app: Hono, deps: GitApiDeps): void {
     if (!resolution.ok) {
       return context.json(resolution.body, resolution.httpStatus);
     }
-    const pathResolution = resolvePathParam(context.req.query('path'), deps, realpath);
+    const pathResolution = resolvePathParam(context.req.query('path'), resolution.repoRoot, deps, realpath);
     if (!pathResolution.ok) {
       return context.json(pathResolution.body, pathResolution.httpStatus);
     }
@@ -390,7 +414,7 @@ export function registerGitApi(app: Hono, deps: GitApiDeps): void {
     if (!resolution.ok) {
       return context.json(resolution.body, resolution.httpStatus);
     }
-    const pathResolution = resolvePathParam(pathParam, deps, realpath);
+    const pathResolution = resolvePathParam(pathParam, resolution.repoRoot, deps, realpath);
     if (!pathResolution.ok) {
       return context.json(pathResolution.body, pathResolution.httpStatus);
     }
