@@ -612,3 +612,49 @@ no tool pending; behaviour with a **subagent in flight** (relevant — stage
 runners spawn subagents); coalescing of rapid injections; and whether anything
 differs when spawned through the daemon rather than directly. The long-tool
 latency bound rests on a **single** run.
+
+## D30 — Watchdog staleness band PINNED at 15 min (Gate-D); and "stale" is three conditions, not one
+
+*2026-07-22 (Wes: "pin the staleness band at 15 min for now", after spike S3a's
+measurements). Rule 0.2 satisfied: calibrated → signed off → pinned, deliberately.*
+
+**PINNED: a stage run with no JSONL append for 15 minutes is STALE.** This
+replaces the spec's ⟨tune 5 min⟩ placeholder, which the measurement disproved.
+
+**Why 15 and not 5.** Measured over the real corpus (697 transcripts, 80.6k
+records; full record in calibration.md 2026-07-22), the **machine-work** gap
+distribution is p50 1.5 s, p99 1.33 min, p99.9 3.52 min, **max 14.87 min**. False
+quarantines by band: >5 min → **30**, >10 min → 8, **>15 min → 0**. A 15-minute
+band clears every one of 70,232 observed healthy gaps. The 5-minute placeholder
+fails **systematically, not occasionally**: the tail is long thinking blocks plus a
+reproducible cluster of `TaskOutput`/`Agent` gaps at exactly **10.00 min** (an
+upstream subagent-poll cap) — and slice 6's stage runners spawn subagents, so a
+5-minute band would quarantine healthy subagent work as a matter of course.
+
+**The assumptions this band carries** (bands are pinned with their assumptions,
+never as bare numbers): measured on **interactive/orchestrated work on this host**,
+CLI 2.1.x, not on dispatcher stage runs — which do not exist yet and may run longer
+autonomous stretches. Wes's "for now" is recorded as intent: **this band is
+provisional and is expected to be re-priced once real stage runs produce their own
+distribution.** Re-measuring is cheap (the S3a scripts are read-only and rerunnable).
+
+**⚠ The pin is only half the design — the other half is not a number.** Human-gated
+waits (`AskUserQuestion` / `ExitPlanMode`) were observed up to **599.99 min** (10 h)
+on perfectly healthy runs, because the human's reply returns as a `tool_result` and
+is indistinguishable from in-flight work. **No threshold separates those from a
+stall**, so the watchdog must not try. **"Stale" therefore means THREE conditions,
+all required:**
+1. the run is **not blocked on a human gate** (consult the existing `canUseTool` /
+   `needsAttention` state — slices 0–2 already own it),
+2. it is **not at a resume boundary** (a resumed session's first gap is wall-clock,
+   not a stall),
+3. and it has **not appended for ≥ 15 min**.
+
+A watchdog implementing only (3) is wrong at any band, and would quarantine a run
+that is waiting on Wes — the exact rule-0.1 failure slice-6.md names ("a system
+that kills good work is worse than no watchdog").
+
+**Still UNPINNED, deliberately (Gate-D):** the retry count before quarantine
+(⟨tune 3⟩) and the retry backoff curve ⟨tune⟩. Those price against *retry* behaviour,
+which no measurement covers yet; they stay placeholders until a stage run produces
+evidence. Binding on build step 5.

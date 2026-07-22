@@ -1,9 +1,10 @@
 # Slice 6 (0.4) — The task system (the dispatcher)
 
 *Opened 2026-07-22 (Wes: "Open slice 6 — let D28 accumulate in the background").
-**Skeleton APPROVED by Wes 2026-07-22**, same day: S1 ran, **D5 is settled**, and
-the kill criterion is cleared. Still open before their dependent steps: **D6**
-(needs S2's priced comparison) and the ⟨tune⟩ band S3 must measure.*
+**Skeleton APPROVED by Wes 2026-07-22**, same day: S1 and S3 ran, **D5 is
+settled**, the kill criterion is cleared, and the **staleness band is PINNED at
+15 min (D30)**. Still open before their dependent steps: **D6** (needs S2's priced
+comparison) and the retry/backoff ⟨tune⟩s (no evidence covers retries yet).*
 
 Spec source: §3.5 (task system), §9 slice 6, invariants I7 + I10, D5 + D6.
 
@@ -93,16 +94,27 @@ this slice's exit gate demonstrates. Records: `decisions.md` D5, `calibration.md
 (cache-read vs cache-write dollars, per-agent). Deliverable: a priced comparison
 Wes can sign D6's default against. Cheap now that 5b exists.
 
-**S3 — Heartbeat reality (⟨tune⟩ calibration).** What does JSONL append cadence
-actually look like across a real stage run — including a long thinking block, a
-long tool call, and a genuinely wedged run? The ⟨tune 5 min⟩ staleness window and
-⟨tune 3⟩ retry count may not be pinned until this measures the distribution
-(rule 0.2). A watchdog that fires on a healthy-but-quiet run is worse than no
-watchdog — it will quarantine real work.
+**S3 — Heartbeat reality ✅ DONE 2026-07-22 (read-only, zero burn).** Measured over
+the REAL corpus (697 transcripts, 80.6k records) instead of synthesised runs.
+Machine-work gaps: p50 1.5 s, p99 1.33 min, p99.9 3.52 min, **max 14.87 min**;
+false quarantines >5 min → 30, >10 → 8, **>15 min → 0**. **Staleness PINNED at
+15 min (D30).** The spec's 5 min failed *systematically*, not occasionally — the
+tail is long thinking blocks plus a reproducible `TaskOutput`/`Agent` cluster at
+exactly 10.00 min (a subagent-poll cap), and stage runners spawn subagents.
+**The bigger result was a design finding, not a number:** healthy human-gated waits
+reach 10 h, so no threshold can separate them from a stall — hence D30's
+three-condition definition of stale. S3b (a synthetic wedge) was NOT run and is not
+worth its burn: S1's A5 already showed a wedge and a slow tool are indistinguishable
+in JSONL (absence of appends is the only signal), which also gives the watchdog
+scenario fixture its mechanism — `python3 -c "time.sleep(N)"` runs foreground where
+the CLI blocks `sleep`. Full record: `calibration.md`, D30.
 
-**⟨tune⟩ inventory (none may become FAIL-able until signed off):** heartbeat
-staleness ⟨tune 5 min⟩; stale retries before quarantine ⟨tune 3⟩; isolation
-default ⟨tune shared-dir⟩; retry backoff curve ⟨tune⟩.
+**⟨tune⟩ inventory.** Heartbeat staleness ✅ **PINNED 15 min** (D30, Gate-D
+2026-07-22 — S3a measured the machine-work tail at max 14.87 min; the spec's
+5 min would have quarantined healthy subagent work systematically). Still
+UNPINNED and not FAIL-able until signed off: stale retries before quarantine
+⟨tune 3⟩; retry backoff curve ⟨tune⟩; isolation default ⟨tune shared-dir⟩
+(pending S2).
 
 ## Scope
 
@@ -114,9 +126,16 @@ default ⟨tune shared-dir⟩; retry backoff curve ⟨tune⟩.
   spawning, through the session host. Every stage run is an `appSessionId`.
 - **I10 enforcement.** Checks meters before spawning; a failed `requireHeadroom`
   or `deferUntilReset` gate refuses the spawn and events `dispatch_refused`.
-- **Watchdog / quarantine.** No JSONL append for ⟨tune⟩ → stale → retry with
-  backoff → quarantine after ⟨tune⟩ attempts. Stale and quarantine set
-  `needsAttention` on the stage session (existing I5 path).
+- **Watchdog / quarantine.** ⚠ Per **D30**, "stale" is **three conditions, all
+  required**: the run is (1) NOT blocked on a human gate, (2) NOT at a resume
+  boundary, and (3) has not appended for **≥ 15 min** (pinned). A watchdog
+  implementing only (3) is wrong at any band — S3a observed healthy human-gated
+  waits up to **10 hours**, and quarantining one is precisely this slice's
+  named rule-0.1 failure. Gate state already exists (`canUseTool` /
+  `needsAttention`, slices 0–2); the watchdog CONSULTS it rather than inventing a
+  second notion of "blocked". Then: retry with backoff → quarantine after
+  ⟨tune 3, unpinned⟩ attempts; stale and quarantine set `needsAttention` on the
+  stage session (existing I5 path).
 - **Stage runner with distinct dispatch verbs.** `review` and `fix` are different
   verbs with the independence rule baked in (design-directions 2026-07-20):
   **review wants independence** (orchestrator or a fresh reviewer — an agent

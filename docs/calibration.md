@@ -2049,3 +2049,68 @@ The long-tool latency bound rests on a **single** run (A5).
 **S3 note (carried):** the CLI blocks foreground `sleep N` in Bash, so a "wedged
 run" fixture cannot be built from `sleep` — S3's heartbeat calibration needs a
 different wedge.
+
+### 2026-07-22 — SPIKE S3a (slice 6): the watchdog cannot be a pure time threshold; and the machine-work tail is bounded at ~15 min
+
+Measured **read-only over the real corpus** (697 transcript files, ~80.6k
+timestamped records) rather than synthesised — months of actual work is a far
+better instrument than a handful of fabricated runs, and it cost nothing.
+Scripts: `scratchpad/s3a-gap-analysis.mjs`, `s3a-gap-refined.mjs`.
+
+**Method + the distinction that makes the number mean anything.** The watchdog's
+question is "how long can a HEALTHY run go without appending to its JSONL?"
+Gaps were taken between consecutive records in **file order** (append order is the
+truth; S1 showed timestamps are not monotonic — 810 out-of-order pairs excluded).
+A gap counts as *in flight* only when the run was working at both ends: an
+`assistant` record, or a `user` record carrying a `tool_result`. **A gap ending at
+a real human turn is idle time, not staleness** — including it would inflate the
+tail by hours (idle p99 = 226 min, max 24,982 min) and produce a uselessly large
+band. Three populations then separate:
+
+| population | count | what it is |
+|---|---|---|
+| **machine work** | 70,232 | model thinking or a tool running — **the only population a staleness band may be tuned against** |
+| **human-gated** | 28 | `AskUserQuestion` / `ExitPlanMode` — the reply returns as a `tool_result`, so it *looks* like in-flight work |
+| **resume boundary** | 3 | a dormant session resumed later; the gap is wall-clock, not a stall |
+
+**Machine-work distribution.** p50 **1.5 s** · p90 **11.3 s** · p99 **1.33 min** ·
+p99.9 **3.52 min** · p99.99 **10.00 min** · **max 14.87 min**. False-quarantine
+count by candidate threshold: >1 min → 971 · >2 → 295 · >3 → 101 ·
+**>5 min → 30 (0.043%)** · >8 → 11 · >10 → 8 · **>15 min → 0**.
+
+**⚠ The spec's ⟨tune 5 min⟩ would falsely quarantine 30 healthy gaps, and they are
+not random.** The tail is long *thinking* blocks (14.87 / 12.94 / 11.01 min) and a
+**systematic cluster of `TaskOutput` / `Agent` gaps at exactly 10.00 min** — an
+upstream subagent-poll cap. Slice 6's stage runners spawn subagents, so that
+cluster is directly load-bearing: a 5-minute band quarantines healthy subagent
+work reproducibly, not occasionally.
+
+**✅ PINNED 2026-07-22 at 15 min** (Wes: "pin the staleness band at 15 min for
+now" — Gate-D sign-off, decision record **D30**). Clears every one of 70,232
+observed healthy machine gaps; 10 min was the aggressive floor (8 false positives,
+and it still cuts the 10-minute TaskOutput cluster). **Assumptions the band
+carries:** measured on interactive/orchestrated work on this host, CLI 2.1.x, NOT
+on dispatcher stage runs — which do not exist yet and may run longer autonomous
+stretches. Wes's "for now" is recorded as intent: **provisional, expected to be
+re-priced once real stage runs produce their own distribution.** Re-measuring is
+cheap — `s3a-gap-refined.mjs` is read-only and rerunnable. The retry count
+⟨tune 3⟩ and backoff curve ⟨tune⟩ remain UNPINNED (no evidence covers retry
+behaviour yet).
+
+**⚠ THE DESIGN FINDING (not a tuning question).** Human-gated waits reach
+**599.99 min** (10 h), with 3 over 30 min — a healthy run waiting on a person.
+**No time threshold can separate them from a stall, so the watchdog must not try.**
+It must EXEMPT runs blocked on a human gate, and VIMES already owns that state
+(the `canUseTool` gate + `needsAttention`, slices 0–2) — the watchdog consults gate
+state, and only unblocked runs are eligible for staleness. Resume boundaries need
+the same exemption (a resumed session's first gap is wall-clock). This makes
+"stale" mean *unblocked, not appending, past the band* — three conditions, not one.
+
+**S3b (the synthetic wedge) is largely ANSWERED and not worth its burn.** S1's A5
+already parked a run in a foreground `python3 -c "time.sleep(40)"` and observed a
+clean 30.4 s gap on a perfectly healthy run — a wedge and a slow tool are
+**indistinguishable in the JSONL**, because the only signal is the absence of
+appends. Therefore time-plus-exemptions IS the whole design; there is no richer
+signal to find. (It also resolves the earlier blocker: the CLI blocks foreground
+`sleep`, but `python3 -c "time.sleep(N)"` runs fine — that is the mechanism for
+the watchdog scenario fixture in build step 10.)
