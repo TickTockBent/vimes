@@ -10,6 +10,7 @@ import GitPanel from './views/GitPanel.vue';
 import CostLedgerView from './views/CostLedgerView.vue';
 import { useVimesStore } from './stores/vimesStore.js';
 import { decideEditorReturn } from './lib/gitReview.js';
+import { parentDir } from './lib/treeNode.js';
 
 const store = useVimesStore();
 const hash = ref(window.location.hash);
@@ -65,6 +66,9 @@ const editorTarget = computed<{ path: string; line?: number } | null>(() => {
 const editorReturnTarget = computed(() => decideEditorReturn(route.value.params.get('returnTo')));
 
 const showFileTree = computed(() => route.value.routePath === '/files' && editorTarget.value === null);
+// The directory `#/files?dir=…` asked for (set when returning from the editor).
+// Absent → the tree opens at its first root, exactly as before.
+const fileTreeInitialDir = computed(() => route.value.params.get('dir'));
 const showSearch = computed(() => route.value.routePath === '/search');
 const showTerminal = computed(() => route.value.routePath === '/terminal');
 const showGit = computed(() => route.value.routePath === '/git');
@@ -88,7 +92,13 @@ function navigateToSession(appSessionId: string): void {
 function navigateHome(): void {
   window.location.hash = '';
 }
-function navigateToFiles(): void {
+// `#/files` opens the tree. An optional `dir` param says WHICH directory to open;
+// without it the tree falls back to the first root (the pre-existing behavior).
+function navigateToFiles(dir?: string | null): void {
+  if (dir !== undefined && dir !== null && dir.length > 0) {
+    window.location.hash = `#/files?dir=${encodeURIComponent(dir)}`;
+    return;
+  }
   window.location.hash = '#/files';
 }
 function navigateToSearch(): void {
@@ -114,13 +124,16 @@ function navigateToEditor(path: string, line?: number, returnTo?: 'git'): void {
   window.location.hash = `#/files?${params.toString()}`;
 }
 // The editor's back button: the git panel only when the route said so (and the
-// panel then restores + refreshes the diff), otherwise the file tree as before.
+// panel then restores + refreshes the diff), otherwise the file tree — reopened
+// at the file's OWN directory, so leaving an editor returns you where you were
+// instead of dropping you at the top-level root.
 function leaveEditor(): void {
   if (editorReturnTarget.value === 'git') {
     navigateToGit();
     return;
   }
-  navigateToFiles();
+  const editedPath = editorTarget.value?.path ?? null;
+  navigateToFiles(editedPath === null ? null : parentDir(editedPath));
 }
 
 const bannerText = computed(() => {
@@ -159,6 +172,7 @@ const bannerText = computed(() => {
     />
     <FileTreeView
       v-else-if="showFileTree"
+      :initial-dir="fileTreeInitialDir"
       @open="(path) => navigateToEditor(path)"
       @search="navigateToSearch"
       @back="navigateHome"

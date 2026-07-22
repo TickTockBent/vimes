@@ -1,8 +1,19 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue';
 import { useVimesStore } from '../stores/vimesStore.js';
-import { deriveTreeRows, effectiveRoots, parentDir, type RawTreeEntry, type TreeRow } from '../lib/treeNode.js';
+import {
+  deriveTreeRows,
+  effectiveRoots,
+  initialTreeDir,
+  parentDir,
+  type RawTreeEntry,
+  type TreeRow,
+} from '../lib/treeNode.js';
 
+// `initialDir` is the directory the route asked for (`#/files?dir=…`) — set when
+// returning from the editor so you land back in the folder you were editing in.
+// Absent → open the first root, the pre-existing behavior.
+const props = defineProps<{ initialDir?: string | null }>();
 const emit = defineEmits<{ open: [path: string]; back: []; search: [] }>();
 const store = useVimesStore();
 
@@ -27,8 +38,10 @@ function downloadHref(row: TreeRow): string {
 }
 
 // List a directory. On 403 (allowlist boundary) we keep the current view and
-// flag it, rather than dropping the user into a dead end.
-async function navigate(dir: string): Promise<void> {
+// flag it, rather than dropping the user into a dead end. Returns TRUE only when
+// the directory was actually listed, so a caller can fall back (see
+// openInitialDir) instead of leaving the user on an error screen.
+async function navigate(dir: string): Promise<boolean> {
   loadState.value = 'loading';
   boundaryHit.value = false;
   errorMessage.value = '';
@@ -40,20 +53,41 @@ async function navigate(dir: string): Promise<void> {
       if (currentDir.value === null) {
         errorMessage.value = 'That directory is outside the workspace.';
       }
-      return;
+      return false;
     }
     if (!response.ok) {
       loadState.value = 'error';
       errorMessage.value = `Could not list directory (HTTP ${response.status}).`;
-      return;
+      return false;
     }
     const data = (await response.json()) as { entries: RawTreeEntry[] };
     rows.value = deriveTreeRows(dir, data.entries);
     currentDir.value = dir;
     loadState.value = 'ready';
+    return true;
   } catch {
     loadState.value = 'error';
     errorMessage.value = 'Network error listing directory.';
+    return false;
+  }
+}
+
+// Open the directory the route asked for, else the first root. A requested
+// directory that cannot be listed (renamed, or outside the allowlist) falls back
+// to the first root — returning from the editor must never strand the user on an
+// error screen just because the folder moved.
+async function openInitialDir(): Promise<void> {
+  if (currentDir.value !== null) {
+    return;
+  }
+  const requestedDir = props.initialDir ?? null;
+  const target = initialTreeDir(requestedDir, roots.value);
+  if (target === null) {
+    return;
+  }
+  const listed = await navigate(target);
+  if (!listed && requestedDir !== null && roots.value.length > 0) {
+    await navigate(roots.value[0]!);
   }
 }
 
@@ -85,21 +119,18 @@ function selectRoot(event: Event): void {
   }
 }
 
-// Initialize to the first root once the sessions projection has one.
+// Initialize once the route's directory (or the sessions projection's first root)
+// is available. A requested `initialDir` does not need roots to have landed.
 watch(
   roots,
-  (next) => {
-    if (currentDir.value === null && next.length > 0) {
-      void navigate(next[0]!);
-    }
+  () => {
+    void openInitialDir();
   },
   { immediate: true },
 );
 
 onMounted(() => {
-  if (currentDir.value === null && roots.value.length > 0) {
-    void navigate(roots.value[0]!);
-  }
+  void openInitialDir();
 });
 
 const hasRoots = computed(() => roots.value.length > 0);
