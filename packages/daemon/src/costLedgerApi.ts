@@ -13,6 +13,7 @@ import {
   buildCostLedgerReadModel,
   type CostLedgerInputRow,
   type CostLedgerReadModel,
+  type ExplicitAgentParentEdge,
 } from '@vimes/core';
 import type { CostUsageRow } from './costCorpus.js';
 import type { SqliteCostStore } from './sqliteCostStore.js';
@@ -79,6 +80,19 @@ export function currentCostLedger(args: CurrentCostLedgerArgs): CostLedgerBody {
     return { ingestionEnabled: false, ledger: null };
   }
   const inputRows = args.costLedgerStore.readUsageRows().map(toInputRow);
-  const ledger = buildCostLedgerReadModel(inputRows, { projectRoots: args.projectRoots });
+  // The agent→agent parent edges harvested out-of-band from no-usage records. The
+  // usage rows carry no toolUseResult.agentId edge (the whole reason the tree came
+  // out flat), so these injected edges are what let core nest the agents.
+  const parentEdges: ExplicitAgentParentEdge[] = args.costLedgerStore
+    .readAgentEdges()
+    .map((edge) => ({
+      sessionId: edge.sessionId,
+      childAgentId: edge.childAgentId,
+      parentAgentId: edge.parentAgentId,
+    }));
+  const ledger = buildCostLedgerReadModel(inputRows, {
+    projectRoots: args.projectRoots,
+    parentEdges,
+  });
   return { ingestionEnabled: true, ledger };
 }

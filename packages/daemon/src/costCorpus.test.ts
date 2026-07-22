@@ -549,7 +549,8 @@ describe('the durable store — idempotent, incremental, and max-preserving', ()
     const store = new SqliteCostStore({ path: ':memory:' });
     try {
       expect(store.watermark()).toBeNull();
-      expect(store.schemaVersion()).toBe(1);
+      // v2 (unit parent-edge 2): cost_agent_edges + the safe v1→v2 migration.
+      expect(store.schemaVersion()).toBe(2);
       store.setWatermark('2026-07-21T12:00:00.000Z');
       expect(store.watermark()).toBe('2026-07-21T12:00:00.000Z');
     } finally {
