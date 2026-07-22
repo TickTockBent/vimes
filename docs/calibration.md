@@ -1943,3 +1943,42 @@ decisions.md.
 I1–I14 are specified in spec §7 with the slice each lands in. Slice 0 brings
 I1, I2, I4, I5, I6, I8, I12, I13 under test. Exact where counted (events, seqs,
 transitions); relative-epsilon where measured (latencies, projections).
+
+### 2026-07-22 — RESOLVED + DEPLOYED LIVE: the parent-edge fix; the tree NESTS
+
+The rule-0.1 flat-tree finding (2026-07-21, above) is CLOSED. Shipped as two
+commits — `93fda90` (core: injected `parentEdges`, pure) and `70f1d38` (daemon:
+harvest → `cost_agent_edges` + v1→v2 migration + wiring + a strengthened exit
+gate) — and deployed by daemon restart at 2026-07-22T11:54:18Z.
+
+**Live, post-deploy (measured, not predicted):**
+| | before | after |
+|---|---|---|
+| `schema_version` | 1 | **2** (migration ran) |
+| `cost_usage_rows` | 20,453 | **20,697** — PRESERVED, never wiped |
+| `cost_agent_edges` | (table absent) | **291** harvested |
+| edges with a non-null parent | — | **48** |
+| agents with `parentResolved` | **0** | **48** |
+| max tree depth | 2 (flat) | **4** (2 real agent→agent hops) |
+| agents with children | 0 | 8 |
+
+Grand total $7,171.04 over 593 agents; reconciliation held (the read model did not
+throw). The spike predicted 289 edges / ~48 nestings — the live numbers (291 / 48)
+match, the delta being corpus growth between spike and deploy.
+
+**The data-safety guard held in production:** the migration cleared
+`cost_ingest_files` (forcing a 694-file re-scan that backfilled the edges) and left
+`cost_usage_rows` intact. This was the sabotage-verified property — adding
+`DELETE FROM cost_usage_rows` to the migration reddens exactly the "spend SURVIVED"
+assertion — and it behaved as tested on the real ledger.
+
+**Why the exit gate is now stronger than before:** the old fixture carried the
+parent edge on a USAGE row, which is the shape that HID this bug (real edges never
+ride usage rows). The gate now also carries a grandchild whose edge lives on a
+separate NO-USAGE `type:user` record, so a regression that stops harvesting from
+no-usage records goes red (verified: it reddens ASSERTION 8 and moves ASSERTION 5).
+
+**Known limitation, unchanged and honest:** edges for already-PRUNED transcripts
+cannot be re-harvested, so those sessions stay flat with `parentResolved=false`.
+The UI's flat-tree note is conditional (`treeIsFlat`) and now hides itself; agents
+indent by depth automatically. Dollars were never affected by any of this.
