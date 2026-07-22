@@ -19,7 +19,7 @@ import {
   type TaskRecord,
 } from '@vimes/core';
 import { createAccessAuthMiddleware, type AccessVerifier } from './auth.js';
-import { createDaemon, NOTHING_IS_FRESH_STALE_BAND_MS, type Daemon, type DaemonDeps } from './app.js';
+import { createDaemon, NO_OBSERVATION_IS_FRESH_STALE_BAND_MS, type Daemon, type DaemonDeps } from './app.js';
 import type { DaemonConfig } from './config.js';
 import { registerTaskApi, type CreateTaskResponse, type DispatchResponse, type ProposeTransitionResponse } from './taskApi.js';
 import { TaskWriter } from './taskWriter.js';
@@ -811,17 +811,21 @@ describe('I10 end-to-end over HTTP — a failed gate never reaches the session h
   });
 });
 
-// ── assertion 15: the NOTHING_IS_FRESH degenerate band ───────────────────────
+// ── assertion 15: the NO_OBSERVATION_IS_FRESH degenerate band ───────────────
 
-describe('NOTHING_IS_FRESH_STALE_BAND_MS — the poller-disabled band', () => {
+describe('NO_OBSERVATION_IS_FRESH_STALE_BAND_MS — the poller-disabled band', () => {
   // `deriveStaleAfterMs` returns null when the usage poller is off, and
   // `TaskDispatcher` requires a number. Rule 0.2 forbids fabricating a band, and
   // disabling dispatch entirely would make the task system depend on an unrelated
   // feature being switched on. So the daemon passes the DEGENERATE band meaning
   // "nothing counts as fresh" — the literal truth when nothing is being observed.
+  // D33 (decisions.md, 2026-07-22) pinned the value at -1: `meterFreshness` uses a
+  // strict `>`, so -1 is the value that makes "nothing is fresh" true for every
+  // non-negative observation age, closing the one-millisecond gap a band of 0
+  // used to leave open.
 
-  it('is zero — nothing is fresh when nothing is being observed', () => {
-    expect(NOTHING_IS_FRESH_STALE_BAND_MS).toBe(0);
+  it('is -1 — the sentinel that makes every non-negative age stale (D33)', () => {
+    expect(NO_OBSERVATION_IS_FRESH_STALE_BAND_MS).toBe(-1);
   });
 
   it('a requireHeadroom task refuses `headroom-unknown` and NEVER reaches spawnSession', async () => {
@@ -831,7 +835,7 @@ describe('NOTHING_IS_FRESH_STALE_BAND_MS — the poller-disabled band', () => {
     // headroom", NOT "you are out of it". Pillar 4: the two are different facts
     // and must not share a reason.
     const harness = buildApiHarness({
-      staleAfterMs: NOTHING_IS_FRESH_STALE_BAND_MS,
+      staleAfterMs: NO_OBSERVATION_IS_FRESH_STALE_BAND_MS,
       meters: {
         // ONE MILLISECOND old. Deliberately not `observedAt: FIXED_NOW` — see the
         // exact-tie case below, which pins why that distinction is real.
@@ -861,7 +865,7 @@ describe('NOTHING_IS_FRESH_STALE_BAND_MS — the poller-disabled band', () => {
     // band. Asserted separately so the band's own contribution is not conflated
     // with this, which holds at any band.
     const harness = buildApiHarness({
-      staleAfterMs: NOTHING_IS_FRESH_STALE_BAND_MS,
+      staleAfterMs: NO_OBSERVATION_IS_FRESH_STALE_BAND_MS,
       meters: { meters: {}, history: {} },
     });
     const task = await createTaskThrough(harness, {
@@ -877,26 +881,22 @@ describe('NOTHING_IS_FRESH_STALE_BAND_MS — the poller-disabled band', () => {
     });
   });
 
-  it('⚠ PINS A GAP: an observation stamped at EXACTLY `now` is still FRESH at a band of 0', async () => {
-    // ⚠ THIS IS A FINDING PINNED AS BEHAVIOUR, NOT AN ENDORSEMENT OF IT.
+  it('D33: an observation stamped at EXACTLY `now` is STALE, and the gated task never reaches spawnSession', async () => {
+    // D33 (decisions.md, 2026-07-22) CLOSED the gap this test used to PIN.
     //
     // `meterFreshness` (meterDerivations.ts) classifies with `age > staleAfterMs`,
-    // so at a band of 0 an observation whose age is EXACTLY 0 ms is 'fresh'. The
-    // constant's name therefore overstates by one millisecond: "nothing counts as
-    // fresh" is true for every ELAPSED age, and false at the exact tie.
+    // a STRICT `>`. At the old band of 0, an observation whose age was EXACTLY
+    // 0 ms read 'fresh' — the constant's name overstated its own guarantee by one
+    // millisecond. At the pinned band of -1, that same exact-tie observation has
+    // age 0 > -1, so it now reads 'stale': "nothing counts as fresh" is true for
+    // every non-negative age, including the tie, not just for elapsed age.
     //
-    // Exposure, sized rather than hand-waved: `meter_sample` is emitted ONLY by
-    // `runUsagePoll`, so reaching this state requires a FORCED refresh (the poller
-    // is off) landing in the same millisecond as a dispatch of a gated task.
-    // Vanishingly rare, and it fails OPEN (the gate evaluates a genuinely
-    // just-observed number) rather than closed.
-    //
-    // It is pinned here rather than tuned away: a band of -1 would close it, and
-    // that is a deliberate decision for the orchestrator to make (rule 0.1 —
-    // findings earn a decision record, they are not quietly patched). If that
-    // decision is taken, THIS TEST REDDENS, which is exactly what should happen.
+    // This is the exact case the pre-D33 version of this test pinned as a known
+    // gap (an observation stamped at `FIXED_NOW` reading 'fresh' and the gate
+    // evaluating a genuinely just-observed number). The decision inverted the
+    // expected behaviour on purpose; this test now pins the guarantee instead.
     const harness = buildApiHarness({
-      staleAfterMs: NOTHING_IS_FRESH_STALE_BAND_MS,
+      staleAfterMs: NO_OBSERVATION_IS_FRESH_STALE_BAND_MS,
       meters: { meters: { 'window-5h': meterRecord({ percent: 1, observedAt: FIXED_NOW }) }, history: {} },
     });
     const task = await createTaskThrough(harness, {
@@ -906,10 +906,14 @@ describe('NOTHING_IS_FRESH_STALE_BAND_MS — the poller-disabled band', () => {
 
     const response = await harness.request(`/api/tasks/${task.taskId}/dispatch`, postJson({}));
 
-    // The gate EVALUATED the number and passed it, so the task spawned.
-    expect(harness.sessionHost.spawnCalls).toHaveLength(1);
-    expect(((await response.json()) as DispatchResponse).result).toMatchObject({
-      outcome: 'spawned',
+    // The gate refused — headroom is UNKNOWN, not "insufficient" — and NO
+    // spawnSession call was made. Assert the call count directly, not merely the
+    // response envelope.
+    expect(harness.sessionHost.spawnCalls).toEqual([]);
+    expect(((await response.json()) as DispatchResponse).result).toEqual({
+      outcome: 'refused',
+      taskId: task.taskId,
+      reason: 'headroom-unknown',
     });
   });
 
@@ -917,7 +921,7 @@ describe('NOTHING_IS_FRESH_STALE_BAND_MS — the poller-disabled band', () => {
     // Assertion 15, second half, and the reason this band is acceptable at all:
     // only tasks that ASKED to be gated are held. Everything else runs.
     const harness = buildApiHarness({
-      staleAfterMs: NOTHING_IS_FRESH_STALE_BAND_MS,
+      staleAfterMs: NO_OBSERVATION_IS_FRESH_STALE_BAND_MS,
       meters: { meters: { 'window-5h': meterRecord({ percent: 1 }) }, history: {} },
     });
     const task = await createTaskThrough(harness, { stage: 'implementing' });
@@ -1027,7 +1031,7 @@ describe('the production wiring in app.ts', () => {
 
   it('creates + dispatches end to end, and honours the degenerate band with the poller OFF', async () => {
     // Assertion 15 against PRODUCTION composition: `usagePollIntervalMs: 0` means
-    // `deriveStaleAfterMs` is null, so app.ts passes NOTHING_IS_FRESH_STALE_BAND_MS.
+    // `deriveStaleAfterMs` is null, so app.ts passes NO_OBSERVATION_IS_FRESH_STALE_BAND_MS.
     // A gated task must therefore refuse `headroom-unknown`, while an ungated one
     // still runs.
     const projectRoot = realpathSync(mkdtempSync(join(temporaryDirectory, 'daemon-root-')));
