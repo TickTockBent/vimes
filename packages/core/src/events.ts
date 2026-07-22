@@ -185,7 +185,42 @@ export const gateFiredPayloadSchema = z.object({
 });
 export const questionAskedPayloadSchema = z.object({ appSessionId: z.string(), prompt: z.string() });
 export const runCompletedPayloadSchema = z.object({ appSessionId: z.string() });
-export const watchdogStalePayloadSchema = z.object({ appSessionId: z.string() });
+// ⚠ WIDENED IN SLICE 6 STEP 5b, OPTIONAL-only — the same widening discipline
+// `taskCreatedPayloadSchema.gates` and `meterRecordSchema` document. Every
+// `watchdog_stale` already written carries only `appSessionId`, still validates,
+// and still folds to `needsAttention: 'stale'` byte-for-byte as before.
+//
+// **Why it had to widen: a staleness record that cannot explain itself is
+// useless as evidence.** The pre-5b payload could say only "this session went
+// stale" — not how stale, not which task, not how many times. Slice 6's named
+// rule-0.1 finding is "the watchdog quarantines a HEALTHY run", and the
+// investigation that finding earns is conducted out of the log: without these
+// fields the log cannot answer "how long had it actually been silent?" or "was
+// this the first episode or the fourth?".
+export const watchdogStalePayloadSchema = z.object({
+  appSessionId: z.string(),
+  // Which task's stage run this session was. Optional because the watchdog is
+  // the only writer that knows it, and older records predate the field.
+  taskId: z.string().optional(),
+  // The silence the DECISION measured (`assessStageRun`'s `observedSilenceMs`),
+  // recorded verbatim rather than re-derived by a reader from timestamps that
+  // may since have moved.
+  observedSilenceMs: z.number().optional(),
+  // Which stale EPISODE this is for the run, 1-based. Named `retryNumber` to
+  // match the `assessStageRun` verdict field it copies verbatim — but read it as
+  // "episode", not "attempt": the watchdog performs NO retries. Nothing nudges,
+  // re-prompts or restarts a run; it observes silence and writes down what it saw.
+  retryNumber: z.number().optional(),
+  // ⟨CALIBRATION FIELD — the whole reason 5b exists in this shape⟩
+  // TRUE when `assessStageRun` returned `quarantine` and **we deliberately did
+  // not quarantine**. Rule 0.2: the retry ⟨tune⟩s (retries-before-quarantine,
+  // backoff curve) have NO evidence behind them — S3 measured staleness, not
+  // retry behaviour — so they may not drive a destructive action yet. This flag
+  // is how the number gets earned: it is the column Wes reads when pricing
+  // ⟨tune 3⟩, answering "how often WOULD we have quarantined, and would it have
+  // been right?" against real work, before anything is allowed to act on it.
+  wouldQuarantine: z.boolean().optional(),
+});
 export const taskQuarantinedPayloadSchema = z.object({ appSessionId: z.string(), taskId: z.string() });
 
 export const notificationTriggerPayloadSchema = z.object({
