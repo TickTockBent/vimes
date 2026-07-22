@@ -1,7 +1,8 @@
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 // ─── Spawn preflight + runtime version probe (slice-2 step 1, E3/E4) ──────────
 //
@@ -42,9 +43,20 @@ export function createCredentialPreflightProbe(env: NodeJS.ProcessEnv = process.
 
 export type CliVersionProbe = () => Promise<string | null>;
 
-// Default runtime version probe (E4): `claude --version` → the leading
-// dotted-version token, or null when the binary is missing / unparseable.
-// Never throws; a 5 s timeout guards against a hung CLI.
+// Shared `--version` output parsing: the leading dotted-version token, else the
+// trimmed output, else null. Both channel probes go through this so a version
+// string is read identically no matter which binary produced it.
+function parseVersionFromStdout(stdout: string): string | null {
+  const match = /(\d+\.\d+\.\d+)/.exec(stdout);
+  return match !== null ? match[1]! : stdout.trim().length > 0 ? stdout.trim() : null;
+}
+
+// Default runtime version probe for the **PTY channel** (E4): the PATH `claude`
+// binary — the one a raw terminal / escape-hatch session runs. It is NOT the
+// binary SDK-hosted sessions run (see createSdkCliVersionProbe below; observed
+// 2026-07-22: PATH 2.1.217 vs SDK-vendored 2.1.207). `claude --version` → the
+// leading dotted-version token, or null when the binary is missing /
+// unparseable. Never throws; a 5 s timeout guards against a hung CLI.
 export function createCliVersionProbe(): CliVersionProbe {
   return () =>
     new Promise((resolvePromise) => {
@@ -53,8 +65,78 @@ export function createCliVersionProbe(): CliVersionProbe {
           resolvePromise(null);
           return;
         }
-        const match = /(\d+\.\d+\.\d+)/.exec(stdout);
-        resolvePromise(match !== null ? match[1]! : stdout.trim().length > 0 ? stdout.trim() : null);
+        resolvePromise(parseVersionFromStdout(stdout));
       });
     });
+}
+
+// ─── SDK channel version probe (E4, slice-6 drift-checker fix) ───────────────
+//
+// The Agent SDK VENDORS its own Claude Code binary and runs that for every SDK
+// session — the D4 default channel — so a green PATH-`claude` check says nothing
+// about the daily driver. This probe observes that vendored binary instead.
+
+// A version observation that names the binary it came from, so a drift record
+// can say WHICH file it looked at. `version` is null when unknown/unparseable;
+// `binaryPath` is null when the binary could not be resolved at all.
+export interface CliVersionObservation {
+  version: string | null;
+  binaryPath: string | null;
+}
+
+export type SdkCliVersionProbe = () => Promise<CliVersionObservation>;
+// Injectable seams (tests never invoke a real Claude binary): where the vendored
+// binary lives, and how `--version` is run against a given path.
+export type SdkBinaryResolver = () => string | null;
+export type VersionCommandRunner = (binaryPath: string) => Promise<string | null>;
+
+// Resolve the Claude Code binary the Agent SDK vendors: the platform package
+// `@anthropic-ai/claude-agent-sdk-${platform}-${arch}` ships an executable named
+// `claude` beside its package.json. Rule-0.6 fragile surface — the layout is the
+// SDK's, not ours — so every failure mode collapses to null.
+export function resolveSdkClaudeBinaryPath(): string | null {
+  try {
+    const requireFromDaemon = createRequire(import.meta.url);
+    const platformPackageName = `@anthropic-ai/claude-agent-sdk-${process.platform}-${process.arch}`;
+    const platformPackageJsonPath = requireFromDaemon.resolve(`${platformPackageName}/package.json`);
+    const candidateBinaryPath = join(dirname(platformPackageJsonPath), 'claude');
+    return existsSync(candidateBinaryPath) ? candidateBinaryPath : null;
+  } catch {
+    return null;
+  }
+}
+
+// Default `--version` runner: exec the binary AT THE GIVEN PATH. The path is a
+// required argument, so this runner structurally cannot fall back to a PATH
+// lookup — there is no code path here that execs a bare `claude`.
+function runVersionCommandAtPath(binaryPath: string): Promise<string | null> {
+  return new Promise((resolvePromise) => {
+    execFile(binaryPath, ['--version'], { timeout: 5_000 }, (error, stdout) => {
+      if (error !== null) {
+        resolvePromise(null);
+        return;
+      }
+      resolvePromise(parseVersionFromStdout(stdout));
+    });
+  });
+}
+
+// Version probe for the SDK channel. Both seams default to the real thing.
+//
+// ⚠ When the vendored binary cannot be resolved this returns
+// `{ version: null, binaryPath: null }` and runs NOTHING. It never falls back to
+// the PATH `claude` — that fallback would silently re-introduce the very bug
+// this probe exists to fix while looking green. An honest unknown beats a
+// confident wrong answer.
+export function createSdkCliVersionProbe(
+  resolveSdkBinaryPath: SdkBinaryResolver = resolveSdkClaudeBinaryPath,
+  runVersionCommand: VersionCommandRunner = runVersionCommandAtPath,
+): SdkCliVersionProbe {
+  return async () => {
+    const binaryPath = resolveSdkBinaryPath();
+    if (binaryPath === null) {
+      return { version: null, binaryPath: null };
+    }
+    return { version: await runVersionCommand(binaryPath), binaryPath };
+  };
 }

@@ -53,7 +53,7 @@ import {
 import { TerminalHost, type TerminalPtyFactory } from './terminalHost.js';
 import { JsonlTailer } from './tailer.js';
 import { createHookIngress, type HookIngress } from './hookIngress.js';
-import type { CliVersionProbe, PreflightProbe } from './runtimeChecks.js';
+import type { CliVersionProbe, PreflightProbe, SdkCliVersionProbe } from './runtimeChecks.js';
 import type { DaemonConfig } from './config.js';
 import { PushSubscriptions } from './pushSubscriptions.js';
 import { PushPipeline } from './pushPipeline.js';
@@ -122,10 +122,15 @@ export interface DaemonDeps {
   // Spawn preflight (E3). Absent → the SessionHost's permissive default (CI never
   // authenticates); main.ts injects the real credential probe.
   preflightProbe?: PreflightProbe;
-  // Runtime version probe (E4). Absent → the boot version check is SKIPPED (so
-  // integration tests never invoke the real CLI); main.ts injects the real
-  // `claude --version` probe. Present → drift is observed at boot, warn-only.
+  // Runtime version probes (E4), one per channel. Absent → that channel's boot
+  // check is SKIPPED (so integration tests never invoke a real CLI); main.ts
+  // injects the real ones. Present → drift is observed at boot, warn-only.
+  // `cliVersionProbe` watches the PATH `claude` (PTY channel);
+  // `sdkCliVersionProbe` watches the binary the Agent SDK vendors and actually
+  // runs for SDK sessions (the D4 default channel). The two are evaluated
+  // INDEPENDENTLY against their own pins — their versions legitimately differ.
   cliVersionProbe?: CliVersionProbe;
+  sdkCliVersionProbe?: SdkCliVersionProbe;
   // Push sender (step 3). Absent → the real web-push sender (VAPID keys from the
   // data dir). CI injects a fake recorder — a real push service NEVER runs in the
   // harness. VAPID keys are still generated/loaded either way (local crypto), so
@@ -821,18 +826,56 @@ export function createDaemon(deps: DaemonDeps): Daemon {
         });
       });
       await hookIngress.start();
-      // Runtime version check (E4), warn-only, never gates. Only when a probe is
-      // injected (main.ts in prod) — integration tests never invoke the CLI.
+      // Runtime version check (E4), warn-only, never gates. Two INDEPENDENT
+      // channels, each against its own pin — the PATH `claude` (PTY escape hatch)
+      // and the binary the Agent SDK vendors and runs for SDK sessions (the D4
+      // default). Their versions legitimately differ, so one pin is never
+      // asserted against the other channel. Each check runs only when its probe
+      // is injected (main.ts in prod) — integration tests never invoke a CLI.
+      let ptyObservedVersion: string | null = null;
       if (deps.cliVersionProbe !== undefined) {
-        const observed = await deps.cliVersionProbe();
+        ptyObservedVersion = await deps.cliVersionProbe();
         const expected = config.expectedCliVersion ?? null;
-        if (expected === null || observed !== expected) {
-          router.emit([runtimeDriftObserved({ expected, observed })]);
+        if (expected === null || ptyObservedVersion !== expected) {
+          router.emit([runtimeDriftObserved({ expected, observed: ptyObservedVersion, channel: 'pty' })]);
           // eslint-disable-next-line no-console
           console.warn(
-            `vimes-daemon: CLI runtime drift — expected=${expected ?? '(unpinned)'} observed=${observed ?? '(unknown)'}`,
+            `vimes-daemon: CLI runtime drift — expected=${expected ?? '(unpinned)'} observed=${ptyObservedVersion ?? '(unknown)'}`,
           );
         }
+      }
+      let sdkObservedVersion: string | null = null;
+      if (deps.sdkCliVersionProbe !== undefined) {
+        const sdkObservation = await deps.sdkCliVersionProbe();
+        sdkObservedVersion = sdkObservation.version;
+        const expectedSdk = config.expectedSdkCliVersion ?? null;
+        // An UNPINNED sdk channel is reported by the boot line below and nothing
+        // else: no drift event, no warning. There is nothing to drift from, and
+        // asserting the pty pin here would emit permanent false drift (rule 0.2).
+        if (expectedSdk !== null && sdkObservedVersion !== expectedSdk) {
+          router.emit([
+            runtimeDriftObserved({
+              expected: expectedSdk,
+              observed: sdkObservedVersion,
+              channel: 'sdk',
+              binaryPath: sdkObservation.binaryPath,
+            }),
+          ]);
+          // eslint-disable-next-line no-console
+          console.warn(
+            `vimes-daemon: SDK CLI runtime drift — expected=${expectedSdk} observed=${sdkObservedVersion ?? '(unknown)'} binary=${sdkObservation.binaryPath ?? '(unresolved)'}`,
+          );
+        }
+      }
+      // Informational boot line naming both observed channels. SEPARATE from the
+      // `vimes-daemon listening on …` line in main.ts, which the deploy procedure
+      // greps and which nothing here touches.
+      if (deps.cliVersionProbe !== undefined || deps.sdkCliVersionProbe !== undefined) {
+        const sdkPinNote =
+          config.expectedSdkCliVersion === undefined ? '(sdk unpinned)' : `(sdk pinned ${config.expectedSdkCliVersion})`;
+        process.stdout.write(
+          `vimes-daemon: claude runtime — pty=${ptyObservedVersion ?? '(unknown)'} sdk=${sdkObservedVersion ?? '(unknown)'} ${sdkPinNote}\n`,
+        );
       }
       // host_started + boot recovery: any session the log left running/spawning
       // with no live process becomes interrupted (§3.10, D13).

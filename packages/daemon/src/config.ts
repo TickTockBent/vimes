@@ -29,10 +29,19 @@ export interface DaemonConfig {
   // Daemon data dir (per-session settings files, and later VAPID keys / caches).
   // Derived from dbPath's directory unless VIMES_DATA_DIR overrides.
   dataDir: string;
-  // Optional pinned CLI version (VIMES_EXPECTED_CLI_VERSION). At boot the daemon
-  // probes `claude --version`; a mismatch OR an unpinned expectation emits
-  // runtime_drift_observed + a console warn. NEVER gates a spawn (E4).
+  // Optional pinned CLI version for the PTY channel (VIMES_EXPECTED_CLI_VERSION).
+  // At boot the daemon probes the PATH `claude --version`; a mismatch OR an
+  // unpinned expectation emits runtime_drift_observed + a console warn. NEVER
+  // gates a spawn (E4).
   expectedCliVersion: string | undefined;
+  // Optional pinned CLI version for the SDK channel (VIMES_EXPECTED_SDK_CLI_VERSION)
+  // — the Claude Code binary the Agent SDK vendors and runs for every SDK session.
+  // It is a SEPARATE pin on purpose: the vendored binary legitimately differs from
+  // the PATH one (observed 2026-07-22: 2.1.207 vs 2.1.217), so reusing
+  // expectedCliVersion here would emit permanent false drift. Unset → the SDK
+  // channel is REPORTED at boot and never asserted (rule 0.2: an unpinned channel
+  // has nothing to drift from; the value is pinned by hand after review).
+  expectedSdkCliVersion: string | undefined;
   // VAPID `subject` (a mailto: or https: URL) sent with every web-push request
   // (VIMES_PUSH_SUBJECT). The default is a placeholder — a real operator sets a
   // reachable mailto so push services can contact them. Never a secret.
@@ -192,6 +201,10 @@ export function loadConfigFromEnv(env: NodeJS.ProcessEnv = process.env): DaemonC
       env.VIMES_EXPECTED_CLI_VERSION === undefined || env.VIMES_EXPECTED_CLI_VERSION === ''
         ? undefined
         : env.VIMES_EXPECTED_CLI_VERSION,
+    expectedSdkCliVersion:
+      env.VIMES_EXPECTED_SDK_CLI_VERSION === undefined || env.VIMES_EXPECTED_SDK_CLI_VERSION === ''
+        ? undefined
+        : env.VIMES_EXPECTED_SDK_CLI_VERSION,
     snapshotIntervalMs:
       rawSnapshotInterval === undefined
         ? DEFAULT_SNAPSHOT_INTERVAL_MS

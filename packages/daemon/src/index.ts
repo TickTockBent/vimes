@@ -42,9 +42,15 @@ export {
 export {
   createCredentialPreflightProbe,
   createCliVersionProbe,
+  createSdkCliVersionProbe,
+  resolveSdkClaudeBinaryPath,
   type PreflightProbe,
   type PreflightResult,
   type CliVersionProbe,
+  type CliVersionObservation,
+  type SdkBinaryResolver,
+  type SdkCliVersionProbe,
+  type VersionCommandRunner,
 } from './runtimeChecks.js';
 export {
   buildSessionSettings,

@@ -37,6 +37,7 @@ function buildConfig(dbPath: string): DaemonConfig {
     dbPath,
     dataDir: dirname(dbPath),
     expectedCliVersion: undefined,
+    expectedSdkCliVersion: undefined,
     snapshotIntervalMs: 60_000,
     accessTeamDomain: undefined,
     accessAud: undefined,

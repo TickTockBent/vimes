@@ -44,6 +44,7 @@ function buildConfig(overrides: Partial<DaemonConfig> = {}): DaemonConfig {
     dbPath: join(temporaryDirectory, `hooks-${databaseFileCounter}.db`),
     dataDir: temporaryDirectory,
     expectedCliVersion: undefined,
+    expectedSdkCliVersion: undefined,
     snapshotIntervalMs: 60_000,
     accessTeamDomain: undefined,
     accessAud: undefined,
@@ -294,10 +295,17 @@ describe('hook ingress — hostile input (rule 0.6, I8)', () => {
 });
 
 describe('runtime version drift (E4, warn-only)', () => {
-  function driftEvents(daemon: Daemon): Array<{ expected: string | null; observed: string | null }> {
+  interface DriftPayload {
+    expected: string | null;
+    observed: string | null;
+    channel?: 'pty' | 'sdk';
+    binaryPath?: string | null;
+  }
+
+  function driftEvents(daemon: Daemon): DriftPayload[] {
     return streamRecords(daemon, 'system')
       .filter((record) => record.type === 'runtime_drift_observed')
-      .map((record) => record.payload as { expected: string | null; observed: string | null });
+      .map((record) => record.payload as DriftPayload);
   }
 
   it('emits runtime_drift_observed on a version mismatch', async () => {
@@ -306,7 +314,7 @@ describe('runtime version drift (E4, warn-only)', () => {
       cliVersionProbe: async () => '9.9.9',
     });
     try {
-      expect(driftEvents(daemon)).toEqual([{ expected: '1.0.0', observed: '9.9.9' }]);
+      expect(driftEvents(daemon)).toEqual([{ expected: '1.0.0', observed: '9.9.9', channel: 'pty' }]);
     } finally {
       await daemon.stop();
     }
@@ -318,7 +326,7 @@ describe('runtime version drift (E4, warn-only)', () => {
       cliVersionProbe: async () => '2.1.215',
     });
     try {
-      expect(driftEvents(daemon)).toEqual([{ expected: null, observed: '2.1.215' }]);
+      expect(driftEvents(daemon)).toEqual([{ expected: null, observed: '2.1.215', channel: 'pty' }]);
     } finally {
       await daemon.stop();
     }
@@ -331,6 +339,70 @@ describe('runtime version drift (E4, warn-only)', () => {
     });
     try {
       expect(driftEvents(daemon)).toEqual([]);
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  // ─── The two channels are watched independently (drift-checker fix) ─────────
+  // The PATH `claude` (pty) and the SDK-vendored binary run different versions by
+  // design, so each is judged against its OWN pin and neither can raise drift for
+  // the other.
+  const SDK_BINARY_PATH = '/fake/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude';
+
+  it('a mismatching sdk pin drifts the sdk channel ONLY, with the binary named', async () => {
+    const daemon = await startDaemon({
+      config: buildConfig({ expectedCliVersion: '2.1.217', expectedSdkCliVersion: '2.1.999' }),
+      cliVersionProbe: async () => '2.1.217',
+      sdkCliVersionProbe: async () => ({ version: '2.1.207', binaryPath: SDK_BINARY_PATH }),
+    });
+    try {
+      expect(driftEvents(daemon)).toEqual([
+        { expected: '2.1.999', observed: '2.1.207', channel: 'sdk', binaryPath: SDK_BINARY_PATH },
+      ]);
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  it('a mismatching pty pin drifts the pty channel ONLY while the sdk pin matches', async () => {
+    const daemon = await startDaemon({
+      config: buildConfig({ expectedCliVersion: '1.0.0', expectedSdkCliVersion: '2.1.207' }),
+      cliVersionProbe: async () => '2.1.217',
+      sdkCliVersionProbe: async () => ({ version: '2.1.207', binaryPath: SDK_BINARY_PATH }),
+    });
+    try {
+      expect(driftEvents(daemon)).toEqual([{ expected: '1.0.0', observed: '2.1.217', channel: 'pty' }]);
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  it('an UNPINNED sdk channel emits no drift, even though it differs from the pty pin', async () => {
+    const daemon = await startDaemon({
+      config: buildConfig({ expectedCliVersion: '2.1.217', expectedSdkCliVersion: undefined }),
+      cliVersionProbe: async () => '2.1.217',
+      sdkCliVersionProbe: async () => ({ version: '2.1.207', binaryPath: SDK_BINARY_PATH }),
+    });
+    try {
+      // The false-drift trap: the pty pin is NEVER asserted against the sdk
+      // channel — an unpinned channel is reported at boot and nothing else.
+      expect(driftEvents(daemon)).toEqual([]);
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  it('an unresolvable sdk binary is reported honestly and still raises drift against a pin', async () => {
+    const daemon = await startDaemon({
+      config: buildConfig({ expectedCliVersion: '2.1.217', expectedSdkCliVersion: '2.1.207' }),
+      cliVersionProbe: async () => '2.1.217',
+      sdkCliVersionProbe: async () => ({ version: null, binaryPath: null }),
+    });
+    try {
+      expect(driftEvents(daemon)).toEqual([
+        { expected: '2.1.207', observed: null, channel: 'sdk', binaryPath: null },
+      ]);
     } finally {
       await daemon.stop();
     }

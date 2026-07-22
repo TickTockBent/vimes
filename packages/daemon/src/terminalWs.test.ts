@@ -80,6 +80,7 @@ function buildConfig(overrides: Partial<DaemonConfig> = {}): DaemonConfig {
     dbPath: nextDatabasePath(),
     dataDir: temporaryDirectory,
     expectedCliVersion: undefined,
+    expectedSdkCliVersion: undefined,
     snapshotIntervalMs: 60_000,
     accessTeamDomain: undefined,
     accessAud: undefined,

@@ -52,6 +52,7 @@ function buildConfig(overrides: Partial<DaemonConfig> = {}): DaemonConfig {
     dbPath: ':memory:',
     dataDir: settingsTempDir,
     expectedCliVersion: undefined,
+    expectedSdkCliVersion: undefined,
     snapshotIntervalMs: 60_000,
     accessTeamDomain: undefined,
     accessAud: undefined,
