@@ -140,5 +140,23 @@ export {
   type BuildCostTreeOptions,
   type ReconciliationViolation,
 } from './pricing/costTree.js';
+export {
+  buildCostLedgerReadModel,
+  COST_LEDGER_SCOPE_LABEL,
+  UNKNOWN_DAY_KEY,
+  type CostLedgerInputRow,
+  type CostLedgerReadModel,
+  type BuildCostLedgerOptions,
+  type MoneyAmount,
+  type RollupView,
+  type ProjectView,
+  type SessionView,
+  type AgentView,
+  type AttributionView,
+  type SpendHistory,
+  type SpendHistoryPoint,
+  type ProjectSpendSeries,
+  type PriceStatusCountsView,
+} from './pricing/costLedgerReadModel.js';
 
 export * from './harness/index.js';

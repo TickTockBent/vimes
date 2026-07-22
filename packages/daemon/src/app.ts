@@ -72,6 +72,7 @@ import {
   deriveStaleAfterMs,
   type DerivedUsageBody,
 } from './usageDerived.js';
+import { currentCostLedger, type CostLedgerBody } from './costLedgerApi.js';
 import {
   UsageObservationLog,
   defaultUsageObservationLogPath,
@@ -188,6 +189,11 @@ export interface Daemon {
   // `nowIso` stamped from the injected clock. Exposed so tests can assert the
   // shape without a round trip.
   derivedUsage(): DerivedUsageBody;
+  // The cost-ledger read model as GET /api/cost/ledger would serve it. Exposed so
+  // tests can assert the body (and the disabled-ingestion envelope) without a
+  // round trip. Throws the reconciliation finding if the built tree does not
+  // reconcile — the route turns that into a 500.
+  costLedger(): CostLedgerBody;
   // The append-only diagnostic observation log (rule 0.6 drift detection).
   usageObservationLog: UsageObservationLog;
   start(): Promise<void>;
@@ -390,6 +396,26 @@ export function createDaemon(deps: DaemonDeps): Daemon {
   // machinery for what is really "here is the data, the endpoint was just
   // polled a moment ago".
   app.post('/api/usage/refresh', async (context) => context.json(await forceUsageRefresh()));
+
+  // ─── the cost-ledger read model (slice 5b step 4a) ─────────────────────────
+  //
+  // Registered here, before the static catch-all and behind the same auth wall.
+  // Reads the durable ledger, then prices + trees + histories it in pure core
+  // (buildCostLedgerReadModel). One endpoint carries the whole body (tree +
+  // history); the corpus prices in milliseconds.
+  //
+  // Ingestion disabled (costLedgerStore null) → an envelope that SAYS so, never
+  // a crash and never a fabricated zero-ledger. A tree that fails to reconcile
+  // is a rule-0.1 finding: the builder throws and we return HTTP 500 with the
+  // finding message — never a wrong 200.
+  app.get('/api/cost/ledger', (context) => {
+    try {
+      return context.json(currentCostLedgerBody());
+    } catch (error) {
+      const findingMessage = error instanceof Error ? error.message : String(error);
+      return context.text(`cost ledger unavailable: ${findingMessage}`, 500);
+    }
+  });
 
   if (config.staticDir !== undefined) {
     const staticDir = config.staticDir;
@@ -657,6 +683,12 @@ export function createDaemon(deps: DaemonDeps): Daemon {
       : null;
   const costCorpusFileSystem = deps.costCorpusFileSystem ?? nodeCorpusFileSystem;
 
+  // The cost-ledger read model (slice 5b step 4a) — reads the store and hands it
+  // to pure core. Referenced by the /api/cost/ledger route registered above; the
+  // route only calls it per request, long after this store is initialized.
+  const currentCostLedgerBody = (): CostLedgerBody =>
+    currentCostLedger({ costLedgerStore, projectRoots: config.projectRoots });
+
   // One ingest scan. NEVER throws outward: a dead or unreadable corpus, or any
   // store/IO failure, is swallowed and logged as a single line (never a payload
   // dump), exactly like a failed usage poll. A bad scan must never take the
@@ -775,6 +807,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     pollUsageOnce,
     ingestCostOnce,
     derivedUsage: currentDerivedUsage,
+    costLedger: currentCostLedgerBody,
     usageObservationLog,
 
     async start(): Promise<void> {
