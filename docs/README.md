@@ -12,7 +12,7 @@ The operating record for the design. Each file has one job:
 | [risk-register.md](risk-register.md) | **Delta register** (spun up 2026-07-19): external-surface rows added/changed since the spec froze. The founding table stays in spec §6. |
 | [design-directions.md](design-directions.md) | Planned/parked systems not yet scheduled into a slice (spun up 2026-07-19; first tenant: the D12 growth revisit). |
 | [decomposition/](decomposition/README.md) | Prior-art decomposition series + the unified carry-over tracker (what's applied vs pending). |
-| _architecture.md_ | *(spins up on need)* System-shaping structures the spec didn't fully pin. |
+| [architecture.md](architecture.md) | **Standing constraints** (spun up 2026-07-22): system-shaping structures the spec didn't pin. First tenant: projections are stream-local (D34) — read it before writing any projection fold. |
 | _slice-N.md_ | *(per slice)* A slice's signed-off design as an operational plan: scope, build order, assertion list. |
 
 Working rules that span the suite:

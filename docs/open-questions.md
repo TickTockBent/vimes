@@ -182,87 +182,12 @@ rollup. This is designed from zero, on raw material none of them had.
      rename; the test that pinned the gap in `taskApi.test.ts` was inverted to
      pin the guarantee instead. -->
 
-## D34 — Projections cannot fold cross-stream, and the event log has no global order *(trigger: slice-6 step 5b, BLOCKED on this; and any future projection that needs a fact from another stream)*
-
-**Raised 2026-07-22 as a rule-0.1 finding. Step 5b HALTED at section B; the
-runner (sections C/D) was not built.** Found by the implementing agent, which
-stopped rather than working around it; reproduced independently by the
-orchestrator with the agent's three probes
-(`scratchpad/slice6-step5b-finding-probe.test.ts.txt`).
-
-### The finding
-
-`bootFromSnapshot` (`projection.ts:107`) and `readAllStreamsGrouped`
-(`projection.ts:53`) fold **each stream to completion before starting the next**,
-and `streams()` is `ORDER BY stream ASC` in the SQLite store / `.sort()` in the
-memory store. Every `appSessionId` is a UUIDv4, so **every session stream sorts
-before the literal `'tasks'`**. A projection on the tasks stream therefore folds
-every session-stream record *before* the `task_created` / `task_session_attached`
-that would give it meaning — `sessionRefs` is still empty, and the record is
-dropped.
-
-Correctness turns on a UUID's alphabetical relationship to a stream name: the
-same fold works with a `zzzz…` stream id and fails with a real one. That was
-demonstrated directly (probe 2).
-
-**The sharper half is that it breaks I6.** With a snapshot taken after the attach,
-the append arrives as a *tail* record folded against a state where the task
-exists, so the value is set; a from-empty replay of the same log drops it:
-
-```
-BOOT   : "lastHeartbeatAt":"2026-01-01T00:00:02.000Z"
-REPLAY : "lastHeartbeatAt":null
-```
-
-The existing I6 helper cannot catch this: `assertBootEqualsReplayAtCuts` cuts an
-*already-grouped* array, so its cut points never reproduce the
-snapshot-contains-the-attach shape a live daemon produces constantly.
-
-**Root cause, stated plainly: `seq` is per-stream** (`UNIQUE(stream, seq)`,
-`MAX(seq) WHERE stream = ?`). **The event log has no global ordering column at
-all** — only `ts`, which is not guaranteed unique or monotonic across streams.
-So "replay the log in order" is not currently a thing the system can do.
-
-### Why this has not bitten before
-
-Every existing projection is single-stream in effect: `sessions` folds session
-events, `meters` folds `meter_sample` on `'usage'`, `tasks` folded only
-`'tasks'`. Step 5b's heartbeat fold is **the first genuine cross-stream fold in
-the codebase**, and it walked straight into the wall. Nothing shipped is broken —
-the constraint was simply never tested, because nothing had needed it.
-
-### The options
-
-- **(a) Give the log a global order** and replay by it. The general fix, and the
-  only one that makes cross-stream folds a normal thing to write. Costs an event-
-  store schema migration plus changes to snapshot `lastAppliedSeq` semantics, and
-  touches the I6/I12 foundations under *every* projection. Large blast radius.
-- **(b) Emit a heartbeat event on the `'tasks'` stream.** Keeps the fold
-  single-stream, but doubles event volume for the highest-frequency signal in the
-  system (S3 counted 80.6k transcript records) and writes a second record of a
-  fact the session stream already holds — principle 9.
-- **(c) Buffer unresolved heartbeats inside `TasksState`** and adopt them when the
-  attach arrives. Makes the fold order-independent, so I6 holds. But state grows
-  with every session ever observed and needs pruning, and the mechanism is subtle
-  in a projection that is currently easy to read.
-- **(d) ⭐ RECOMMENDED — put `lastAppendAt` on the SESSION record.** The sessions
-  projection already folds session-stream events, so this is a single-stream fold
-  with no ordering problem at all. The watchdog runner already reads sessions
-  state for `liveness` and `needsAttention`, so it costs nothing at the call site.
-  The same applies to the retry count: `watchdog_stale` carries `appSessionId` and
-  is already folded by the sessions projection.
-
-### Lean: (d), plus write the constraint down regardless
-
-**(d) is the smallest change and is also the better model.** "When did this
-session last append?" is a fact *about a session*, not about a task — principle 9
-says it belongs where its stream already is. `TaskRecord.lastHeartbeatAt` and
-`staleRetries` are slice-0 reservations that predate the session/task split being
-worked out; under (d) they stay unwritten and should be explicitly retired rather
-than left looking live.
-
-**Whatever we choose, the constraint itself needs recording in
-`architecture.md`:** *no projection may fold an event from a stream other than its
-own.* The next person to try it will otherwise lose the same day. If cross-stream
-folding is ever genuinely required, (a) is the honest answer and should be its own
-slice, not a step inside one.
+<!-- D34 (projections cannot fold cross-stream) moved to decisions.md 2026-07-22 —
+     decided: option (d). The watchdog heartbeat becomes `lastAppendAt` on the
+     SESSION record, folded by the sessions projection (single-stream, no ordering
+     problem, I6 unaffected), because "when did this session last append" is a fact
+     about a session rather than a task (principle 9). TaskRecord.lastHeartbeatAt
+     and .staleRetries are retired as slice-0 reservations that predate the
+     session/task split. The standing constraint — no projection may fold another
+     stream's events, because the log has no global ordering column — is recorded
+     in architecture.md. Wes approved the recommendation. -->

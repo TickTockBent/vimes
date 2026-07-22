@@ -807,3 +807,67 @@ ungated case remains the proof that the blast radius stays opt-in.
 **Forward pointer.** Step 5's watchdog is the next consumer of freshness
 reasoning in this codebase, and should inherit a constant that means what it says
 rather than a second constant needing its own asterisk.
+
+## D34 — Projections are STREAM-LOCAL; the watchdog heartbeat moves to the SESSION record
+
+*2026-07-22 (Wes, on the open-questions D34 finding): approved option (d) —
+`lastAppendAt` on the session record — and the constraint written down. Rule 0.1
+satisfied: the finding halted slice-6 step 5b, earned this record, and was not
+patched around. Moved from open-questions.md, where the full reproduction and the
+four options were first recorded.*
+
+**The finding.** Step 5b's heartbeat fold was the first genuine cross-stream fold
+in the codebase, and it does not work. `bootFromSnapshot` and
+`readAllStreamsGrouped` fold **each stream to completion before the next**, and
+`streams()` is alphabetical. Every `appSessionId` is a UUIDv4, so every session
+stream sorts before the literal `'tasks'` — the tasks projection folded session
+appends *before* the `task_session_attached` that gives them meaning, and dropped
+them. Whether it appeared to work depended on the stream's NAME: the same fold
+succeeds with a `zzzz…` id and fails with a real UUID.
+
+**Root cause.** `seq` is per-stream (`UNIQUE(stream, seq)`, `MAX(seq) WHERE
+stream = ?`). **The event log has no global ordering column** — only `ts`, which
+is not guaranteed unique or monotonic across streams. "Replay the log in order"
+is not something the system can currently do.
+
+**It also broke I6**, and the existing guard could not see it: with a snapshot
+taken after the attach, boot set `lastHeartbeatAt` while replay-from-empty left it
+`null`. `assertBootEqualsReplayAtCuts` cuts an *already-grouped* array, so its cut
+points never reproduce the snapshot-contains-the-attach shape a live daemon
+produces constantly. A green I6 is evidence about single-stream folds only.
+
+**How it was found and handled.** The implementing agent halted at section B
+rather than working around it, and proposed four repairs without choosing one.
+The orchestrator reproduced all three probes independently before accepting the
+claim. Section A (the `watchdog_stale` widening) was green and independent and
+shipped separately (`7e53f15`); section B was reverted and saved as a patch.
+
+**Decision: option (d) — the heartbeat is a fact about a SESSION.**
+`lastAppendAt` (and the stale-episode count) live on the **session record**, folded
+by the sessions projection, which already owns session-stream events. That fold is
+single-stream, so no ordering problem exists and I6 is unaffected. The watchdog
+runner already reads sessions state for `liveness` and `needsAttention`, so it
+costs nothing at the call site.
+
+This is not merely the cheapest repair — it is the better model. **"When did this
+session last append?" is a fact about a session, not about a task** (principle 9:
+one source of record per fact, held where its stream already is).
+`TaskRecord.lastHeartbeatAt` and `TaskRecord.staleRetries` are slice-0
+reservations that predate the session/task split being worked out; under this
+decision they stay unwritten and are **explicitly retired** rather than left
+looking live.
+
+**Rejected, with reasons.** (a) Give the log a global order — the general fix and
+the only one that makes cross-stream folds ordinary, but it costs an event-store
+migration plus new snapshot `lastAppliedSeq` semantics under *every* projection.
+If cross-stream folding is ever genuinely required, this is the honest answer and
+**it is its own slice, not a step inside one.** (b) Emit heartbeat events on the
+tasks stream — doubles event volume for the highest-frequency signal in the system
+(S3 counted 80.6k transcript records) and writes a second record of a fact the
+session stream already holds. (c) Buffer unresolved heartbeats inside `TasksState`
+— order-independent and I6-safe, but state grows with every session ever observed
+and the mechanism is subtle in a projection that is currently easy to read.
+
+**The constraint is now written down** in `architecture.md`: *no projection may
+fold an event from a stream other than its own.* That entry exists so the next
+person does not lose the same day, and it is why `architecture.md` was created.
