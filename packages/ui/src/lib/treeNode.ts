@@ -75,6 +75,12 @@ export function formatSize(bytes: number, type: FileEntryType): string {
 
 // Sort: directories first, then symlinks, then files; alphabetical within a
 // group, case-insensitive. Hidden entries sort with their peers (not hoisted).
+//
+// NATURAL (numeric) ordering within a group: `numeric: true` makes embedded digit
+// runs compare as NUMBERS, so `chapter-2.md` precedes `chapter-10.md` instead of
+// the lexicographic `chapter-1, chapter-10, …, chapter-19, chapter-2`. This is how
+// a chapter/episode/version-numbered directory is actually read; plain
+// localeCompare only looks right until a collection passes nine items.
 const TYPE_ORDER: Record<FileEntryType, number> = { dir: 0, symlink: 1, file: 2 };
 
 export function deriveTreeRows(directory: string, entries: readonly RawTreeEntry[]): TreeRow[] {
@@ -89,8 +95,24 @@ export function deriveTreeRows(directory: string, entries: readonly RawTreeEntry
       if (typeDelta !== 0) {
         return typeDelta;
       }
-      return a.name.localeCompare(b.name, undefined, { sensitivity: 'accent' });
+      return a.name.localeCompare(b.name, undefined, { sensitivity: 'accent', numeric: true });
     });
+}
+
+// The directory the file tree should open at. An explicitly requested directory
+// wins — that is how returning from the editor lands you back in the folder you
+// were editing in, rather than being bounced to the first root (the tree is
+// unmounted while the editor is open, so its own `currentDir` does not survive
+// the trip; the route has to carry it). With nothing requested, fall back to the
+// first root, which is the pre-existing behavior. Null = nothing to open yet.
+export function initialTreeDir(
+  requestedDir: string | null,
+  roots: readonly string[],
+): string | null {
+  if (requestedDir !== null && requestedDir.length > 0) {
+    return requestedDir;
+  }
+  return roots.length > 0 ? roots[0]! : null;
 }
 
 // Distinct live-session cwds, sorted, as the offered navigation roots. Dead

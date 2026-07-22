@@ -4,6 +4,7 @@ import {
   deriveTreeRows,
   effectiveRoots,
   formatSize,
+  initialTreeDir,
   joinPath,
   parentDir,
   parseRootsPayload,
@@ -54,6 +55,67 @@ describe('deriveTreeRows', () => {
     const alpha = rows.find((r) => r.name === 'Alpha.ts')!;
     expect(alpha.absolute).toBe('/root/Alpha.ts');
     expect(alpha.sizeLabel).toBe('2 KB');
+  });
+
+  // NATURAL ordering: digit runs compare as numbers. Lexicographically this list
+  // reads chapter-1, chapter-10, chapter-11, chapter-2 — which is how a chapters
+  // directory stops being readable the moment it passes nine files.
+  it('sorts embedded numbers NUMERICALLY, so chapter-2 precedes chapter-10', () => {
+    const chapters: RawTreeEntry[] = [
+      { name: 'chapter-10.md', type: 'file', size: 1, mtime: 1, hidden: false },
+      { name: 'chapter-2.md', type: 'file', size: 1, mtime: 1, hidden: false },
+      { name: 'chapter-1.md', type: 'file', size: 1, mtime: 1, hidden: false },
+      { name: 'chapter-11.md', type: 'file', size: 1, mtime: 1, hidden: false },
+      { name: 'chapter-9.md', type: 'file', size: 1, mtime: 1, hidden: false },
+    ];
+    expect(deriveTreeRows('/root', chapters).map((row) => row.name)).toEqual([
+      'chapter-1.md',
+      'chapter-2.md',
+      'chapter-9.md',
+      'chapter-10.md',
+      'chapter-11.md',
+    ]);
+  });
+
+  it('applies numeric ordering to directories too, and keeps dirs before files', () => {
+    const mixed: RawTreeEntry[] = [
+      { name: 'part-10', type: 'dir', size: 0, mtime: 1, hidden: false },
+      { name: 'part-2', type: 'dir', size: 0, mtime: 1, hidden: false },
+      { name: 'chapter-10.md', type: 'file', size: 1, mtime: 1, hidden: false },
+      { name: 'chapter-2.md', type: 'file', size: 1, mtime: 1, hidden: false },
+    ];
+    expect(deriveTreeRows('/root', mixed).map((row) => row.name)).toEqual([
+      'part-2',
+      'part-10',
+      'chapter-2.md',
+      'chapter-10.md',
+    ]);
+  });
+});
+
+// Returning from the editor must land in the folder you were editing in. The tree
+// is unmounted while the editor is open, so its own currentDir cannot survive the
+// trip — the route carries the directory and this picks it up.
+describe('initialTreeDir', () => {
+  const roots = ['/home/ticktockbent/projects', '/home/ticktockbent/content'];
+
+  it('prefers the requested directory over the first root', () => {
+    expect(initialTreeDir('/content/death/manuscript/chapters', roots)).toBe(
+      '/content/death/manuscript/chapters',
+    );
+  });
+
+  it('falls back to the first root when no directory is requested', () => {
+    expect(initialTreeDir(null, roots)).toBe('/home/ticktockbent/projects');
+    expect(initialTreeDir('', roots)).toBe('/home/ticktockbent/projects');
+  });
+
+  it('returns null when nothing is requested and there are no roots yet', () => {
+    expect(initialTreeDir(null, [])).toBeNull();
+  });
+
+  it('still honours a requested directory before any root has landed', () => {
+    expect(initialTreeDir('/a/b', [])).toBe('/a/b');
   });
 });
 
