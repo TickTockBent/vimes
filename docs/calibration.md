@@ -2114,3 +2114,87 @@ appends. Therefore time-plus-exemptions IS the whole design; there is no richer
 signal to find. (It also resolves the earlier blocker: the CLI blocks foreground
 `sleep`, but `python3 -c "time.sleep(N)"` runs fine — that is the mechanism for
 the watchdog scenario fixture in build step 10.)
+
+### 2026-07-22 — SPIKE S2 (slice 6, D6): the lean's PREMISE is refuted — caching is not directory-scoped
+
+D6's load-bearing claim was "prompt cache is scoped to machine+directory, so a
+worktree worker cannot reuse a sibling's cached prefix." **Not observed on this
+host.** Five serial `claude-opus-4-8` runs (P0 warm-up, A1/A2 same directory,
+B1/B2 separate fresh worktrees), priced through the shipped pipeline
+(`scanCostCorpus` → `dedupeUsageRowsGlobally` → `priceUsageRow`):
+
+- A1, in a never-used directory, **read 16,081 tokens that P0 had written in a
+  DIFFERENT directory.**
+- B2, a fresh worktree, took a **100% cache hit including a 22,297-token block
+  written elsewhere** (zero cache writes).
+- Meanwhile A2 — the second worker in the *same* directory — still wrote 3,260.
+
+Caching behaves as prefix/content-addressed, not directory-keyed. The worker's
+`cwd` is evidently not part of any cached block.
+
+**The measured A2-vs-B2 delta (−88.2%, favouring worktree) is NOT usable and must
+not be signed against.** Write tokens fall monotonically across the whole sequence
+(41,814 → 26,097 → 25,557 → 22,298 → 0) straight through the arm boundary, and
+arm B ran last: **run order is 100% confounded with arm.** The agent reported this
+rather than shipping the headline number, which is the correct call.
+
+**Two method corrections worth keeping:** the Opus-class minimum cacheable prefix
+is **4096** tokens (not ~1024 — immaterial here, Claude Code's own ~19K system
+prompt clears it); and **every cache write landed in the 1h tier, with 5m writes
+zero in all five runs**, so these workers pay ×2 base input, not ×1.25.
+
+**D6 recommendation (Wes's call): the cache argument for `shared-dir` is gone.**
+Decide D6 on the isolation axis alone — and with the cache penalty removed,
+nothing remains on the benefit side to pay for shared-dir's write races. Lean
+flips to **`worktree` default**, per-task override retained. **Limits:** one host,
+one account, one model, one task shape, 5 serial runs, order confounded; cache is
+a rule-0.6 external surface that already shifted (1h not 5m) versus the work
+order's assumptions. A dollar figure would need S2b: counterbalanced order,
+distinct content per arm, a fresh-prefix control, ≥3 replicates.
+
+**Write-race axis: untested.** All runs were serial, single-worker, read-only.
+This says nothing about concurrent workers colliding, `.git/index.lock` contention
+(a hard failure, not a slow path), or reads of mid-edit files.
+
+### 2026-07-22 — ⚠ FINDING (rule 0.1, OPEN — HALTS D28): two first-party Anthropic cost signals disagree by exactly 3× on Opus
+
+Surfaced incidentally by S2 and **verified independently by the orchestrator** on
+the same five runs.
+
+| source | implied Opus-4-8 rate | 
+|---|---|
+| our PINNED table (Gate-D, 2026-07-21) | **$15 / $75** per MTok |
+| the SDK result message's `total_cost_usd` | **$5.05 / $25.24** per MTok |
+
+Ratio ours/CLI = **2.973, 2.979, 2.969, 2.770, 2.981** across the five runs
+(2.770 is the run with zero cache writes, i.e. a different token mix) — total
+**2.9711**. A systematic exact-3× is a rate-row conflict, not noise.
+
+**Why this is a conflict and not an obvious bug.** The pinned entry is marked
+`validated (C2, frac 0.801)`. C2 (2026-07-21) validated the table against
+**Anthropic's own `claude_code.cost.usage`** OTel metric — the same experiment
+that caught the documented Sonnet-5 price being 33% low and pinned the BILLED
+rate over the documented one. So we now have **two first-party Anthropic cost
+signals — the OTel cost metric and the SDK's `total_cost_usd` — disagreeing by
+exactly 3× on Opus**, one day after the pin. One of them is not what Anthropic
+bills.
+
+**Consequence, and why it halts D28.** Opus dominates the corpus, so **every
+absolute Opus dollar the live ledger shows may be 3× high** (the displayed
+~$7.2K would be ~$2.4K if the SDK figure is right). Percentages, rankings,
+reconciliation and the tree are all unaffected — this is a scalar on one model's
+rates. **D28 is the accuracy sign-off against `/usage`; validating for days
+against a possibly-3×-wrong number would burn the exact evidence D28 exists to
+produce.** D28 should therefore START by resolving this, not accumulate through it.
+
+**Rule 0.1 respected: the price table was NOT touched.** Resolution is Wes's
+call. The decisive tiebreaker is Anthropic's actual billing/usage figures — which
+is precisely what D28 compares against, so the two are one job now.
+
+**Second incidental finding (API-shape trap, worth a code comment).**
+`scanCostCorpus` emits **raw** rows — one per content block, sharing a
+`message.id` — and dedupe lives in `SqliteCostStore`'s SQL upsert, not in the
+scanner. **Any caller pricing `scanResult.rows` directly double-counts
+multi-block messages** (it inflated S2's first pass ~50%, 15 raw → 10 deduped)
+until `dedupeUsageRowsGlobally` is applied. The shipped ledger path is correct
+(it goes through the store); this is a trap for future direct callers.
