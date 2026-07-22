@@ -243,9 +243,12 @@ that breaks both levers re-triggers it, rule 0.6.)
 
 0. ~~**S1 spike (D5)**~~ ✅ **DONE 2026-07-22** — D5 settled, kill criterion cleared,
    step 6 unblocked (and cheaper than planned: the plumbing already exists).
-1. **Task state machine (PURE, core).** Transition table, legal edges, rejection
-   reasons, the convergence exit. Full task event set (rule 0.5) — extend
-   `events.ts` beyond the two reserved events.
+1. ~~**Task state machine (PURE, core).**~~ ✅ **DONE 2026-07-22.** Transition table
+   as DATA (`TASK_STAGE_EDGES`, derived stage vocabulary), total `proposeTransition`
+   that never throws, 5 enumerated refusal reasons, the convergence exit as a flag
+   on the `→ done` edge, and the task event set (`task_created`,
+   `task_transitioned`, `task_transition_rejected` = I7's record). 108 tests, all
+   enumerated from the exported table so coverage cannot drift from the design.
 2. **Tasks projection (core).** Replace the stub; I6 must hold.
 3. **Dispatcher decision function (PURE, core).** spawn/defer/refuse/quarantine,
    consuming slice 5's headroom evaluator. **I7 + I10 land here.**
