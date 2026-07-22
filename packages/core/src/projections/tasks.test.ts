@@ -93,6 +93,84 @@ describe('tasks projection — task_created', () => {
     expect(state.tasks[TASK_B]!.createdBy).toBe('orchestrator');
   });
 
+  it('folds the GATES the birth record carries (step 4b widening)', () => {
+    // Assertion 1, first half. Until step 4b widened `task_created`, no event
+    // could set `gates` at all — the field existed on the record, defaulted to
+    // `{}`, and was unreachable, which made I10's whole refusal path test-only.
+    // This is the fold that makes a gated task expressible in the log.
+    const state = stateFromLog([
+      [
+        taskCreated({
+          taskId: TASK_B,
+          projectRoot: '/home/user/projects/vimes',
+          createdBy: 'orchestrator',
+          isolation: 'worktree',
+          stage: 'backlog',
+          gates: {
+            requireHeadroom: { meterId: 'window-5h', pct: 40 },
+            deferUntilReset: 'weekly-cap',
+          },
+        }),
+      ],
+    ]);
+    const gatedTask = state.tasks[TASK_B];
+    expect(gatedTask!.gates).toEqual({
+      requireHeadroom: { meterId: 'window-5h', pct: 40 },
+      deferUntilReset: 'weekly-cap',
+    });
+    // The widened record must still satisfy the slice-0 schema unchanged.
+    const validated = taskRecordSchema.safeParse(gatedTask);
+    expect(validated.success, JSON.stringify(validated.error?.issues)).toBe(true);
+  });
+
+  it('a birth record with NO gates still folds {} — old events are unchanged', () => {
+    // Assertion 1, second half, and the reason the widening is OPTIONAL-only: a
+    // `task_created` written before the field existed must fold to exactly what
+    // it folded to then, or I6 breaks over every log already on disk.
+    const withoutGates = stateFromLog([[createTaskA()]]);
+    expect(withoutGates.tasks[TASK_A]!.gates).toEqual({});
+
+    // Stated as a BYTE comparison as well, because "equals {}" would also pass
+    // for a record that grew an extra key alongside it.
+    const explicitlyEmpty = stateFromLog([
+      [
+        taskCreated({
+          taskId: TASK_A,
+          projectRoot: '/home/user/projects/vimes',
+          createdBy: 'human',
+          isolation: 'worktree',
+          stage: 'backlog',
+          gates: {},
+        }),
+      ],
+    ]);
+    expect(tasksProjection.serialize(withoutGates)).toBe(
+      tasksProjection.serialize(explicitlyEmpty),
+    );
+  });
+
+  it('a PARTIAL gates object folds exactly what was named, inventing nothing', () => {
+    // Both gate fields are independently optional on the record. A task that
+    // names only `requireHeadroom` must not acquire a `deferUntilReset` it never
+    // asked for — a fabricated gate would refuse work nobody gated.
+    const state = stateFromLog([
+      [
+        taskCreated({
+          taskId: TASK_A,
+          projectRoot: '/home/user/projects/vimes',
+          createdBy: 'human',
+          isolation: 'worktree',
+          stage: 'backlog',
+          gates: { requireHeadroom: { meterId: 'window-5h', pct: 75 } },
+        }),
+      ],
+    ]);
+    expect(state.tasks[TASK_A]!.gates).toEqual({
+      requireHeadroom: { meterId: 'window-5h', pct: 75 },
+    });
+    expect(state.tasks[TASK_A]!.gates.deferUntilReset).toBeUndefined();
+  });
+
   it('a duplicate task_created never clobbers the existing record (replay safety)', () => {
     // Assertion 2: the task has MOVED since it was born; re-delivering the birth
     // record must not reset it to `backlog`.

@@ -70,9 +70,9 @@ export const tasksProjection: Projection<TasksState> = {
           return state;
         }
         // The birth record carries only what the creator NAMED (taskId,
-        // projectRoot, createdBy, isolation, stage). Everything else is the
-        // schema's documented starting value, filled in here rather than in the
-        // event, so the event stays a statement of intent and the projection
+        // projectRoot, createdBy, isolation, stage, gates). Everything else is
+        // the schema's documented starting value, filled in here rather than in
+        // the event, so the event stays a statement of intent and the projection
         // owns the record shape.
         const bornTask: TaskRecord = {
           taskId: payload.taskId,
@@ -80,7 +80,13 @@ export const tasksProjection: Projection<TasksState> = {
           stage: payload.stage,
           manualReviewRequired: false,
           isolation: payload.isolation,
-          gates: {},
+          // `gates` was widened onto the birth record in step 4b, OPTIONAL-only.
+          // ABSENT → `{}`, byte-for-byte what every previously-written
+          // `task_created` folded to before the field existed, so old logs replay
+          // identically (I6). Present → folded verbatim; the creator's gates are
+          // the ONLY way `requireHeadroom` / `deferUntilReset` reach a record, and
+          // therefore the only way I10's refusal is reachable outside a test.
+          gates: payload.gates ?? {},
           sessionRefs: [],
           createdBy: payload.createdBy,
           lastHeartbeatAt: null,

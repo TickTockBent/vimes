@@ -282,7 +282,25 @@ that breaks both levers re-triggers it, rule 0.6.)
      via the explicit `resolveWorkingDirectory` seam. Step 8 replaces that resolver;
      a test asserts today's behaviour and is marked to REDDEN so the change is
      deliberate, not accidental.
-   - 4b — the HTTP task API. NOT started.
+   - 4b ✅ **DONE 2026-07-22.** The task API (`POST /api/tasks`, `.../transitions`,
+     `.../dispatch`) over a NEW `TaskWriter` — the **sole writer** of task state,
+     built as a class rather than route-handler logic because step 5's watchdog
+     must quarantine IN-PROCESS, and a second write path is the principle-10
+     failure this slice names as halting. **I7 over HTTP:** every rejection is
+     409 + the enumerated reason **and** an evented `task_transition_rejected`;
+     `toStage` is validated as a plain string on purpose, so `unknown-stage` is
+     refused BY THE MACHINE, on the record, rather than by zod with nothing
+     written. 400 (not a proposal) and 404 (no such task) event NOTHING.
+     **The security boundary:** `spawnSession` does not validate `cwd`, so a
+     task's `projectRoot` — a durable instruction to spawn Claude in a directory
+     — is walled at creation by `resolveWithinRoots` against the same allowlist
+     union the file/git APIs use; 403 writes no event, and the RESOLVED path is
+     what persists. `task_created` was widened with an OPTIONAL `gates` (rule
+     0.5): the field has existed since slice 0 but no event could set it, which
+     left I10's refusal path unreachable outside a test. **No `GET /api/tasks`** —
+     `/api/projections/tasks` already serves it (principle 9).
+     ⚠ Raised **D33** (open-questions): the degenerate `NOTHING_IS_FRESH_STALE_BAND_MS = 0`
+     overstates by one millisecond. Pinned by a test, fails open, awaiting sign-off.
 5. **Watchdog + quarantine** (after S3 calibration + sign-off for the ⟨tune⟩s).
 6. **Course correction** — the verb the kill criterion protects. Per D5 this is a
    `correction` verb + its event + the board affordance over the EXISTING

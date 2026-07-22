@@ -129,8 +129,21 @@ function buildTaskStreamStore(): MemoryEventStore {
   store.append([
     taskCreated({ taskId: TASK_ALPHA, projectRoot: '/home/user/a', createdBy: 'human', isolation: 'worktree', stage: 'backlog' }),
   ]);
+  // ⚠ GATED ON PURPOSE (slice 6 step 4b). `task_created` was widened with an
+  // optional `gates`, and a fold outside the I6 fixture is a fold outside replay
+  // equivalence — the non-vacuity guard below does NOT cover it (the fixture
+  // already folds to a non-init state without any gate). BETA carries the gate
+  // that its `dispatch_refused` below names, so the log tells one coherent story:
+  // this task was gated on headroom, and the dispatcher refused it.
   store.append([
-    taskCreated({ taskId: TASK_BETA, projectRoot: '/home/user/b', createdBy: 'orchestrator', isolation: 'shared-dir', stage: 'backlog' }),
+    taskCreated({
+      taskId: TASK_BETA,
+      projectRoot: '/home/user/b',
+      createdBy: 'orchestrator',
+      isolation: 'shared-dir',
+      stage: 'backlog',
+      gates: { requireHeadroom: { meterId: 'window-5h', pct: 40 } },
+    }),
   ]);
   store.append([
     taskTransitioned({ taskId: TASK_ALPHA, fromStage: 'backlog', toStage: 'planning', manualReviewRequired: false, proposedBy: 'dispatcher' }),
@@ -173,8 +186,19 @@ function buildTaskStreamStore(): MemoryEventStore {
   store.append([
     taskSessionAttached({ taskId: TASK_ALPHA, stage: 'implementing', appSessionId: ALPHA_IMPLEMENTING_SESSION }),
   ]);
+  // GAMMA carries the OTHER gate field, so both halves of the widened shape are
+  // inside the replayed log rather than only the one the dispatcher happens to
+  // consume first. ALPHA deliberately stays UNGATED — an old-shape birth record,
+  // proving the optional field still folds to `{}` across every cut point.
   store.append([
-    taskCreated({ taskId: TASK_GAMMA, projectRoot: '/home/user/c', createdBy: 'human', isolation: 'worktree', stage: 'planning' }),
+    taskCreated({
+      taskId: TASK_GAMMA,
+      projectRoot: '/home/user/c',
+      createdBy: 'human',
+      isolation: 'worktree',
+      stage: 'planning',
+      gates: { deferUntilReset: 'window-5h' },
+    }),
   ]);
   store.append([meterSample(meter('window-5h', 250))]);
   store.append([
@@ -258,6 +282,21 @@ describe('projection I6 — boot(snapshot+tail) equals replay-from-empty', () =>
     expect(state.tasks[TASK_ALPHA]!.manualReviewRequired).toBe(true);
     expect(state.tasks[TASK_BETA]!.stage).toBe('quarantined');
     expect(state.tasks[TASK_GAMMA]!.stage).toBe('blocked-external');
+  });
+
+  it('the tasks I6 fixture folds the GATES its birth records carry (step 4b)', () => {
+    // Assertion 2. The statement of what the I6 case above replays for the NEWLY
+    // widened field, so "I6 covers the gates fold" is asserted rather than
+    // claimed. Both optional halves are present in the log (BETA: requireHeadroom,
+    // GAMMA: deferUntilReset) and ALPHA is deliberately ungated, so the fixture
+    // exercises present-and-absent at every cut point.
+    const store = buildTaskStreamStore();
+    const state = replayFromEmpty(tasksProjection, readAllStreamsGrouped(store));
+    expect(state.tasks[TASK_ALPHA]!.gates).toEqual({});
+    expect(state.tasks[TASK_BETA]!.gates).toEqual({
+      requireHeadroom: { meterId: 'window-5h', pct: 40 },
+    });
+    expect(state.tasks[TASK_GAMMA]!.gates).toEqual({ deferUntilReset: 'window-5h' });
   });
 
   it('the tasks I6 fixture also folds task_session_attached into sessionRefs', () => {
