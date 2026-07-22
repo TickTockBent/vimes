@@ -2156,7 +2156,7 @@ distinct content per arm, a fresh-prefix control, ≥3 replicates.
 This says nothing about concurrent workers colliding, `.git/index.lock` contention
 (a hard failure, not a slow path), or reads of mid-edit files.
 
-### 2026-07-22 — ⚠ FINDING (rule 0.1, OPEN — HALTS D28): two first-party Anthropic cost signals disagree by exactly 3× on Opus
+### 2026-07-22 — ⚠ FINDING (rule 0.1, DECIDED — see D31; does NOT halt D28): two first-party Anthropic cost signals disagree by exactly 3× on Opus
 
 Surfaced incidentally by S2 and **verified independently by the orchestrator** on
 the same five runs.
@@ -2187,9 +2187,16 @@ rates. **D28 is the accuracy sign-off against `/usage`; validating for days
 against a possibly-3×-wrong number would burn the exact evidence D28 exists to
 produce.** D28 should therefore START by resolving this, not accumulate through it.
 
-**Rule 0.1 respected: the price table was NOT touched.** Resolution is Wes's
-call. The decisive tiebreaker is Anthropic's actual billing/usage figures — which
-is precisely what D28 compares against, so the two are one job now.
+**Rule 0.1 respected: the price table was NOT touched.**
+
+**RESOLVED SAME DAY by Wes → D31: do not chase it.** "If we chase this too much
+we'll just go into a tailspin because Anthropic could change their pricing
+silently at any time. Pin what we have observed, and we'll monitor as we go for
+changes… keep a note about this intact, and we can revisit it later if we notice
+further discrepancies." The table STANDS at $15/$75; the divergence is recorded,
+not resolved; **D28 is un-halted and proceeds** carrying this as a known, accepted
+uncertainty on absolute Opus dollars. See D31 for the reasoning and for the
+monitoring gap it exposes.
 
 **Second incidental finding (API-shape trap, worth a code comment).**
 `scanCostCorpus` emits **raw** rows — one per content block, sharing a

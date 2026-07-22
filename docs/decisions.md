@@ -658,3 +658,50 @@ that kills good work is worse than no watchdog").
 (⟨tune 3⟩) and the retry backoff curve ⟨tune⟩. Those price against *retry* behaviour,
 which no measurement covers yet; they stay placeholders until a stage run produces
 evidence. Binding on build step 5.
+
+## D31 — The 3× Opus cost divergence is NOTED, not chased; the table stands, and D28 is the monitor
+
+*2026-07-22 (Wes, on the S2 finding): "my feeling is that if we chase this too much
+we'll just go into a tailspin because Anthropic could change their pricing silently
+at any time. Pin what we have observed, and we'll monitor as we go for changes."
+Asked which of the two observed rates to pin, he declined to re-pin: "keep a note
+about this intact, and we can revisit it later if we notice further discrepancies."*
+
+**Decision: change nothing.** `claude-opus-4-8` stays pinned at **$15/$75 per
+MTok** (the C2-validated figure). The SDK `total_cost_usd` observation implying
+$5.05/$25.24 is **recorded as an open divergence, not treated as a correction.**
+No re-pin, no Gate-D supersession, no code change.
+
+**Why this is the right call and not avoidance.** Pricing is a **rule-0.6 external
+surface** — presumed to change under us without notice. Chasing a 3× discrepancy
+between two first-party signals could consume the slice with no guarantee of a
+stable answer, because the answer itself can move. The project's response to a
+drifting external surface is an isolation boundary plus observation, not a
+one-time forensic resolution. The price table already IS that boundary: it is a
+single pinned module carrying an effective date, so a later correction is a
+one-line, dated re-pin rather than a refactor.
+
+**What this decision costs, stated plainly (pillar 4 — no pretending).** Absolute
+Opus dollars in the ledger carry a **known, unresolved 3× uncertainty**, and Opus
+dominates the corpus. Unaffected: percentages, rankings, project/session/agent
+attribution, reconciliation, the tree, and every un-known classification — this is
+a scalar on one model's rate, not a structural error.
+
+**D28 is un-halted, and D28 IS the monitor.** The accuracy sign-off compares the
+ledger against Anthropic's own `/usage` over days of real use — which is precisely
+the tiebreaker this divergence needs. "Monitor as we go for changes" therefore
+requires no new machinery to begin: **if the ledger and `/usage` disagree by ~3×,
+that is the further discrepancy this decision defers to.** D28's verdict should
+explicitly note which way that comparison came out.
+
+**⚠ The monitoring gap this exposed (queued, not built).** VIMES currently ingests
+**NEITHER** first-party cost signal: nothing captures `total_cost_usd` from the SDK
+result stream (zero references in `packages/`), and `claude_code.cost.usage` was
+spiked in U2 but never built — only a fixture exists. **The ledger prices tokens
+with our own table and has nothing to check itself against**, which is exactly why
+a 3× divergence survived a Gate-D pin and was found only when a spike tripped over
+it. Cheapest fix, if wanted later: the daemon already consumes the SDK stream, so
+capturing `total_cost_usd` per run and continuously comparing it to our priced
+figure gives a **rate-agnostic ratio monitor** — it watches for the ratio *moving*,
+so it works regardless of which rate is correct, and it would have caught this on
+day one. Queued as a rider, not scheduled; slice 6 keeps its scope.
