@@ -220,6 +220,41 @@ describe('sessions projection — I5 attention conservation', () => {
     });
   }
 
+  // ⚠ ASSERTION 5 (slice 6 step 5b) — THE WIDENED `watchdog_stale` STILL REACHES
+  // THE ATTENTION PATH, UNCHANGED. The runner writes four extra evidence fields
+  // (taskId / observedSilenceMs / retryNumber / wouldQuarantine), and this
+  // projection parses `watchdog_stale` with **`seenPayloadSchema`** — `{
+  // appSessionId }` — not a schema of its own. Zod's default object behaviour
+  // STRIPS unknown keys rather than rejecting them, so the widened payload folds
+  // to exactly the same record. That is verified here rather than assumed,
+  // because if it rejected instead, every widened staleness report would fold to
+  // NOTHING: no attention, no notification, and a watchdog that writes to a log
+  // nobody is told about.
+  it('the WIDENED watchdog_stale payload still sets needsAttention.reason = stale', () => {
+    const widenedInput = watchdogStale({
+      appSessionId: APP_SESSION_ID,
+      taskId: 'task-aaaa-0001',
+      observedSilenceMs: 1_800_000,
+      retryNumber: 2,
+      wouldQuarantine: true,
+    });
+    const widenedState = stateFromLog([[createInput()], withNotificationTrigger(widenedInput)]);
+    const narrowState = stateFromLog([
+      [createInput()],
+      withNotificationTrigger(watchdogStale({ appSessionId: APP_SESSION_ID })),
+    ]);
+    expect(widenedState.sessions[APP_SESSION_ID]!.needsAttention).toMatchObject({ reason: 'stale' });
+    // Byte-identical to the pre-widening fold: the extra fields changed the LOG,
+    // and changed nothing at all about the session record.
+    expect(sessionsProjection.serialize(widenedState)).toBe(
+      sessionsProjection.serialize(narrowState),
+    );
+    // And the evidence itself survived into the log for the rule-0.1
+    // investigation it exists to serve — stripping happens at the FOLD, never at
+    // the append.
+    expect(widenedInput.payload).toMatchObject({ wouldQuarantine: true, retryNumber: 2 });
+  });
+
   // (c) Reserved reasons (rule 0.5 — schema addition only, no setter emits
   // them yet: 'rate-limited' lands slice 5, 'brake' lands slice 7). A
   // hand-built notification_trigger carrying 'rate-limited' must validate
