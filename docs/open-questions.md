@@ -20,12 +20,11 @@ Is "Vimes" the name? Proposed and un-objected through one red-pen round.
 
 <!-- D4 moved to decisions.md 2026-07-19 — decided: SDK-hosted default everywhere, PTY escape hatch -->
 
-## D5 — Course-correction mechanism ⚠ *(trigger: slice 6 spike)*
+<!-- D5 moved to decisions.md 2026-07-22 — decided by spike S1: streaming-input
+     injection STEERS a live run mid-turn (confirmed, two models); interrupt is
+     the hard-stop lever, not the correction fallback. Kill criterion NOT
+     triggered. -->
 
-Streaming-input SDK injection vs interrupt+resume-with-correction for injecting
-a course correction into a live stage run. **Lean (2026-07-13):** injection
-preferred; interrupt+resume is the fallback. If *both* fail such that
-corrections require killing runs, that is slice 6's kill criterion.
 
 ## D6 — Worker isolation default *(trigger: slice 6 — task system build)*
 

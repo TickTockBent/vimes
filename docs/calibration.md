@@ -1982,3 +1982,70 @@ no-usage records goes red (verified: it reddens ASSERTION 8 and moves ASSERTION 
 cannot be re-harvested, so those sessions stay flat with `parentResolved=false`.
 The UI's flat-tree note is conditional (`treeIsFlat`) and now hides itself; agents
 indent by depth automatically. Dollars were never affected by any of this.
+
+### 2026-07-22 — SPIKE S1 (slice 6, D5): correction injection STEERS a live run mid-turn; kill criterion NOT triggered
+
+The blocking slice-6 spike. **Versions: SDK `0.3.207`; the binary actually
+exercised is the SDK-VENDORED CLI `2.1.207`, not the PATH `2.1.217`** (see the
+risk-register row — this divergence is itself a finding). Six runs, scripts and
+raw transcripts in `scratchpad/s1-scratch/`. Driven directly against the SDK,
+mirroring `sessionHost.spawn()`; the live daemon was never touched.
+
+**Test A — streaming-input injection: verdict (1) MID-TURN STEER.** Not merely
+queued-to-turn-boundary, and not failed. A message pushed into the live
+`AsyncMessageQueue` reached the model *inside* the turn (A1: enqueue→delivery
+3.06 s with zero `result`s emitted, so no turn boundary had occurred; A2: 1.29 s),
+was obeyed (stopped writing `step-N` files, wrote `DONE.txt`), and the run
+continued as **one** run — single `result`, `is_error:false`, one `sessionId`, one
+transcript file. Reproduced on **two models** (haiku-4.5, sonnet-5) with the
+**production message shape** (`sessionHost.deliver()`'s exact object).
+
+**The delivery boundary is the next model call — NOT preemption of a running
+tool.** A5 parked the worker in a 40 s foreground tool and pushed mid-tool:
+enqueue `12:36:19.786Z` → delivery `12:36:50.210Z` = **30.42 s**, landing exactly
+when the tool returned. **Correction latency is bounded by the remaining duration
+of the in-flight tool call — unbounded in the worst case (a long build or test
+suite).** Binding consequences for slice 6 step 6: the UI must render a correction
+as *queued → delivered*, never as instantly applied; and **the watchdog must not
+read "correction queued, not yet delivered" as stale** or it will quarantine a
+healthy corrected run.
+
+**Test B — interrupt + resume (run regardless, per the work order).**
+`interrupt()` resolved in 3 ms with receipt `{still_queued:[]}`; 38 ms later a
+synthetic `[Request interrupted by user]` record and a `result` with
+`subtype:'error_during_execution'`, `is_error:true`. **The SDK iterator then
+THREW** — an interrupt surfaces as an *exception*, not a graceful end (production
+already absorbs it at `consumeSdk`'s catch → `windDown`, but the abort verb must
+be written against a throw). Zero orphan processes across three snapshots. Work
+lost = the pending model call only (~2–3 s), nothing lost on disk.
+
+**I3 no-fork — verified STRUCTURALLY by the orchestrator, not by return values.**
+Parsing the transcripts for A1, A2, A5 and B1: each has **1 sessionId, 1 root
+(`parentUuid:null`), 0 parents with >1 child, 0 chain breaks.** Resume reused the
+same `sessionId` and appended to the same file (50,334 → 64,399 bytes, 32 → 44
+records). A fork would require a second root, a second file, or a two-child
+parent — none present on either path.
+
+**D5 recommendation (Wes's call): adopt injection; keep `interrupt()` as the
+hard-stop lever.** Steer = inject (no interrupt, no resume, no lost turn, no
+cache-cold restart, no session boundary); abort = interrupt (the only thing that
+can preempt an in-flight tool). The mechanism **already ships** — `sendMessage()`
+into a running session already lands in the SDK queue — so slice 6 step 6 is
+largely semantics, evidencing and UI (a `correction` verb, its event, the board
+affordance), not new plumbing.
+
+**Kill criterion: NOT TRIGGERED.** It fires only if corrections require killing
+runs on *both* paths; both paths work. Slice 6 proceeds.
+
+**Open, deliberately not determined (recorded so they are not mistaken for
+settled):** whether the undocumented `SDKUserMessage.priority` (`'now'|'next'|
+'later'`) changes the delivery boundary; delivery point when mid-generation with
+**no** tool call pending (all three successful injections landed at a tool
+boundary); behaviour with a **subagent (Task tool)** in flight — relevant because
+stage runners may spawn subagents; coalescing of multiple rapid injections; and
+whether anything differs when spawned **through the daemon** rather than directly.
+The long-tool latency bound rests on a **single** run (A5).
+
+**S3 note (carried):** the CLI blocks foreground `sleep N` in Bash, so a "wedged
+run" fixture cannot be built from `sleep` — S3's heartbeat calibration needs a
+different wedge.

@@ -557,3 +557,58 @@ choice, tunable, about protecting remaining headroom for work he cares about.
 100% is Anthropic's wall — not a choice, and in-flight work fails on their terms
 regardless of what any rule here says. The brake exists to keep us from meeting
 the wall.
+
+## D5 — Course correction is STREAMING-INPUT INJECTION; `interrupt()` is the hard stop, not the fallback
+
+*2026-07-22 (settled by spike S1, Wes: "d5 approved"). Moved from
+open-questions.md; the 2026-07-13 lean is CONFIRMED by observation.*
+
+**Decision: steer = inject, abort = interrupt.** A correction is delivered by
+pushing a `SdkUserMessage` into the live session's streaming-input queue.
+`interrupt()` is retained as a *complementary* lever for hard stops (runaway
+command, abort) — **not** as the correction fallback it was originally cast as.
+
+**Evidence (spike S1, full record in calibration.md 2026-07-22; SDK 0.3.207,
+SDK-vendored CLI 2.1.207).** Injection was observed to reach the model **inside
+the turn** — 3.06 s and 1.29 s from enqueue to delivery with zero `result`s
+emitted, so provably before any turn boundary — on **two models**, using the
+production message shape, leaving **one continuous run** (single `result`, one
+`sessionId`, one transcript). The orchestrator independently verified I3 no-fork
+structurally across four runs: 1 sessionId, 1 root, 0 multi-child parents, 0
+chain breaks. Interrupt+resume also works cleanly (3 ms stop, no orphans, same
+file, correction applied), so **both** levers exist.
+
+**Kill criterion NOT triggered.** It fires only if corrections require killing
+runs on both paths; neither path requires it. Slice 6 proceeds.
+
+**The constraint this decision carries (binding on slice 6 step 6).** Delivery is
+bounded by the **next model call**, not by generation: injection does **not**
+preempt an in-flight tool. Parked in a 40 s tool, a correction landed at
+**30.4 s**, exactly when the tool returned — and the worst case is unbounded (a
+long build or test suite). Therefore:
+- the UI renders a correction as **queued → delivered**, never as instantly
+  applied; and
+- the **watchdog must not read "correction queued, not yet delivered" as stale**,
+  or it will quarantine a healthy corrected run.
+`interrupt()` is the only lever that preempts a running tool — which is precisely
+why it is kept rather than discarded.
+
+**Consequence for the build.** The mechanism ALREADY SHIPS: `sendMessage()` into
+a running session already lands in the SDK queue (`sessionHost.ts`). Slice 6
+step 6 is therefore mostly **semantics, evidencing and UI** — a `correction`
+verb, its event, and the board affordance — not new plumbing.
+
+**Two riders recorded, not folded into this decision** (risk-register rows,
+2026-07-22): the SDK vendors its own CLI binary at a different version from PATH
+(the E4 drift-guard fix is a separate approved unit); and an injected correction
+is written as a `queued_command` **attachment**, not a `user` record, carrying
+the *enqueue* timestamp at the *delivery* file position — so **the tailer must
+learn that shape or mid-run corrections are invisible in the session stream**,
+and transcript records must never be ordered by `timestamp`.
+
+**Deliberately not determined** (so it is not mistaken for settled): the
+undocumented `SDKUserMessage.priority` field; delivery when mid-generation with
+no tool pending; behaviour with a **subagent in flight** (relevant — stage
+runners spawn subagents); coalescing of rapid injections; and whether anything
+differs when spawned through the daemon rather than directly. The long-tool
+latency bound rests on a **single** run.
