@@ -6,6 +6,7 @@ import { parseRootsPayload } from '../lib/treeNode.js';
 import type { TerminalListItem } from '../lib/terminalList.js';
 import type { CacheObservabilityRecord } from '../lib/cacheBadge.js';
 import type { DerivedUsageBody, UsageRefreshOutcome, UsageSnapshot } from '../lib/meterDisplay.js';
+import type { CostLedgerBody } from '../lib/costDisplay.js';
 import type { GitStatus, GitFileDiff, GitRepoEntry, GitDiffContext } from '../lib/gitReview.js';
 import type { EventRecord, SessionRecord } from '../lib/types.js';
 import { derivePushState, type PushUiState } from '../lib/pushState.js';
@@ -130,6 +131,18 @@ export const useVimesStore = defineStore('vimes', () => {
   // Rendered verbatim-ish by refreshNotice(): a throttled or failed refresh is
   // NEVER presented as a successful one.
   const lastUsageRefresh = ref<UsageRefreshOutcome | null>(null);
+  // ── Cost ledger (slice 5b step 4b) — the "what did VIMES-hosted work cost"
+  // surface (GET /api/cost/ledger). Plain REST-into-ref, same-origin, tolerant of
+  // transient failure, mirroring fetchTerminals. Fetched on the cost view's open
+  // plus a manual refresh button — NOT on the sessions cadence, because the tree
+  // is expensive to rebuild server-side and nobody is staring at it continuously
+  // (unlike the usage strip). Null until the first fetch lands: the view renders
+  // "loading", never a fabricated $0 tree (pillar 4).
+  const costLedger = ref<CostLedgerBody | null>(null);
+  // True while a cost-ledger fetch is in flight, so the refresh control can
+  // disable itself and the view can show a spinner instead of a stale-vs-fresh
+  // ambiguity.
+  const costLedgerLoading = ref(false);
   // ── Git review (slice 4 step 3) — the primary-human-job surface (spec §3.4) ──
   // Plain REST-into-ref, mirroring fetchTerminals: fetch, credentials
   // same-origin, tolerant of transient failure. The daemon's /api/git/* endpoints
@@ -333,6 +346,28 @@ export const useVimesStore = defineStore('vimes', () => {
       };
     } finally {
       usageRefreshInFlight.value = false;
+    }
+  }
+
+  // GET /api/cost/ledger — the priced project → session → agent tree, spend
+  // history and attribution groupings (slice 5b step 4b). Same plain same-origin
+  // REST-into-ref shape as fetchDerivedUsage, but driven by the view's open + a
+  // manual refresh, never a polling loop. A transient failure leaves the previous
+  // body in place (or null if none has landed yet); the arrival of a body is
+  // never mistaken for freshness — every dollar carries its own price-table date.
+  async function fetchCostLedger(): Promise<void> {
+    costLedgerLoading.value = true;
+    try {
+      const response = await fetch('/api/cost/ledger', { credentials: 'same-origin' });
+      if (!response.ok) {
+        return;
+      }
+      costLedger.value = (await response.json()) as CostLedgerBody;
+    } catch {
+      // Transient network hiccup — the view's refresh button retries. The prior
+      // body (or null) stays; nothing is fabricated.
+    } finally {
+      costLedgerLoading.value = false;
     }
   }
 
@@ -1125,6 +1160,10 @@ export const useVimesStore = defineStore('vimes', () => {
     lastUsageRefresh,
     fetchDerivedUsage,
     refreshUsage,
+    // Cost ledger (slice 5b step 4b)
+    costLedger,
+    costLedgerLoading,
+    fetchCostLedger,
     // Git review (slice 4 step 3)
     gitStatus,
     gitDiffFiles,

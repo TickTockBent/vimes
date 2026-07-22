@@ -7,6 +7,7 @@ import EditorView from './views/EditorView.vue';
 import SearchPanel from './views/SearchPanel.vue';
 import TerminalView from './views/TerminalView.vue';
 import GitPanel from './views/GitPanel.vue';
+import CostLedgerView from './views/CostLedgerView.vue';
 import { useVimesStore } from './stores/vimesStore.js';
 import { decideEditorReturn } from './lib/gitReview.js';
 
@@ -67,6 +68,9 @@ const showFileTree = computed(() => route.value.routePath === '/files' && editor
 const showSearch = computed(() => route.value.routePath === '/search');
 const showTerminal = computed(() => route.value.routePath === '/terminal');
 const showGit = computed(() => route.value.routePath === '/git');
+// `#/cost` — the cost-ledger view (slice 5b step 4b). Statically imported like
+// the other views; it pulls in no heavy dep, so it adds no lazy chunk.
+const showCost = computed(() => route.value.routePath === '/cost');
 // `/#/meters` — the deep-link target of the deployed threshold-notification push
 // (slice 5 step 4b). It used to fall through to SessionListView by ACCIDENT,
 // which was correct only because the meters strip happens to live there. Claim
@@ -95,6 +99,9 @@ function navigateToTerminal(): void {
 }
 function navigateToGit(): void {
   window.location.hash = '#/git';
+}
+function navigateToCost(): void {
+  window.location.hash = '#/cost';
 }
 function navigateToEditor(path: string, line?: number, returnTo?: 'git'): void {
   const params = new URLSearchParams({ path });
@@ -167,6 +174,7 @@ const bannerText = computed(() => {
       @open-editor="(path) => navigateToEditor(path, undefined, 'git')"
       @back="navigateHome"
     />
+    <CostLedgerView v-else-if="showCost" @back="navigateHome" />
     <StreamView v-else-if="activeSessionId" :app-session-id="activeSessionId" @back="navigateHome" />
     <SessionListView
       v-else
@@ -176,6 +184,7 @@ const bannerText = computed(() => {
       @open-search="navigateToSearch"
       @open-terminal="navigateToTerminal"
       @open-git="navigateToGit"
+      @open-cost="navigateToCost"
     />
   </div>
 </template>
