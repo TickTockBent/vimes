@@ -38,6 +38,9 @@ import {
 import { WsHub, type WsHubDeps } from './wsHub.js';
 import { registerFileApi } from './fileApi.js';
 import { registerGitApi } from './gitApi.js';
+import { registerTaskApi } from './taskApi.js';
+import { TaskWriter } from './taskWriter.js';
+import { TaskDispatcher } from './taskDispatcher.js';
 import type { GitRunner } from './gitAdapter.js';
 import {
   SearchService,
@@ -88,6 +91,32 @@ import { nodeCorpusFileSystem, type CorpusFileSystem } from './costCorpus.js';
 // bounds reap latency to at most a minute past the window — cheap and not a
 // calibrated band. Disabled entirely when the window is 0.
 const TERMINAL_REAP_CHECK_INTERVAL_MS = 60_000;
+
+// The METER staleness band handed to the dispatcher when the usage poller is
+// DISABLED — i.e. when `deriveStaleAfterMs(config.usagePollIntervalMs)` is null.
+//
+// The poller is off, so NO meter observation can be vouched for as current. This
+// is NOT a ⟨tune⟩ pin (rule 0.2) — it is the DEGENERATE BAND meaning "nothing
+// counts as fresh", which is the literal truth when nothing is being observed.
+// The alternatives were both worse: fabricating a plausible band would pin a
+// number nobody calibrated, and disabling dispatch entirely would make the
+// daemon's whole task system depend on an unrelated feature being switched on.
+//
+// The consequence, stated so it is a choice and not a surprise: a task with a
+// `requireHeadroom` gate refuses `headroom-unknown` (pillar 4 — never spawn
+// against a number we cannot see, and never call it "insufficient" when the truth
+// is "invisible"). UNGATED work is completely unaffected, so the blast radius is
+// opt-in: only tasks that asked to be gated are held.
+//
+// ⚠ KNOWN GAP, RECORDED RATHER THAN TUNED AWAY (rule 0.1). `meterFreshness`
+// classifies with `age > staleAfterMs`, so at a band of 0 an observation whose age
+// is EXACTLY 0 ms still reads 'fresh' — the name overstates by one millisecond.
+// Reaching that state needs a FORCED usage refresh (the poller is off, and
+// `runUsagePoll` is `meter_sample`'s only emitter) landing in the same millisecond
+// as a gated dispatch, and it fails OPEN. A band of -1 would close it; that is a
+// decision for sign-off, not a silent edit here. `taskApi.test.ts` PINS the
+// current behaviour, so taking that decision reddens a test on purpose.
+export const NOTHING_IS_FRESH_STALE_BAND_MS = 0;
 
 const DAEMON_PROJECTIONS: ReadonlyArray<Projection<unknown>> = [
   sessionsProjection as Projection<unknown>,
@@ -366,6 +395,52 @@ export function createDaemon(deps: DaemonDeps): Daemon {
   registerGitApi(app, {
     getAllowedRoots: () => [...config.projectRoots, ...sessionHost.liveSessionCwds()],
     runner: deps.gitRunner,
+  });
+
+  // ─── the task API (slice 6 step 4b) ────────────────────────────────────────
+  //
+  // Behind the same auth wall (`app.use('*', ...)` above — I14 needs no per-route
+  // work here) and before the static catch-all, in the same region as the other
+  // registerXApi calls. This is the dispatcher's FIRST CALLER: steps 1–4a built
+  // the decisions and the executor, and nothing invoked them outside a test.
+  //
+  // ⚠ ONE WRITER. `TaskWriter` is constructed here and is the ONLY thing in the
+  // daemon that writes `task_created` / `task_transitioned` /
+  // `task_transition_rejected`. Step 5's watchdog will take this same instance
+  // rather than growing a second path (principle 10).
+  const taskWriter = new TaskWriter({
+    emit: (events) => router.emit(events),
+    readTasks: () => bootFromSnapshot(tasksProjection, snapshotStore, store),
+    ids,
+  });
+
+  const taskDispatcher = new TaskDispatcher({
+    // `sessionHost` is constructed further down; these thunks only run per
+    // dispatch request, long after construction — the same deferral
+    // registerFileApi already relies on for `liveSessionCwds()`.
+    sessionHost: {
+      spawnSession: (options) => sessionHost.spawnSession(options),
+      isLive: (appSessionId) => sessionHost.isLive(appSessionId),
+    },
+    emit: (events) => router.emit(events),
+    readTasks: () => bootFromSnapshot(tasksProjection, snapshotStore, store),
+    readMeters: () => currentMetersState(),
+    // The INJECTED clock, stamped HERE at the boundary and nowhere deeper
+    // (rule 0.3). Never `Date.now()`.
+    nowIso: () => clock.now(),
+    // Null (poller disabled) → the degenerate band; see the constant's own note.
+    staleAfterMs: deriveStaleAfterMs(config.usagePollIntervalMs) ?? NOTHING_IS_FRESH_STALE_BAND_MS,
+  });
+
+  registerTaskApi(app, {
+    taskWriter,
+    // ONE explicit attempt per request. No loop, no timer, no scheduling — step
+    // 4a's boundary, unchanged.
+    dispatchTask: (taskId) => taskDispatcher.dispatchTask(taskId),
+    // The SAME allowlist union the file/git APIs use, verbatim, read fresh per
+    // request. A task's projectRoot is a durable instruction to spawn a process
+    // in a directory, so it is walled by exactly the same allowlist a file read is.
+    getAllowedRoots: () => [...config.projectRoots, ...sessionHost.liveSessionCwds()],
   });
 
   // GET /api/terminals — the live terminal list (terminal-lifecycle backlog

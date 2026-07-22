@@ -382,12 +382,24 @@ export const meterPushOutcomePayloadSchema = z.object({
 // after the fact. The creator names it; this event records what was named.
 // `stage` is carried (rather than assumed `backlog`) so the projection folds a
 // stated starting stage instead of re-deriving one.
+//
+// ⚠ WIDENED IN SLICE 6 STEP 4b with `gates`, OPTIONAL-only — the same widening
+// discipline `meterRecordSchema` documents. Every `task_created` already written
+// omits the field, still validates, and still serializes to the same bytes.
+//
+// The gap this closes: `taskRecordSchema.gates` has existed since slice 0 and the
+// projection defaults it to `{}`, but until now NO EVENT COULD EVER SET IT. That
+// made `requireHeadroom` / `deferUntilReset` unreachable in production and I10's
+// entire refusal path test-only — a gate nobody could ever ask for. The creator
+// names the gates; this event records what was named (rule 0.5: the data shape
+// lands with its consumer, which is the task API in this same step).
 export const taskCreatedPayloadSchema = z.object({
   taskId: z.string(),
   projectRoot: z.string(),
   createdBy: taskRecordSchema.shape.createdBy,
   isolation: taskRecordSchema.shape.isolation,
   stage: taskStageSchema,
+  gates: taskRecordSchema.shape.gates.optional(),
 });
 
 // task_transitioned — one ACCEPTED transition, exactly as the state machine
