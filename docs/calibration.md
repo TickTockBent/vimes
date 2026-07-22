@@ -2205,3 +2205,41 @@ scanner. **Any caller pricing `scanResult.rows` directly double-counts
 multi-block messages** (it inflated S2's first pass ~50%, 15 raw → 10 deduped)
 until `dedupeUsageRowsGlobally` is applied. The shipped ledger path is correct
 (it goes through the store); this is a trap for future direct callers.
+
+### 2026-07-22 — the weekly cost snapshot, and a 4th instance of the vacuous-guard pattern
+
+`scripts/cost-snapshot.mjs` + `~/.vimes/cost-history.jsonl` (Wes: "make a weekly
+cron that tracks raw session costs and writes them to a data file… it doesn't need
+to be fancy"). Reads the ledger DB read-only, aggregates per session, writes one
+JSONL line per session. Backfilled 74 sessions / 21,000 rows / $7,308.59, matching
+`buildCostLedgerReadModel` exactly.
+
+**Why it carries raw tokens + `priceTableDate` per line:** D31 leaves a known 3×
+uncertainty on the Opus rate. A file of dollars alone would be worthless the moment
+the rate is corrected; raw tokens + the table date make the whole history
+re-priceable. **Two invariants:** a line always reflects that session's ENTIRE
+history, and **lines are never removed** — so the file outlives transcript pruning
+(and ledger pruning), making the durable horizon "since we started snapshotting"
+rather than whatever retention says.
+
+**⚠ Findings established BEFORE the facts were assumed:** there is **no historical
+cost figure anywhere on disk** — 0 cost keys across 92,365 transcript records,
+`~/.claude/stats-cache.json`'s `costUSD` values are all `0`, and
+`usage-gauge.json`/`usage-state.json` carry headroom percentages, not dollars. So
+back-verification against Anthropic's own number is impossible retroactively; the
+snapshot records OUR figures. Also: retention is 365 days but was set 2026-07-21,
+so the corpus actually spans 2026-06-12 → now, NOT a year.
+
+**PROCESS FINDING (4th instance of the vacuous-guard pattern).** The first
+implementation used a windowed `--since-days` query and then REPLACED each
+session's whole line with the window-only aggregate — silently truncating any
+session that straddled the cutoff. It destroyed 3,139 rows and $926.41, and it
+would have compounded weekly, hitting long-running (i.e. expensive) sessions
+hardest. **The agent's idempotency check passed** because it compared LINE COUNT
+(74 → 74) while the contents were being hollowed out. The orchestrator caught it
+only by summing the dollars independently. Root cause was the ORCHESTRATOR's work
+order, which specified windowed processing to mirror "last week's worth" — windowing
+a derived aggregate truncates anything crossing the boundary, and at 21k rows it
+bought nothing. Fixed by always recomputing every session from full history.
+**The lesson, sharper than the earlier three: verify the property that MATTERS, not
+an adjacent one that happens to be easy to count.**
