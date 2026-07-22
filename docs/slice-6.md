@@ -302,7 +302,34 @@ that breaks both levers re-triggers it, rule 0.6.)
      **D33** (decisions.md, settled 2026-07-22): the degenerate band's one-millisecond
      overstatement is closed — `NOTHING_IS_FRESH_STALE_BAND_MS` is renamed
      `NO_OBSERVATION_IS_FRESH_STALE_BAND_MS` and pinned at `-1`.
-5. **Watchdog + quarantine** (after S3 calibration + sign-off for the ⟨tune⟩s).
+5. **Watchdog** — split 5a/5b, and **the quarantine half is deliberately NOT built.**
+   - 5a ✅ **DONE 2026-07-22.** `assessStageRun`, pure. D30's three conditions are
+     encoded as CHECK ORDER, not a buried conjunction: every early return is a
+     PROTECTION and all of them sit above the escalation branches, so the slice's
+     named finding is prevented structurally rather than by a number. `unknown` is
+     its own verdict and never escalates (pillar 4, as step 3 did for
+     `headroom-unknown`) — *uncertainty may cost a run its escalation, never its
+     life.* Safety established by a 33,600-row matrix read in both directions.
+     `TRANSCRIPT_APPEND_EVENT_TYPES` pins what may advance the heartbeat:
+     tailer-derived appends only, never daemon bookkeeping — otherwise the
+     watchdog's own `watchdog_stale` would refresh the heartbeat it is judging, a
+     guard that disarms itself on use (rule 0.7).
+   - 5b ✅ **DONE 2026-07-22**, after **halting once** on the D34 finding (take 1
+     tried a cross-stream fold). Per D34 the heartbeat is `lastAppendAt` on the
+     **session** record, folded by the sessions projection — same-stream, so I6 is
+     unaffected. `staleEpisodes` replaces the misleading slice-0 name
+     `staleRetries`; the two task fields are marked RETIRED, not deleted. The
+     slice's **first timer** lands in `app.ts` on the terminal-reap lifecycle; the
+     check interval is a sampling cadence, not a threshold. Event spam (4a's
+     deferred question) is answered by dedup on `needsAttention.reason === 'stale'`
+     — the flag `watchdog_stale` itself sets, so no new state (principle 9).
+   - ⏸ **QUARANTINE + RETRY: BLOCKED ON GATE-D.** D30 pinned the band and pinned
+     **nothing** about retries; S3 measured staleness, not retry behaviour. Under
+     rule 0.2 those numbers may not drive a destructive action, so the watchdog
+     **detects and reports but never kills**. `wouldQuarantine` on each
+     `watchdog_stale` records what we *would* have done — this step is now the
+     calibration instrument that earns ⟨tune 3⟩ and the backoff curve. **Needs:
+     the watchdog running against real stage runs, then Wes prices it.**
 6. **Course correction** — the verb the kill criterion protects. Per D5 this is a
    `correction` verb + its event + the board affordance over the EXISTING
    `sendMessage()` path, plus the *queued → delivered* rendering and the
