@@ -4,6 +4,7 @@ import type { Projection } from './projection.js';
 import {
   EVENT_TYPES,
   taskCreatedPayloadSchema,
+  taskSessionAttachedPayloadSchema,
   taskTransitionedPayloadSchema,
 } from '../events.js';
 
@@ -107,6 +108,52 @@ export const tasksProjection: Projection<TasksState> = {
           // existing value through, which the emitter already recorded).
           manualReviewRequired: payload.manualReviewRequired,
         }));
+      }
+
+      case EVENT_TYPES.taskSessionAttached: {
+        const parsed = taskSessionAttachedPayloadSchema.safeParse(event.payload);
+        if (!parsed.success) {
+          return state;
+        }
+        const payload = parsed.data;
+        // Unknown task → no-op, exactly like `task_transitioned` above: a ref for
+        // a task we never saw created must never fabricate a record.
+        return withTask(state, payload.taskId, (task) => {
+          // IDEMPOTENT ON REPLAY, keyed on `appSessionId`. `sessionRefs` is the
+          // only field of a TaskRecord that ACCUMULATES rather than being
+          // overwritten, so it is the only one where folding the same fact twice
+          // leaves a trace — every other case in this fold is naturally
+          // idempotent (a stage assignment applied twice is the same stage).
+          //
+          // ⚠ Stated precisely, because the plausible version is wrong and was
+          // checked by breaking this line: I6 does NOT catch a duplicate append.
+          // Cut points replay the SAME record sequence either way, so a fold that
+          // appends twice appends twice in both paths and replay equivalence
+          // still holds. What this guard defends is the fold being handed the
+          // same event MORE THAN ONCE — an at-least-once delivery, an overlapping
+          // tail read, an operator re-appending a record — where the board would
+          // sprout a phantom second stage run that never existed. The dedicated
+          // idempotence test, not I6, is what holds this line.
+          //
+          // Keyed on `appSessionId` and deliberately NOT on stage: the same
+          // session cannot run twice, while one task legitimately accumulates
+          // several refs across stages AND several within one stage (a re-run
+          // after a quarantine is a NEW session, and must be kept).
+          if (task.sessionRefs.some((existingRef) => existingRef.appSessionId === payload.appSessionId)) {
+            return task;
+          }
+          return {
+            ...task,
+            // APPEND, never sort: the refs are a chronological trail of which
+            // sessions ran this task, and the log order is the only order that
+            // means anything. New array, never a push onto the shared one —
+            // snapshots share references with live state.
+            sessionRefs: [
+              ...task.sessionRefs,
+              { stage: payload.stage, appSessionId: payload.appSessionId },
+            ],
+          };
+        });
       }
 
       // ── deliberately NOT folded ────────────────────────────────────────────

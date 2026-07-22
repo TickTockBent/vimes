@@ -12,6 +12,7 @@ import {
   seen,
   sessionCreated,
   taskCreated,
+  taskSessionAttached,
   taskTransitioned,
   taskTransitionRejected,
   withNotificationTrigger,
@@ -78,9 +79,33 @@ function buildMultiStreamStore(): MemoryEventStore {
 // with session/usage traffic on other streams. This is what makes the tasks I6
 // case a real test — cutting this log at any point leaves tasks mid-journey, so
 // a snapshot+tail boot has to reconstruct genuine state rather than nothing.
+//
+// ⚠ EXTENDED IN SLICE 6 STEP 4a with `task_session_attached`, because a fold the
+// I6 fixture never exercises is a fold I6 does not cover: the non-vacuity guard
+// below only proves the fixture moves the projection AT ALL, and the pre-4a
+// fixture already cleared it on stages alone. `sessionRefs` is the one field of
+// the record that ACCUMULATES rather than being overwritten, so it is the one
+// field whose fold depends on ORDER and on PRIOR CONTENT — a cut point that
+// reconstructs the array in the wrong order, or from the wrong starting point,
+// diverges from replay-from-empty in a way no `stage` assignment ever can. So the
+// fixture carries all three of the fold's branches across cut points: normal
+// appends, a DUPLICATE attach, and an attach for an unknown task.
+//
+// ⚠ Truthfully scoped (checked by breaking the guard): the DUPLICATE is here so
+// the idempotence branch is inside the replayed span, NOT because I6 can detect a
+// duplicate append — it cannot. Both paths fold the same records, so a fold that
+// appends twice appends twice on both sides and equivalence still holds. The
+// dedicated idempotence case in tasks.test.ts holds that line; this fixture holds
+// the ORDER line.
 const TASK_ALPHA = 'task-alpha-0001';
 const TASK_BETA = 'task-beta-0002';
 const TASK_GAMMA = 'task-gamma-0003';
+// The stage runs. APP_1 is the session created at the top of the fixture whose
+// `taskRef` already names TASK_ALPHA/implementing, so the attach record and the
+// session's own birth record agree about the same run.
+const ALPHA_PLANNING_SESSION = 'bbbbbbbb-0000-4000-8000-000000000011';
+const ALPHA_IMPLEMENTING_SESSION = APP_1;
+const BETA_PLANNING_SESSION = 'bbbbbbbb-0000-4000-8000-000000000012';
 
 function buildTaskStreamStore(): MemoryEventStore {
   const store = new MemoryEventStore({
@@ -110,6 +135,10 @@ function buildTaskStreamStore(): MemoryEventStore {
   store.append([
     taskTransitioned({ taskId: TASK_ALPHA, fromStage: 'backlog', toStage: 'planning', manualReviewRequired: false, proposedBy: 'dispatcher' }),
   ]);
+  // The dispatcher spawned the planning stage run (step 4a): the first ref.
+  store.append([
+    taskSessionAttached({ taskId: TASK_ALPHA, stage: 'planning', appSessionId: ALPHA_PLANNING_SESSION }),
+  ]);
   store.append([livenessChanged({ appSessionId: APP_1, to: 'running', cause: 'spawned' })]);
   // I7's evidence, folded by nobody — the task stays in `planning`.
   store.append([
@@ -121,10 +150,28 @@ function buildTaskStreamStore(): MemoryEventStore {
   store.append([
     taskTransitioned({ taskId: TASK_BETA, fromStage: 'backlog', toStage: 'planning', manualReviewRequired: false, proposedBy: 'dispatcher' }),
   ]);
+  store.append([
+    taskSessionAttached({ taskId: TASK_BETA, stage: 'planning', appSessionId: BETA_PLANNING_SESSION }),
+  ]);
+  // A re-delivered attach — the same session, attached again. The fold is
+  // idempotent on `appSessionId`, so this must add NOTHING; if it ever appended,
+  // a snapshot taken after it and a replay across it would disagree.
+  store.append([
+    taskSessionAttached({ taskId: TASK_BETA, stage: 'planning', appSessionId: BETA_PLANNING_SESSION }),
+  ]);
+  // An attach for a task that was never created — ignored, never fabricated.
+  store.append([
+    taskSessionAttached({ taskId: 'task-never-created-9999', stage: 'implementing', appSessionId: APP_2 }),
+  ]);
   // I10's refusal record, also folded by nobody.
   store.append([dispatchRefused({ taskId: TASK_BETA, reason: 'requireHeadroom gate failed' })]);
   store.append([
     taskTransitioned({ taskId: TASK_ALPHA, fromStage: 'plan-ready', toStage: 'implementing', manualReviewRequired: false, proposedBy: 'dispatcher' }),
+  ]);
+  // The second ref on ALPHA: a different stage, a different session. The one
+  // field of the record that ACCUMULATES.
+  store.append([
+    taskSessionAttached({ taskId: TASK_ALPHA, stage: 'implementing', appSessionId: ALPHA_IMPLEMENTING_SESSION }),
   ]);
   store.append([
     taskCreated({ taskId: TASK_GAMMA, projectRoot: '/home/user/c', createdBy: 'human', isolation: 'worktree', stage: 'planning' }),
@@ -211,6 +258,25 @@ describe('projection I6 — boot(snapshot+tail) equals replay-from-empty', () =>
     expect(state.tasks[TASK_ALPHA]!.manualReviewRequired).toBe(true);
     expect(state.tasks[TASK_BETA]!.stage).toBe('quarantined');
     expect(state.tasks[TASK_GAMMA]!.stage).toBe('blocked-external');
+  });
+
+  it('the tasks I6 fixture also folds task_session_attached into sessionRefs', () => {
+    // Assertion 4 (step 4a). The statement of what the I6 case replays for the
+    // NEW fold, so "I6 covers the attach fold" is an assertion rather than a
+    // claim: two refs accumulate in log order on ALPHA, the duplicate attach on
+    // BETA collapses to one, and the attach for a task that was never created
+    // fabricated nothing.
+    const store = buildTaskStreamStore();
+    const state = replayFromEmpty(tasksProjection, readAllStreamsGrouped(store));
+    expect(state.tasks[TASK_ALPHA]!.sessionRefs).toEqual([
+      { stage: 'planning', appSessionId: ALPHA_PLANNING_SESSION },
+      { stage: 'implementing', appSessionId: ALPHA_IMPLEMENTING_SESSION },
+    ]);
+    expect(state.tasks[TASK_BETA]!.sessionRefs).toEqual([
+      { stage: 'planning', appSessionId: BETA_PLANNING_SESSION },
+    ]);
+    expect(state.tasks[TASK_GAMMA]!.sessionRefs).toEqual([]);
+    expect(state.tasks['task-never-created-9999']).toBeUndefined();
   });
 
   it('the other projections still fold this task-bearing log identically', () => {
