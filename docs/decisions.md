@@ -705,3 +705,50 @@ capturing `total_cost_usd` per run and continuously comparing it to our priced
 figure gives a **rate-agnostic ratio monitor** — it watches for the ratio *moving*,
 so it works regardless of which rate is correct, and it would have caught this on
 day one. Queued as a rider, not scheduled; slice 6 keeps its scope.
+
+## D32 — Worker isolation default is WORKTREE; the lean's cache premise was refuted
+
+*2026-07-22 (Wes: "agreed, flip the default to worktree isolation", on spike S2's
+evidence). Moved from open-questions.md; the 2026-07-13 lean is REVERSED.*
+
+**Decision: default `isolation: 'worktree'`**, with the per-task override the spec
+already reserved (`shared-dir` remains selectable per task).
+
+**Why the lean reversed.** The 2026-07-13 lean was `shared-dir`, resting entirely
+on one claim: *"prompt cache is scoped to machine + directory, so a worktree worker
+cannot reuse a sibling's cached prefix."* **Spike S2 observed that this is false on
+this host** (full record in calibration.md 2026-07-22): a worker in a never-used
+directory read 16,081 tokens written in a DIFFERENT directory, and a fresh worktree
+took a **100% cache hit including a 22,297-token block written elsewhere** — while
+the second worker in the *same* directory still paid 3,260 tokens of cache writes.
+Caching behaves prefix/content-addressed, not directory-keyed.
+
+With the cache benefit gone, the trade collapsed to a single axis: **worktree buys
+file isolation; shared-dir buys nothing that can still be demonstrated.** Isolation
+therefore wins by default rather than by measurement.
+
+**What this decision is explicitly NOT based on.** S2 also produced an 88% dollar
+delta favouring worktree — **that number is order-confounded and was not used.**
+Write tokens fell monotonically across the whole run sequence and arm B ran last,
+so run order is fully confounded with arm. The *cache-scoping observation* is the
+finding; the price tag is not.
+
+**The untested axis, stated so it is not mistaken for settled.** S2 ran serial,
+single-worker, read-only, so it says nothing about (a) how bad shared-dir's write
+races actually get — including `.git/index.lock` contention, which is a hard
+failure rather than a slow path — or (b) what worktree isolation COSTS in setup
+time, disk, and git overhead. This decision buys a known benefit against an
+unmeasured cost. Build step 8 should measure worktree setup cost as it lands and
+keep the per-task override cheap, so a cost surprise is a config change rather than
+a redesign.
+
+**Limits of the evidence:** one host, one account, one model, one task shape, five
+serial runs. Caching is a rule-0.6 external surface that already shifted under us
+the same day (every write landed in the 1h tier, none in 5m). If cache scoping ever
+becomes directory-keyed, this decision's premise returns and D6 should be reopened
+as a new dated entry.
+
+**Scope note:** no code carries an isolation default today — `schemas.ts` reserves
+the enum (`'shared-dir' | 'worktree'`) but nothing sets it. This decision is
+therefore docs-only until build step 8, which is where the default first becomes
+real.

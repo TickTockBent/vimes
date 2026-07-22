@@ -26,12 +26,9 @@ Is "Vimes" the name? Proposed and un-objected through one red-pen round.
      triggered. -->
 
 
-## D6 — Worker isolation default *(trigger: slice 6 — task system build)*
-
-`shared-dir` (cache-warm, write races possible) vs `worktree` (isolated,
-cache-cold; cache is scoped to machine+directory). **Lean (2026-07-13):**
-per-task flag `isolation: shared-dir | worktree`, default ⟨tune shared-dir⟩
-with dispatcher-serialized write phases.
+<!-- D6 moved to decisions.md 2026-07-22 — decided: default WORKTREE, per-task
+     override retained. Spike S2 refuted the lean's premise: caching is not
+     directory-scoped on this host, so shared-dir's cache benefit does not exist. -->
 
 <!-- D7 moved to decisions.md 2026-07-19 — decided: hooks-first correlation,
      -n demoted to unused fallback. -->

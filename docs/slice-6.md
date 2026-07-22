@@ -64,10 +64,13 @@ delivered*, and **the watchdog must not read "queued, not yet delivered" as
 stale.** The mechanism already ships (`sendMessage()` reaches the SDK queue), so
 step 6 is semantics + evidencing + UI, not plumbing.
 
-### D6 — Worker isolation default
-`shared-dir` (cache-warm, write races) vs `worktree` (isolated, cache-cold; cache
-is scoped to machine+directory). Lean: per-task flag, default ⟨tune shared-dir⟩
-with dispatcher-serialized write phases.
+### D6 — Worker isolation ✅ **SETTLED 2026-07-22: default WORKTREE** (Wes)
+Spike S2 **refuted the lean's premise** — caching is NOT directory-scoped on this
+host (a fresh worktree took a 100% cache hit including a 22K-token block written in
+a different directory). So `shared-dir`'s only benefit does not exist, and the
+choice collapsed to the isolation axis alone: worktree buys file isolation at a
+cost not yet measured; shared-dir buys nothing still demonstrable. **Default
+`worktree`, per-task override retained.** Record: `decisions.md` D32.
 
 **New this slice: D6 is now MEASURABLE rather than a judgment call.** The cost
 ledger (5b) prices per-session and per-agent cache reads and cache writes in real
@@ -113,8 +116,8 @@ the CLI blocks `sleep`. Full record: `calibration.md`, D30.
 2026-07-22 — S3a measured the machine-work tail at max 14.87 min; the spec's
 5 min would have quarantined healthy subagent work systematically). Still
 UNPINNED and not FAIL-able until signed off: stale retries before quarantine
-⟨tune 3⟩; retry backoff curve ⟨tune⟩; isolation default ⟨tune shared-dir⟩
-(pending S2).
+⟨tune 3⟩; retry backoff curve ⟨tune⟩. Isolation default ✅ **PINNED `worktree`**
+(D32) — no longer a ⟨tune⟩.
 
 ## Scope
 
@@ -254,7 +257,11 @@ that breaks both levers re-triggers it, rule 0.6.)
    `sendMessage()` path, plus the *queued → delivered* rendering and the
    watchdog's "queued correction is not staleness" rule.
 7. **Stage-runner verbs: review vs fix**, independence rule baked in.
-8. **D6 isolation + worktree management** (after S2 + Wes's pin).
+8. **Isolation + worktree management** — build to **D32: default `worktree`**,
+   per-task override honoured. NOTE the untested axis: measure worktree setup cost
+   (time, disk, git overhead) as it lands, and keep the override cheap in case the
+   cost surprises. No code carries an isolation default today (the schema enum is
+   reserved but unset), so this is the first place the default becomes real.
 9. **Kanban UI.**
 10. **Watchdog scenario profile** + the deliberate six→seven assertion change.
 
