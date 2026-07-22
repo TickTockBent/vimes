@@ -82,6 +82,18 @@ export {
   type TransitionRejectionReason,
 } from './tasks/taskStateMachine.js';
 export {
+  DISPATCHABLE_TASK_STAGES,
+  NON_DISPATCHABLE_TASK_STAGES,
+  dispatchRefuseReasonSchema,
+  dispatchDeferReasonSchema,
+  isDispatchableStage,
+  decideDispatch,
+  type DispatchInput,
+  type DispatchDecision,
+  type DispatchRefuseReason,
+  type DispatchDeferReason,
+} from './tasks/dispatchDecision.js';
+export {
   cacheObservabilityProjection,
   type CacheObservabilityState,
   type CacheObservabilityRecord,

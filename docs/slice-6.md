@@ -258,8 +258,18 @@ that breaks both levers re-triggers it, rule 0.6.)
    **I6 is now non-vacuous**: a fixture with three tasks mid-journey, PLUS a
    non-vacuity guard inside `assertBootEqualsReplayAtCuts` that binds every I6 case
    present and future.
-3. **Dispatcher decision function (PURE, core).** spawn/defer/refuse/quarantine,
-   consuming slice 5's headroom evaluator. **I7 + I10 land here.**
+3. ~~**Dispatcher decision function (PURE, core).**~~ ✅ **DONE 2026-07-22.**
+   `decideDispatch` → spawn | defer | refuse (quarantine is the WATCHDOG's outcome,
+   step 5 — scope corrected). Consumes slice 5's `evaluateHeadroomGate`. **I10 lands
+   here**, established by an exhaustive 1,728-row cross product asserted in BOTH
+   directions (nothing spawns with a non-passing gate; everything that spawned had a
+   passing gate or none), with vacuity guards counting qualifying rows.
+   **Pillar-4 call:** an UNKNOWN headroom verdict REFUSES with its own reason
+   (`headroom-unknown`), never passes and never shares a reason with `fail` — a
+   refusal must not say "you are out of headroom" when the truth is "we cannot see
+   headroom." Blast radius is opt-in (ungated tasks unaffected). The branch is
+   written `verdict !== 'pass'` so a verdict added to slice 5's enum later cannot
+   fall through into a spawn.
 4. **Dispatcher execution (daemon).** Spawn through the session host; wire
    `dispatch_refused`; task API.
 5. **Watchdog + quarantine** (after S3 calibration + sign-off for the ⟨tune⟩s).
