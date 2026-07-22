@@ -68,13 +68,39 @@ describe('I1 — appSessionId state survives Claude session-ID rotation', () => 
       '22222222-2222-4222-8222-222222222222',
     ]);
 
-    // Everything else is byte-identical (I1: rotation changes only the mapping).
-    const baselineWithoutMapping: Partial<SessionRecord> = { ...baselineRecord };
-    delete baselineWithoutMapping.claudeSessionIds;
-    const rotationWithoutMapping: Partial<SessionRecord> = { ...rotationRecord };
-    delete rotationWithoutMapping.claudeSessionIds;
+    // ⚠ `lastAppendAt` IS ALSO EXCLUDED (slice 6 step 5b, D34) — and the reason
+    // is not a convenience, it is the field working correctly. A
+    // `claude_session_mapped` is itself a TRANSCRIPT APPEND (step 5a classifies
+    // it so deliberately: "the very append that a resume produces"), and the
+    // rotation fixture contains one more transcript record than the baseline.
+    // So the rotation world genuinely OBSERVED one more append and its heartbeat
+    // is legitimately later — under this test's synthetic stepping clock, by
+    // exactly one tick. Asserting the two heartbeats equal would be asserting
+    // that two different observation histories produced the same observation.
+    //
+    // I1's claim is untouched: identity, liveness, attention, custody, name,
+    // cwd and every other field survive rotation unchanged. The heartbeat is a
+    // record of WHEN WE LAST SAW THE RUN SPEAK, so it moves when the run speaks.
+    const baselineWithoutObservationTimes: Partial<SessionRecord> = { ...baselineRecord };
+    delete baselineWithoutObservationTimes.claudeSessionIds;
+    delete baselineWithoutObservationTimes.lastAppendAt;
+    const rotationWithoutObservationTimes: Partial<SessionRecord> = { ...rotationRecord };
+    delete rotationWithoutObservationTimes.claudeSessionIds;
+    delete rotationWithoutObservationTimes.lastAppendAt;
 
-    expect(rotationWithoutMapping).toEqual(baselineWithoutMapping);
+    expect(rotationWithoutObservationTimes).toEqual(baselineWithoutObservationTimes);
+
+    // The excluded field is asserted as a RELATIONSHIP rather than dropped: both
+    // worlds observed appends, and the world with the extra append observed one
+    // later. (A `toEqual` that silently ignored a field would be the weaker test.)
+    expect(baselineRecord.lastAppendAt).not.toBeNull();
+    expect(rotationRecord.lastAppendAt).not.toBeNull();
+    expect(
+      Date.parse(rotationRecord.lastAppendAt!) >= Date.parse(baselineRecord.lastAppendAt!),
+    ).toBe(true);
+    // Neither world was ever reported stale, so neither carries an episode count.
+    expect(baselineRecord.staleEpisodes).toBeUndefined();
+    expect(rotationRecord.staleEpisodes).toBeUndefined();
   });
 
   it('the mapping entries carry the passed-in jsonlPath', () => {

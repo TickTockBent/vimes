@@ -48,6 +48,35 @@ export const sessionRecordSchema = z.object({
   // at the projection when session_created omits it, so old logs/snapshots
   // tolerate — same neutrality posture as provider.
   custody: z.enum(['host', 'external']),
+  // ── D34: the watchdog's heartbeat lives HERE, on the session ───────────────
+  //
+  // Both fields are OPTIONAL-only widenings, for the same reason `provider` and
+  // `custody` document above: nothing validates a snapshot's records against
+  // this schema on load, so a record written before these fields existed must
+  // still load and serialize identically. The sessions projection therefore
+  // leaves both ABSENT until the event that gives them a value folds.
+  //
+  // **Why here and not on the TaskRecord** (this is the whole of D34): a
+  // projection may only fold events from its OWN stream — `bootFromSnapshot`
+  // folds each stream to completion in alphabetical order and the log has no
+  // global ordering column, so a tasks projection folding session appends folds
+  // them in a different phase entirely (architecture.md, "Projections are
+  // STREAM-LOCAL"). "When did this session last append?" is a fact about a
+  // SESSION, and the session stream already carries the events that answer it.
+  //
+  // When this session was last observed APPENDING TO ITS TRANSCRIPT — advanced
+  // only by `TRANSCRIPT_APPEND_EVENT_TYPES` (tasks/watchdogDecision.ts), i.e.
+  // only by events the tailer derived from a real JSONL record. NEVER advanced
+  // by daemon-authored bookkeeping; see the fold in projections/sessions.ts for
+  // the self-defeating bug that rule prevents. Absent/null = never observed.
+  lastAppendAt: z.string().nullable().optional(),
+  // How many `watchdog_stale` records this session has accumulated.
+  //
+  // ⚠ NAMED FOR WHAT IT COUNTS. These are stale EPISODES, not retries: the
+  // watchdog performs NO retries — nothing nudges, re-prompts or restarts a run
+  // (slice 6 step 5b). The slice-0 name `staleRetries` described a mechanism
+  // that was never built, and D34 is the moment it stops being carried forward.
+  staleEpisodes: z.number().optional(),
 });
 export type SessionRecord = z.infer<typeof sessionRecordSchema>;
 
@@ -107,7 +136,20 @@ export const taskRecordSchema = z.object({
     }),
   ),
   createdBy: z.enum(['human', 'orchestrator']),
+  // ⚠ **RETIRED by D34 (2026-07-22). NOTHING WRITES THIS FIELD.** Superseded by
+  // `SessionRecord.lastAppendAt`, which is where the heartbeat now lives: a
+  // projection may only fold events from its own stream, and the appends that
+  // move a heartbeat are SESSION-stream events (architecture.md, "Projections
+  // are STREAM-LOCAL"). The tasks projection sets this to `null` at birth and
+  // never touches it again — a reserved field left looking live is how the next
+  // person rebuilds the cross-stream fold D34 exists to prevent. RETAINED
+  // rather than deleted because removing it is a breaking schema change that
+  // needs its own decision; read the heartbeat off the session record instead.
   lastHeartbeatAt: z.string().nullable(),
+  // ⚠ **RETIRED by D34 (2026-07-22). NOTHING WRITES THIS FIELD.** Superseded by
+  // `SessionRecord.staleEpisodes` — same stream-locality reason as above, plus
+  // the name: the watchdog counts stale EPISODES and performs no retries at
+  // all. Stays at `0` forever. Same retention rationale as `lastHeartbeatAt`.
   staleRetries: z.number(),
 });
 export type TaskRecord = z.infer<typeof taskRecordSchema>;
