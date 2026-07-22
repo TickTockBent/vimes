@@ -187,6 +187,26 @@ describe('runtime_drift_observed (E4)', () => {
     expect(input.type).toBe('runtime_drift_observed');
     expect(runtimeDriftObservedPayloadSchema.safeParse(input.payload).success).toBe(true);
   });
+
+  it('a HISTORICAL payload without channel/binaryPath still validates (append-only)', () => {
+    // Drift events written before the pty/sdk channel split carry neither field.
+    // The log is append-only, so they must keep parsing forever.
+    const historicalPayload = { expected: '2.1.215', observed: '2.1.217' };
+    expect(runtimeDriftObservedPayloadSchema.safeParse(historicalPayload).success).toBe(true);
+  });
+
+  it('carries the channel label and the observed binary path when present', () => {
+    const sdkPayload = {
+      expected: '2.1.207',
+      observed: '2.1.208',
+      channel: 'sdk',
+      binaryPath: '/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude',
+    };
+    expect(runtimeDriftObservedPayloadSchema.safeParse(sdkPayload).success).toBe(true);
+    expect(runtimeDriftObservedPayloadSchema.safeParse({ ...sdkPayload, binaryPath: null }).success).toBe(true);
+    // The channel vocabulary is closed: an unknown channel is rejected.
+    expect(runtimeDriftObservedPayloadSchema.safeParse({ ...sdkPayload, channel: 'telepathy' }).success).toBe(false);
+  });
 });
 
 describe('meter_alert (slice-5 step 4a — account-wide, not session-shaped)', () => {

@@ -3,7 +3,7 @@ import { dirname } from 'node:path';
 import { loadConfigFromEnv } from './config.js';
 import { productionClock, productionIdSource } from './prodIds.js';
 import { createDaemon } from './app.js';
-import { createCliVersionProbe, createCredentialPreflightProbe } from './runtimeChecks.js';
+import { createCliVersionProbe, createCredentialPreflightProbe, createSdkCliVersionProbe } from './runtimeChecks.js';
 
 // The daemon entry point: read env config, build the verifier (real if Access is
 // configured, fail-closed otherwise), boot, and register graceful shutdown.
@@ -13,13 +13,15 @@ async function runDaemon(): Promise<void> {
   mkdirSync(config.dataDir, { recursive: true });
 
   // Production injects the REAL probes (determinism-exempt boundary): a
-  // credential-presence preflight and a `claude --version` runtime check.
+  // credential-presence preflight and a `--version` runtime check per channel —
+  // the PATH `claude` (PTY) and the binary the Agent SDK vendors (SDK sessions).
   const daemon = createDaemon({
     config,
     clock: productionClock,
     ids: productionIdSource,
     preflightProbe: createCredentialPreflightProbe(),
     cliVersionProbe: createCliVersionProbe(),
+    sdkCliVersionProbe: createSdkCliVersionProbe(),
   });
   await daemon.start();
 

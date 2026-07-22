@@ -237,10 +237,19 @@ export type HookEventPayload = z.infer<typeof hookEventPayloadSchema>;
 // runtime_drift_observed (E4): observed CLI version at boot vs the (optional)
 // pinned expectation. Warn-only, never gates. `expected` is null when unpinned;
 // `observed` is null when the version probe could not read a version.
+//
+// `channel` names WHICH Claude Code binary was observed: 'pty' is the PATH
+// `claude` (the escape hatch), 'sdk' is the binary the Agent SDK vendors and
+// actually runs for every SDK session (the D4 default channel) — the two
+// legitimately differ. `binaryPath` records the exact file observed, when known.
+// Both are OPTIONAL: the log is append-only and drift events written before the
+// channel split carry neither field, so they must keep validating.
 export const runtimeDriftObservedPayloadSchema = z
   .object({
     expected: z.string().nullable(),
     observed: z.string().nullable(),
+    channel: z.enum(['pty', 'sdk']).optional(),
+    binaryPath: z.string().nullable().optional(),
   })
   .passthrough();
 export type RuntimeDriftObservedPayload = z.infer<typeof runtimeDriftObservedPayloadSchema>;

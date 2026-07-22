@@ -89,6 +89,7 @@ function buildConfig(overrides: Partial<DaemonConfig> = {}): DaemonConfig {
     dbPath: join(temporaryDirectory, `events-${fileCounter}.db`),
     dataDir: temporaryDirectory,
     expectedCliVersion: undefined,
+    expectedSdkCliVersion: undefined,
     snapshotIntervalMs: 60_000,
     accessTeamDomain: undefined,
     accessAud: undefined,

@@ -61,6 +61,7 @@ function buildConfig(dbPath: string, overrides: Partial<DaemonConfig> = {}): Dae
     dbPath,
     dataDir: dirname(dbPath),
     expectedCliVersion: undefined,
+    expectedSdkCliVersion: undefined,
     snapshotIntervalMs: 60_000,
     accessTeamDomain: undefined,
     accessAud: undefined,

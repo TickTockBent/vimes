@@ -44,6 +44,7 @@ function buildConfig(projectRoots: string[]): DaemonConfig {
     dbPath: ':memory:',
     dataDir: mkdtempSync(join(tmpdir(), 'vimes-discovery-data-')),
     expectedCliVersion: undefined,
+    expectedSdkCliVersion: undefined,
     snapshotIntervalMs: 60_000,
     accessTeamDomain: undefined,
     accessAud: undefined,
