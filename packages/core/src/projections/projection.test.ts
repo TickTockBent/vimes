@@ -5,11 +5,15 @@ import { MemoryEventStore } from '../memoryEventStore.js';
 import type { EventStore } from '../eventStore.js';
 import {
   billingBucketObserved,
+  dispatchRefused,
   gateFired,
   hostStarted,
   livenessChanged,
   seen,
   sessionCreated,
+  taskCreated,
+  taskTransitioned,
+  taskTransitionRejected,
   withNotificationTrigger,
 } from '../events.js';
 import type { MeterRecord } from '../schemas.js';
@@ -68,8 +72,92 @@ function buildMultiStreamStore(): MemoryEventStore {
   return store;
 }
 
+// A multi-stream log that ACTUALLY MOVES THE TASK BOARD: three tasks, born at
+// different stages, walked through several transitions each (including the
+// `→ done` convergence edge), interleaved with the non-folded task events and
+// with session/usage traffic on other streams. This is what makes the tasks I6
+// case a real test — cutting this log at any point leaves tasks mid-journey, so
+// a snapshot+tail boot has to reconstruct genuine state rather than nothing.
+const TASK_ALPHA = 'task-alpha-0001';
+const TASK_BETA = 'task-beta-0002';
+const TASK_GAMMA = 'task-gamma-0003';
+
+function buildTaskStreamStore(): MemoryEventStore {
+  const store = new MemoryEventStore({
+    clock: new SteppingClock('2026-01-01T00:00:00.000Z', 1000),
+    ids: new CountingIdSource(),
+  });
+  // Other streams, so the per-stream tail logic in bootFromSnapshot is exercised
+  // alongside the tasks stream rather than in isolation.
+  store.append([
+    sessionCreated({
+      appSessionId: APP_1,
+      channel: 'sdk',
+      cwd: '/home/user/a',
+      name: null,
+      forkedFrom: null,
+      taskRef: { taskId: TASK_ALPHA, stage: 'implementing' },
+    }),
+  ]);
+  store.append([meterSample(meter('window-5h', 100))]);
+
+  store.append([
+    taskCreated({ taskId: TASK_ALPHA, projectRoot: '/home/user/a', createdBy: 'human', isolation: 'worktree', stage: 'backlog' }),
+  ]);
+  store.append([
+    taskCreated({ taskId: TASK_BETA, projectRoot: '/home/user/b', createdBy: 'orchestrator', isolation: 'shared-dir', stage: 'backlog' }),
+  ]);
+  store.append([
+    taskTransitioned({ taskId: TASK_ALPHA, fromStage: 'backlog', toStage: 'planning', manualReviewRequired: false, proposedBy: 'dispatcher' }),
+  ]);
+  store.append([livenessChanged({ appSessionId: APP_1, to: 'running', cause: 'spawned' })]);
+  // I7's evidence, folded by nobody — the task stays in `planning`.
+  store.append([
+    taskTransitionRejected({ taskId: TASK_ALPHA, fromStage: 'planning', attemptedToStage: 'done', reason: 'illegal-edge', proposedBy: 'orchestrator' }),
+  ]);
+  store.append([
+    taskTransitioned({ taskId: TASK_ALPHA, fromStage: 'planning', toStage: 'plan-ready', manualReviewRequired: false, proposedBy: 'dispatcher' }),
+  ]);
+  store.append([
+    taskTransitioned({ taskId: TASK_BETA, fromStage: 'backlog', toStage: 'planning', manualReviewRequired: false, proposedBy: 'dispatcher' }),
+  ]);
+  // I10's refusal record, also folded by nobody.
+  store.append([dispatchRefused({ taskId: TASK_BETA, reason: 'requireHeadroom gate failed' })]);
+  store.append([
+    taskTransitioned({ taskId: TASK_ALPHA, fromStage: 'plan-ready', toStage: 'implementing', manualReviewRequired: false, proposedBy: 'dispatcher' }),
+  ]);
+  store.append([
+    taskCreated({ taskId: TASK_GAMMA, projectRoot: '/home/user/c', createdBy: 'human', isolation: 'worktree', stage: 'planning' }),
+  ]);
+  store.append([meterSample(meter('window-5h', 250))]);
+  store.append([
+    taskTransitioned({ taskId: TASK_BETA, fromStage: 'planning', toStage: 'quarantined', manualReviewRequired: false, proposedBy: 'dispatcher' }),
+  ]);
+  store.append([
+    taskTransitioned({ taskId: TASK_ALPHA, fromStage: 'implementing', toStage: 'review', manualReviewRequired: false, proposedBy: 'dispatcher' }),
+  ]);
+  store.append([
+    taskTransitioned({ taskId: TASK_GAMMA, fromStage: 'planning', toStage: 'blocked-external', manualReviewRequired: false, proposedBy: 'human' }),
+  ]);
+  // The convergence exit: done + manualReviewRequired.
+  store.append([
+    taskTransitioned({ taskId: TASK_ALPHA, fromStage: 'review', toStage: 'done', manualReviewRequired: true, proposedBy: 'dispatcher' }),
+  ]);
+  store.append([hostStarted()]);
+  return store;
+}
+
 // I6: at several cut points (start, mid, head), boot from snapshot + tail equals
 // replay-from-empty, byte-identical.
+//
+// ⚠ NON-VACUITY GUARD (slice 6 step 2). Replay equivalence is TRIVIALLY true for
+// a projection whose fold does nothing — an empty state equals an empty state at
+// every cut, and the assertion below would sail through while testing exactly
+// nothing. That is precisely the trap the tasks case sat in while
+// `tasksProjection.apply` was a stub. So this helper first REFUSES a fixture
+// that folds to the projection's own `init()` state: an I6 case must be given a
+// store whose events actually move the projection, or it fails here rather than
+// passing hollowly.
 function assertBootEqualsReplayAtCuts<StateType>(
   projection: Projection<StateType>,
   store: EventStore,
@@ -77,6 +165,11 @@ function assertBootEqualsReplayAtCuts<StateType>(
 ): void {
   const groupedRecords = readAllStreamsGrouped(store);
   const fullReplaySerialized = projection.serialize(replayFromEmpty(projection, groupedRecords));
+
+  expect(
+    fullReplaySerialized,
+    `I6 fixture for ${projection.id} folds to init() — the replay assertion would be vacuous`,
+  ).not.toBe(projection.serialize(projection.init()));
 
   const cutPoints = [0, Math.floor(groupedRecords.length / 2), groupedRecords.length];
   for (const cutPoint of cutPoints) {
@@ -98,9 +191,34 @@ describe('projection I6 — boot(snapshot+tail) equals replay-from-empty', () =>
     assertBootEqualsReplayAtCuts(metersProjection, store, new SteppingClock('2026-02-01T00:00:00.000Z', 1000));
   });
 
-  it('holds for the tasks stub projection at every cut point', () => {
-    const store = buildMultiStreamStore();
+  it('holds for the tasks projection over REAL task events at every cut point', () => {
+    // Was a vacuous case until slice 6 step 2: it replayed a store with no task
+    // events against a projection that folded nothing. It now replays a log of
+    // three tasks walking several stages each, and the helper's non-vacuity
+    // guard fails the case outright if the fold ever goes hollow again.
+    const store = buildTaskStreamStore();
     assertBootEqualsReplayAtCuts(tasksProjection, store, new SteppingClock('2026-02-01T00:00:00.000Z', 1000));
+  });
+
+  it('the tasks I6 fixture folds three tasks to distinct, non-initial stages', () => {
+    // The explicit statement of what the I6 case above is actually replaying.
+    // If `apply` regressed to the stub, this reddens immediately — and so does
+    // the non-vacuity guard inside assertBootEqualsReplayAtCuts.
+    const store = buildTaskStreamStore();
+    const state = replayFromEmpty(tasksProjection, readAllStreamsGrouped(store));
+    expect(Object.keys(state.tasks).sort()).toEqual([TASK_ALPHA, TASK_BETA, TASK_GAMMA].sort());
+    expect(state.tasks[TASK_ALPHA]!.stage).toBe('done');
+    expect(state.tasks[TASK_ALPHA]!.manualReviewRequired).toBe(true);
+    expect(state.tasks[TASK_BETA]!.stage).toBe('quarantined');
+    expect(state.tasks[TASK_GAMMA]!.stage).toBe('blocked-external');
+  });
+
+  it('the other projections still fold this task-bearing log identically', () => {
+    // Rule 0.4: the new fixture must not disturb the projections that share the
+    // event spine — sessions and meters ignore the 'tasks' stream entirely.
+    const store = buildTaskStreamStore();
+    assertBootEqualsReplayAtCuts(sessionsProjection, store, new SteppingClock('2026-02-01T00:00:00.000Z', 1000));
+    assertBootEqualsReplayAtCuts(metersProjection, store, new SteppingClock('2026-02-01T00:00:00.000Z', 1000));
   });
 
   it('meters stub actually folds meter_sample (upsert by meterId)', () => {

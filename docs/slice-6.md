@@ -249,7 +249,15 @@ that breaks both levers re-triggers it, rule 0.6.)
    on the `→ done` edge, and the task event set (`task_created`,
    `task_transitioned`, `task_transition_rejected` = I7's record). 108 tests, all
    enumerated from the exported table so coverage cannot drift from the design.
-2. **Tasks projection (core).** Replace the stub; I6 must hold.
+2. ~~**Tasks projection (core).**~~ ✅ **DONE 2026-07-22.** Folds `task_created` +
+   `task_transitioned`; deliberately does NOT fold `task_transition_rejected`,
+   `dispatch_refused` (both changed no state — they are I7/I10 evidence, and the
+   projection is state, not audit) or `task_quarantined` (a session-stream fact;
+   folding it too would make stage derivable from two sources, principle 9). It
+   never calls `proposeTransition` — it applies what was RECORDED, never re-decides.
+   **I6 is now non-vacuous**: a fixture with three tasks mid-journey, PLUS a
+   non-vacuity guard inside `assertBootEqualsReplayAtCuts` that binds every I6 case
+   present and future.
 3. **Dispatcher decision function (PURE, core).** spawn/defer/refuse/quarantine,
    consuming slice 5's headroom evaluator. **I7 + I10 land here.**
 4. **Dispatcher execution (daemon).** Spawn through the session host; wire
