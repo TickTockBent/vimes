@@ -53,4 +53,19 @@ if [[ -n "${bannedNondeterminismMatches}" ]]; then
   exit 1
 fi
 
+# --- dependency advisory gate ------------------------------------------------
+# Fails on HIGH/CRITICAL; reports moderate and below. See scripts/check-advisories.mjs
+# for why the threshold is not zero, and docs/risk-register.md for the accepted
+# moderates and their reachability analysis.
+#
+# NETWORK-TOLERANT BY DESIGN. `npm audit` needs the registry, and a gate that goes
+# red when you are on a train would make the whole gate untrustworthy for reasons
+# unrelated to the code. `|| true` keeps a nonzero audit exit (which npm returns
+# whenever ANY advisory exists) from tripping `set -e`; the decision is made by the
+# checker from the JSON body, and no body at all is reported as SKIPPED, never as a
+# pass.
+echo "ci-gate: dependency advisories (fails on high/critical)"
+npmAuditJson="$(npm audit --json 2>/dev/null || true)"
+printf '%s' "${npmAuditJson}" | node scripts/check-advisories.mjs
+
 echo "ci-gate: all gates passed"
