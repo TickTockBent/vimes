@@ -985,6 +985,37 @@ already consumes it). Re-ingestion required. **Recommendation:** a small side ta
 type:user records during the same walk — keeps usage rows unchanged, is idempotent,
 and Step 3 reads it as the parent map. Sign-off + shape are Wes's call.
 
+### 2026-07-22 — SIGNED OFF (Wes): build the parent-edge fix (side table), + confirming spike
+
+Wes: "go ahead with the parent edge fix." The recommended **`cost_agent_edges`
+side table** is the chosen shape. Building it as two sequential units: (1) pure
+core — `buildCostTree`/`buildCostLedgerReadModel` accept an injected
+`parentEdges` list and union it into the parent map; (2) daemon — harvest edges
+in the walk, persist to the side table, thread through `currentCostLedger`, and
+strengthen the exit gate with a REALISTIC no-usage edge record.
+
+**Confirming spike (`scratchpad/edge-spike.mjs`, read-only over the live 692-file
+corpus, 90,670 lines):**
+- **All 309 edge-bearing records are `type:user` with ZERO `message.usage`** —
+  exactly the records `parseUsageRecord` drops. `usageRowsWithToolUseResultAgentId
+  = 0` confirms the row-derived path recovers *nothing* on real data (the tree is
+  provably flat, matching the finding above).
+- **Direction confirmed against real records:** the record's own `agentId` is the
+  PARENT, `toolUseResult.agentId` is the CHILD. 241 edge records carry
+  `agentId:null` (spawned by the session root → a top-level subagent); 68 carry a
+  non-null parent (a subagent spawning a sub-subagent).
+- **289 distinct edges** by (sessionId, childAgentId); **287 point at a real
+  usage-bearing agent node** (of 602 such nodes). Deduped first-wins, **48 child
+  nodes gain a non-null parent → genuine depth-≥2 nesting**; the rest confirm
+  session-root spawns (no visible tree change, `parentResolved` stays false under
+  the existing null-parent semantics — deliberately NOT changed by this fix).
+- **Accepted limitation (honest):** edges for already-PRUNED transcripts cannot be
+  re-harvested; those sessions stay flat (`parentResolved=false`). Dollars remain
+  exact and unaffected either way. Backfill on the live box needs a one-time
+  re-scan of on-disk files — handled by a schema-version-triggered reset of
+  `cost_ingest_files` ONLY (usage rows are preserved: max-wins is idempotent and
+  pruned rows must never be dropped).
+
 ### 2026-07-21 — FINDING (rule 0.1, SIGNED OFF): `inference_geo` is the sentinel `"not_available"`, not absent
 
 Step 2's work order pinned the validated price-modifier set as `{null,'standard'}`
