@@ -5,16 +5,21 @@ import { MemoryEventStore } from '../memoryEventStore.js';
 import type { EventStore } from '../eventStore.js';
 import {
   billingBucketObserved,
+  claudeSessionMapped,
   dispatchRefused,
   gateFired,
   hostStarted,
+  lineQuarantined,
   livenessChanged,
+  message,
   seen,
   sessionCreated,
   taskCreated,
   taskSessionAttached,
   taskTransitioned,
   taskTransitionRejected,
+  usageBlock,
+  watchdogStale,
   withNotificationTrigger,
 } from '../events.js';
 import type { MeterRecord } from '../schemas.js';
@@ -51,6 +56,20 @@ function meter(meterId: string, used: number): MeterRecord {
 
 // A synthetic multi-stream log across three streams: two app sessions, 'usage',
 // and 'system'.
+//
+// ⚠ EXTENDED IN SLICE 6 STEP 5b (D34) with the two new SESSION-record folds —
+// `lastAppendAt` (transcript appends) and `staleEpisodes` (`watchdog_stale`) —
+// because a fold the I6 fixture never exercises is a fold I6 does not cover.
+// The story the added records tell is the watchdog's own: the run appends, goes
+// silent, is reported stale twice, then appends again. Both folds therefore sit
+// inside replay equivalence at every cut point, and `lastAppendAt` in particular
+// is ORDER-DEPENDENT — it is the ts of the LAST append folded, so a cut point
+// that reconstructs the sequence wrongly diverges from replay-from-empty.
+//
+// ⚠ It is also the fixture that would have caught take 1, had take 1 been able
+// to use it: these events are all on the SESSION stream, which is the projection
+// that folds them. The equivalent fold in the TASKS projection is cross-stream
+// and is exactly what D34 forbids (architecture.md).
 function buildMultiStreamStore(): MemoryEventStore {
   const store = new MemoryEventStore({
     clock: new SteppingClock('2026-01-01T00:00:00.000Z', 1000),
@@ -70,6 +89,22 @@ function buildMultiStreamStore(): MemoryEventStore {
   ]);
   store.append([billingBucketObserved({ appSessionId: APP_1, bucket: 'interactive' })]);
   store.append([meterSample(meter('weekly-cap', 42))]);
+  // ── the D34 folds (step 5b) ───────────────────────────────────────────────
+  // APP_1 appends, is reported stale TWICE (two episodes), then appends again —
+  // so the counter accumulates across cut points and the heartbeat has to move
+  // PAST the staleness reports, which do not advance it.
+  store.append([message({ appSessionId: APP_1, role: 'assistant', content: 'working' })]);
+  store.append([usageBlock({ appSessionId: APP_1, usage: { input_tokens: 12 } })]);
+  store.append(withNotificationTrigger(watchdogStale({ appSessionId: APP_1, retryNumber: 1 })));
+  store.append([seen({ appSessionId: APP_1 })]);
+  store.append(withNotificationTrigger(watchdogStale({ appSessionId: APP_1, retryNumber: 2 })));
+  // The run comes back to life: a real transcript append AFTER both reports.
+  store.append([
+    claudeSessionMapped({ appSessionId: APP_1, claudeSessionId: 'c-resumed', jsonlPath: '/p/c-resumed.jsonl' }),
+  ]);
+  // APP_2 appends once and is never reported stale — the fixture carries a
+  // session with a heartbeat and NO episode count beside one that has both.
+  store.append([lineQuarantined({ appSessionId: APP_2, raw: '{bad', reason: 'malformed-json' })]);
   return store;
 }
 
@@ -255,6 +290,32 @@ describe('projection I6 — boot(snapshot+tail) equals replay-from-empty', () =>
   it('holds for the sessions projection at every cut point', () => {
     const store = buildMultiStreamStore();
     assertBootEqualsReplayAtCuts(sessionsProjection, store, new SteppingClock('2026-02-01T00:00:00.000Z', 1000));
+  });
+
+  it('the sessions I6 fixture folds BOTH D34 fields (step 5b)', () => {
+    // ASSERTION 5's statement of what the I6 case above actually replays, so
+    // "I6 covers the new folds" is asserted rather than claimed. `lastAppendAt`
+    // must be the ts of the LAST transcript append (the resume mapping), NOT of
+    // the `watchdog_stale` / `seen` bookkeeping that came before it — the
+    // heartbeat a watchdog report refreshed would be a guard that disarms on use.
+    const store = buildMultiStreamStore();
+    const records = readAllStreamsGrouped(store);
+    const state = replayFromEmpty(sessionsProjection, records);
+
+    const lastAppendRecord = records.filter(
+      (record) => record.stream === APP_1 && record.type === 'claude_session_mapped',
+    );
+    expect(lastAppendRecord).toHaveLength(1);
+    expect(state.sessions[APP_1]!.lastAppendAt).toBe(lastAppendRecord[0]!.ts);
+    expect(state.sessions[APP_1]!.staleEpisodes).toBe(2);
+
+    // The other session: a heartbeat, and NO episode count at all.
+    const app2AppendRecords = records.filter(
+      (record) => record.stream === APP_2 && record.type === 'line_quarantined',
+    );
+    expect(app2AppendRecords).toHaveLength(1);
+    expect(state.sessions[APP_2]!.lastAppendAt).toBe(app2AppendRecords[0]!.ts);
+    expect(state.sessions[APP_2]!.staleEpisodes).toBeUndefined();
   });
 
   it('holds for the meters stub projection at every cut point', () => {

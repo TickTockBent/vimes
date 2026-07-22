@@ -87,6 +87,54 @@ export interface DaemonConfig {
   // entirely: no store is opened, no db file is created, no timer runs.
   // VIMES_COST_INGEST_MS overrides.
   costIngestIntervalMs: number;
+  // ─── the stage-run watchdog (slice 6 step 5b) ──────────────────────────────
+  //
+  // How often the watchdog wakes and examines every live stage run. This is a
+  // SAMPLING CADENCE, NOT A THRESHOLD: it bounds detection LATENCY (a stall is
+  // noticed at most one interval after it crosses the band) and never
+  // correctness, because staleness is measured from event TIMESTAMPS rather
+  // than from how many times we happened to look. Halving it does not make a
+  // healthy run stale; it only makes the report arrive sooner. Rule 0.2 does
+  // not apply to it for exactly that reason — no verdict depends on its value.
+  // A value of 0 DISABLES the watchdog entirely (the daemon never creates the
+  // timer), matching the usage poller and the terminal reaper.
+  // VIMES_WATCHDOG_CHECK_MS overrides.
+  watchdogCheckIntervalMs: number;
+  // The staleness band: no transcript append for this long is condition (3) of
+  // D30's three. **PINNED at 15 min by D30 (Gate-D, signed off 2026-07-22)**
+  // against spike S3a's measurement of the real corpus — 70,232 healthy
+  // machine-work gaps all clear it, the longest observed being 14.87 min. It is
+  // therefore a real default rather than a ⟨tune⟩ placeholder. D30 records the
+  // assumptions it carries (interactive work on this host, CLI 2.1.x, not
+  // dispatcher stage runs) and that it is expected to be re-priced once real
+  // stage runs produce their own distribution.
+  // VIMES_WATCHDOG_STALE_AFTER_MS overrides.
+  watchdogStaleAfterMs: number;
+  // ⟨tune 3 PREVIEW⟩ — **UNPINNED, deliberately (D30: "no measurement covers
+  // retry behaviour").** How many stale episodes a run may accumulate before
+  // `assessStageRun` returns `quarantine`.
+  //
+  // ⚠ **NOTHING DESTRUCTIVE IS DRIVEN BY THIS NUMBER TODAY.** The watchdog
+  // runner never quarantines and never retries (taskWatchdog.ts); the only
+  // effect this value has is the `wouldQuarantine` flag recorded on a
+  // `watchdog_stale`, which is the calibration column that will let the number
+  // be priced against real work before anything acts on it. Named for what it
+  // counts — EPISODES, not retries — because nothing retries.
+  // VIMES_WATCHDOG_MAX_STALE_EPISODES overrides.
+  watchdogMaxStaleEpisodes: number;
+  // ⟨tune PREVIEW⟩ — **UNPINNED** backoff curve, read positionally by
+  // `assessStageRun` and clamped to its last element. Same status as above: no
+  // retry exists, so the only consumer of the delay it names is a verdict field
+  // the runner discards. Kept because `WatchdogPolicy` requires it and because
+  // step 6+ will need somewhere for the curve to live once it is earned.
+  //
+  // ⚠ **AN EMPTY CURVE IS REFUSED AT THIS BOUNDARY.** `assessStageRun` returns
+  // `retryAfterMs: 0` for an empty curve — the documented degenerate case, "no
+  // delay stated" — and in a RUNNER that reads as "retry immediately", i.e. a
+  // hot loop. Nothing retries today so it cannot bite, which is precisely why
+  // it is refused now, while refusing it is free.
+  // VIMES_WATCHDOG_BACKOFF_MS overrides (comma-separated).
+  watchdogRetryBackoffMs: number[];
 }
 
 const DEFAULT_PORT = 4600;
@@ -121,6 +169,22 @@ const DEFAULT_USAGE_REFRESH_MIN_INTERVAL_MS = 30_000;
 // apply): the first scan captures the full backlog and later scans are cheap, so
 // this is freshness-vs-noise, not a correctness knob. 0 disables ingestion.
 const DEFAULT_COST_INGEST_INTERVAL_MS = 1_800_000;
+// Watchdog SAMPLING CADENCE, 60 s — the same fixed-cadence idiom as
+// TERMINAL_REAP_CHECK_INTERVAL_MS, and NOT a calibrated band (rule 0.2 does not
+// apply): it bounds how long after a run crosses the band we notice, never
+// whether the run is stale. 0 disables the watchdog.
+const DEFAULT_WATCHDOG_CHECK_INTERVAL_MS = 60_000;
+// D30's PINNED staleness band, 15 min. Signed off 2026-07-22 against spike S3a
+// — a real, calibrated default, not a placeholder. See the field's own note for
+// the assumptions it carries.
+const DEFAULT_WATCHDOG_STALE_AFTER_MS = 900_000;
+// ⟨tune 3 PREVIEW⟩ — UNPINNED (D30). Drives NO destructive action today; it only
+// colours the `wouldQuarantine` calibration flag. See the field's note.
+const DEFAULT_WATCHDOG_MAX_STALE_EPISODES = 3;
+// ⟨tune PREVIEW⟩ — UNPINNED backoff curve (1 min, 5 min, 15 min). Nothing
+// retries, so nothing waits these delays; the curve exists because
+// `WatchdogPolicy` requires one. NEVER empty — see parseRetryBackoffMs.
+const DEFAULT_WATCHDOG_RETRY_BACKOFF_MS: readonly number[] = [60_000, 300_000, 900_000];
 
 function expandHome(path: string): string {
   if (path === '~') {
@@ -173,6 +237,35 @@ function parseAlertPercents(rawValue: string | undefined): number[] {
     .map((entry) => Number(entry))
     .filter((entry) => Number.isFinite(entry));
   return [...new Set(parsedPercents)].sort((left, right) => left - right);
+}
+
+// The watchdog's backoff curve: comma-separated non-negative milliseconds, in
+// the order they are read positionally.
+//
+// ⚠ **AN EMPTY CURVE IS REFUSED, LOUDLY.** Every other list-shaped knob here
+// treats empty as "disable the feature" (alert percents), but this one cannot:
+// `assessStageRun` documents `retryAfterMs: 0` as an empty curve's degenerate
+// answer ("no delay stated"), and a runner that ever acts on it would read 0 as
+// "retry immediately" — a hot loop against a wedged run. Nothing retries today,
+// so this refusal costs nothing and closes the gap while it is free. A
+// non-numeric or negative entry is refused for the same reason rather than
+// silently dropped: a curve quietly shortened by a typo is a curve nobody
+// reviewed.
+function parseRetryBackoffMs(rawValue: string | undefined, variableName: string): number[] {
+  if (rawValue === undefined) {
+    return [...DEFAULT_WATCHDOG_RETRY_BACKOFF_MS];
+  }
+  const entries = rawValue
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+  const parsedDelays = entries.map((entry) => parsePositiveInteger(entry, variableName));
+  if (parsedDelays.length === 0) {
+    throw new Error(
+      `${variableName} must name at least one backoff delay — an empty curve would mean "no delay stated", which a runner reads as "retry immediately"`,
+    );
+  }
+  return parsedDelays;
 }
 
 function parsePositiveInteger(rawValue: string, variableName: string): number {
@@ -252,5 +345,27 @@ export function loadConfigFromEnv(env: NodeJS.ProcessEnv = process.env): DaemonC
       env.VIMES_COST_INGEST_MS === undefined || env.VIMES_COST_INGEST_MS === ''
         ? DEFAULT_COST_INGEST_INTERVAL_MS
         : parsePositiveInteger(env.VIMES_COST_INGEST_MS, 'VIMES_COST_INGEST_MS'),
+    watchdogCheckIntervalMs:
+      env.VIMES_WATCHDOG_CHECK_MS === undefined || env.VIMES_WATCHDOG_CHECK_MS === ''
+        ? DEFAULT_WATCHDOG_CHECK_INTERVAL_MS
+        : parsePositiveInteger(env.VIMES_WATCHDOG_CHECK_MS, 'VIMES_WATCHDOG_CHECK_MS'),
+    watchdogStaleAfterMs:
+      env.VIMES_WATCHDOG_STALE_AFTER_MS === undefined || env.VIMES_WATCHDOG_STALE_AFTER_MS === ''
+        ? DEFAULT_WATCHDOG_STALE_AFTER_MS
+        : parsePositiveInteger(env.VIMES_WATCHDOG_STALE_AFTER_MS, 'VIMES_WATCHDOG_STALE_AFTER_MS'),
+    watchdogMaxStaleEpisodes:
+      env.VIMES_WATCHDOG_MAX_STALE_EPISODES === undefined ||
+      env.VIMES_WATCHDOG_MAX_STALE_EPISODES === ''
+        ? DEFAULT_WATCHDOG_MAX_STALE_EPISODES
+        : parsePositiveInteger(
+            env.VIMES_WATCHDOG_MAX_STALE_EPISODES,
+            'VIMES_WATCHDOG_MAX_STALE_EPISODES',
+          ),
+    // An env set to the EMPTY STRING is refused rather than treated as "no
+    // curve" — see parseRetryBackoffMs.
+    watchdogRetryBackoffMs: parseRetryBackoffMs(
+      env.VIMES_WATCHDOG_BACKOFF_MS,
+      'VIMES_WATCHDOG_BACKOFF_MS',
+    ),
   };
 }

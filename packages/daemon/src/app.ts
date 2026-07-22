@@ -41,6 +41,7 @@ import { registerGitApi } from './gitApi.js';
 import { registerTaskApi } from './taskApi.js';
 import { TaskWriter } from './taskWriter.js';
 import { TaskDispatcher } from './taskDispatcher.js';
+import { TaskWatchdog } from './taskWatchdog.js';
 import type { GitRunner } from './gitAdapter.js';
 import {
   SearchService,
@@ -447,6 +448,35 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     // request. A task's projectRoot is a durable instruction to spawn a process
     // in a directory, so it is walled by exactly the same allowlist a file read is.
     getAllowedRoots: () => [...config.projectRoots, ...sessionHost.liveSessionCwds()],
+  });
+
+  // ─── the stage-run watchdog (slice 6 step 5b) ──────────────────────────────
+  //
+  // Constructed here beside the dispatcher; its TIMER is installed in start()
+  // below, with the reaper/poller lifecycle. Reads both projections fresh on
+  // every check, writes through the same router, and stamps the INJECTED clock
+  // at this boundary and nowhere deeper (rule 0.3).
+  //
+  // ⚠ IT DETECTS AND REPORTS. It never quarantines and never retries — see
+  // taskWatchdog.ts for why the destructive half is still waiting on a Gate-D
+  // sign-off, and note that a `watchdog_stale` raises attention and therefore
+  // PUSHES A NOTIFICATION to a real phone.
+  const taskWatchdog = new TaskWatchdog({
+    readTasks: () => bootFromSnapshot(tasksProjection, snapshotStore, store),
+    readSessions: () => bootFromSnapshot(sessionsProjection, snapshotStore, store),
+    emit: (events) => router.emit(events),
+    nowIso: () => clock.now(),
+    policy: {
+      // D30's PINNED band (15 min by default; see config.ts).
+      staleAfterMs: config.watchdogStaleAfterMs,
+      // ⟨tune⟩ UNPINNED. The field is named `maxStaleRetries` by the step-5a
+      // decision's shape; the config knob is named for what it actually counts
+      // (EPISODES), because nothing retries. Neither number drives a
+      // destructive action — the only thing they change is the
+      // `wouldQuarantine` calibration flag on a record.
+      maxStaleRetries: config.watchdogMaxStaleEpisodes,
+      retryBackoffMs: config.watchdogRetryBackoffMs,
+    },
   });
 
   // GET /api/terminals — the live terminal list (terminal-lifecycle backlog
@@ -869,6 +899,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
   let terminalReapTimer: ReturnType<typeof setInterval> | null = null;
   let usagePollTimer: ReturnType<typeof setInterval> | null = null;
   let costIngestTimer: ReturnType<typeof setInterval> | null = null;
+  let taskWatchdogTimer: ReturnType<typeof setInterval> | null = null;
 
   return {
     httpServer,
@@ -1032,6 +1063,36 @@ export function createDaemon(deps: DaemonDeps): Daemon {
         }, config.costIngestIntervalMs);
         costIngestTimer.unref();
       }
+      // Stage-run watchdog (slice 6 step 5b) — SLICE 6'S FIRST TIMER. The DAEMON
+      // boundary owns the periodic wake, exactly like the reaper, the poller and
+      // the ingester above (rule 0.3): the decision and the runner stay
+      // clock-injected and timer-free, so every test drives `checkOnce()` by
+      // hand. An interval of 0 DISABLES the watchdog entirely: the timer is
+      // never created. unref'd so it never keeps the process alive, and cleared
+      // on stop() so no handle leaks.
+      //
+      // ⚠ The interval is a SAMPLING CADENCE, NOT A THRESHOLD. It bounds
+      // detection LATENCY — a wedged run is noticed at most one interval after
+      // it crosses the band — and never correctness, because staleness is
+      // measured from event timestamps rather than from how often we look.
+      // Changing it can make a report arrive sooner or later; it can never make
+      // a healthy run stale. NO IMMEDIATE FIRST CHECK, deliberately: unlike the
+      // poller (which fills empty meters) and the ingester (which warms a
+      // ledger), this one WRITES ATTENTION AND PUSHES NOTIFICATIONS, and the
+      // moment right after a restart is when the projections are freshest but
+      // the runs are least settled. One interval of patience costs nothing.
+      if (config.watchdogCheckIntervalMs > 0) {
+        taskWatchdogTimer = setInterval(() => {
+          try {
+            taskWatchdog.checkOnce();
+          } catch {
+            // A transient check failure is non-fatal: the next tick retries. The
+            // runner is total and should never throw, but a watchdog that dies
+            // on one bad record is a watchdog that has silently stopped watching.
+          }
+        }, config.watchdogCheckIntervalMs);
+        taskWatchdogTimer.unref();
+      }
     },
 
     async stop(): Promise<void> {
@@ -1052,6 +1113,12 @@ export function createDaemon(deps: DaemonDeps): Daemon {
       if (costIngestTimer !== null) {
         clearInterval(costIngestTimer);
         costIngestTimer = null;
+      }
+      // Same reason, same place: the watchdog reads both projections and writes
+      // through the router, so its timer must be dead before the db closes.
+      if (taskWatchdogTimer !== null) {
+        clearInterval(taskWatchdogTimer);
+        taskWatchdogTimer = null;
       }
       // host_stopped + kill children (they die with the daemon, §3.10) and stop
       // watching transcripts BEFORE the final snapshot, so the log/watchers are

@@ -15,6 +15,7 @@ import {
   taskQuarantinedPayloadSchema,
   ttlTierObservedPayloadSchema,
 } from '../events.js';
+import { isTranscriptAppendEventType } from '../tasks/watchdogDecision.js';
 
 export interface SessionsState {
   sessions: Record<string, SessionRecord>;
@@ -36,6 +37,59 @@ function withSession(
   };
 }
 
+// ─── D34: the watchdog HEARTBEAT fold (slice 6 step 5b) ──────────────────────
+//
+// `lastAppendAt` answers "when did this session last append to its transcript?"
+// — a fact about a SESSION, folded here because the events that answer it are
+// SESSION-stream events. That is the whole of D34: `bootFromSnapshot` folds each
+// stream to completion in alphabetical order and the log has no global ordering
+// column, so a projection may only fold events from its own stream
+// (architecture.md, "Projections are STREAM-LOCAL"). Take 1 of this step put the
+// field on the TaskRecord and folded session appends into the TASKS projection;
+// every session stream is a UUID and sorts before `'tasks'`, so the appends were
+// folded before the `task_session_attached` that gave them meaning, and I6
+// broke. Every event consulted below is constructed with
+// `stream: payload.appSessionId` (events.ts), so this fold is same-stream.
+//
+// ⚠ **WHICH EVENTS COUNT IS NOT DECIDED HERE.** The membership test is 5a's
+// exported `isTranscriptAppendEventType`, so the watchdog's decision and this
+// projection read ONE definition of "the run appended" (principle 9). Only
+// events the TAILER derived from a real JSONL record are in it; daemon-authored
+// bookkeeping (`liveness_changed`, `notification_trigger`, `seen`,
+// `attention_cleared`, `watchdog_stale`, `session_renamed`, the `task_*` family)
+// is NOT, and must never be added.
+//
+// **The self-defeating bug that exclusion prevents:** if bookkeeping counted,
+// the watchdog writing `watchdog_stale` would refresh the very heartbeat it is
+// judging — every check would then observe a fresh append, silence would reset
+// to zero on each escalation, and the guard could never escalate at all. A guard
+// that disarms itself on use. Rule 0.7 says it from the other side: staleness is
+// OBSERVED (append cadence), never DECLARED.
+function withTranscriptAppendHeartbeat(
+  state: SessionsState,
+  event: EventRecord,
+): SessionsState {
+  if (!isTranscriptAppendEventType(event.type)) {
+    return state;
+  }
+  // Every transcript-append payload carries `appSessionId`; `seenPayloadSchema`
+  // is exactly `{ appSessionId }` and Zod STRIPS the rest, so one parse serves
+  // all nine types without this fold owning a second copy of their schemas. The
+  // same trick the attention-setter branch below already uses for
+  // `watchdog_stale`. A payload without a usable `appSessionId` is malformed →
+  // state unchanged, never a throw (I8).
+  const parsed = seenPayloadSchema.safeParse(event.payload);
+  if (!parsed.success) {
+    return state;
+  }
+  // `withSession` ignores an unknown session, and returns a NEW record — the
+  // input state is never mutated (snapshots share references with live state).
+  return withSession(state, parsed.data.appSessionId, (session) => ({
+    ...session,
+    lastAppendAt: event.ts,
+  }));
+}
+
 export const sessionsProjection: Projection<SessionsState> = {
   id: 'sessions',
 
@@ -45,7 +99,14 @@ export const sessionsProjection: Projection<SessionsState> = {
 
   // TOTAL: unknown event types are no-ops; events for unknown sessions are
   // no-ops; a malformed payload is a no-op. Nothing throws.
-  apply(state: SessionsState, event: EventRecord): SessionsState {
+  apply(incomingState: SessionsState, event: EventRecord): SessionsState {
+    // The heartbeat fold runs FIRST and COMPOSES with the type switch below: a
+    // `gate_fired` both advances `lastAppendAt` (the run appended — it was alive
+    // enough to ask) and raises attention. Everything after this line therefore
+    // folds against `state` = "the incoming state with the heartbeat already
+    // applied"; for every event type outside the exported append set it is the
+    // incoming state unchanged.
+    const state = withTranscriptAppendHeartbeat(incomingState, event);
     switch (event.type) {
       case EVENT_TYPES.sessionCreated: {
         const parsed = sessionCreatedPayloadSchema.safeParse(event.payload);
@@ -111,10 +172,26 @@ export const sessionsProjection: Projection<SessionsState> = {
         if (!parsed.success) {
           return state;
         }
-        return withSession(state, parsed.data.appSessionId, (session) => ({
-          ...session,
-          needsAttention: { reason, since: event.ts },
-        }));
+        return withSession(state, parsed.data.appSessionId, (session) => {
+          const attendedSession: SessionRecord = {
+            ...session,
+            needsAttention: { reason, since: event.ts },
+          };
+          if (event.type !== EVENT_TYPES.watchdogStale) {
+            return attendedSession;
+          }
+          // D34: count the stale EPISODE on the session, same stream as the
+          // event that reports it. Note what this is NOT: it is not a retry
+          // count, because nothing retries — the watchdog reports and stops
+          // (slice 6 step 5b). `?? 0` is the old-snapshot path: a record written
+          // before this field existed has no count, and its first episode is 1.
+          //
+          // ⚠ `watchdog_stale` deliberately does NOT advance `lastAppendAt` —
+          // it is not in `TRANSCRIPT_APPEND_EVENT_TYPES`, so the heartbeat fold
+          // above skipped it. See that fold's note: a watchdog whose own report
+          // refreshed the heartbeat it is judging could never escalate.
+          return { ...attendedSession, staleEpisodes: (session.staleEpisodes ?? 0) + 1 };
+        });
       }
 
       case EVENT_TYPES.seen: {
@@ -203,10 +280,14 @@ export const sessionsProjection: Projection<SessionsState> = {
         }));
       }
 
-      // transition_rejected, notification_trigger, message, usage_block,
-      // line_quarantined, host_started, host_stopped, resync_marker (a
-      // client-facing signal only), and any unknown type do not change a
-      // SessionRecord.
+      // transition_rejected, notification_trigger, host_started, host_stopped,
+      // resync_marker (a client-facing signal only), and any unknown type do not
+      // change a SessionRecord here.
+      //
+      // message, usage_block and line_quarantined reach no case of their own —
+      // but they are NOT no-ops any more: they are transcript appends, and
+      // `withTranscriptAppendHeartbeat` above already advanced `lastAppendAt`
+      // for them before this switch ran. They change nothing else.
       default:
         return state;
     }

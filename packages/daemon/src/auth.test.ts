@@ -51,6 +51,14 @@ function buildConfig(overrides: Partial<DaemonConfig>): DaemonConfig {
     usageAlertPercents: [],
     usageForcedRefreshMinIntervalMs: 0,
     costIngestIntervalMs: 0,
+    // The stage-run watchdog (slice 6 step 5b): DISABLED in tests — 0 means the
+    // daemon never creates the timer, so no test daemon can wake up and write
+    // attention/notifications behind a case's back. The policy values are inert
+    // while the interval is 0.
+    watchdogCheckIntervalMs: 0,
+    watchdogStaleAfterMs: 900_000,
+    watchdogMaxStaleEpisodes: 3,
+    watchdogRetryBackoffMs: [60_000],
     ...overrides,
   };
 }
