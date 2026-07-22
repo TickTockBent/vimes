@@ -37,7 +37,7 @@ import { currentCostLedger } from './costLedgerApi.js';
 //      vacuous"). It re-runs the SAME fixture with the fork's copied rows carrying
 //      DISTINCT message ids, so the store's max-wins dedupe cannot merge them, and
 //      asserts the grand total inflates to the exact DOUBLED figure
-//      (235,000,000 nano) — proving the deduped-total assertion below rejects a
+//      (246,000,000 nano) — proving the deduped-total assertion below rejects a
 //      broken-dedup input rather than passing vacuously.
 //
 //  (B) Manual sabotages the orchestrator can actually run, each reddening a NAMED
@@ -46,17 +46,25 @@ import { currentCostLedger } from './costLedgerApi.js';
 //          in costCorpus.ts `parseUsageRecord`, change the deduped row key
 //            rowKey: `msg:${messageId}`   →   `msg:${messageId}@${context.sourcePath}`
 //          so the fork copies get distinct keys and are counted twice. The grand
-//          total in ASSERTIONS 1 & 2 goes red (235,000,000 instead of 132,500,000).
+//          total in ASSERTIONS 1 & 2 goes red (246,000,000 instead of 143,500,000).
 //        • Max-wins dedupe: in sqliteCostStore.ts UPSERT_USAGE_ROW, change
 //          `outputTokens = MAX(...)` to `outputTokens = excluded.outputTokens`
 //          (first-/last-wins). Progressive-snapshot spend collapses and ASSERTION 1
-//          goes red (grand total no longer 132,500,000).
+//          goes red (grand total no longer 143,500,000).
 //        • No-percent scope discipline: add a `percentOfBudget` field to
 //          CostLedgerReadModel in costLedgerReadModel.ts. ASSERTION 3 goes red
 //          (the body's JSON now contains "percent").
-//        • Nesting: in costTree.ts pass 2, stop honouring the parent edge (force
-//          `parentResolved = false` / attach every agent to the session root).
-//          ASSERTION 5 goes red (no agent has a resolved child at depth ≥2).
+//        • Nesting (usage-borne edge): in costTree.ts pass 2, stop honouring the
+//          parent edge (force `parentResolved = false` / attach every agent to the
+//          session root). ASSERTION 5 goes red (no agent has a resolved child at depth ≥2).
+//        • Nesting (REALISTIC no-usage edge): in costCorpus.ts, make `extractAgentEdge`
+//          return null for records WITHOUT `message.usage` (gate the harvest on usage).
+//          ASSERTION 8 goes red — the grandchild's edge lives on a no-usage record, so
+//          it is never harvested and the realistic nesting disappears (grandchild falls
+//          back to the session root, parentResolved false). ASSERTION 5's parent-subtree
+//          total also moves red, because the un-nested grandchild leaves agent-child's
+//          subtree (verified by running the sabotage). ASSERTION 5's usage-borne
+//          child↔parent edge itself still joins (that edge rides a usage row).
 
 // ── the adversarial fixture, exercising every load-bearing rule AT ONCE ───────
 //
@@ -69,7 +77,10 @@ import { currentCostLedger } from './costLedgerApi.js';
 // (unpriceable ''), plus a literal <synthetic> record the SCAN excludes (rule 7).
 // A haiku row splits cache into 5m + 1h tiers (rule 6). A FORK file copies two
 // rows verbatim by message.id, which max-wins dedupe MUST count once (rule 4). A
-// real toolUseResult.agentId edge nests agent-child under agent-parent to depth 2.
+// usage-borne toolUseResult.agentId edge nests agent-child under agent-parent (depth
+// 2). And — the point of the parent-edge fix — a REALISTIC no-usage edge (on a
+// type:user record in a separate file) nests agent-grandchild under agent-child
+// (depth 3), harvested into the cost_agent_edges side table.
 const PROJECT_ROOTS: readonly string[] = ['/home/ticktockbent/projects'];
 const PROJECTS_ROOT = '/fake/projects';
 
@@ -86,6 +97,7 @@ const SESSION_OUTSIDE = 'session-outside-3';
 
 const AGENT_PARENT = 'agent-parent-aaaa';
 const AGENT_CHILD = 'agent-child-bbbb';
+const AGENT_GRANDCHILD = 'agent-grandchild-cccc';
 
 const DAY_ONE = '2026-07-19';
 const DAY_TWO = '2026-07-20';
@@ -99,28 +111,40 @@ const DAY_TWO = '2026-07-20';
 //   fable (claude-fable-5):    input 10000, output 50000
 //
 // Priced rows (each counted ONCE after fork dedupe):
-//   R1 opus  root  S1  in=100  out=1000  → 100·15000 + 1000·75000       = 76,500,000
-//   R2 haiku agent S1  in=2000 cacheRead=1000 cache5m=400 cache1h=200
+//   R1 opus  root       S1  in=100  out=1000  → 100·15000 + 1000·75000  = 76,500,000
+//   R2 haiku agent      S1  in=2000 cacheRead=1000 cache5m=400 cache1h=200
 //        → 2000·1000 + 1000·100 + 400·1250 + 200·2000                   =  3,000,000
-//   R3 fable agent S1  in=100  out=500   → 100·10000 + 500·50000        = 26,000,000
-//   R4 opus  root  S2  in=200  out=200   → 200·15000 + 200·75000        = 18,000,000
-//   R5 opus  root  S3  in=100  out=100   → 100·15000 + 100·75000        =  9,000,000
-// Grand deduped priced total:                                          = 132,500,000
+//   R3 fable agent      S1  in=100  out=500   → 100·10000 + 500·50000   = 26,000,000
+//   R4 opus  root       S2  in=200  out=200   → 200·15000 + 200·75000   = 18,000,000
+//   R5 opus  root       S3  in=100  out=100   → 100·15000 + 100·75000   =  9,000,000
+//   R6 fable grandchild S1  in=100  out=200   → 100·10000 + 200·50000   = 11,000,000
+// Grand deduped priced total:                                          = 143,500,000
+//
+// R6 is the REALISTIC-shape nesting proof: its spawn edge (agent-grandchild under
+// agent-child) rides a NO-USAGE type:user record in a SEPARATE file, harvested into
+// the side table — NOT a usage-borne toolUseResult like R2's (the unrealistic shape
+// that hid the bug). R6 is a vimes/day-one usage row, so it lifts EXPECTED_DAY_ONE
+// and the vimes-subtree total together.
 const EXPECTED_R1_OPUS_ROOT_NANO = 76_500_000;
 const EXPECTED_R2_HAIKU_CACHE_NANO = 3_000_000;
 const EXPECTED_R3_FABLE_CHILD_NANO = 26_000_000;
 const EXPECTED_R4_OPUS_DAOTREE_NANO = 18_000_000;
 const EXPECTED_R5_OPUS_OUTSIDE_NANO = 9_000_000;
+const EXPECTED_R6_FABLE_GRANDCHILD_NANO = 11_000_000;
 
 const EXPECTED_DAY_ONE_NANO =
-  EXPECTED_R1_OPUS_ROOT_NANO + EXPECTED_R2_HAIKU_CACHE_NANO + EXPECTED_R3_FABLE_CHILD_NANO; // 105,500,000
+  EXPECTED_R1_OPUS_ROOT_NANO +
+  EXPECTED_R2_HAIKU_CACHE_NANO +
+  EXPECTED_R3_FABLE_CHILD_NANO +
+  EXPECTED_R6_FABLE_GRANDCHILD_NANO; // 116,500,000
 const EXPECTED_DAY_TWO_NANO = EXPECTED_R4_OPUS_DAOTREE_NANO + EXPECTED_R5_OPUS_OUTSIDE_NANO; // 27,000,000
-const EXPECTED_GRAND_DEDUPED_NANO = EXPECTED_DAY_ONE_NANO + EXPECTED_DAY_TWO_NANO; // 132,500,000
+const EXPECTED_GRAND_DEDUPED_NANO = EXPECTED_DAY_ONE_NANO + EXPECTED_DAY_TWO_NANO; // 143,500,000
 
 // If the fork's two shared rows (R1 + R3) were summed TWICE (a broken dedupe), the
-// grand total would inflate by exactly their sum. The teeth test proves it.
+// grand total would inflate by exactly their sum. The teeth test proves it. R6 is NOT
+// in the fork file, so it is never doubled.
 const EXPECTED_DOUBLED_IF_DEDUPE_BROKEN_NANO =
-  EXPECTED_GRAND_DEDUPED_NANO + EXPECTED_R1_OPUS_ROOT_NANO + EXPECTED_R3_FABLE_CHILD_NANO; // 235,000,000
+  EXPECTED_GRAND_DEDUPED_NANO + EXPECTED_R1_OPUS_ROOT_NANO + EXPECTED_R3_FABLE_CHILD_NANO; // 246,000,000
 
 // Token weights of the surfaced un-knowns (Pillar 4: never a silent $0).
 const UNKNOWN_MODEL_OUTPUT_TOKENS = 1234;
@@ -185,6 +209,38 @@ function usageRecordLine(fields: UsageRecordFields): string {
   return JSON.stringify(record) + '\n';
 }
 
+// ── the REALISTIC no-usage edge record builder (the point of this unit) ───────
+//
+// The spawn edge lives on a `type:'user'` record with NO `message.usage` — the shape
+// parseUsageRecord DROPS. It carries a top-level `sessionId`, the spawner's `agentId`
+// as parent (omitted when null → spawned by the session root), and
+// `toolUseResult.agentId` = the spawned child. It must produce NO usage row; the edge
+// reaches the tree ONLY through the harvested side table.
+interface ToolResultEdgeFields {
+  timestamp: string;
+  cwd: string;
+  sessionId: string;
+  parentAgentId: string | null; // omitted when null
+  childAgentId: string;
+}
+
+function toolResultEdgeLine(fields: ToolResultEdgeFields): string {
+  const record: Record<string, unknown> = {
+    type: 'user',
+    timestamp: fields.timestamp,
+    cwd: fields.cwd,
+    sessionId: fields.sessionId,
+    // NO usage → parseUsageRecord returns empty → no usage row. The edge is all this
+    // record carries into the pipeline.
+    message: { role: 'user', content: [{ type: 'tool_result', content: 'ok' }] },
+    toolUseResult: { agentId: fields.childAgentId },
+  };
+  if (fields.parentAgentId !== null) {
+    record.agentId = fields.parentAgentId;
+  }
+  return JSON.stringify(record) + '\n';
+}
+
 // ── the five priced records + the un-knowns, as reusable literals ─────────────
 const ROW_R1_OPUS_ROOT = usageRecordLine({
   timestamp: `${DAY_ONE}T10:00:00.000Z`,
@@ -240,6 +296,31 @@ const ROW_R5_OPUS_OUTSIDE = usageRecordLine({
   model: 'claude-opus-4-8',
   inputTokens: 100,
   outputTokens: 100,
+});
+
+// R6 — a grandchild USAGE row under the vimes session. It carries NO usage-borne
+// edge (no toolUseResultAgentId); its parent link arrives ONLY via the no-usage edge
+// line below, harvested into the side table. Day one, vimes, priced (fable).
+const ROW_R6_FABLE_GRANDCHILD = usageRecordLine({
+  timestamp: `${DAY_ONE}T10:15:00.000Z`,
+  cwd: CWD_VIMES,
+  sessionId: SESSION_VIMES,
+  messageId: 'msg-grandchild-s1-fable',
+  model: 'claude-fable-5',
+  agentId: AGENT_GRANDCHILD,
+  inputTokens: 100,
+  outputTokens: 200,
+});
+
+// The REALISTIC nesting edge: agent-child spawned agent-grandchild. Lives on a
+// NO-USAGE type:user record, in a separate file — the shape that hid the bug when
+// parseUsageRecord dropped it. Harvest is what nests R6 under R3.
+const EDGE_GRANDCHILD_UNDER_CHILD = toolResultEdgeLine({
+  timestamp: `${DAY_ONE}T10:16:00.000Z`,
+  cwd: CWD_VIMES,
+  sessionId: SESSION_VIMES,
+  parentAgentId: AGENT_CHILD,
+  childAgentId: AGENT_GRANDCHILD,
 });
 
 const ROW_UNKNOWN_MODEL = usageRecordLine({
@@ -306,6 +387,23 @@ function buildFixtureFiles(forkCopiesShareIds: boolean): Map<string, string> {
     [
       join(PROJECTS_ROOT, '-home-ticktockbent-projects-vimes', SESSION_VIMES, 'subagents', 'fork-copy.jsonl'),
       forkR1 + forkR3,
+    ],
+    // R6 grandchild's own USAGE file — spend, but NO edge on it.
+    [
+      join(
+        PROJECTS_ROOT,
+        '-home-ticktockbent-projects-vimes',
+        SESSION_VIMES,
+        'subagents',
+        `${AGENT_GRANDCHILD}.jsonl`,
+      ),
+      ROW_R6_FABLE_GRANDCHILD,
+    ],
+    // A SEPARATE no-usage file carrying ONLY the grandchild's parent edge. This is
+    // the realistic shape: the edge and the spend live in different records/files.
+    [
+      join(PROJECTS_ROOT, '-home-ticktockbent-projects-vimes', SESSION_VIMES, 'subagents', 'edges.jsonl'),
+      EDGE_GRANDCHILD_UNDER_CHILD,
     ],
     // Project "daotree" — a priced root row + the two un-knowns + the excluded synthetic.
     [
@@ -414,7 +512,8 @@ describe('slice-5b machine exit gate — the whole cost pipeline over an adversa
       const ledger = ledgerBodyFor(store);
       expect(ledger.grandTotal.priced.nanoDollars).toBe(EXPECTED_GRAND_DEDUPED_NANO);
       // Every figure carries its formatted USD alongside the exact integer.
-      expect(ledger.grandTotal.priced.usd).toBe('$0.132500');
+      // 143,500,000 nano ÷ 1e9 = $0.143500.
+      expect(ledger.grandTotal.priced.usd).toBe('$0.143500');
     } finally {
       store.dispose();
     }
@@ -429,8 +528,8 @@ describe('slice-5b machine exit gate — the whole cost pipeline over an adversa
       // one of each. The total is the deduped figure, and provably NOT the doubled one.
       expect(ledger.grandTotal.priced.nanoDollars).toBe(EXPECTED_GRAND_DEDUPED_NANO);
       expect(ledger.grandTotal.priced.nanoDollars).not.toBe(EXPECTED_DOUBLED_IF_DEDUPE_BROKEN_NANO);
-      // The five priced rows survive as five priced rows — the fork copies merged in.
-      expect(ledger.grandTotal.statusCounts.priced).toBe(5);
+      // The six priced rows survive as six priced rows — the fork copies merged in.
+      expect(ledger.grandTotal.statusCounts.priced).toBe(6);
     } finally {
       store.dispose();
     }
@@ -480,7 +579,7 @@ describe('slice-5b machine exit gate — the whole cost pipeline over an adversa
         grand.statusCounts.unpriced +
         grand.statusCounts.unpriceable +
         grand.statusCounts.flagged;
-      expect(totalRowsCounted).toBe(7); // 5 priced + 1 unpriced + 1 unpriceable; synthetic absent
+      expect(totalRowsCounted).toBe(8); // 6 priced + 1 unpriced + 1 unpriceable; synthetic absent
     } finally {
       store.dispose();
     }
@@ -507,9 +606,13 @@ describe('slice-5b machine exit gate — the whole cost pipeline over an adversa
       expect(childAgent!.parentResolved).toBe(true);
       expect(childAgent!.parentAgentId).toBe(AGENT_PARENT);
 
-      // The nesting reconciles: parent subtree = its own (haiku) + child subtree (fable).
+      // The nesting reconciles: parent subtree = its own (haiku R2) + child subtree,
+      // and the child's subtree now includes the grandchild (fable R3 + fable R6):
+      //   3,000,000 + 26,000,000 + 11,000,000 = 40,000,000.
       expect(parentAgent!.subtree.priced.nanoDollars).toBe(
-        EXPECTED_R2_HAIKU_CACHE_NANO + EXPECTED_R3_FABLE_CHILD_NANO,
+        EXPECTED_R2_HAIKU_CACHE_NANO +
+          EXPECTED_R3_FABLE_CHILD_NANO +
+          EXPECTED_R6_FABLE_GRANDCHILD_NANO,
       );
     } finally {
       store.dispose();
@@ -542,15 +645,52 @@ describe('slice-5b machine exit gate — the whole cost pipeline over an adversa
       await ingestFixture(store, buildFixtureFiles(true));
       const firstTotal = ledgerBodyFor(store).grandTotal.priced.nanoDollars;
       const firstRowCount = store.countUsageRows();
+      const firstEdgeCount = store.countAgentEdges();
 
       // Ingest the SAME corpus a second time into the SAME store. Step 1's dedupe is
-      // idempotent — the total and the stored row count must not move.
+      // idempotent — the total, the stored row count, and the harvested edge count
+      // must not move (edges are first-wins on conflict).
       await ingestFixture(store, buildFixtureFiles(true));
       const secondTotal = ledgerBodyFor(store).grandTotal.priced.nanoDollars;
 
       expect(secondTotal).toBe(firstTotal);
       expect(secondTotal).toBe(EXPECTED_GRAND_DEDUPED_NANO);
       expect(store.countUsageRows()).toBe(firstRowCount);
+      expect(store.countAgentEdges()).toBe(firstEdgeCount);
+      expect(firstEdgeCount).toBeGreaterThan(0);
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it('ASSERTION 8 — REALISTIC no-usage nesting: agent-grandchild nests under agent-child via the harvested side-table edge', async () => {
+    const store = new SqliteCostStore({ path: nextLedgerPath() });
+    try {
+      await ingestFixture(store, buildFixtureFiles(true));
+
+      // The edge that nests the grandchild rode a NO-USAGE record. Prove it reached
+      // the side table at all (harvest fired independent of usage).
+      expect(store.countAgentEdges()).toBeGreaterThan(0);
+
+      const ledger = ledgerBodyFor(store);
+      const vimesProject = ledger.projects.find((project) => project.projectKey === PROJECT_KEY_VIMES);
+      const vimesSession = vimesProject!.sessions.find((session) => session.sessionId === SESSION_VIMES);
+
+      // Walk root → agent-parent → agent-child → agent-grandchild (depth 3).
+      const parentAgent = vimesSession!.agents.find((agent) => agent.agentId === AGENT_PARENT);
+      const childAgent = parentAgent!.children.find((agent) => agent.agentId === AGENT_CHILD);
+      expect(childAgent).toBeDefined();
+      const grandchildAgent = childAgent!.children.find(
+        (agent) => agent.agentId === AGENT_GRANDCHILD,
+      );
+      expect(grandchildAgent).toBeDefined();
+
+      // The edge JOINED from the no-usage record: the grandchild's parent was
+      // recovered as agent-child, not guessed as the session root.
+      expect(grandchildAgent!.parentResolved).toBe(true);
+      expect(grandchildAgent!.parentAgentId).toBe(AGENT_CHILD);
+      // Its own spend is exactly R6 (no children of its own).
+      expect(grandchildAgent!.subtree.priced.nanoDollars).toBe(EXPECTED_R6_FABLE_GRANDCHILD_NANO);
     } finally {
       store.dispose();
     }
@@ -570,8 +710,9 @@ describe('slice-5b machine exit gate — the whole cost pipeline over an adversa
       // rowKey sabotage in the header), and ASSERTION 2's strict equality catches it.
       expect(ledger.grandTotal.priced.nanoDollars).toBe(EXPECTED_DOUBLED_IF_DEDUPE_BROKEN_NANO);
       expect(ledger.grandTotal.priced.nanoDollars).not.toBe(EXPECTED_GRAND_DEDUPED_NANO);
-      // Seven priced rows now, not five — the two fork copies are counted separately.
-      expect(ledger.grandTotal.statusCounts.priced).toBe(7);
+      // Eight priced rows now, not six — the two fork copies (R1, R3) are counted
+      // separately; R6 is not in the fork file, so it stays single.
+      expect(ledger.grandTotal.statusCounts.priced).toBe(8);
       // Reconciliation still HOLDS on the inflated tree — proving reconciliation
       // alone cannot catch a double-count; only the known-total assertion can.
       // (currentCostLedger did not throw: we reached here.)

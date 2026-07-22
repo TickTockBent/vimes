@@ -34,6 +34,10 @@ export interface CostIngestResult {
   stats: CostCorpusScanStats;
   rowsUpserted: number;
   storedRowCount: number;
+  // Distinct agent→agent parent edges harvested (and upserted) this run — surfaced
+  // so a deploy can see the one-time v1→v2 backfill count. stats also carries
+  // agentEdgesHarvested / agentEdgeRecordsSkippedNoSession for the full picture.
+  agentEdgesUpserted: number;
   watermark: string;
 }
 
@@ -46,6 +50,9 @@ export async function ingestCostCorpus(options: CostIngestOptions): Promise<Cost
     previousProgress: options.store.fileProgress(),
   });
   options.store.upsertUsageRows(scanResult.rows);
+  // Persist the harvested parent edges alongside the usage rows. First-wins in the
+  // store, so this is idempotent across runs (a child has one spawner).
+  options.store.upsertAgentEdges(scanResult.agentEdges);
   options.store.recordFileProgress(scanResult.fileProgress);
   const watermark = options.nowIso();
   options.store.setWatermark(watermark);
@@ -53,6 +60,7 @@ export async function ingestCostCorpus(options: CostIngestOptions): Promise<Cost
     stats: scanResult.stats,
     rowsUpserted: scanResult.rows.length,
     storedRowCount: options.store.countUsageRows(),
+    agentEdgesUpserted: scanResult.agentEdges.length,
     watermark,
   };
 }

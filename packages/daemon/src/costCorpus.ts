@@ -140,6 +140,21 @@ export interface CostUsageRow {
   settledScore: number;
 }
 
+// ── the agent→agent parent edge (unit parent-edge 2) ──────────────────────────
+//
+// The spawn edge lives ONLY on `type:user` records with NO `message.usage`:
+// `toolUseResult.agentId` is the SPAWNED (child) agent, and the record's own
+// `agentId` is its PARENT (null = spawned by the session root directly).
+// `parseUsageRecord` drops these no-usage records, so the edge never reached the
+// store and the tree came out flat. This side channel harvests them out-of-band,
+// INDEPENDENT of usage, during the same walk. A daemon-local type mirroring the
+// CostUsageRow "daemon owns its own shape" pattern.
+export interface CostAgentEdge {
+  readonly sessionId: string; // NON-null: an edge with no session can't be keyed; see extractAgentEdge
+  readonly childAgentId: string; // toolUseResult.agentId — the spawned agent
+  readonly parentAgentId: string | null; // the record's own agentId; null = spawned by session root
+}
+
 export interface CostCorpusFileProgress {
   path: string;
   // The stat taken BEFORE the read. If the file grew during the read,
@@ -166,6 +181,11 @@ export interface CostCorpusScanStats {
   rowsOutsideProjectRoots: number;
   // A trailing fragment left unconsumed because the file was mid-write.
   filesWithPartialTrailingLine: number;
+  // Distinct agent→agent parent edges emitted this scan (post first-wins dedupe).
+  agentEdgesHarvested: number;
+  // Records carrying a `toolUseResult.agentId` but NO `sessionId` — an edge that
+  // cannot be keyed, so it is dropped and counted here rather than silently lost.
+  agentEdgeRecordsSkippedNoSession: number;
 }
 
 export interface CostCorpusScanResult {
@@ -173,6 +193,10 @@ export interface CostCorpusScanResult {
   // dedupeUsageRowsGlobally, or hand them to SqliteCostStore, which applies the
   // same merge in SQL so dedupe also spans runs.
   rows: CostUsageRow[];
+  // Distinct (sessionId, childAgentId) parent edges harvested this scan, first-wins,
+  // in encounter order. Bounded and deterministic; the store also first-wins on
+  // conflict, so a re-ingest never rewrites an edge.
+  agentEdges: CostAgentEdge[];
   fileProgress: CostCorpusFileProgress[];
   stats: CostCorpusScanStats;
 }
@@ -386,6 +410,47 @@ function parseUsageRecord(record: unknown, context: RecordContext): ParsedUsageR
   return { row, hadUsage: true, wasSynthetic: false, missingMessageId: messageId === null };
 }
 
+// ── agent-edge harvest (unit parent-edge 2) ──────────────────────────────────
+//
+// The child agent id an edge record carries, or null when the record is not an
+// edge record at all (no `toolUseResult.agentId` string). Shared by both
+// extractAgentEdge and the skipped-no-session counter so each reads the shape the
+// SAME way — the counter must fire on exactly the records extractAgentEdge inspects.
+function edgeChildAgentId(record: unknown): string | null {
+  if (!isPlainObject(record)) {
+    return null;
+  }
+  const toolUseResult = record.toolUseResult;
+  if (!isPlainObject(toolUseResult)) {
+    return null;
+  }
+  return readOptionalString(toolUseResult, 'agentId');
+}
+
+// Harvest the agent→agent parent edge from a record, INDEPENDENT of usage — this is
+// the whole point: the edge lives on NO-USAGE `type:user` records that
+// parseUsageRecord drops. Returns null unless the record carries a
+// `toolUseResult.agentId` string AND a top-level `sessionId` string to key it by.
+// Direction: `toolUseResult.agentId` is the spawned CHILD; the record's own `agentId`
+// is the PARENT (absent/null = spawned by the session root directly). A record with a
+// childAgentId but NO sessionId cannot be keyed → returns null; the caller counts that
+// drop via `agentEdgeRecordsSkippedNoSession` rather than losing it silently.
+export function extractAgentEdge(record: unknown): CostAgentEdge | null {
+  const childAgentId = edgeChildAgentId(record);
+  if (childAgentId === null || !isPlainObject(record)) {
+    return null;
+  }
+  const sessionId = readOptionalString(record, 'sessionId');
+  if (sessionId === null) {
+    return null; // unkeyable — the caller records it in agentEdgeRecordsSkippedNoSession
+  }
+  return {
+    sessionId,
+    childAgentId,
+    parentAgentId: readOptionalString(record, 'agentId'),
+  };
+}
+
 // ── the walk ─────────────────────────────────────────────────────────────────
 interface DiscoveredFile {
   path: string;
@@ -468,6 +533,15 @@ export async function scanCostCorpus(options: CostCorpusScanOptions): Promise<Co
   }
 
   const rows: CostUsageRow[] = [];
+  // First-wins dedupe within this scan, keyed `${sessionId}::${childAgentId}` — a
+  // child has ONE spawner, so the returned array is bounded and deterministic. The
+  // store also first-wins on conflict, so re-ingest never rewrites an edge.
+  // Incremental-scan note: harvest only sees files READ this scan; skipped-unchanged
+  // files emit nothing. Backfilling the live box is the store's v1→v2 migration job
+  // (a one-time progress reset forces a full re-scan). Edges are NOT re-derivable
+  // from stored usage rows — the usage rows never carried this edge.
+  const agentEdges: CostAgentEdge[] = [];
+  const seenAgentEdgeKeys = new Set<string>();
   const fileProgress: CostCorpusFileProgress[] = [];
   const stats: CostCorpusScanStats = {
     jsonlFilesFound: discoveredFiles.length,
@@ -480,6 +554,8 @@ export async function scanCostCorpus(options: CostCorpusScanOptions): Promise<Co
     usageRecordsWithoutMessageId: 0,
     rowsOutsideProjectRoots: 0,
     filesWithPartialTrailingLine: 0,
+    agentEdgesHarvested: 0,
+    agentEdgeRecordsSkippedNoSession: 0,
   };
 
   for (const discoveredFile of discoveredFiles) {
@@ -546,6 +622,21 @@ export async function scanCostCorpus(options: CostCorpusScanOptions): Promise<Co
         stats.malformedLines += 1;
         continue;
       }
+      // Harvest the parent edge FIRST and INDEPENDENT of usage — the edge lives on
+      // NO-USAGE `type:user` records that parseUsageRecord returns empty for, so it
+      // must be read off every record, not gated behind the usage-row branch.
+      const agentEdge = extractAgentEdge(record);
+      if (agentEdge !== null) {
+        const agentEdgeDedupeKey = `${agentEdge.sessionId}::${agentEdge.childAgentId}`;
+        if (!seenAgentEdgeKeys.has(agentEdgeDedupeKey)) {
+          seenAgentEdgeKeys.add(agentEdgeDedupeKey);
+          agentEdges.push(agentEdge);
+        }
+      } else if (edgeChildAgentId(record) !== null) {
+        // The record HAD a toolUseResult.agentId but no sessionId to key it by — an
+        // unkeyable edge. Counted, never silently lost.
+        stats.agentEdgeRecordsSkippedNoSession += 1;
+      }
       const parsed = parseUsageRecord(record, {
         sourcePath: discoveredFile.path,
         sourceKind: discoveredFile.sourceKind,
@@ -578,5 +669,6 @@ export async function scanCostCorpus(options: CostCorpusScanOptions): Promise<Co
     });
   }
 
-  return { rows, fileProgress, stats };
+  stats.agentEdgesHarvested = agentEdges.length;
+  return { rows, agentEdges, fileProgress, stats };
 }

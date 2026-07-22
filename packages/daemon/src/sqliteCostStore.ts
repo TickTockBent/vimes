@@ -1,5 +1,10 @@
 import Database from 'better-sqlite3';
-import type { CostSourceKind, CostCorpusFileProgress, CostUsageRow } from './costCorpus.js';
+import type {
+  CostAgentEdge,
+  CostSourceKind,
+  CostCorpusFileProgress,
+  CostUsageRow,
+} from './costCorpus.js';
 
 // ─── slice 5b step 1 — the durable cost store ────────────────────────────────
 //
@@ -66,9 +71,24 @@ CREATE TABLE IF NOT EXISTS cost_meta (
   key TEXT PRIMARY KEY,
   value TEXT
 );
+
+-- The agent→agent parent edge (unit parent-edge 2). Harvested out-of-band from the
+-- NO-USAGE type:user records that carry toolUseResult.agentId — the edge parseUsageRecord
+-- never sees. Both key columns are NON-null BY CONSTRUCTION (extractAgentEdge drops any
+-- edge with a null sessionId), so the PK is a real idempotency key with no SQLite
+-- null-in-PK quirk: a child has exactly one spawner, first-wins on conflict.
+CREATE TABLE IF NOT EXISTS cost_agent_edges (
+  sessionId TEXT NOT NULL,
+  childAgentId TEXT NOT NULL,
+  parentAgentId TEXT,
+  PRIMARY KEY (sessionId, childAgentId)
+);
 `;
 
-const COST_SCHEMA_VERSION = '1';
+// v1: cost_usage_rows + cost_ingest_files + cost_meta.
+// v2: adds cost_agent_edges; the forward migration clears cost_ingest_files ONLY,
+//     forcing a one-time full re-scan so edges backfill from the on-disk transcripts.
+const COST_SCHEMA_VERSION = '2';
 const INGESTION_WATERMARK_KEY = 'ingestion_watermark';
 
 // The insert half. Every column is named so the upsert below can reference
@@ -153,6 +173,21 @@ const USAGE_ROW_COLUMNS = `
   inputTokens, outputTokens, cacheReadInputTokens, cacheCreationInputTokens,
   cacheCreation5mInputTokens, cacheCreation1hInputTokens, settledScore
 `;
+
+// FIRST-WINS, idempotent: a child has one spawner, so a re-ingest must NEVER change
+// an existing edge's parent. ON CONFLICT DO NOTHING preserves the incumbent — mirrors
+// core's mergeParentEdges first-wins and the in-scan dedupe in costCorpus.
+const UPSERT_AGENT_EDGE = `
+INSERT INTO cost_agent_edges (sessionId, childAgentId, parentAgentId)
+VALUES (@sessionId, @childAgentId, @parentAgentId)
+ON CONFLICT(sessionId, childAgentId) DO NOTHING
+`;
+
+interface AgentEdgeRecord {
+  sessionId: string;
+  childAgentId: string;
+  parentAgentId: string | null;
+}
 
 interface UsageRowRecord {
   rowKey: string;
@@ -257,10 +292,14 @@ export class SqliteCostStore {
   private readonly countRowsStatement: Database.Statement;
   private readonly readMetaStatement: Database.Statement;
   private readonly writeMetaStatement: Database.Statement;
+  private readonly upsertAgentEdgeStatement: Database.Statement;
+  private readonly readAgentEdgesStatement: Database.Statement;
+  private readonly countAgentEdgesStatement: Database.Statement;
   private readonly upsertRowsTransaction: (rows: readonly CostUsageRow[]) => void;
   private readonly upsertFileProgressTransaction: (
     entries: readonly CostCorpusFileProgress[],
   ) => void;
+  private readonly upsertAgentEdgesTransaction: (edges: readonly CostAgentEdge[]) => void;
 
   constructor(options: { path: string }) {
     this.database = new Database(options.path);
@@ -270,9 +309,42 @@ export class SqliteCostStore {
     this.database.pragma('synchronous = NORMAL');
     this.database.pragma('busy_timeout = 5000');
     this.database.exec(COST_SCHEMA);
-    this.database
-      .prepare("INSERT OR IGNORE INTO cost_meta (key, value) VALUES ('schema_version', ?)")
-      .run(COST_SCHEMA_VERSION);
+
+    // ── schema-version handling + forward migration ──────────────────────────
+    // Runs AFTER the schema exec (so cost_agent_edges already exists) and BEFORE
+    // the other statements are prepared. Three cases:
+    //   • fresh DB (no stored version) → stamp the current version, no migration.
+    //   • stored version < 2           → forward-migrate v1→v2, then stamp '2'.
+    //   • stored version already ≥ 2   → nothing to do.
+    const storedSchemaVersionRow = this.database
+      .prepare('SELECT value FROM cost_meta WHERE key = ?')
+      .get('schema_version') as { value: string } | undefined;
+    if (storedSchemaVersionRow === undefined) {
+      this.database
+        .prepare("INSERT INTO cost_meta (key, value) VALUES ('schema_version', ?)")
+        .run(COST_SCHEMA_VERSION);
+    } else if (Number(storedSchemaVersionRow.value) < 2) {
+      // ⚠⚠ v1→v2 MIGRATION — DATA-SAFETY CRITICAL ⚠⚠
+      // Clear cost_ingest_files ONLY. Wiping the ingest progress forces the next
+      // scan to re-read every on-disk transcript from byte 0, so the new agent-edge
+      // harvest backfills edges that v1 never captured.
+      //
+      // DO **NOT** TOUCH cost_usage_rows. Transcripts get PRUNED (cleanupPeriodDays
+      // is a mitigation, not a guarantee — rule 0.6), so cost_usage_rows is the
+      // DURABLE copy of real spend. Dropping it to "force a clean re-scan" would
+      // permanently lose spend whose source transcript is already gone. Re-ingest is
+      // max-wins idempotent, so keeping the rows re-adds nothing incorrectly.
+      const clearIngestProgress = this.database.transaction(() => {
+        this.database.prepare('DELETE FROM cost_ingest_files').run();
+        this.database
+          .prepare(
+            `INSERT INTO cost_meta (key, value) VALUES ('schema_version', ?)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+          )
+          .run(COST_SCHEMA_VERSION);
+      });
+      clearIngestProgress();
+    }
 
     this.upsertRowStatement = this.database.prepare(UPSERT_USAGE_ROW);
     this.upsertFileProgressStatement = this.database.prepare(
@@ -297,6 +369,14 @@ export class SqliteCostStore {
       `INSERT INTO cost_meta (key, value) VALUES (?, ?)
        ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
     );
+    this.upsertAgentEdgeStatement = this.database.prepare(UPSERT_AGENT_EDGE);
+    this.readAgentEdgesStatement = this.database.prepare(
+      `SELECT sessionId, childAgentId, parentAgentId FROM cost_agent_edges
+       ORDER BY sessionId ASC, childAgentId ASC`,
+    );
+    this.countAgentEdgesStatement = this.database.prepare(
+      'SELECT COUNT(*) AS edgeCount FROM cost_agent_edges',
+    );
 
     this.upsertRowsTransaction = this.database.transaction((rows: readonly CostUsageRow[]) => {
       for (const row of rows) {
@@ -311,6 +391,27 @@ export class SqliteCostStore {
             observedSizeBytes: entry.observedSizeBytes,
             observedMtimeMs: entry.observedMtimeMs,
             consumedBytes: entry.consumedBytes,
+          });
+        }
+      },
+    );
+    this.upsertAgentEdgesTransaction = this.database.transaction(
+      (edges: readonly CostAgentEdge[]) => {
+        for (const edge of edges) {
+          // Defensive: the harvest already drops null-session edges, but a null/empty
+          // sessionId or childAgentId here would violate the NON-null PK, so skip it.
+          if (
+            edge.sessionId === null ||
+            edge.sessionId === '' ||
+            edge.childAgentId === null ||
+            edge.childAgentId === ''
+          ) {
+            continue;
+          }
+          this.upsertAgentEdgeStatement.run({
+            sessionId: edge.sessionId,
+            childAgentId: edge.childAgentId,
+            parentAgentId: edge.parentAgentId,
           });
         }
       },
@@ -340,6 +441,27 @@ export class SqliteCostStore {
 
   recordFileProgress(entries: readonly CostCorpusFileProgress[]): void {
     this.upsertFileProgressTransaction(entries);
+  }
+
+  // First-wins, idempotent: an existing (sessionId, childAgentId) edge is never
+  // rewritten by a re-ingest (a child has one spawner). Null-session/child edges are
+  // skipped defensively.
+  upsertAgentEdges(edges: readonly CostAgentEdge[]): void {
+    this.upsertAgentEdgesTransaction(edges);
+  }
+
+  readAgentEdges(): CostAgentEdge[] {
+    const records = this.readAgentEdgesStatement.all() as AgentEdgeRecord[];
+    return records.map((record) => ({
+      sessionId: record.sessionId,
+      childAgentId: record.childAgentId,
+      parentAgentId: record.parentAgentId,
+    }));
+  }
+
+  countAgentEdges(): number {
+    const record = this.countAgentEdgesStatement.get() as { edgeCount: number };
+    return record.edgeCount;
   }
 
   // The ingestion watermark — an ISO timestamp supplied by the caller's clock (no
