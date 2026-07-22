@@ -94,6 +94,25 @@ export {
   type DispatchDeferReason,
 } from './tasks/dispatchDecision.js';
 export {
+  WATCHDOG_GOVERNED_LIVENESS,
+  ALL_SESSION_LIVENESS,
+  NON_GOVERNED_SESSION_LIVENESS,
+  WATCHDOG_BLOCKING_ATTENTION_REASONS,
+  ALL_ATTENTION_REASONS,
+  NON_BLOCKING_ATTENTION_REASONS,
+  TRANSCRIPT_APPEND_EVENT_TYPES,
+  ALL_EVENT_TYPES,
+  NON_HEARTBEAT_EVENT_TYPES,
+  isWatchdogGovernedLiveness,
+  isBlockingAttentionReason,
+  isTranscriptAppendEventType,
+  assessStageRun,
+  type StageRunObservation,
+  type WatchdogPolicy,
+  type WatchdogVerdict,
+  type WatchdogHealthyReason,
+} from './tasks/watchdogDecision.js';
+export {
   cacheObservabilityProjection,
   type CacheObservabilityState,
   type CacheObservabilityRecord,
