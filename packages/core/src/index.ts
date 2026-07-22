@@ -137,6 +137,7 @@ export {
   type RowTokenCounts,
   type PriceStatusCounts,
   type AgentParentEdge,
+  type ExplicitAgentParentEdge,
   type BuildCostTreeOptions,
   type ReconciliationViolation,
 } from './pricing/costTree.js';

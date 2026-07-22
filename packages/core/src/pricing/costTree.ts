@@ -151,6 +151,10 @@ export interface BuildCostTreeOptions {
   // lab's category dirs). A row's project is the immediate child of the longest
   // matched root. Empty (default) → project keys fall back to the honest full cwd.
   readonly projectRoots?: readonly string[];
+  // Externally-harvested agent→agent parent edges (parent-edge fix, unit 1). Applied
+  // FIRST (authoritative), then row-derived edges fill the rest — see mergeParentEdges.
+  // Absent/empty (default) → behaviour is exactly the row-only buildParentMap path.
+  readonly parentEdges?: readonly ExplicitAgentParentEdge[];
 }
 
 // The single explicit bucket for rows outside VIMES_PROJECT_ROOTS (rule 7).
@@ -269,6 +273,19 @@ export interface AgentParentEdge {
   readonly parentAgentId: string | null;
 }
 
+// An externally-supplied parent edge (parent-edge fix, unit 1). On the real corpus
+// the agent→agent edge lives on `toolUseResult.agentId`, which appears ONLY on
+// non-usage-bearing `type:user` records — so the usage rows the tree ingests carry
+// `toolUseResultAgentId: null` and `buildParentMap(rows)` recovers nothing. A caller
+// that harvested those edges out-of-band (unit 2, the daemon) supplies them here so
+// the tree can nest. Keyed within a session (the child shares the spawner's session);
+// `parentAgentId` null = spawned by the session root directly (fallback, unresolved).
+export interface ExplicitAgentParentEdge {
+  readonly sessionId: string | null;
+  readonly childAgentId: string;
+  readonly parentAgentId: string | null;
+}
+
 // Composite key for a (sessionId, agentId) node. The `::` delimiter cannot appear
 // in a uuid session id or a hex agent id, so the join is unambiguous — and it is
 // printable, never a control byte.
@@ -293,6 +310,40 @@ export function buildParentMap(rows: readonly CostTreeInputRow[]): Map<string, A
     // First edge wins deterministically; a child has one spawner.
     if (!parentByChildNodeKey.has(childNodeKey)) {
       parentByChildNodeKey.set(childNodeKey, { parentAgentId: row.agentId });
+    }
+  }
+  return parentByChildNodeKey;
+}
+
+// Merge injected `parentEdges` with the row-derived edges into ONE parent map, of
+// the same `Map<string, AgentParentEdge>` shape `buildParentMap` returns and keyed
+// by the same `nodeKey(sessionId, childAgentId)`.
+//
+// Union order (deterministic, first-wins per (sessionId, childAgentId) node key):
+//   1. Injected `parentEdges` FIRST, in array order — authoritative for the real
+//      corpus, whose usage rows carry no `toolUseResult.agentId` edge. A child
+//      already present is skipped (the earlier injected edge wins).
+//   2. THEN the row-derived edges from `buildParentMap(rows)`, filling only children
+//      not already claimed by an injected edge.
+// The result is a pure function of (parentEdges, rows): Map insertion order is fixed
+// by the fold order above, so the same inputs always produce the same map.
+function mergeParentEdges(
+  parentEdges: readonly ExplicitAgentParentEdge[],
+  rows: readonly CostTreeInputRow[],
+): Map<string, AgentParentEdge> {
+  const parentByChildNodeKey = new Map<string, AgentParentEdge>();
+  // Pass 1: injected edges, array order, first-wins per child node key.
+  for (const injectedEdge of parentEdges) {
+    const childNodeKey = nodeKey(injectedEdge.sessionId, injectedEdge.childAgentId);
+    if (!parentByChildNodeKey.has(childNodeKey)) {
+      parentByChildNodeKey.set(childNodeKey, { parentAgentId: injectedEdge.parentAgentId });
+    }
+  }
+  // Pass 2: row-derived edges fill any child an injected edge did not already claim.
+  const rowDerivedEdges = buildParentMap(rows);
+  for (const [childNodeKey, edge] of rowDerivedEdges) {
+    if (!parentByChildNodeKey.has(childNodeKey)) {
+      parentByChildNodeKey.set(childNodeKey, edge);
     }
   }
   return parentByChildNodeKey;
@@ -356,7 +407,9 @@ export function buildCostTree(
   options: BuildCostTreeOptions = {},
 ): CostTree {
   const projectRoots = options.projectRoots ?? [];
-  const parentMap = buildParentMap(rows);
+  // Union of injected edges (first, authoritative) and row-derived edges. With no
+  // injected edges this equals buildParentMap(rows) exactly — same map, same keys.
+  const parentMap = mergeParentEdges(options.parentEdges ?? [], rows);
 
   // Pass 0: a session belongs to ONE project (project → session → agent). A
   // session is launched in one directory, and its session-root records (agentId

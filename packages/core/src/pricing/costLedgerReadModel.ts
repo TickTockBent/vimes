@@ -43,10 +43,15 @@ import {
   type AttributionGroup,
   type CostTree,
   type CostTreeInputRow,
+  type ExplicitAgentParentEdge,
   type ProjectNode,
   type RollupTotals,
   type SessionNode,
 } from './costTree.js';
+
+// Canonical export is costTree.ts; re-exported here for callers that build the read
+// model and supply edges in one import.
+export type { ExplicitAgentParentEdge } from './costTree.js';
 
 // The fixed scope label. This measures VIMES-hosted work, not a personal bill —
 // the string is a constant in the body so the UI can never substitute
@@ -250,12 +255,16 @@ export interface BuildCostLedgerOptions {
   // Project-parent roots (VIMES_PROJECT_ROOTS) for tree classification — passed
   // straight through to buildCostTree so project keys match rule 7.
   readonly projectRoots?: readonly string[];
+  // Externally-harvested agent→agent parent edges (parent-edge fix, unit 1), passed
+  // straight through to buildCostTree so the tree can nest agents whose usage rows
+  // carry no toolUseResult edge. Absent (default) → row-only behaviour, unchanged.
+  readonly parentEdges?: readonly ExplicitAgentParentEdge[];
   // A test seam to inject a non-reconciling tree so the builder's reconciliation
   // guard can be exercised — absent in prod (buildCostTree reconciles by
   // construction, so no INPUT alone can make the builder's tree fail to reconcile).
   readonly buildTree?: (
     rows: readonly CostTreeInputRow[],
-    opts: { projectRoots: readonly string[] },
+    opts: { projectRoots: readonly string[]; parentEdges?: readonly ExplicitAgentParentEdge[] },
   ) => CostTree;
 }
 
@@ -320,6 +329,7 @@ export function buildCostLedgerReadModel(
 ): CostLedgerReadModel {
   const priceTable = options.priceTable ?? SLICE_5B_PRICE_TABLE;
   const projectRoots = options.projectRoots ?? [];
+  const parentEdges = options.parentEdges;
 
   // Price each row once (Step 2) and carry the result into the tree row (Step 3
   // consumes it, never re-prices). The priced result is retained per input row
@@ -347,7 +357,7 @@ export function buildCostLedgerReadModel(
   }));
 
   const buildTreeFn = options.buildTree ?? buildCostTree;
-  const tree = buildTreeFn(treeRows, { projectRoots });
+  const tree = buildTreeFn(treeRows, { projectRoots, parentEdges });
   // The load-bearing guard — a non-reconciling tree is a lie; let it throw.
   assertTreeReconciles(tree);
 
