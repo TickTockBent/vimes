@@ -67,6 +67,21 @@ export {
 } from './meterDerivations.js';
 export { tasksProjection, type TasksState } from './projections/tasks.js';
 export {
+  TASK_STAGES,
+  TASK_STAGE_EDGES,
+  INITIAL_TASK_STAGE,
+  taskStageSchema,
+  transitionProposedBySchema,
+  transitionRejectionReasonSchema,
+  isLegalTaskEdge,
+  proposeTransition,
+  type TaskStage,
+  type TransitionProposal,
+  type TransitionProposedBy,
+  type TransitionOutcome,
+  type TransitionRejectionReason,
+} from './tasks/taskStateMachine.js';
+export {
   cacheObservabilityProjection,
   type CacheObservabilityState,
   type CacheObservabilityRecord,

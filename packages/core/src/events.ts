@@ -1,6 +1,15 @@
 import { z } from 'zod';
 import type { EventInput } from './schemas.js';
-import { meterRecordSchema } from './schemas.js';
+import { meterRecordSchema, taskRecordSchema } from './schemas.js';
+// The task-event payloads validate against the STATE MACHINE's own vocabulary
+// (stages, refusal reasons, proposer) rather than re-declaring it — one source of
+// record per fact (principle 9). Direction is events.ts → tasks/ → schemas.ts;
+// the state machine imports nothing from here, so there is no cycle.
+import {
+  taskStageSchema,
+  transitionProposedBySchema,
+  transitionRejectionReasonSchema,
+} from './tasks/taskStateMachine.js';
 
 // The domain event vocabulary (spec §3.3 / slice-0.md). Each type carries a zod
 // payload schema; helper constructors build EventInput records ready for
@@ -86,6 +95,17 @@ export const EVENT_TYPES = {
   // carries the subscription endpoint or key material — only the meterId, whether
   // a send was attempted, and (when attempted) the outcome + any HTTP status.
   meterPushOutcome: 'meter_push_outcome',
+  // Slice-6 step 1: the task vocabulary, on the 'tasks' stream beside the
+  // already-reserved `dispatch_refused`. Rule 0.5 — the shapes land with the
+  // state machine, ahead of the projection (step 2) and the dispatcher (step 3).
+  //
+  // `task_transition_rejected` is **I7's RECORD**. The invariant is not "the
+  // machine returns a rejection", it is "the rejection is *evented*" — a
+  // rejection nobody wrote down is, for I7's purposes, a rejection that never
+  // happened. Every REJECT outcome from `proposeTransition` gets one of these.
+  taskCreated: 'task_created',
+  taskTransitioned: 'task_transitioned',
+  taskTransitionRejected: 'task_transition_rejected',
 } as const;
 
 export const SYSTEM_STREAM = 'system';
@@ -347,6 +367,56 @@ export const meterPushOutcomePayloadSchema = z.object({
   statusCode: z.number().optional(),
 });
 
+// ——— task payloads (slice-6 step 1), all on the 'tasks' stream ———
+//
+// task_created — the birth record. `isolation` is REQUIRED here rather than
+// defaulted downstream: D32 pins the default to 'worktree', and a task whose
+// isolation is only implied is a task whose worker directory nobody can audit
+// after the fact. The creator names it; this event records what was named.
+// `stage` is carried (rather than assumed `backlog`) so the projection folds a
+// stated starting stage instead of re-deriving one.
+export const taskCreatedPayloadSchema = z.object({
+  taskId: z.string(),
+  projectRoot: z.string(),
+  createdBy: taskRecordSchema.shape.createdBy,
+  isolation: taskRecordSchema.shape.isolation,
+  stage: taskStageSchema,
+});
+
+// task_transitioned — one ACCEPTED transition, exactly as the state machine
+// decided it. `manualReviewRequired` is the RESULTING flag (the convergence
+// exit), not the proposal's request: the machine only honours it into `done`, so
+// recording the result keeps the log and the projection from disagreeing.
+export const taskTransitionedPayloadSchema = z.object({
+  taskId: z.string(),
+  fromStage: taskStageSchema,
+  toStage: taskStageSchema,
+  manualReviewRequired: z.boolean(),
+  proposedBy: transitionProposedBySchema,
+  note: z.string().optional(),
+});
+
+// task_transition_rejected — I7's record. Carries the ATTEMPTED edge (both ends)
+// and the enumerated reason, so a reviewer can tell a quarantined run that tried
+// to complete apart from a plain typo, without re-running anything.
+// `attemptedToStage` is named distinctly from `toStage` precisely because NO
+// transition happened — the task is still in `fromStage`.
+//
+// ⚠ Both stage fields are deliberately `z.string()` and NOT `taskStageSchema`,
+// unlike the accepted event above. The whole point of this event is to record
+// what the machine REFUSED, and one of the refusals is `unknown-stage` — a stage
+// outside the enum. Validating these against the enum would make exactly that
+// rejection unrecordable, which is I7 failing silently in the one case (slice 7's
+// hostile input) where the record matters most. An accepted transition is within
+// the vocabulary by construction; a rejected one is not.
+export const taskTransitionRejectedPayloadSchema = z.object({
+  taskId: z.string(),
+  fromStage: z.string(),
+  attemptedToStage: z.string(),
+  reason: transitionRejectionReasonSchema,
+  proposedBy: transitionProposedBySchema,
+});
+
 export const EVENT_PAYLOAD_SCHEMAS = {
   [EVENT_TYPES.sessionCreated]: sessionCreatedPayloadSchema,
   [EVENT_TYPES.livenessChanged]: livenessChangedPayloadSchema,
@@ -382,6 +452,9 @@ export const EVENT_PAYLOAD_SCHEMAS = {
   [EVENT_TYPES.pushFailed]: pushFailedPayloadSchema,
   [EVENT_TYPES.meterAlert]: meterAlertPayloadSchema,
   [EVENT_TYPES.meterPushOutcome]: meterPushOutcomePayloadSchema,
+  [EVENT_TYPES.taskCreated]: taskCreatedPayloadSchema,
+  [EVENT_TYPES.taskTransitioned]: taskTransitionedPayloadSchema,
+  [EVENT_TYPES.taskTransitionRejected]: taskTransitionRejectedPayloadSchema,
 } as const;
 
 export type SessionCreatedPayload = z.infer<typeof sessionCreatedPayloadSchema>;
@@ -412,6 +485,9 @@ export type MeterAlertPayload = z.infer<typeof meterAlertPayloadSchema>;
 export type MeterAlertDisposition = z.infer<typeof meterAlertDispositionSchema>;
 export type MeterPushOutcomePayload = z.infer<typeof meterPushOutcomePayloadSchema>;
 export type MeterPushOutcomeResult = z.infer<typeof meterPushOutcomeResultSchema>;
+export type TaskCreatedPayload = z.infer<typeof taskCreatedPayloadSchema>;
+export type TaskTransitionedPayload = z.infer<typeof taskTransitionedPayloadSchema>;
+export type TaskTransitionRejectedPayload = z.infer<typeof taskTransitionRejectedPayloadSchema>;
 
 // Discriminated union over the vocabulary — the domain-event value space.
 export type DomainEvent =
@@ -448,7 +524,10 @@ export type DomainEvent =
   | { type: typeof EVENT_TYPES.pushSent; payload: PushSentPayload }
   | { type: typeof EVENT_TYPES.pushFailed; payload: PushFailedPayload }
   | { type: typeof EVENT_TYPES.meterAlert; payload: MeterAlertPayload }
-  | { type: typeof EVENT_TYPES.meterPushOutcome; payload: MeterPushOutcomePayload };
+  | { type: typeof EVENT_TYPES.meterPushOutcome; payload: MeterPushOutcomePayload }
+  | { type: typeof EVENT_TYPES.taskCreated; payload: TaskCreatedPayload }
+  | { type: typeof EVENT_TYPES.taskTransitioned; payload: TaskTransitionedPayload }
+  | { type: typeof EVENT_TYPES.taskTransitionRejected; payload: TaskTransitionRejectedPayload };
 
 // Maps each attention-setting event type to the needsAttention reason it sets.
 const ATTENTION_SETTER_REASON: Readonly<Record<string, AttentionReason>> = {
@@ -546,6 +625,20 @@ export function meterPushOutcome(payload: MeterPushOutcomePayload): EventInput {
 }
 export function dispatchRefused(payload: DispatchRefusedPayload): EventInput {
   return { stream: 'tasks', type: EVENT_TYPES.dispatchRefused, payload };
+}
+
+// The slice-6 task constructors. Same 'tasks' stream as `dispatch_refused`,
+// literal for the same reason the meter constructors use a literal 'usage': the
+// vocabulary module stays free-standing (no dependency on a projection).
+export function taskCreated(payload: TaskCreatedPayload): EventInput {
+  return { stream: 'tasks', type: EVENT_TYPES.taskCreated, payload };
+}
+export function taskTransitioned(payload: TaskTransitionedPayload): EventInput {
+  return { stream: 'tasks', type: EVENT_TYPES.taskTransitioned, payload };
+}
+// I7's record — emitted for EVERY rejected proposal, never conditionally.
+export function taskTransitionRejected(payload: TaskTransitionRejectedPayload): EventInput {
+  return { stream: 'tasks', type: EVENT_TYPES.taskTransitionRejected, payload };
 }
 
 // Hook ingress constructors (B). Each emits on the session's stream; the ingress
