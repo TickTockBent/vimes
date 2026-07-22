@@ -270,8 +270,19 @@ that breaks both levers re-triggers it, rule 0.6.)
    headroom." Blast radius is opt-in (ungated tasks unaffected). The branch is
    written `verdict !== 'pass'` so a verdict added to slice 5's enum later cannot
    fall through into a spawn.
-4. **Dispatcher execution (daemon).** Spawn through the session host; wire
-   `dispatch_refused`; task API.
+4. **Dispatcher execution (daemon).** Split into 4a/4b (as slice 5b was).
+   - 4a ✅ **DONE 2026-07-22.** `TaskDispatcher` executes a `DispatchDecision`:
+     spawn through the session host + `task_session_attached`; refuse → the evented
+     `dispatch_refused` (**I10 is only satisfied by refusing AND recording it**);
+     defer → emits NOTHING (a defer is not a refusal; any surface re-derives it).
+     New `task_session_attached` event + its projection fold (idempotent per
+     `appSessionId`), I6 fixture extended. **No timer** — `dispatchTask` is called
+     explicitly; scheduling policy is deliberately out.
+     ⚠ **Isolation is NOT yet honoured**: every task resolves to `task.projectRoot`
+     via the explicit `resolveWorkingDirectory` seam. Step 8 replaces that resolver;
+     a test asserts today's behaviour and is marked to REDDEN so the change is
+     deliberate, not accidental.
+   - 4b — the HTTP task API. NOT started.
 5. **Watchdog + quarantine** (after S3 calibration + sign-off for the ⟨tune⟩s).
 6. **Course correction** — the verb the kill criterion protects. Per D5 this is a
    `correction` verb + its event + the board affordance over the EXISTING

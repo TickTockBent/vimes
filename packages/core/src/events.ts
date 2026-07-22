@@ -106,6 +106,13 @@ export const EVENT_TYPES = {
   taskCreated: 'task_created',
   taskTransitioned: 'task_transitioned',
   taskTransitionRejected: 'task_transition_rejected',
+  // Slice-6 step 4a: the link between a task and the session that runs one of
+  // its stages. A stage run IS an ordinary session (spec §3.5) and
+  // `TaskRecord.sessionRefs` was reserved in slice 0 to hold the link — but
+  // until this event existed NOTHING appended to it, so "open this task's
+  // session" had no data path. The dispatcher (packages/daemon/taskDispatcher)
+  // emits exactly one of these per successful spawn.
+  taskSessionAttached: 'task_session_attached',
 } as const;
 
 export const SYSTEM_STREAM = 'system';
@@ -417,6 +424,26 @@ export const taskTransitionRejectedPayloadSchema = z.object({
   proposedBy: transitionProposedBySchema,
 });
 
+// task_session_attached — one stage run, linked to its task. Emitted by the
+// dispatcher AFTER the session host has actually returned an `appSessionId`, so
+// this event is a record of a session that EXISTS, never of one that was
+// attempted (a refused spawn emits nothing here — the host already evented its
+// own refusal, and inventing a task-side record of a session that never spawned
+// would put a dangling ref on the board).
+//
+// ⚠ `stage` is deliberately `z.string()` rather than `taskStageSchema`, matching
+// BOTH shapes this event bridges: `taskRecordSchema.sessionRefs[].stage` (the
+// slice-0 frozen record it folds into) and `sessionCreatedPayloadSchema.taskRef
+// .stage`. A ref is a LABEL of which stage ran, not an authority over stage —
+// `task_transitioned` is that authority (principle 9) — so narrowing it here
+// would put a second, stricter vocabulary on a field the record it feeds keeps
+// loose, and the fold would start dropping refs the schema itself accepts.
+export const taskSessionAttachedPayloadSchema = z.object({
+  taskId: z.string(),
+  stage: z.string(),
+  appSessionId: z.string(),
+});
+
 export const EVENT_PAYLOAD_SCHEMAS = {
   [EVENT_TYPES.sessionCreated]: sessionCreatedPayloadSchema,
   [EVENT_TYPES.livenessChanged]: livenessChangedPayloadSchema,
@@ -455,6 +482,7 @@ export const EVENT_PAYLOAD_SCHEMAS = {
   [EVENT_TYPES.taskCreated]: taskCreatedPayloadSchema,
   [EVENT_TYPES.taskTransitioned]: taskTransitionedPayloadSchema,
   [EVENT_TYPES.taskTransitionRejected]: taskTransitionRejectedPayloadSchema,
+  [EVENT_TYPES.taskSessionAttached]: taskSessionAttachedPayloadSchema,
 } as const;
 
 export type SessionCreatedPayload = z.infer<typeof sessionCreatedPayloadSchema>;
@@ -488,6 +516,7 @@ export type MeterPushOutcomeResult = z.infer<typeof meterPushOutcomeResultSchema
 export type TaskCreatedPayload = z.infer<typeof taskCreatedPayloadSchema>;
 export type TaskTransitionedPayload = z.infer<typeof taskTransitionedPayloadSchema>;
 export type TaskTransitionRejectedPayload = z.infer<typeof taskTransitionRejectedPayloadSchema>;
+export type TaskSessionAttachedPayload = z.infer<typeof taskSessionAttachedPayloadSchema>;
 
 // Discriminated union over the vocabulary — the domain-event value space.
 export type DomainEvent =
@@ -527,7 +556,8 @@ export type DomainEvent =
   | { type: typeof EVENT_TYPES.meterPushOutcome; payload: MeterPushOutcomePayload }
   | { type: typeof EVENT_TYPES.taskCreated; payload: TaskCreatedPayload }
   | { type: typeof EVENT_TYPES.taskTransitioned; payload: TaskTransitionedPayload }
-  | { type: typeof EVENT_TYPES.taskTransitionRejected; payload: TaskTransitionRejectedPayload };
+  | { type: typeof EVENT_TYPES.taskTransitionRejected; payload: TaskTransitionRejectedPayload }
+  | { type: typeof EVENT_TYPES.taskSessionAttached; payload: TaskSessionAttachedPayload };
 
 // Maps each attention-setting event type to the needsAttention reason it sets.
 const ATTENTION_SETTER_REASON: Readonly<Record<string, AttentionReason>> = {
@@ -639,6 +669,13 @@ export function taskTransitioned(payload: TaskTransitionedPayload): EventInput {
 // I7's record — emitted for EVERY rejected proposal, never conditionally.
 export function taskTransitionRejected(payload: TaskTransitionRejectedPayload): EventInput {
   return { stream: 'tasks', type: EVENT_TYPES.taskTransitionRejected, payload };
+}
+// The task↔session link (step 4a). On the 'tasks' stream and NOT the session's
+// stream: it is a fact about the TASK's record (`sessionRefs`), and the tasks
+// projection folds only its own stream. The session's own birth record
+// (`session_created`) already lives on the session stream.
+export function taskSessionAttached(payload: TaskSessionAttachedPayload): EventInput {
+  return { stream: 'tasks', type: EVENT_TYPES.taskSessionAttached, payload };
 }
 
 // Hook ingress constructors (B). Each emits on the session's stream; the ingress

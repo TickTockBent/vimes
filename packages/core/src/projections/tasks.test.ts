@@ -7,6 +7,7 @@ import {
   dispatchRefused,
   taskCreated,
   taskQuarantined,
+  taskSessionAttached,
   taskTransitioned,
   taskTransitionRejected,
 } from '../events.js';
@@ -317,6 +318,121 @@ describe('tasks projection — hostile and unknown input', () => {
       expect(after).toBe(before);
     });
   }
+});
+
+// ─── slice 6 step 4a — task_session_attached ────────────────────────────────
+//
+// A stage run IS an ordinary session (spec §3.5). `sessionRefs` was reserved in
+// slice 0 and, until this event, NOTHING appended to it — so "open this task's
+// session" had no data path. These are the step-4a assertions 1–3.
+const STAGE_SESSION_B_ID = 'aaaaaaaa-0000-4000-8000-000000000002';
+
+function attachSessionToTaskA(appSessionId: string, stage: string): EventInput {
+  return taskSessionAttached({ taskId: TASK_A, stage, appSessionId });
+}
+
+describe('tasks projection — task_session_attached', () => {
+  it('appends the ref to that task, in log order', () => {
+    // Assertion 1. Two stage runs on one task accumulate; the order is the log's.
+    const state = stateFromLog([
+      [createTaskA()],
+      [attachSessionToTaskA(STAGE_SESSION_ID, 'planning')],
+      [attachSessionToTaskA(STAGE_SESSION_B_ID, 'implementing')],
+    ]);
+    expect(state.tasks[TASK_A]!.sessionRefs).toEqual([
+      { stage: 'planning', appSessionId: STAGE_SESSION_ID },
+      { stage: 'implementing', appSessionId: STAGE_SESSION_B_ID },
+    ]);
+    // The record the fold produces still satisfies the slice-0 schema.
+    expect(taskRecordSchema.safeParse(state.tasks[TASK_A]).success).toBe(true);
+  });
+
+  it('ignores an attach for an unknown task — it never fabricates a record', () => {
+    // Assertion 1 (second half), same rule as `task_transitioned`: the log is
+    // truth, and a ref for a task nobody created is a ref to nothing.
+    const state = stateFromLog([
+      [createTaskA()],
+      [taskSessionAttached({ taskId: TASK_B, stage: 'planning', appSessionId: STAGE_SESSION_ID })],
+    ]);
+    expect(state.tasks[TASK_B]).toBeUndefined();
+    expect(state.tasks[TASK_A]!.sessionRefs).toEqual([]);
+  });
+
+  it('is IDEMPOTENT on replay — the same appSessionId is never appended twice', () => {
+    // Assertion 2, and THIS test is the one holding the line — verified by
+    // deleting the guard in tasks.ts and watching exactly this case and the I6
+    // fixture-content case redden while the I6 cut-point case stayed green. A
+    // duplicate append is deterministic, so replay equivalence cannot see it;
+    // only an explicit assertion can.
+    const state = stateFromLog([
+      [createTaskA()],
+      [attachSessionToTaskA(STAGE_SESSION_ID, 'planning')],
+      [attachSessionToTaskA(STAGE_SESSION_ID, 'planning')],
+      [attachSessionToTaskA(STAGE_SESSION_ID, 'planning')],
+    ]);
+    expect(state.tasks[TASK_A]!.sessionRefs).toEqual([
+      { stage: 'planning', appSessionId: STAGE_SESSION_ID },
+    ]);
+  });
+
+  it('keys idempotence on appSessionId, so a SECOND run of the same stage is kept', () => {
+    // Assertion 2 (the other direction). Deduplicating on `stage` would silently
+    // swallow a re-run after a quarantine — a different session doing the same
+    // stage is a genuinely new ref, and the board must be able to show both.
+    const state = stateFromLog([
+      [createTaskA()],
+      [attachSessionToTaskA(STAGE_SESSION_ID, 'implementing')],
+      [attachSessionToTaskA(STAGE_SESSION_B_ID, 'implementing')],
+    ]);
+    expect(state.tasks[TASK_A]!.sessionRefs).toEqual([
+      { stage: 'implementing', appSessionId: STAGE_SESSION_ID },
+      { stage: 'implementing', appSessionId: STAGE_SESSION_B_ID },
+    ]);
+  });
+
+  it('a malformed attach payload is a no-op and never throws', () => {
+    // Same total-fold discipline as every other case (I8's spirit).
+    const before = stateFromLog([[createTaskA()]]);
+    const serializedBefore = tasksProjection.serialize(before);
+    const malformedRecord = {
+      ...recordOf(attachSessionToTaskA(STAGE_SESSION_ID, 'planning')),
+      payload: { taskId: TASK_A },
+    } as unknown as EventRecord;
+    let after: TasksState | undefined;
+    expect(() => {
+      after = tasksProjection.apply(before, malformedRecord);
+    }).not.toThrow();
+    expect(after).toBe(before);
+    expect(tasksProjection.serialize(before)).toBe(serializedBefore);
+  });
+
+  it('does not mutate the input state or the existing sessionRefs array', () => {
+    // Assertion 3. `sessionRefs` is the one field that ACCUMULATES, which makes
+    // it the one an in-place `push` would corrupt across a shared snapshot.
+    const frozenState = stateFromLog([
+      [createTaskA()],
+      [attachSessionToTaskA(STAGE_SESSION_ID, 'planning')],
+    ]);
+    Object.freeze(frozenState);
+    Object.freeze(frozenState.tasks);
+    Object.freeze(frozenState.tasks[TASK_A]);
+    Object.freeze(frozenState.tasks[TASK_A]!.sessionRefs);
+    const serializedBefore = tasksProjection.serialize(frozenState);
+
+    const afterAttach = tasksProjection.apply(
+      frozenState,
+      recordOf(attachSessionToTaskA(STAGE_SESSION_B_ID, 'implementing')),
+    );
+
+    expect(afterAttach).not.toBe(frozenState);
+    expect(afterAttach.tasks).not.toBe(frozenState.tasks);
+    expect(afterAttach.tasks[TASK_A]).not.toBe(frozenState.tasks[TASK_A]);
+    expect(afterAttach.tasks[TASK_A]!.sessionRefs).not.toBe(frozenState.tasks[TASK_A]!.sessionRefs);
+    expect(afterAttach.tasks[TASK_A]!.sessionRefs).toHaveLength(2);
+    // The frozen input is byte-for-byte what it was.
+    expect(tasksProjection.serialize(frozenState)).toBe(serializedBefore);
+    expect(frozenState.tasks[TASK_A]!.sessionRefs).toHaveLength(1);
+  });
 });
 
 describe('tasks projection — purity', () => {
