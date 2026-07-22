@@ -299,8 +299,9 @@ that breaks both levers re-triggers it, rule 0.6.)
      0.5): the field has existed since slice 0 but no event could set it, which
      left I10's refusal path unreachable outside a test. **No `GET /api/tasks`** —
      `/api/projections/tasks` already serves it (principle 9).
-     ⚠ Raised **D33** (open-questions): the degenerate `NOTHING_IS_FRESH_STALE_BAND_MS = 0`
-     overstates by one millisecond. Pinned by a test, fails open, awaiting sign-off.
+     **D33** (decisions.md, settled 2026-07-22): the degenerate band's one-millisecond
+     overstatement is closed — `NOTHING_IS_FRESH_STALE_BAND_MS` is renamed
+     `NO_OBSERVATION_IS_FRESH_STALE_BAND_MS` and pinned at `-1`.
 5. **Watchdog + quarantine** (after S3 calibration + sign-off for the ⟨tune⟩s).
 6. **Course correction** — the verb the kill criterion protects. Per D5 this is a
    `correction` verb + its event + the board affordance over the EXISTING

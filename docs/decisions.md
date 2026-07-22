@@ -752,3 +752,58 @@ as a new dated entry.
 the enum (`'shared-dir' | 'worktree'`) but nothing sets it. This decision is
 therefore docs-only until build step 8, which is where the default first becomes
 real.
+
+## D33 — The degenerate staleness band PINNED at `-1`; `NOTHING_IS_FRESH_STALE_BAND_MS` renamed to `NO_OBSERVATION_IS_FRESH_STALE_BAND_MS`
+
+*2026-07-22 (Wes, on the open-questions D33 finding): approved changing the value
+to `-1` and renaming the constant. Rule 0.1 satisfied: the finding earned this
+record rather than a silent patch; moved from open-questions.md, where the finding
+and its exposure analysis were first recorded.*
+
+**Found by an implementing agent's test, confirmed independently.** During slice-6
+step 4b verification, the first version of a test asserted the *intent* of
+`NOTHING_IS_FRESH_STALE_BAND_MS` and failed. Confirmed independently against
+`meterDerivations.ts:75`: `meterFreshness` classifies with `observationAgeMs >
+staleAfterMs` — a strict `>` — so at a band of `0` an observation aged **exactly
+0 ms** read `fresh`, and its gate was evaluated for real. The constant's name
+claimed nothing could be fresh; it overstated that guarantee by one millisecond.
+
+**Exposure, sized rather than hand-waved.** With the usage poller disabled,
+`runUsagePoll` is `meter_sample`'s only emitter, so reaching the gap required a
+*forced* `POST /api/usage/refresh` landing in the same millisecond as a gated
+dispatch. `observedAt` is stamped from the daemon's own injected clock
+(`usageEndpoint.ts:178`), never from the endpoint's, so clock skew could not widen
+the window — a future-dated observation was never reachable here. In production
+the poller is ON and this constant is unused; the gap was real but narrow and
+failed OPEN.
+
+**Decision: `-1`, and the constant is renamed.** `packages/daemon/src/app.ts` now
+exports `NO_OBSERVATION_IS_FRESH_STALE_BAND_MS = -1`. Because `meterFreshness`
+uses a strict `>`, `-1` is not an arbitrary negative number picked to "look
+closed" — it is the **largest** band for which every non-negative observation age
+reads `stale`, which is exactly the guarantee the name makes. The comment at its
+definition says so explicitly, and flags that `-1` reading oddly as a duration is
+deliberate: it is a sentinel, not a timeout, and a future reader who "fixes" it
+back to `0` re-opens D33.
+
+**Why a name that overstates its own guarantee matters at one millisecond of
+blast radius.** This is the pillar-4 failure in miniature: a constant that claims
+"nothing can be vouched for" while actually vouching for one exact case is the
+same shape of error as trusting a number the system cannot see, just smaller.
+Rule 0.2's discipline — don't fabricate a plausible band, don't tune away a
+finding silently — was already satisfied by the original band; this decision
+closes the one remaining crack without touching the rest of that reasoning, which
+is unchanged and still load-bearing: `-1` beats both fabricating a plausible
+number and disabling task dispatch entirely whenever the poller is off.
+
+**Test consequence, taken on purpose.** `taskApi.test.ts` carried a test explicitly
+labelled as pinning this gap (an observation stamped at exactly `now` reading
+`fresh` and spawning). That test has been inverted: the same observation now reads
+`stale`, and the assertion moved from "spawned" to zero `spawnSession` calls. The
+other tests in that describe block — a 1 ms-old observation refuses, a
+never-observed meter refuses, an ungated task still spawns — are unchanged; the
+ungated case remains the proof that the blast radius stays opt-in.
+
+**Forward pointer.** Step 5's watchdog is the next consumer of freshness
+reasoning in this codebase, and should inherit a constant that means what it says
+rather than a second constant needing its own asterisk.

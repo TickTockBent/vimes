@@ -108,15 +108,21 @@ const TERMINAL_REAP_CHECK_INTERVAL_MS = 60_000;
 // is "invisible"). UNGATED work is completely unaffected, so the blast radius is
 // opt-in: only tasks that asked to be gated are held.
 //
-// ⚠ KNOWN GAP, RECORDED RATHER THAN TUNED AWAY (rule 0.1). `meterFreshness`
-// classifies with `age > staleAfterMs`, so at a band of 0 an observation whose age
-// is EXACTLY 0 ms still reads 'fresh' — the name overstates by one millisecond.
-// Reaching that state needs a FORCED usage refresh (the poller is off, and
-// `runUsagePoll` is `meter_sample`'s only emitter) landing in the same millisecond
-// as a gated dispatch, and it fails OPEN. A band of -1 would close it; that is a
-// decision for sign-off, not a silent edit here. `taskApi.test.ts` PINS the
-// current behaviour, so taking that decision reddens a test on purpose.
-export const NOTHING_IS_FRESH_STALE_BAND_MS = 0;
+// GAP CLOSED (D33, decisions.md, signed off 2026-07-22). `meterFreshness`
+// classifies with `age > staleAfterMs` — a STRICT `>` — so at a band of 0 an
+// observation whose age was EXACTLY 0 ms still read 'fresh': the name overstated
+// its own guarantee by one millisecond. `-1` is not arbitrary: because the
+// comparison is strict, `-1` is the LARGEST band for which every non-negative
+// age (i.e. every age that can actually occur — `meterFreshness` already treats
+// a future-dated observation as fresh, never stale) reads 'stale'. That is
+// exactly the guarantee the name makes, so `-1` is the unique value that makes
+// the name true rather than a nearby approximation of it.
+//
+// ⚠ `-1` as a duration reads oddly ON PURPOSE. It is not a timeout — nothing
+// waits `-1` ms for anything — it is the SENTINEL that makes "nothing is fresh"
+// literally true under a strict `>` comparison. A future reader who "fixes" this
+// back to `0` because a negative duration looks like a bug re-opens D33.
+export const NO_OBSERVATION_IS_FRESH_STALE_BAND_MS = -1;
 
 const DAEMON_PROJECTIONS: ReadonlyArray<Projection<unknown>> = [
   sessionsProjection as Projection<unknown>,
@@ -429,7 +435,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     // (rule 0.3). Never `Date.now()`.
     nowIso: () => clock.now(),
     // Null (poller disabled) → the degenerate band; see the constant's own note.
-    staleAfterMs: deriveStaleAfterMs(config.usagePollIntervalMs) ?? NOTHING_IS_FRESH_STALE_BAND_MS,
+    staleAfterMs: deriveStaleAfterMs(config.usagePollIntervalMs) ?? NO_OBSERVATION_IS_FRESH_STALE_BAND_MS,
   });
 
   registerTaskApi(app, {

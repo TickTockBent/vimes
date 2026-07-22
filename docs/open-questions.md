@@ -174,39 +174,10 @@ rollup. This is designed from zero, on raw material none of them had.
      cache-observability projection: 47% of real usage_block events were
      duplicate message.ids.) -->
 
-## D33 — The degenerate staleness band overstates by one millisecond *(trigger: slice-6 step 5's watchdog, or any decision to run with the usage poller disabled)*
-
-**Raised 2026-07-22 as a rule-0.1 finding during slice-6 step 4b verification.**
-Found by the implementing agent, whose first version of the test asserted the
-*intent* and failed; confirmed independently against `meterDerivations.ts:75`.
-
-`app.ts` hands `TaskDispatcher` a staleness band of `NOTHING_IS_FRESH_STALE_BAND_MS
-= 0` when `deriveStaleAfterMs(config.usagePollIntervalMs)` is null — i.e. when the
-usage poller is disabled. The name asserts that no observation can be vouched for.
-**It overstates by one millisecond:** `meterFreshness` classifies with
-`observationAgeMs > staleAfterMs`, so an observation aged **exactly 0 ms** reads
-`fresh` and its gate is evaluated for real.
-
-**Exposure is narrow and it fails OPEN.** With the poller off, `runUsagePoll` is
-`meter_sample`'s only emitter, so reaching this needs a forced
-`POST /api/usage/refresh` landing in the *same millisecond* as a gated dispatch.
-`observedAt` is stamped from the daemon's own injected clock (`usageEndpoint.ts:178`),
-never from the endpoint's, so clock skew cannot widen the window — a future-dated
-observation is not reachable here. In production the poller is ON and this constant
-is never used.
-
-**Why it is written down rather than tuned away (rule 0.1, rule 0.2).** `-1` would
-close it, and that is a one-character edit — which is exactly why it is not being
-made silently. A number that decides whether a worker spawns against an
-unverifiable meter is Wes's to price (pillar 4: never spawn against a number we
-cannot see). The current behaviour is PINNED by a test in `taskApi.test.ts`
-explicitly labelled as a gap, so taking the decision reddens a test on purpose and
-the change is deliberate rather than incidental.
-
-**Lean: change the constant to `-1` and rename it to match what it then means.**
-The band's whole purpose is to be the honest degenerate case; a name that
-overstates its own guarantee is the pillar-4 failure in miniature, even where the
-blast radius is one millisecond. **Cheap now, and step 5's watchdog is the next
-consumer of freshness reasoning** — it should inherit a constant that means what it
-says. Counter-argument for leaving it at `0`: it is unreachable in the shipped
-configuration, and `-1` as a duration reads oddly enough to need its own comment.
+<!-- D33 (degenerate staleness band) moved to decisions.md 2026-07-22 — decided:
+     `NOTHING_IS_FRESH_STALE_BAND_MS` renamed to
+     `NO_OBSERVATION_IS_FRESH_STALE_BAND_MS` and its value changed from `0` to
+     `-1`, closing the one-millisecond gap (`meterFreshness`'s strict `>` let an
+     observation aged exactly 0 ms read `fresh`). Wes approved the value and the
+     rename; the test that pinned the gap in `taskApi.test.ts` was inverted to
+     pin the guarantee instead. -->
