@@ -1,7 +1,11 @@
 # Small queued items (dispatch-ready, waiting on a free slot / no conflict)
 
-Kept here rather than in `docs/` — these are work items, not design records.
-Delete an entry when it ships.
+*Q1 SHIPPED 2026-07-23. Entry kept until the next compaction, then delete.*
+
+Work items, not design records — decisions live in `decisions.md`, design in
+`design-directions.md`. Kept in `docs/` (not `scratchpad/`, which is gitignored
+working space) so the queue is durable and reachable from the phone, the same
+reason `slice-6-test-plan.md` lives here. Delete an entry when it ships.
 
 ---
 
