@@ -1232,3 +1232,31 @@ refactor deferred for now.
 **Scope note.** This is the panel-lifecycle affordance living in each view's back
 button for now. A future clean-up could move panel chrome (close/back) into the
 shell (`PanelHost`) so views stop owning it — noted, not scheduled.
+
+## D41 (addendum) — TWO views have a conditional back, not one; only the branch that actually emits closes the panel
+
+*2026-07-23, found while implementing D41's affordance half. The orchestrator's
+work order asserted that only `GitPanel` had a conditional back and that
+`TerminalView.onBack` "always closes the panel". That was wrong, and the
+implementing agent caught it rather than applying the label blindly.*
+
+`TerminalView.onBack` is the **same shape as GitPanel's**:
+```js
+async function onBack() {
+  if (started.value) { teardownView(); await refreshTerminals(); return; }  // in-view: back to the terminal LIST, no emit
+  emit('back');                                                            // only this closes the panel
+}
+```
+From an open shell it detaches and returns to the terminal list — **in-view
+navigation, no `emit('back')`** — and only from the list does it close the panel.
+
+**The rule this generalises to, and the one to apply to any future view:** a
+view's back button relabels to "close ✕" **only in the branch that actually
+`emit('back')`s** to the shell. A branch that navigates WITHIN the view keeps its
+own affordance regardless of `backKind` — labelling it "Close panel" would be an
+accessibility lie, telling a screen-reader user the panel will close when it will
+not. Both `GitPanel` (`activeFilePath`) and `TerminalView` (`started`) are
+handled this way.
+
+No behaviour changed here — this addendum records the corrected fact and the rule,
+because the next view with an in-view back will hit exactly this.

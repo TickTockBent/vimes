@@ -49,6 +49,13 @@ const store = useVimesStore();
 // Below desktop width showSidebar is false and the phone/tablet path is untouched.
 const { panelCount, showSidebar } = useLayoutMode();
 
+// D41: on a desktop panel the button that closes it reads "close ✕"; on a phone
+// (one panel, "back" = go up) it stays "back". Tablet keeps the current
+// paradigm with the panel row, so it stays 'back' too — the sidebar is the
+// desktop signal. The ACTION is closePanelAt either way (backFrom); only the
+// affordance differs.
+const backKind = computed<'back' | 'close'>(() => (showSidebar.value ? 'close' : 'back'));
+
 // The session list is home — the bottom of every navigation stack. A deep-link
 // or reload lands on just the visible window (e.g. `#/session/x` → [stream]); we
 // synthesize the list root beneath it so "back" always eventually reaches home,
@@ -329,6 +336,7 @@ const bannerText = computed(() => {
           :route="sidebarRoute"
           :index="0"
           :focused="false"
+          :back-kind="backKind"
           @open="openSessionPanel"
           @open-files="openFilesPanel"
           @open-search="openSearchPanel"
@@ -358,6 +366,7 @@ const bannerText = computed(() => {
             :route="panel.route"
             :index="panel.trueIndex"
             :focused="panel.trueIndex === focusedIndex && contentPanels.length > 1"
+            :back-kind="backKind"
             @open="openSessionPanel"
             @open-files="openFilesPanel"
             @open-search="openSearchPanel"
@@ -395,6 +404,7 @@ const bannerText = computed(() => {
           :route="panel.route"
           :index="panel.trueIndex"
           :focused="panel.trueIndex === focusedIndex && visiblePanels.length > 1"
+          :back-kind="backKind"
           @open="openSessionPanel"
           @open-files="openFilesPanel"
           @open-search="openSearchPanel"

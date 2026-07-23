@@ -13,7 +13,10 @@ import {
 // `initialDir` is the directory the route asked for (`#/files?dir=…`) — set when
 // returning from the editor so you land back in the folder you were editing in.
 // Absent → open the first root, the pre-existing behavior.
-const props = defineProps<{ initialDir?: string | null }>();
+// D41: this panel's close affordance. 'close' (a desktop panel) renders ✕;
+// 'back' (a phone) keeps the original back affordance. The click handler is
+// UNCHANGED — only the label/aria differ.
+const props = defineProps<{ initialDir?: string | null; backKind?: 'back' | 'close' }>();
 const emit = defineEmits<{ open: [path: string]; back: []; search: [] }>();
 const store = useVimesStore();
 
@@ -146,10 +149,10 @@ function icon(type: TreeRow['type']): string {
       <button
         type="button"
         class="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md text-lg active:bg-slate-100 dark:active:bg-slate-900"
-        aria-label="Back to sessions"
+        :aria-label="props.backKind === 'close' ? 'Close panel' : 'Back to sessions'"
         @click="emit('back')"
       >
-        ‹
+        {{ props.backKind === 'close' ? '✕' : '‹' }}
       </button>
       <h1 class="flex-1 truncate font-semibold">Files</h1>
       <button

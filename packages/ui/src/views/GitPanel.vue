@@ -23,6 +23,13 @@ import {
 
 // `openEditor` carries the ABSOLUTE file path; App.vue routes it to the CM6
 // editor with returnTo=git, closing the review → fix → re-review loop.
+// D41: this panel's close affordance. The header button is CONDITIONAL —
+// `activeFilePath ? backToList() : emit('back')` — and only the `emit('back')`
+// branch (no active file) actually closes the panel, so only THAT branch
+// respects `backKind`. The `backToList()` branch is in-view navigation (diff →
+// changed-files list) and keeps its current label/aria regardless of
+// `backKind`. The click handler is UNCHANGED — only the label/aria differ.
+const props = defineProps<{ backKind?: 'back' | 'close' }>();
 const emit = defineEmits<{ back: []; openEditor: [absolutePath: string] }>();
 const store = useVimesStore();
 
@@ -281,10 +288,16 @@ onMounted(async () => {
       <button
         type="button"
         class="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md text-lg text-slate-600 active:bg-slate-100 dark:text-slate-200 dark:active:bg-slate-900"
-        :aria-label="activeFilePath ? 'Back to changed files' : 'Back to sessions'"
+        :aria-label="
+          activeFilePath
+            ? 'Back to changed files'
+            : props.backKind === 'close'
+              ? 'Close panel'
+              : 'Back to sessions'
+        "
         @click="activeFilePath ? backToList() : emit('back')"
       >
-        ‹
+        {{ !activeFilePath && props.backKind === 'close' ? '✕' : '‹' }}
       </button>
       <h1 class="flex-1 truncate font-semibold">
         {{ activeFilePath ? 'Diff' : 'Git' }}
