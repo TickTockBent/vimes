@@ -33,11 +33,11 @@ import {
 import type { DaemonConfig } from './config.js';
 import { defaultProjectsRoot, transcriptFileFor } from './transcriptPaths.js';
 import {
-  buildSessionSettings,
-  mintSpawnSecret,
+  envWithHookSecret,
+  mintHookChannel,
   removeSessionSettings,
   secretMatchesDigest,
-  writeSessionSettings,
+  type HookChannel,
 } from './sessionSettings.js';
 import type { HookAuthResult, HookHost, HookIngestResult } from './hookIngress.js';
 import type { PreflightProbe, PreflightResult } from './runtimeChecks.js';
@@ -88,6 +88,12 @@ export interface SdkQueryOptions {
   // Per-session settings file path (C). Passed to Options.settings so the SDK
   // loads the injected hook relays alongside the project tier (D14 MERGE).
   settings?: string;
+  // Environment for the Claude child, carrying VIMES_HOOK_SECRET so the injected
+  // relays can expand it. Set together with `settings` or not at all.
+  // FRAGILE-ADAPTER (rule 0.6): the SDK's Options.env REPLACES the child
+  // environment rather than merging, so this is a FULL env (process.env spread
+  // in) — never just the one variable.
+  env?: Record<string, string | undefined>;
   settingSources: string[];
   canUseTool: SdkCanUseTool;
 }
@@ -170,7 +176,11 @@ interface AdapterSpawnContext {
   appSessionId: string;
   cwd: string;
   resume: string | undefined;
-  settingsPath: string | undefined;
+  // The settings file AND the secret env travel as one value on purpose — an
+  // adapter cannot register the hook relays without also being handed the
+  // variable that makes them authenticate (see mintHookChannel). `undefined`
+  // means no relays at all for this spawn, not unauthenticated relays.
+  hookChannel: HookChannel | undefined;
 }
 
 export type InteractionAck = { ok: true; appSessionId: string } | { refused: true; reason: string };
@@ -330,7 +340,15 @@ class ClaudeSdkAdapter implements SessionAdapter {
       options: {
         cwd: context.cwd,
         resume: context.resume,
-        settings: context.settingsPath,
+        settings: context.hookChannel?.settingsPath,
+        // The SDK's Options.env REPLACES the child environment, so spread the
+        // daemon's own env in; the hook secret is merged on top. When there is
+        // no hook channel we leave env unset so the child inherits process.env
+        // exactly as before.
+        env:
+          context.hookChannel === undefined
+            ? undefined
+            : envWithHookSecret(process.env, context.hookChannel),
         settingSources: this.services.config.sdkSettingSources,
         canUseTool: (toolName, toolInput, options) =>
           this.handleGate(context.appSessionId, toolName, toolInput, options),
@@ -495,11 +513,12 @@ class ClaudePtyAdapter implements SessionAdapter {
   ) {}
 
   spawn(context: AdapterSpawnContext): LiveProcess {
-    // D15: the PTY child spawns with a scrubbed env (no CLAUDE* keys).
-    const environment = scrubClaudeEnv(process.env);
+    // D15: the PTY child spawns with a scrubbed env (no CLAUDE* keys), then the
+    // hook secret is merged on top — after the scrub, so it survives it.
+    const environment = envWithHookSecret(scrubClaudeEnv(process.env), context.hookChannel);
     const args: string[] = [];
-    if (context.settingsPath !== undefined) {
-      args.push('--settings', context.settingsPath);
+    if (context.hookChannel !== undefined) {
+      args.push('--settings', context.hookChannel.settingsPath);
     }
     if (context.resume !== undefined) {
       args.push('--resume', context.resume);
@@ -985,26 +1004,32 @@ export class SessionHost implements HookHost {
     resume: string | undefined,
   ): void {
     const adapter: SessionAdapter = channel === 'sdk' ? this.sdkAdapter : this.ptyAdapter;
-    const settingsPath = this.prepareHookChannel(appSessionId);
+    const hookChannel = this.prepareHookChannel(appSessionId);
     const cause = resume === undefined ? 'spawn' : 'resume';
-    const live = adapter.spawn({ appSessionId, cwd, resume, settingsPath });
-    live.settingsPath = settingsPath;
+    const live = adapter.spawn({ appSessionId, cwd, resume, hookChannel });
+    live.settingsPath = hookChannel?.settingsPath;
     this.liveProcesses.set(appSessionId, live);
     this.emitGuardedLiveness(appSessionId, 'running', cause);
     adapter.activate(live);
   }
 
-  // Mint a per-spawn secret, write the per-session settings file registering the
-  // five hook relays (C), and register the secret digest for the ingress. Best
-  // effort: an fs failure degrades to no injected settings (SDK-init correlation
-  // still works) rather than failing the spawn.
-  private prepareHookChannel(appSessionId: string): string | undefined {
+  // Mint the whole hook channel for this spawn — secret, settings file
+  // registering the five relays (C), and the env fragment carrying the secret —
+  // then register the digest for the ingress. Returning the channel whole is
+  // what keeps the settings file and the secret env inseparable at the call
+  // site. Best effort: an fs failure degrades to NO channel (no settings file,
+  // so no relays are registered at all — SDK-init correlation still works)
+  // rather than failing the spawn or, worse, registering relays with nothing to
+  // authenticate with.
+  private prepareHookChannel(appSessionId: string): HookChannel | undefined {
     try {
-      const { secret, digest } = mintSpawnSecret();
-      const content = buildSessionSettings({ appSessionId, hookPort: this.config.hookPort, secret });
-      const settingsPath = writeSessionSettings(this.config.dataDir, appSessionId, content);
-      this.spawnSecrets.set(appSessionId, digest);
-      return settingsPath;
+      const hookChannel = mintHookChannel({
+        dataDir: this.config.dataDir,
+        appSessionId,
+        hookPort: this.config.hookPort,
+      });
+      this.spawnSecrets.set(appSessionId, hookChannel.digest);
+      return hookChannel;
     } catch {
       // No settings file — the session still spawns; the hook relay is simply
       // absent for it. Never logs the secret.
@@ -1193,6 +1218,10 @@ const defaultSdkQueryFactory: SdkQueryFactory = ({ prompt, options }) => {
         cwd: options.cwd,
         resume: options.resume,
         settings: options.settings,
+        // Carries VIMES_HOOK_SECRET to the Claude child (and from there to its
+        // hook subprocesses). Undefined → the SDK leaves the child inheriting
+        // process.env, which is the pre-hook-channel behavior.
+        env: options.env,
         settingSources: options.settingSources,
         canUseTool: options.canUseTool,
         // Spike (b): canUseTool only fires under permissionMode 'default'.

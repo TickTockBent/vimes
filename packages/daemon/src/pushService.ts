@@ -90,7 +90,10 @@ export function isValidPushSubscription(candidate: unknown): candidate is PushSu
     return false;
   }
   try {
-    // eslint-disable-next-line no-new
+    // Constructed purely for its throw: the parser IS the validity check, and
+    // this function only answers yes/no, so there is nothing to keep. Parsing
+    // rather than pattern-matching means the push endpoint is validated by the
+    // same rules the fetch will later apply to it.
     new URL(record.endpoint);
   } catch {
     return false;

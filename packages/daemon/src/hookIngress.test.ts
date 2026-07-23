@@ -8,8 +8,8 @@ import { SteppingClock, type EventRecord, type IdSource } from '@vimes/core';
 import type { AccessVerifier } from './auth.js';
 import { createDaemon, type Daemon, type DaemonDeps } from './app.js';
 import type { DaemonConfig } from './config.js';
-import { sessionSettingsPath } from './sessionSettings.js';
-import type { SdkQueryFactory, SdkStreamMessage } from './sessionHost.js';
+import { HOOK_SECRET_ENV_VAR, sessionSettingsPath } from './sessionSettings.js';
+import type { SdkQueryFactory, SdkQueryOptions, SdkStreamMessage } from './sessionHost.js';
 
 const HOOK_FIXTURES_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'fixtures', 'hooks');
 const temporaryDirectory = mkdtempSync(join(tmpdir(), 'vimes-hookingress-'));
@@ -29,7 +29,21 @@ const uniqueIdSource: IdSource = { uuid: () => randomUUID() };
 // A fake SDK query: yield the init frame (mapping 'claude-sdk'), then end. The
 // session goes dormant, but the spawn secret lingers (D10) so hook posts still
 // authenticate, and the session record still exists for correlation.
-const fakeSdkFactory: SdkQueryFactory = () => {
+//
+// The options of the most recent spawn are recorded so a case can read the
+// per-spawn hook secret out of the child's ENVIRONMENT — the only place it
+// exists now that it is out of the relay command line.
+let lastSdkOptions: SdkQueryOptions | undefined;
+function takeLastSdkOptions(): SdkQueryOptions {
+  if (lastSdkOptions === undefined) {
+    throw new Error('no SDK spawn was recorded');
+  }
+  const options = lastSdkOptions;
+  lastSdkOptions = undefined;
+  return options;
+}
+const fakeSdkFactory: SdkQueryFactory = ({ options }) => {
+  lastSdkOptions = options;
   const generator = (async function* (): AsyncGenerator<SdkStreamMessage> {
     yield { type: 'system', subtype: 'init', session_id: 'claude-sdk' };
   })();
@@ -86,16 +100,16 @@ function startDaemon(overrides: Partial<DaemonDeps> = {}): Promise<Daemon> {
   return daemon.start().then(() => daemon);
 }
 
-// Spawn a session and lift its per-spawn secret out of the settings file that
-// startProcess wrote synchronously (read before the async stream tears it down).
+// Spawn a session and lift its per-spawn secret out of the environment the
+// daemon handed the child — the settings file only names `$VIMES_HOOK_SECRET`,
+// so this mirrors what a real hook's shell expands at run time. Also asserts
+// the settings file startProcess wrote is the one the spawn was pointed at.
 function spawnAndSecret(daemon: Daemon, dataDir: string): { appSessionId: string; secret: string } {
   const spawn = daemon.sessionHost.spawnSession({ channel: 'sdk', cwd: projectRoot });
   const appSessionId = 'appSessionId' in spawn ? spawn.appSessionId : '';
-  const settings = JSON.parse(readFileSync(sessionSettingsPath(dataDir, appSessionId), 'utf8')) as {
-    hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
-  };
-  const relay = settings.hooks.SessionStart![0]!.hooks[0]!.command;
-  const secret = /Bearer ([^"\s]+)/.exec(relay)![1]!;
+  const options = takeLastSdkOptions();
+  expect(options.settings).toBe(sessionSettingsPath(dataDir, appSessionId));
+  const secret = options.env![HOOK_SECRET_ENV_VAR]!;
   return { appSessionId, secret };
 }
 

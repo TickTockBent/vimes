@@ -53,14 +53,18 @@ export {
   type VersionCommandRunner,
 } from './runtimeChecks.js';
 export {
+  HOOK_SECRET_ENV_VAR,
   buildSessionSettings,
+  envWithHookSecret,
   hookRelayCommand,
+  mintHookChannel,
   mintSpawnSecret,
   secretMatchesDigest,
   sessionSettingsPath,
   sessionSettingsDir,
   writeSessionSettings,
   removeSessionSettings,
+  type HookChannel,
   type SpawnSecret,
 } from './sessionSettings.js';
 export { JsonlTailer, type JsonlTailerDeps } from './tailer.js';

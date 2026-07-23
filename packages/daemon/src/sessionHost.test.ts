@@ -35,7 +35,7 @@ import {
   type SdkStreamMessage,
   type SdkUserMessage,
 } from './sessionHost.js';
-import { sessionSettingsPath } from './sessionSettings.js';
+import { HOOK_SECRET_ENV_VAR, sessionSettingsPath } from './sessionSettings.js';
 import type { PreflightProbe } from './runtimeChecks.js';
 
 // ── harness helpers ──────────────────────────────────────────────────────────
@@ -942,7 +942,10 @@ describe('SessionHost — settings injection + hook custody (C, D7)', () => {
     );
     const relay = parsed.hooks.SessionStart![0]!.hooks[0]!.command;
     expect(relay).toContain(`/hooks/${appSessionId}`);
-    const secret = /Bearer ([^"\s]+)/.exec(relay)![1]!;
+    // The relay names the variable; the VALUE reaches the child through the env
+    // (see the per-channel env tests below) — never through the file or argv.
+    expect(relay).toContain(`Bearer $${HOOK_SECRET_ENV_VAR}`);
+    const secret = fakePty.capturedEnv()![HOOK_SECRET_ENV_VAR]!;
 
     // The registered secret authenticates constant-time; wrong / unknown reject.
     expect(host.verifyHookSecret(appSessionId, secret)).toBe('ok');
@@ -961,6 +964,75 @@ describe('SessionHost — settings injection + hook custody (C, D7)', () => {
       }
     });
     host.stop();
+  });
+
+  // ── the hook secret travels in the ENVIRONMENT, per channel ───────────────
+  //
+  // The failure mode these two guard is silent: if a channel spawns with the
+  // settings file but WITHOUT the variable, every hook posts `Bearer ` and fails
+  // auth — attention, gates and notifications stop while the daemon still looks
+  // alive. One test per channel, each asserting the spawned environment carries
+  // VIMES_HOOK_SECRET equal to the secret that session's ingress accepts.
+  //
+  // What these prove: the value the daemon hands the child's environment is the
+  // one `verifyHookSecret` accepts, and it is absent from the settings file.
+  // What they CANNOT prove: that Claude Code re-exports that variable to the
+  // hook subprocess it spawns, or that it still accepts this hooks-block shape.
+  // That needs a live hook firing (fragile-adapter, rule 0.6).
+
+  it('PTY channel: the spawned env carries VIMES_HOOK_SECRET = the session secret; the file does not', () => {
+    const fakePty = makeFakePty();
+    const { host } = makeHarness({ ptySpawnFactory: fakePty.factory });
+    try {
+      const spawn = host.spawnSession({ channel: 'pty', cwd: '/p' });
+      const appSessionId = 'appSessionId' in spawn ? spawn.appSessionId : '';
+
+      const environment = fakePty.capturedEnv()!;
+      const secret = environment[HOOK_SECRET_ENV_VAR];
+      expect(secret).toBeTypeOf('string');
+      expect(secret!.length).toBeGreaterThan(0);
+      // The ingress accepts exactly this value for exactly this session.
+      expect(host.verifyHookSecret(appSessionId, secret)).toBe('ok');
+      // D15's CLAUDE* scrub still applies — the merge happens after it.
+      expect(Object.keys(environment).some((key) => /^CLAUDE/.test(key))).toBe(false);
+
+      // The secret is nowhere on disk: the settings file names the variable only.
+      const settingsFile = readFileSync(sessionSettingsPath(settingsTempDir, appSessionId), 'utf8');
+      expect(settingsFile).toContain(`$${HOOK_SECRET_ENV_VAR}`);
+      expect(settingsFile).not.toContain(secret!);
+    } finally {
+      host.stop();
+    }
+  });
+
+  it('SDK channel: the query options carry a full env with VIMES_HOOK_SECRET = the session secret', async () => {
+    const barrier = makeBarrier();
+    const { factory, calls } = makeSdkFactory(async function* () {
+      await barrier.promise;
+    });
+    const { host } = makeHarness({ sdkQueryFactory: factory });
+    try {
+      const spawn = host.spawnSession({ channel: 'sdk', cwd: '/p' });
+      const appSessionId = 'appSessionId' in spawn ? spawn.appSessionId : '';
+
+      expect(calls).toHaveLength(1);
+      const options = calls[0]!;
+      // Settings and env are handed over together — one is useless without the other.
+      expect(options.settings).toBe(sessionSettingsPath(settingsTempDir, appSessionId));
+      const secret = options.env?.[HOOK_SECRET_ENV_VAR];
+      expect(secret).toBeTypeOf('string');
+      expect(host.verifyHookSecret(appSessionId, secret)).toBe('ok');
+
+      // The SDK's Options.env REPLACES the child env rather than merging, so the
+      // daemon's own environment must be spread in or the child loses PATH/HOME.
+      expect(options.env!.PATH).toBe(process.env.PATH);
+
+      const settingsFile = readFileSync(sessionSettingsPath(settingsTempDir, appSessionId), 'utf8');
+      expect(settingsFile).not.toContain(secret!);
+    } finally {
+      barrier.release();
+      host.stop();
+    }
   });
 
   it('ingestHook emits the hook event (appSessionId stamped) and dedupes claude_session_mapped across channels (D7)', async () => {
