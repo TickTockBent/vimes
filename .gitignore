@@ -14,3 +14,7 @@ Screenshot_*.png
 
 # Local operator/build guidance — kept out of the public repo (homelab-specific)
 /CLAUDE.md
+
+# Orchestrator working files: checkpoints, probe scripts, gate logs, handoff
+# notes. Durable work items live in docs/QUEUE.md; design lives in docs/.
+scratchpad/
