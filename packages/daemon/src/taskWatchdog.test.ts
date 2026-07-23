@@ -10,6 +10,8 @@ import {
   SteppingClock,
   attentionCleared,
   claudeSessionMapped,
+  correctionDelivered,
+  correctionQueued,
   gateFired,
   livenessChanged,
   message,
@@ -383,6 +385,155 @@ describe('task watchdog — THE FINDING GUARD: a protected run is never reported
     });
     harness.watchdog.checkOnce();
     expect(harness.emitted).toEqual([]);
+  });
+});
+
+describe('task watchdog — D30/D5: a queued correction is NOT staleness (step 6a)', () => {
+  // ═══ ASSERTION 9, BOTH HALVES ════════════════════════════════════════════
+  //
+  // This is the rule step 6a exists to close, end to end and through the REAL
+  // sessions projection: the harness folds `correction_queued` /
+  // `correction_delivered` with `sessionsProjection`, exactly as production
+  // does, so nothing here is asserted against a stubbed state.
+  //
+  // **Why the rule exists.** D5 measured a correction sitting in the SDK queue
+  // for 30.4 s against a 40 s tool, with an UNBOUNDED worst case (a long build
+  // or test suite), because injection is bounded by the next model call and does
+  // not preempt an in-flight tool. For that entire window a run being actively
+  // steered is indistinguishable from a run going quiet. Without the protection
+  // the watchdog reports a HEALTHY corrected run as stale — and a stale report
+  // raises attention, and attention pushes a notification to a real person's
+  // phone about work that was fine.
+  //
+  // ⚠ **THE SECOND HALF IS WHAT STOPS THE FIRST FROM BEING VACUOUS.** "Emits
+  // nothing" is trivially true of a watchdog that never reports anything, of a
+  // run the watchdog does not govern, and of a seed that was never stale to
+  // begin with. So the same run, at the SAME silence, under the SAME policy and
+  // the SAME clock, is checked again after the delivery is observed — and it
+  // MUST report stale. Only the correction changed between the two checks.
+  it('a steered run silent well past the band is HEALTHY and emits NOTHING; after delivery the SAME run reports stale', () => {
+    const harness = buildHarness({
+      seed: (appendWorldEvents) => {
+        // Genuinely wedged by every other measure: alive, no human gate, one
+        // real transcript append ten hours ago, resume boundary already lapsed.
+        seedGenuinelyStaleRun(appendWorldEvents);
+        // …and then steered. The queue happens AFTER the last append, which is
+        // what "queued, not yet delivered" means.
+        appendWorldEvents([
+          correctionQueued({
+            appSessionId: SESSION_ID,
+            text: 'synthetic steer: prefer the smaller change',
+          }),
+        ]);
+      },
+    });
+
+    // ── half one: the protection holds ──────────────────────────────────────
+    const protectedSummary = harness.watchdog.checkOnce();
+    expect(harness.emitted).toEqual([]);
+    expect(protectedSummary.staleReportsEmitted).toBe(0);
+    // NOT merely "healthy" — healthy FOR THIS REASON. A pass on
+    // 'not-a-live-run' or 'awaiting-human' would mean the seed, not the
+    // correction, did the protecting.
+    expect(protectedSummary.outcomes[0]).toMatchObject({
+      outcome: 'silent',
+      verdict: { verdict: 'healthy', reason: 'correction-in-flight' },
+    });
+    // The projection really is holding the fact (not an accident of the seed).
+    expect(harness.sessions().sessions[SESSION_ID]!.pendingCorrectionAt).toEqual(
+      expect.any(String),
+    );
+
+    // ── half two: delivery observed → the protection lifts ──────────────────
+    // The tailer sees the `queued_command` attachment in the transcript and the
+    // mapper turns it into this event. Nothing else about the run changes: same
+    // clock, same policy, same heartbeat, same ten hours of silence.
+    harness.appendWorldEvents([
+      correctionDelivered({
+        appSessionId: SESSION_ID,
+        commandMode: 'prompt',
+        originKind: 'human',
+        enqueuedAt: '2026-07-22T02:00:03.000Z',
+      }),
+    ]);
+    expect(harness.sessions().sessions[SESSION_ID]!.pendingCorrectionAt).toBeNull();
+
+    const reportedSummary = harness.watchdog.checkOnce();
+    expect(reportedSummary.staleReportsEmitted).toBe(1);
+    expect(reportedSummary.outcomes[0]).toMatchObject({
+      outcome: 'reported',
+      verdict: { verdict: 'stale' },
+    });
+    expect(harness.emitted.map((event) => event.type)).toEqual([
+      EVENT_TYPES.watchdogStale,
+      EVENT_TYPES.notificationTrigger,
+    ]);
+  });
+
+  it('the delivery does NOT reset the silence clock — the report measures the ORIGINAL silence', () => {
+    // ⚠ The other way the second half could go hollow: if `correction_delivered`
+    // advanced `lastAppendAt`, the run would look freshly alive and the second
+    // check would return `healthy: 'appending'` rather than stale. It is not in
+    // TRANSCRIPT_APPEND_EVENT_TYPES, so it does not. The observed silence in the
+    // report must therefore still be the full ten hours from the real append.
+    const harness = buildHarness({
+      seed: (appendWorldEvents) => {
+        seedGenuinelyStaleRun(appendWorldEvents);
+        appendWorldEvents([correctionQueued({ appSessionId: SESSION_ID, text: 'synthetic steer' })]);
+        appendWorldEvents([correctionDelivered({ appSessionId: SESSION_ID, commandMode: 'prompt' })]);
+      },
+    });
+    const heartbeatAt = harness.sessions().sessions[SESSION_ID]!.lastAppendAt!;
+    harness.watchdog.checkOnce();
+
+    const staleEvents = staleEventsIn(harness.emitted);
+    expect(staleEvents).toHaveLength(1);
+    const payload = staleEvents[0]!.payload as { observedSilenceMs: number };
+    expect(payload.observedSilenceMs).toBe(
+      Date.parse(NOW_TEN_HOURS_LATER) - Date.parse(heartbeatAt),
+    );
+    // Sanity: the heartbeat is the transcript append, not either correction event.
+    expect(Date.parse(heartbeatAt)).toBeLessThan(Date.parse(NOW_TEN_HOURS_LATER));
+  });
+
+  it('a correction queued BEFORE the last append does not protect — delivery already happened', () => {
+    // The protection is "queued at or after the last append". A correction that
+    // predates a subsequent transcript append has demonstrably been overtaken by
+    // the run itself, so it may not shield the silence that came after it.
+    // Without this case, an implementation that protected on ANY pending
+    // correction would still pass the pair above.
+    const harness = buildHarness({
+      seed: (appendWorldEvents) => {
+        appendWorldEvents([
+          sessionCreated({
+            appSessionId: SESSION_ID,
+            channel: 'sdk',
+            cwd: PROJECT_ROOT,
+            name: null,
+            forkedFrom: null,
+            taskRef: null,
+          }),
+        ]);
+        appendWorldEvents([
+          livenessChanged({ appSessionId: SESSION_ID, to: 'running', cause: 'spawned' }),
+        ]);
+        appendWorldEvents([
+          claudeSessionMapped({ appSessionId: SESSION_ID, claudeSessionId: 'c1', jsonlPath: '/p/c1.jsonl' }),
+        ]);
+        appendWorldEvents([correctionQueued({ appSessionId: SESSION_ID, text: 'synthetic steer' })]);
+        // The run appended AFTER the correction was queued.
+        appendWorldEvents([message({ appSessionId: SESSION_ID, role: 'assistant', content: 'working' })]);
+      },
+    });
+    const summary = harness.watchdog.checkOnce();
+    expect(summary.staleReportsEmitted).toBe(1);
+    expect(summary.outcomes[0]).toMatchObject({ outcome: 'reported', verdict: { verdict: 'stale' } });
+  });
+
+  it('a run with NO correction at all still reports stale — the baseline the pair is measured against', () => {
+    const harness = buildHarness({ seed: seedGenuinelyStaleRun });
+    expect(harness.sessions().sessions[SESSION_ID]!.pendingCorrectionAt).toBeUndefined();
+    expect(harness.watchdog.checkOnce().staleReportsEmitted).toBe(1);
   });
 });
 

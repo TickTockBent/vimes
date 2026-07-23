@@ -9,6 +9,8 @@ import {
   attentionCleared,
   billingBucketObserved,
   claudeSessionMapped,
+  correctionDelivered,
+  correctionQueued,
   gateFired,
   livenessChanged,
   lineQuarantined,
@@ -569,6 +571,169 @@ describe('sessions projection — lastAppendAt / staleEpisodes (D34)', () => {
         }).not.toThrow();
         expect(sessionsProjection.serialize(foldedState!)).toBe(
           sessionsProjection.serialize(bornState),
+        );
+      }
+    });
+  }
+});
+
+describe('sessions projection — pendingCorrectionAt (D5/D30, slice 6 step 6a)', () => {
+  // ASSERTION 6. Everything here folds through the REAL projection over a real
+  // event log; nothing is hand-stubbed.
+  function foldLog(batches: EventInput[][]): {
+    state: ReturnType<typeof sessionsProjection.init>;
+    records: EventRecord[];
+  } {
+    const store = makeStore();
+    for (const batch of batches) {
+      store.append(batch);
+    }
+    const records = readAllStreamsGrouped(store);
+    return { state: replayFromEmpty(sessionsProjection, records), records };
+  }
+
+  const queuedInput = correctionQueued({
+    appSessionId: APP_SESSION_ID,
+    text: 'synthetic steer: prefer the smaller change',
+  });
+  const deliveredInput = correctionDelivered({
+    appSessionId: APP_SESSION_ID,
+    commandMode: 'prompt',
+    originKind: 'human',
+    enqueuedAt: '2026-07-13T12:00:09.000Z',
+  });
+
+  it('BOTH correction events are constructed on the SESSION stream (D34, stated as a test)', () => {
+    // This projection is the one D34 was about, so the same-stream property is
+    // ASSERTED rather than asserted-in-a-comment: a fold here is only legal for
+    // events that live on the session's own stream.
+    expect(queuedInput.stream).toBe(APP_SESSION_ID);
+    expect(deliveredInput.stream).toBe(APP_SESSION_ID);
+  });
+
+  it('correction_queued sets pendingCorrectionAt to the EVENT ts', () => {
+    const { state, records } = foldLog([[createInput()], [queuedInput]]);
+    expect(state.sessions[APP_SESSION_ID]!.pendingCorrectionAt).toBe(records.at(-1)!.ts);
+  });
+
+  it('correction_delivered CLEARS it to null', () => {
+    const { state } = foldLog([[createInput()], [queuedInput], [deliveredInput]]);
+    expect(state.sessions[APP_SESSION_ID]!.pendingCorrectionAt).toBeNull();
+  });
+
+  it('a second queued correction overwrites the pending timestamp with the newer one', () => {
+    const { state, records } = foldLog([
+      [createInput()],
+      [queuedInput],
+      [correctionQueued({ appSessionId: APP_SESSION_ID, text: 'synthetic second steer' })],
+    ]);
+    expect(state.sessions[APP_SESSION_ID]!.pendingCorrectionAt).toBe(records.at(-1)!.ts);
+  });
+
+  it('a delivery with NOTHING pending is a no-op — the field is not even created', () => {
+    // ⚠ NOT A CORNER CASE. A human typing straight into a PTY produces a
+    // `commandMode:'prompt'` queued_command that VIMES never queued; so does a
+    // correction that was in flight across a daemon restart. Neither is an
+    // error, and neither may stamp a field onto a record that never had one —
+    // the record must serialize exactly as an untouched session does.
+    const { state: bornState } = foldLog([[createInput()]]);
+    const { state } = foldLog([[createInput()], [deliveredInput]]);
+    expect(state.sessions[APP_SESSION_ID]!.pendingCorrectionAt).toBeUndefined();
+    expect(sessionsProjection.serialize(state)).toBe(sessionsProjection.serialize(bornState));
+    expect(sessionsProjection.serialize(state)).not.toContain('pendingCorrectionAt');
+  });
+
+  it('a SECOND delivery after the field is already null is also a no-op', () => {
+    const once = foldLog([[createInput()], [queuedInput], [deliveredInput]]);
+    const twice = foldLog([[createInput()], [queuedInput], [deliveredInput], [deliveredInput]]);
+    expect(sessionsProjection.serialize(twice.state)).toBe(
+      sessionsProjection.serialize(once.state),
+    );
+  });
+
+  it('an UNKNOWN session is ignored by both folds — nothing is fabricated', () => {
+    const { state } = foldLog([
+      [correctionQueued({ appSessionId: 'never-created-session', text: 'synthetic' })],
+      [correctionDelivered({ appSessionId: 'never-created-session', commandMode: 'prompt' })],
+    ]);
+    expect(state.sessions['never-created-session']).toBeUndefined();
+    expect(sessionsProjection.serialize(state)).toBe(
+      sessionsProjection.serialize(sessionsProjection.init()),
+    );
+  });
+
+  it('an OLD snapshot with no pendingCorrectionAt still loads and serializes unchanged', () => {
+    // Optional-only widening: a session that has never seen a correction
+    // serializes exactly as it did before this field existed.
+    const { state } = foldLog([[createInput()], [message({ appSessionId: APP_SESSION_ID, role: 'user', content: 'hi' })]]);
+    expect(state.sessions[APP_SESSION_ID]!.pendingCorrectionAt).toBeUndefined();
+    expect(sessionsProjection.serialize(state)).not.toContain('pendingCorrectionAt');
+  });
+
+  it('neither fold advances lastAppendAt — delivery releases the guard without resetting the clock', () => {
+    // ⚠ LOAD-BEARING, and the reason assertion 9's second half is not vacuous.
+    // `correction_delivered` is NOT in TRANSCRIPT_APPEND_EVENT_TYPES, so
+    // observing a delivery clears the protection WITHOUT making the run look
+    // freshly alive. If it advanced the heartbeat, a run that wedged the instant
+    // after being steered would silently reset its own silence clock.
+    const { state, records } = foldLog([
+      [createInput()],
+      [message({ appSessionId: APP_SESSION_ID, role: 'assistant', content: 'working' })],
+      [queuedInput],
+      [deliveredInput],
+    ]);
+    const heartbeatRecord = records.find((record) => record.type === EVENT_TYPES.message)!;
+    expect(state.sessions[APP_SESSION_ID]!.lastAppendAt).toBe(heartbeatRecord.ts);
+    expect(TRANSCRIPT_APPEND_EVENT_TYPES.has(EVENT_TYPES.correctionQueued)).toBe(false);
+    expect(TRANSCRIPT_APPEND_EVENT_TYPES.has(EVENT_TYPES.correctionDelivered)).toBe(false);
+  });
+
+  it('purity: the input state and its records are never mutated', () => {
+    const { state: bornState } = foldLog([[createInput()]]);
+    const bornRecord = bornState.sessions[APP_SESSION_ID]!;
+    const queuedRecord: EventRecord = {
+      eventId: '00000000-0000-4000-8000-00000000cafe',
+      seq: 2,
+      stream: APP_SESSION_ID,
+      ts: '2026-01-01T00:10:00.000Z',
+      type: EVENT_TYPES.correctionQueued,
+      payload: { appSessionId: APP_SESSION_ID, text: 'synthetic steer' },
+    };
+    const nextState = sessionsProjection.apply(bornState, queuedRecord);
+    expect(nextState).not.toBe(bornState);
+    expect(nextState.sessions[APP_SESSION_ID]).not.toBe(bornRecord);
+    expect(bornRecord.pendingCorrectionAt).toBeUndefined();
+    expect(nextState.sessions[APP_SESSION_ID]!.pendingCorrectionAt).toBe('2026-01-01T00:10:00.000Z');
+  });
+
+  const malformedCorrectionPayloads: Array<[string, unknown]> = [
+    ['null payload', null],
+    ['empty object', {}],
+    ['appSessionId of the wrong type', { appSessionId: 42, text: 'x' }],
+    ['a bare string', 'not-an-object'],
+    ['an array', [1, 2, 3]],
+    ['correction_queued with no text', { appSessionId: APP_SESSION_ID }],
+    ['correction_delivered with no commandMode', { appSessionId: APP_SESSION_ID }],
+  ];
+
+  for (const [label, payload] of malformedCorrectionPayloads) {
+    it(`a ${label} leaves state unchanged and never throws (I8)`, () => {
+      const { state: pendingState } = foldLog([[createInput()], [queuedInput]]);
+      for (const eventType of [EVENT_TYPES.correctionQueued, EVENT_TYPES.correctionDelivered]) {
+        const hostileRecord: EventRecord = {
+          eventId: '00000000-0000-4000-8000-00000000dead',
+          seq: 3,
+          stream: APP_SESSION_ID,
+          ts: '2026-01-01T00:20:00.000Z',
+          type: eventType,
+          payload,
+        };
+        let foldedState: ReturnType<typeof sessionsProjection.init> | null = null;
+        expect(() => {
+          foldedState = sessionsProjection.apply(pendingState, hostileRecord);
+        }).not.toThrow();
+        expect(sessionsProjection.serialize(foldedState!)).toBe(
+          sessionsProjection.serialize(pendingState),
         );
       }
     });

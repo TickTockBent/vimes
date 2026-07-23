@@ -299,10 +299,26 @@ function buildStageRunObservation(taskId: string, session: SessionRecord): Stage
     // turns into `unknown` and never escalates.
     lastHeartbeatAt: session.lastAppendAt ?? null,
     lastResumeBoundaryAt: lastResumeBoundaryOf(session),
-    // ⚠ `correctionQueuedAt` is DELIBERATELY NOT SET — step 6 (course
-    // correction) is what populates it, and `assessStageRun` already honours it
-    // when it is present. Supplying a value today would invent a fact nothing in
-    // the system observes yet; leaving it absent changes no logic in 5a.
+    // ⚠ **D30'S OTHER RULE, CLOSED HERE (slice 6 step 6a).** 5a reserved
+    // `correctionQueuedAt` and already honours it; 5b left it unset because
+    // nothing observed the fact yet. Step 6a is what observes it: the sessions
+    // projection folds `correction_queued` → `pendingCorrectionAt` and
+    // `correction_delivered` → `null`, so this line is a READ of an observed
+    // fact and adds no policy (`watchdogDecision.ts` is untouched).
+    //
+    // **Why the line matters.** D5 measured a correction sitting in the SDK
+    // queue for **30.4 s** against a 40 s tool, with an UNBOUNDED worst case (a
+    // long build or test suite), because injection is bounded by the next model
+    // call and does not preempt an in-flight tool. For that whole window a run
+    // that is being actively steered is INDISTINGUISHABLE from a run going
+    // quiet. D30 says it explicitly: a queued-but-undelivered correction is NOT
+    // staleness. Without this read the watchdog reports a healthy corrected run
+    // as stale — and a stale report raises attention, and attention **pushes a
+    // notification to a real person's phone** about work that was fine.
+    //
+    // `?? null` is the old-record path: a session record written before the
+    // field existed has no pending correction, which is the same as none.
+    correctionQueuedAt: session.pendingCorrectionAt ?? null,
     //
     // D34: the episode count is `SessionRecord.staleEpisodes`. Absent (a record
     // predating the field) reads as zero episodes so far.

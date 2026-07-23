@@ -4,7 +4,7 @@ import { resolve, sep } from 'node:path';
 import { WebSocketServer, WebSocket, type RawData } from 'ws';
 import { z } from 'zod';
 import type { EventRecord, EventStore } from '@vimes/core';
-import { EventRouter } from '@vimes/core';
+import { EventRouter, correctionQueued } from '@vimes/core';
 import type { SessionHost } from './sessionHost.js';
 import { isValidPushSubscription, type PushSubscriptionRecord } from './pushService.js';
 import type { SearchService } from './search.js';
@@ -395,8 +395,27 @@ export class WsHub {
         }
         const result = host.sendMessage(control.appSessionId, control.text);
         if ('refused' in result) {
+          // ⚠ A REFUSED SEND EMITS NOTHING. Nothing was queued, so there is no
+          // correction to record — and a `correction_queued` for a send the host
+          // rejected would make the watchdog protect a run nobody is steering,
+          // i.e. switch the staleness guard off on a run that can then wedge
+          // silently forever.
           this.refuse(connection, 'send', result.reason);
+          return;
         }
+        // ⚠ THE EMIT SITS AFTER THE HOST HAS SAID IT SUCCEEDED, never before.
+        // This is the boundary that KNOWS: `sendMessage` returns `{ok:true}`
+        // only once the text has actually reached the live process's
+        // streaming-input queue (D5 — steer = inject). Emitting optimistically
+        // ahead of that would record a queued correction for a send that could
+        // still refuse (external custody, dead session, resume failure).
+        //
+        // D5: this is the correction's ONLY entry point. The WS `send` op is the
+        // existing path and the mechanism already ships; a second route (an HTTP
+        // correction endpoint) would be a second writer of the same fact.
+        this.router.emit([
+          correctionQueued({ appSessionId: control.appSessionId, text: control.text }),
+        ]);
         return;
       }
       case 'gate_response': {
