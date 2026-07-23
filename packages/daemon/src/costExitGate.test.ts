@@ -2,7 +2,11 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
-import { COST_LEDGER_SCOPE_LABEL, OUTSIDE_ROOTS_PROJECT_KEY } from '@vimes/core';
+import {
+  COST_LEDGER_SCOPE_LABEL,
+  OUTSIDE_ROOTS_PROJECT_KEY,
+  type CostLedgerReadModel,
+} from '@vimes/core';
 import type {
   CorpusDirectoryEntry,
   CorpusFileStat,
@@ -10,7 +14,7 @@ import type {
 } from './costCorpus.js';
 import { ingestCostCorpus } from './costIngest.js';
 import { SqliteCostStore } from './sqliteCostStore.js';
-import { currentCostLedger } from './costLedgerApi.js';
+import { currentCostLedger, sessionNamesByCostSessionId } from './costLedgerApi.js';
 
 // ─── slice 5b step 5 — the machine EXIT GATE (end-to-end fixture corpus) ──────
 //
@@ -497,6 +501,24 @@ function ledgerBodyFor(store: SqliteCostStore) {
   return body.ledger;
 }
 
+// ── D37: the ledger is a DIRECTORY ROLLUP, so a node lookup walks the forest ──
+type LedgerDirectory = CostLedgerReadModel['directories'][number];
+
+function allDirectories(ledger: CostLedgerReadModel): LedgerDirectory[] {
+  const flattened: LedgerDirectory[] = [];
+  const pending: LedgerDirectory[] = [...ledger.directories];
+  while (pending.length > 0) {
+    const node = pending.pop()!;
+    flattened.push(node);
+    pending.push(...node.children);
+  }
+  return flattened;
+}
+
+function directoryAt(ledger: CostLedgerReadModel, directoryPath: string): LedgerDirectory | undefined {
+  return allDirectories(ledger).find((node) => node.directoryPath === directoryPath);
+}
+
 afterAll(() => {
   rmSync(temporaryDirectory, { recursive: true, force: true });
 });
@@ -591,7 +613,7 @@ describe('slice-5b machine exit gate — the whole cost pipeline over an adversa
       await ingestFixture(store, buildFixtureFiles(true));
       const ledger = ledgerBodyFor(store);
 
-      const vimesProject = ledger.projects.find((project) => project.projectKey === PROJECT_KEY_VIMES);
+      const vimesProject = directoryAt(ledger, PROJECT_KEY_VIMES);
       expect(vimesProject).toBeDefined();
       const vimesSession = vimesProject!.sessions.find((session) => session.sessionId === SESSION_VIMES);
       expect(vimesSession).toBeDefined();
@@ -673,7 +695,7 @@ describe('slice-5b machine exit gate — the whole cost pipeline over an adversa
       expect(store.countAgentEdges()).toBeGreaterThan(0);
 
       const ledger = ledgerBodyFor(store);
-      const vimesProject = ledger.projects.find((project) => project.projectKey === PROJECT_KEY_VIMES);
+      const vimesProject = directoryAt(ledger, PROJECT_KEY_VIMES);
       const vimesSession = vimesProject!.sessions.find((session) => session.sessionId === SESSION_VIMES);
 
       // Walk root → agent-parent → agent-child → agent-grandchild (depth 3).
@@ -717,8 +739,8 @@ describe('slice-5b machine exit gate — the whole cost pipeline over an adversa
       // alone cannot catch a double-count; only the known-total assertion can.
       // (currentCostLedger did not throw: we reached here.)
       expect(OUTSIDE_ROOTS_PROJECT_KEY).toBe('<outside-project-roots>'); // the outside bucket exists
-      const hasOutsideBucket = ledger.projects.some(
-        (project) => project.projectKey === OUTSIDE_ROOTS_PROJECT_KEY,
+      const hasOutsideBucket = ledger.directories.some(
+        (directory) => directory.directoryPath === OUTSIDE_ROOTS_PROJECT_KEY,
       );
       expect(hasOutsideBucket).toBe(true);
     } finally {
@@ -726,25 +748,140 @@ describe('slice-5b machine exit gate — the whole cost pipeline over an adversa
     }
   });
 
-  it('SANITY — the outside-roots bucket and both inside projects are classified correctly (rule 7/9)', async () => {
+  it('SANITY — the outside-roots bucket and both inside directories are classified correctly (rule 9)', async () => {
     const store = new SqliteCostStore({ path: nextLedgerPath() });
     try {
       await ingestFixture(store, buildFixtureFiles(true));
       const ledger = ledgerBodyFor(store);
-      const projectKeys = ledger.projects.map((project) => project.projectKey);
-      expect(projectKeys).toContain(PROJECT_KEY_VIMES);
-      expect(projectKeys).toContain(PROJECT_KEY_DAOTREE);
-      expect(projectKeys).toContain(OUTSIDE_ROOTS_PROJECT_KEY);
+      const directoryPaths = allDirectories(ledger).map((directory) => directory.directoryPath);
+      expect(directoryPaths).toContain(PROJECT_KEY_VIMES);
+      expect(directoryPaths).toContain(PROJECT_KEY_DAOTREE);
+      expect(directoryPaths).toContain(OUTSIDE_ROOTS_PROJECT_KEY);
 
-      const outsideProject = ledger.projects.find(
-        (project) => project.projectKey === OUTSIDE_ROOTS_PROJECT_KEY,
+      const outsideProject = ledger.directories.find(
+        (directory) => directory.directoryPath === OUTSIDE_ROOTS_PROJECT_KEY,
       );
       expect(outsideProject!.insideProjectRoots).toBe(false);
       expect(outsideProject!.subtree.priced.nanoDollars).toBe(EXPECTED_R5_OPUS_OUTSIDE_NANO);
 
-      const vimesProject = ledger.projects.find((project) => project.projectKey === PROJECT_KEY_VIMES);
+      const vimesProject = directoryAt(ledger, PROJECT_KEY_VIMES);
       expect(vimesProject!.insideProjectRoots).toBe(true);
       expect(vimesProject!.subtree.priced.nanoDollars).toBe(EXPECTED_DAY_ONE_NANO);
+    } finally {
+      store.dispose();
+    }
+  });
+
+  // ── D37 — the same corpus, the same money, a DIRECTORY tree instead of a
+  //    category-keyed flat list. The grand total is pinned to the SAME figure the
+  //    pre-D37 grouping produced (143,500,000 nano); if it moves, that is a bug.
+  it('D37 — regrouping moved buckets, NOT money: same corpus, same pinned grand total, nested tree', async () => {
+    const store = new SqliteCostStore({ path: nextLedgerPath() });
+    try {
+      await ingestFixture(store, buildFixtureFiles(true));
+      const ledger = ledgerBodyFor(store);
+
+      // The safety property. This is the identical figure ASSERTION 1 pins, and
+      // it is the figure the OLD (category-keyed) grouping produced too — same
+      // rows, same prices, different buckets.
+      expect(ledger.grandTotal.priced.nanoDollars).toBe(EXPECTED_GRAND_DEDUPED_NANO);
+
+      // ONE top-level node inside roots (the configured root) plus the outside
+      // bucket — where the old model listed vimes and daotree at the top.
+      expect(ledger.directories.map((directory) => directory.directoryPath)).toEqual([
+        '/home/ticktockbent/projects',
+        OUTSIDE_ROOTS_PROJECT_KEY,
+      ]);
+      const projectsRoot = ledger.directories[0]!;
+      expect(projectsRoot.children.map((child) => child.directoryPath)).toEqual([
+        PROJECT_KEY_DAOTREE,
+        PROJECT_KEY_VIMES,
+      ]);
+      // The root's subtree is the two inside projects; the outside bucket stays out.
+      expect(projectsRoot.subtree.priced.nanoDollars).toBe(
+        EXPECTED_GRAND_DEDUPED_NANO - EXPECTED_R5_OPUS_OUTSIDE_NANO,
+      );
+      // No session ran at the root itself, so it owns nothing directly.
+      expect(projectsRoot.own.priced.nanoDollars).toBe(0);
+      expect(projectsRoot.sessions).toEqual([]);
+
+      // Every node reconciles by hand, including the un-known counts.
+      for (const directory of allDirectories(ledger)) {
+        const ownFromSessions = directory.sessions.reduce(
+          (sum, session) => sum + session.subtree.priced.nanoDollars,
+          0,
+        );
+        expect(directory.own.priced.nanoDollars).toBe(ownFromSessions);
+        const subtreeFromParts =
+          directory.own.priced.nanoDollars +
+          directory.children.reduce((sum, child) => sum + child.subtree.priced.nanoDollars, 0);
+        expect(directory.subtree.priced.nanoDollars).toBe(subtreeFromParts);
+        // Pillar 4 survives the regrouping: the un-knowns roll up too, so no
+        // level of the tree can render one as $0.
+        const unknownFromParts =
+          directory.sessions.reduce(
+            (sum, session) => sum + session.subtree.tokensByStatus.unpriced,
+            0,
+          ) +
+          directory.children.reduce(
+            (sum, child) => sum + child.subtree.tokensByStatus.unpriced,
+            0,
+          );
+        expect(directory.subtree.tokensByStatus.unpriced).toBe(unknownFromParts);
+      }
+      // …and they are actually present, not vacuously zero everywhere.
+      expect(projectsRoot.subtree.tokensByStatus.unpriced).toBe(UNKNOWN_MODEL_OUTPUT_TOKENS);
+      expect(projectsRoot.subtree.tokensByStatus.unpriceable).toBe(MISSING_MODEL_OUTPUT_TOKENS);
+
+      // Every node has a history series, and each sums to that node's subtree —
+      // so the UI's selector can offer the same nodes the tree shows.
+      const seriesByPath = new Map(
+        ledger.spendHistory.byDirectory.map((series) => [series.directoryPath, series]),
+      );
+      for (const directory of allDirectories(ledger)) {
+        const series = seriesByPath.get(directory.directoryPath);
+        expect(series, `no series for ${directory.directoryPath}`).toBeDefined();
+        const seriesSum = series!.points.reduce((sum, point) => sum + point.priced.nanoDollars, 0);
+        expect(seriesSum).toBe(directory.subtree.priced.nanoDollars);
+      }
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it('D37 — the session-name join lights the ladder up, and its absence degrades honestly', async () => {
+    const store = new SqliteCostStore({ path: nextLedgerPath() });
+    try {
+      await ingestFixture(store, buildFixtureFiles(true));
+
+      // Without a sessions reader: the ladder starts at the cwd basename. No
+      // second source of session names is invented.
+      const withoutNames = ledgerBodyFor(store);
+      const vimesWithoutNames = directoryAt(withoutNames, PROJECT_KEY_VIMES)!;
+      expect(vimesWithoutNames.sessions[0]!.name).toBeNull();
+      expect(vimesWithoutNames.sessions[0]!.label).toBe('vimes');
+
+      // With one: the human name wins for the session it names, and only that one.
+      const bodyWithNames = currentCostLedger({
+        costLedgerStore: store,
+        projectRoots: PROJECT_ROOTS,
+        readSessions: () => ({
+          sessions: {
+            'app-session-1': {
+              appSessionId: 'app-session-1',
+              claudeSessionIds: [{ id: SESSION_VIMES, jsonlPath: '/fake.jsonl', observedAt: DAY_ONE }],
+              name: 'the vimes run',
+            },
+          },
+          // The projection carries far more per session than the join reads; the
+          // cast keeps this fixture to the two fields that matter here.
+        } as unknown as Parameters<typeof sessionNamesByCostSessionId>[0]),
+      });
+      const namedLedger = bodyWithNames.ledger!;
+      expect(directoryAt(namedLedger, PROJECT_KEY_VIMES)!.sessions[0]!.label).toBe('the vimes run');
+      expect(directoryAt(namedLedger, PROJECT_KEY_DAOTREE)!.sessions[0]!.label).toBe('daotree');
+      // The join changes labels only — never a figure.
+      expect(namedLedger.grandTotal.priced.nanoDollars).toBe(EXPECTED_GRAND_DEDUPED_NANO);
     } finally {
       store.dispose();
     }

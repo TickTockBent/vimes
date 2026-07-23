@@ -14,6 +14,7 @@ import {
   type CostLedgerInputRow,
   type CostLedgerReadModel,
   type ExplicitAgentParentEdge,
+  type SessionsState,
 } from '@vimes/core';
 import type { CostUsageRow } from './costCorpus.js';
 import type { SqliteCostStore } from './sqliteCostStore.js';
@@ -61,9 +62,51 @@ function toInputRow(storedRow: CostUsageRow): CostLedgerInputRow {
 export interface CurrentCostLedgerArgs {
   // Null when ingestion is disabled.
   costLedgerStore: SqliteCostStore | null;
-  // VIMES_PROJECT_ROOTS (D21) — passed through so project classification matches
-  // rule 7.
+  // VIMES_PROJECT_ROOTS (D21) — passed through so directory classification
+  // matches binding data rule 9 (cwd + insideProjectRoots, never the slug).
   projectRoots: readonly string[];
+  // The sessions projection, read FRESH per request (same pattern the watchdog
+  // and the hub already use). It supplies the top rung of D37's identity ladder
+  // — the human-given session name. Absent → the ladder simply starts one rung
+  // lower (cwd basename → short id); a name is never fabricated.
+  readSessions?: () => SessionsState;
+}
+
+/**
+ * The join between the sessions projection and the cost rows: cost rows are keyed
+ * by the CLAUDE session id (the `sessionId` field of the transcript JSONL), while
+ * the projection is keyed by the VIMES app session id and records the claude ids
+ * it has observed for each. Both are mapped to the same name so a cost row joins
+ * whichever id it happens to carry — the two id spaces are both uuids and never
+ * collide.
+ *
+ * A blank name is dropped rather than mapped: the ladder must fall through to the
+ * cwd basename, not render an empty leaf.
+ *
+ * FIRST-WINS per id. A resumed or forked session can leave the same claude id
+ * observed under two app sessions; first-wins makes the label a deterministic
+ * function of the event log rather than of map-iteration luck.
+ */
+export function sessionNamesByCostSessionId(
+  sessionsState: SessionsState,
+): Record<string, string> {
+  const namesBySessionId: Record<string, string> = {};
+  const claimId = (sessionId: string, name: string): void => {
+    if (!Object.hasOwn(namesBySessionId, sessionId)) {
+      namesBySessionId[sessionId] = name;
+    }
+  };
+  for (const sessionRecord of Object.values(sessionsState.sessions)) {
+    const name = sessionRecord.name;
+    if (name === null || name.trim().length === 0) {
+      continue;
+    }
+    claimId(sessionRecord.appSessionId, name);
+    for (const claudeSessionId of sessionRecord.claudeSessionIds) {
+      claimId(claudeSessionId.id, name);
+    }
+  }
+  return namesBySessionId;
 }
 
 /**
@@ -90,9 +133,15 @@ export function currentCostLedger(args: CurrentCostLedgerArgs): CostLedgerBody {
       childAgentId: edge.childAgentId,
       parentAgentId: edge.parentAgentId,
     }));
+  // The human-given session names (D37's identity ladder, top rung). Read only
+  // when a reader was wired; the tree degrades to cwd basename → short id
+  // otherwise rather than inventing a second source of session names.
+  const sessionNames =
+    args.readSessions === undefined ? undefined : sessionNamesByCostSessionId(args.readSessions());
   const ledger = buildCostLedgerReadModel(inputRows, {
     projectRoots: args.projectRoots,
     parentEdges,
+    sessionNames,
   });
   return { ingestionEnabled: true, ledger };
 }

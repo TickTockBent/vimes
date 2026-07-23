@@ -5,6 +5,7 @@ import {
   type AgentNode,
   type CostTree,
   type CostTreeInputRow,
+  type DirectoryNode,
   type RollupTotals,
 } from './costTree.js';
 import { priceUsageRow } from './priceUsageRow.js';
@@ -136,8 +137,8 @@ describe('history bucketing by day', () => {
 
     const alphaKey = '/home/ticktockbent/projects/alpha';
     const betaKey = '/home/ticktockbent/projects/beta';
-    const alpha = model.spendHistory.byProject.find((series) => series.projectKey === alphaKey);
-    const beta = model.spendHistory.byProject.find((series) => series.projectKey === betaKey);
+    const alpha = model.spendHistory.byDirectory.find((series) => series.directoryPath === alphaKey);
+    const beta = model.spendHistory.byDirectory.find((series) => series.directoryPath === betaKey);
 
     expect(alpha?.points).toEqual([
       { day: '2026-07-20', priced: { nanoDollars: ONE_ROW_NANO, usd: formatUsd(ONE_ROW_NANO) } },
@@ -150,13 +151,25 @@ describe('history bucketing by day', () => {
       { day: '2026-07-21', priced: { nanoDollars: ONE_ROW_NANO, usd: formatUsd(ONE_ROW_NANO) } },
     ]);
 
-    // Per-project series reconciles with the tree's project subtree total.
-    const alphaProject = model.projects.find((project) => project.projectKey === alphaKey);
+    // Each directory node's series reconciles with that node's SUBTREE total.
+    const alphaDirectory = model.directories[0]!.children.find(
+      (child) => child.directoryPath === alphaKey,
+    );
     const alphaHistorySum = (alpha?.points ?? []).reduce(
       (sum, point) => sum + point.priced.nanoDollars,
       0,
     );
-    expect(alphaHistorySum).toBe(alphaProject?.subtree.priced.nanoDollars);
+    expect(alphaHistorySum).toBe(alphaDirectory?.subtree.priced.nanoDollars);
+
+    // D37: an INTERIOR node has a series too — the rollup of everything beneath
+    // it — so the history selector can offer the same nodes the tree shows.
+    const rootSeries = model.spendHistory.byDirectory.find(
+      (series) => series.directoryPath === '/home/ticktockbent/projects',
+    );
+    expect(rootSeries).toBeDefined();
+    const rootHistorySum = rootSeries!.points.reduce((sum, point) => sum + point.priced.nanoDollars, 0);
+    expect(rootHistorySum).toBe(model.directories[0]!.subtree.priced.nanoDollars);
+    expect(rootHistorySum).toBe(model.grandTotal.priced.nanoDollars);
   });
 
   it('buckets by a pure string slice of the timestamp — offset-only ISO grouped by prefix', () => {
@@ -206,26 +219,26 @@ describe('Pillar 4 — a non-priced row never reads as $0', () => {
 });
 
 describe('the built model reconciles', () => {
-  it('grand total equals the sum of every project subtree', () => {
+  it('grand total equals the sum of every TOP-LEVEL directory subtree', () => {
     const rows: CostLedgerInputRow[] = [
       row({ sessionId: 'session-alpha', projectCwd: '/home/ticktockbent/projects/alpha' }),
       row({ sessionId: 'session-beta', projectCwd: '/home/ticktockbent/projects/beta' }),
       row({ sessionId: 'session-beta', projectCwd: '/home/ticktockbent/projects/beta', agentId: 'agentX' }),
     ];
     const model = buildCostLedgerReadModel(rows, { projectRoots: PROJECT_ROOTS });
-    const projectSum = model.projects.reduce(
-      (sum, project) => sum + project.subtree.priced.nanoDollars,
+    const topLevelSum = model.directories.reduce(
+      (sum, directory) => sum + directory.subtree.priced.nanoDollars,
       0,
     );
-    expect(projectSum).toBe(model.grandTotal.priced.nanoDollars);
+    expect(topLevelSum).toBe(model.grandTotal.priced.nanoDollars);
     expect(model.grandTotal.priced.nanoDollars).toBe(ONE_ROW_NANO * 3);
   });
 
   it('empty input → an empty, servable envelope (no throw)', () => {
     const model = buildCostLedgerReadModel([], { projectRoots: PROJECT_ROOTS });
-    expect(model.projects).toEqual([]);
+    expect(model.directories).toEqual([]);
     expect(model.spendHistory.grand).toEqual([]);
-    expect(model.spendHistory.byProject).toEqual([]);
+    expect(model.spendHistory.byDirectory).toEqual([]);
     expect(model.grandTotal.priced.nanoDollars).toBe(0);
     expect(model.grandTotal.priced.usd).toBe(formatUsd(0));
     expect(model.scopeLabel).toBe(COST_LEDGER_SCOPE_LABEL);
@@ -246,31 +259,133 @@ describe('the built model reconciles', () => {
       opts: { projectRoots: readonly string[] },
     ): CostTree => {
       const goodTree = buildCostTree(treeRows, opts);
-      const goodProject = goodTree.projects[0]!;
-      const goodSession = goodProject.sessions[0]!;
+      // The one leaf directory this single-cwd fixture produces.
+      const findLeaf = (node: DirectoryNode): DirectoryNode =>
+        node.sessions.length > 0 ? node : findLeaf(node.children[0]!);
+      const goodLeaf = findLeaf(goodTree.directories[0]!);
+      const goodSession = goodLeaf.sessions[0]!;
       const goodAgent = goodSession.agents[0]!;
       const corruptedSubtree: RollupTotals = {
         ...goodAgent.subtree,
         pricedNanoDollars: goodAgent.subtree.pricedNanoDollars + 1, // one nano-dollar off
       };
       const corruptedAgent: AgentNode = { ...goodAgent, subtree: corruptedSubtree };
-      return {
-        ...goodTree,
-        projects: [
-          {
-            ...goodProject,
-            sessions: [
-              { ...goodSession, agents: [corruptedAgent, ...goodSession.agents.slice(1)] },
-              ...goodProject.sessions.slice(1),
-            ],
-          },
-          ...goodTree.projects.slice(1),
+      const corruptedLeaf: DirectoryNode = {
+        ...goodLeaf,
+        sessions: [
+          { ...goodSession, agents: [corruptedAgent, ...goodSession.agents.slice(1)] },
+          ...goodLeaf.sessions.slice(1),
         ],
       };
+      const rehang = (node: DirectoryNode): DirectoryNode =>
+        node.directoryPath === corruptedLeaf.directoryPath
+          ? corruptedLeaf
+          : { ...node, children: node.children.map(rehang) };
+      return { ...goodTree, directories: goodTree.directories.map(rehang) };
     };
 
     expect(() =>
       buildCostLedgerReadModel(rows, { projectRoots: PROJECT_ROOTS, buildTree: corruptingBuildTree }),
     ).toThrow(/reconciliation FAILED/);
+  });
+});
+
+// ─── D37 on the WIRE: the directory rollup and its history ───────────────────
+describe('D37 — the servable body carries the directory tree and a series per node', () => {
+  const NESTED_ROWS: CostLedgerInputRow[] = [
+    row({
+      sessionId: 'wire-vimes',
+      projectCwd: '/home/ticktockbent/projects/infrastructure/vimes',
+      timestamp: '2026-07-20T10:00:00.000Z',
+    }),
+    row({
+      sessionId: 'wire-daemon',
+      projectCwd: '/home/ticktockbent/projects/infrastructure/vimes/packages/daemon',
+      timestamp: '2026-07-21T10:00:00.000Z',
+    }),
+    row({
+      sessionId: 'wire-dongfu',
+      projectCwd: '/home/ticktockbent/projects/games/dongfu',
+      timestamp: '2026-07-21T10:00:00.000Z',
+    }),
+  ];
+
+  function allDirectoryPaths(model: { directories: readonly { directoryPath: string; children: readonly unknown[] }[] }): string[] {
+    const paths: string[] = [];
+    const pending = [...(model.directories as readonly { directoryPath: string; children: readonly unknown[] }[])];
+    while (pending.length > 0) {
+      const node = pending.pop()!;
+      paths.push(node.directoryPath);
+      pending.push(...(node.children as readonly { directoryPath: string; children: readonly unknown[] }[]));
+    }
+    return paths.sort();
+  }
+
+  it('EVERY directory node has a history series, and each sums to that node subtree', () => {
+    const model = buildCostLedgerReadModel(NESTED_ROWS, { projectRoots: PROJECT_ROOTS });
+    const seriesByPath = new Map(
+      model.spendHistory.byDirectory.map((series) => [series.directoryPath, series]),
+    );
+
+    // The selector is driven by the tree, so every tree node must have a series
+    // — otherwise selecting an interior node charts nothing (seriesForSelection
+    // correctly refuses to fall back to grand).
+    const pending = [...model.directories];
+    let checked = 0;
+    while (pending.length > 0) {
+      const node = pending.pop()!;
+      pending.push(...node.children);
+      checked += 1;
+      const series = seriesByPath.get(node.directoryPath);
+      expect(series, `no series for ${node.directoryPath}`).toBeDefined();
+      const seriesSum = series!.points.reduce((sum, point) => sum + point.priced.nanoDollars, 0);
+      expect(seriesSum).toBe(node.subtree.priced.nanoDollars);
+    }
+    expect(checked).toBeGreaterThanOrEqual(6);
+    // The grand series still totals the grand total — regrouping moved buckets,
+    // not money.
+    const grandSum = model.spendHistory.grand.reduce((sum, point) => sum + point.priced.nanoDollars, 0);
+    expect(grandSum).toBe(model.grandTotal.priced.nanoDollars);
+    expect(model.grandTotal.priced.nanoDollars).toBe(ONE_ROW_NANO * 3);
+  });
+
+  it('the tree nests real ancestors and never invents one above the configured root', () => {
+    const model = buildCostLedgerReadModel(NESTED_ROWS, { projectRoots: PROJECT_ROOTS });
+    expect(allDirectoryPaths(model)).toEqual([
+      '/home/ticktockbent/projects',
+      '/home/ticktockbent/projects/games',
+      '/home/ticktockbent/projects/games/dongfu',
+      '/home/ticktockbent/projects/infrastructure',
+      '/home/ticktockbent/projects/infrastructure/vimes',
+      '/home/ticktockbent/projects/infrastructure/vimes/packages',
+      '/home/ticktockbent/projects/infrastructure/vimes/packages/daemon',
+    ]);
+    // Nothing above the root: no `/home`, no `/home/ticktockbent`, no `/`.
+    expect(model.directories.map((node) => node.directoryPath)).toEqual(['/home/ticktockbent/projects']);
+  });
+
+  it('session views carry the ladder: injected names win, the rest fall back to the basename', () => {
+    const model = buildCostLedgerReadModel(NESTED_ROWS, {
+      projectRoots: PROJECT_ROOTS,
+      sessionNames: { 'wire-daemon': 'daemon spike' },
+    });
+    const findSession = (sessionId: string) => {
+      const pending = [...model.directories];
+      while (pending.length > 0) {
+        const node = pending.pop()!;
+        pending.push(...node.children);
+        const match = node.sessions.find((session) => session.sessionId === sessionId);
+        if (match !== undefined) {
+          return match;
+        }
+      }
+      return undefined;
+    };
+    expect(findSession('wire-daemon')!.label).toBe('daemon spike');
+    expect(findSession('wire-daemon')!.name).toBe('daemon spike');
+    expect(findSession('wire-vimes')!.label).toBe('vimes');
+    expect(findSession('wire-vimes')!.name).toBeNull();
+    expect(findSession('wire-vimes')!.cwd).toBe('/home/ticktockbent/projects/infrastructure/vimes');
+    expect(findSession('wire-vimes')!.directoryPath).toBe('/home/ticktockbent/projects/infrastructure/vimes');
   });
 });

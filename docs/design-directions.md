@@ -264,3 +264,236 @@ already use.
 **No existence check in v1** — verifying would make a deliberately pure,
 deterministic module async. A path the agent invented opens the editor and
 reports not-found, which is honest. Revisit only if dead links prove common.
+
+## PANELS — one shell, N panes, and the phone is the degenerate case
+
+*Drafted 2026-07-23 at Wes's request. **Design only — nothing here is decided.**
+The ⟨Wes⟩ decisions at the end gate a work order.*
+
+*Supersedes an earlier sketch in this entry (a "primary + aside" two-slot route),
+which Wes replaced with the panel model in the same session. The reasoning for
+the swap is recorded below because it is the interesting part — the panel model
+won on **fewer concepts**, not on flexibility.*
+
+**This is the concrete design for "UI shape evolution" (2026-07-20) above.** That
+note already called for *"bespoke desktop and mobile layouts, not one responsive
+layout"* and *"multi-pane: session list + stream + editor/diff side by side"* —
+this entry is that note, made buildable. Two threads from it land directly here:
+
+- **"Real estate to content, not chrome"** (the design-principle candidate) is
+  the strongest argument for panels over a conventional IDE shell: panels ARE
+  content, and the only chrome added is one sidebar. If that candidate is
+  promoted to `design-principles.md`, this design is what it will be checked
+  against first.
+- **"Sessions should not be the landing page"** — the home screen should be the
+  top-down board with sessions as a drill-down. That note said *"revisit when
+  slice 6/7 UI is designed"*, and **step 9 is that revisit**: once a board
+  exists, the panel stack's initial state is the natural place to make the
+  switch. ⟨Wes⟩ #3 below is the same question in its concrete form.
+
+### The premise, and why "just make it wider" is the wrong instinct
+
+Every view in VIMES today is phone-shaped, deliberately — the product premise is
+a workday driven from a phone. But a phone imposes a specific discipline: **you
+can attend to exactly one thing.** Every view is a destination you navigate to,
+and the router enforces it.
+
+The value of a desktop is not more pixels for the same view. It is
+**simultaneity** — supervising several agents means holding more than one fact at
+once, and the phone shell structurally forbids that.
+
+The single best argument for building it: **read what an agent did next to the
+file it changed.** That is the supervision loop, and on a phone it is two
+navigations and a lost place.
+
+### ⚠ The structural blocker
+
+`App.vue` derives every view from a single `routePath`, and they are mutually
+exclusive — `showFileTree`, `showSearch`, `showTerminal`, `showGit`, `showCost`,
+`showMeters` are each `routePath === '/x'`, with `editorTarget` as `/files` plus
+a `path` param. **The route model cannot express two things at once.**
+
+This is the expensive-to-retrofit piece, and it is the same shape as the
+layout-agnostic `lib/` constraint on step 9: cheap up front, a rewrite afterwards.
+
+### The model: a PANEL STACK, rendered as many as fit
+
+**The app's navigation state is a list of panels. Each panel holds one route.
+The viewport renders as many trailing panels as fit. Back pops.**
+
+| device | N | push | pop |
+|---|---|---|---|
+| phone | 1 | replaces what you see | back, exactly as today |
+| tablet | 2 | appears beside | back |
+| desktop | 3+ | appears beside | back |
+
+The phone is not a special case — it is the **degenerate** case, `N = 1`. That is
+the whole point of the model, and it is why today's behaviour survives untouched:
+a single-panel stack rendered one-at-a-time *is* the current app.
+
+Three consequences worth stating, because each deletes a problem the earlier
+two-slot sketch had to solve:
+
+1. **"Back" needs no new rule.** Pop the stack, on every device. The two-slot
+   sketch had to decide whether back closed the aside or left the primary; that
+   question no longer exists.
+2. **No parameter namespacing.** Each panel owns its own params by construction.
+   The two-slot sketch collided on `path` (an editor as primary *and* an editor
+   in the aside) and needed an `asidePath=` hack. Gone.
+3. **One shell, not two.** The earlier sketch needed a `PhoneShell` and a
+   `DesktopShell` plus a written discipline rule to stop them drifting. Rules get
+   broken; a single shell parameterised by N **cannot** drift. This is the same
+   move the codebase makes everywhere else — structural escaping over a
+   sanitizer, derived vocabularies over hand-listed ones. **Make it impossible,
+   not forbidden.**
+
+**Why this is not over-abstraction.** It looks like building a general system for
+a two-pane need, and the docs' own guidance is *define at the first instance,
+generalize at the second*. The guidance does not bite here because the panel
+model has **fewer concepts** than the special case it replaces: one slot type
+instead of two, one back rule instead of two, no param namespacing, one shell
+instead of two. When the general form is *simpler* than the special form, that is
+not generalization — it is finding the right model. If it were equal complexity
+with more flexibility, this entry would argue the other way.
+
+### The shell
+
+- **Persistent left sidebar** (desktop only): nav, plus the session list with
+  liveness dots and attention badges. The real change is that the session list
+  stops being a destination and becomes **ambient**. Pillar 5 says attention is
+  the scarce resource; a list you must navigate to is a list you check less often
+  than you should.
+- **A panel host** rendering the trailing N panels of the stack.
+- **Meters** become persistent chrome rather than living inside
+  `SessionListView`. There is room; there never was on a phone.
+
+### Per-view treatment
+
+| View | As a panel | Cost |
+|---|---|---|
+| **Stream** | the common primary; pushes file panels beside itself | high value |
+| **Editor** | pushed by a path click or the tree | medium |
+| **Board** | consumes step 9's layout-agnostic `lib/`; columns go horizontal when the panel is wide | medium |
+| **Session list** | moves into the sidebar on desktop; stays a panel on phone | medium |
+| **File tree** | a panel that pushes editor panels | low |
+| **Cost ledger / meters** | already fine wider | trivial |
+| **Terminal / git / search** | panels, unchanged | trivial |
+
+### A payoff already banked, and a rule it collapses
+
+The clickable file paths shipped in `61ea9cc` open the editor **in a new tab** —
+the only option on a phone. Under panels, a path click **pushes a file panel**,
+full stop. On a phone that fills the screen and back returns you; on desktop it
+appears beside the message that mentioned it.
+
+Note what happened: "new tab on phone, aside pane on desktop" was **one action
+described twice.** The panel model collapses it to one rule with a
+layout-dependent N. That is the model paying for itself before it is built.
+
+### The discipline, now structural rather than written
+
+Derived logic stays in `src/lib/*.ts` and leaf components (a task card, a session
+row, a meter tile) are shared. Under the two-shell sketch this needed a rule.
+Under panels there is only one shell, so **a behaviour cannot exist on one device
+and not the other** — there is no second tree for it to live in.
+
+### ⟨Wes⟩ — the decisions that gate a work order
+
+1. **Adopt the panel stack?** *(Lean: yes. It is simpler than the alternative, it
+   is the reason desktop is worth building, and retrofitting the router later is
+   the rewrite.)*
+2. **How is N chosen** — a width breakpoint, or an explicit user control?
+   *(Lean: computed from width, with a manual override remembered per device.)*
+3. **Does the sidebar session list replace `SessionListView` on desktop, or
+   coexist?** *(Lean: replace. Two lists of the same thing is exactly the drift
+   the model exists to prevent.)*
+4. **The focus model.** With N panels, which one takes keyboard input and global
+   actions? *(Lean: the last-interacted panel, with a visible focus ring. Needs
+   deciding before the shell is built, not after.)*
+5. **Scope of the first unit** — the shell alone with one panel pair as proof, or
+   the shell plus every view's panel treatment? *(Lean: shell plus the
+   stream→editor pair. That pair exercises push, pop, and focus end to end.)*
+
+---
+
+### The retrofit, scoped (2026-07-23)
+
+**Two measurements decide the shape, and both are good news.**
+
+**1. No view knows about routing.** `grep` for `location.hash` / `routePath` /
+`URLSearchParams` across `views/` and `components/` returns **nothing**. Every
+view is props-in / events-out; all routing lives in `App.vue` (204 lines). The
+retrofit is **contained to one file plus a new lib** — it does not spread across
+eight views, which is what would have made it expensive.
+
+**2. That routing has ZERO test coverage.** It is inline in a `.vue`, and the
+house rule is that `.vue` files are not tested here. So the module about to
+change shape is the one module with no assertions on it. **Phase 1 is not desktop
+prep — it is paying that down**, and it is worth doing even if panels are never
+built.
+
+#### Phase 1 — extract routing to a pure, tested lib. NO behaviour change.
+
+`packages/ui/src/lib/route.ts`: `parseRoute(hash) → Route` and
+`buildHash(route) → string`, round-trip tested. `App.vue` delegates and behaves
+exactly as it does today.
+
+⚠ **Three things a refactor must preserve, all currently implicit:**
+- **The `v-if` / `v-else-if` chain is a PRECEDENCE ORDER, and it is load-bearing
+  and undocumented.** `editorTarget` beats everything; `SessionListView` is the
+  fallback. Make precedence an explicit, tested function — do not leave it
+  encoded in template order, where a reordering silently changes behaviour.
+- **Route → view is NOT 1:1.** `#/meters` and `#/` render the *same*
+  `SessionListView`, differing only by the `expand-meters` prop. The model is
+  **route → (view, props)**.
+- `leaveEditor` / `decideEditorReturn` is an existing whitelist with real
+  semantics; carry it verbatim.
+
+*Lift: ~150 lines lib + ~50 tests. Low risk — a pure refactor whose tests are
+written against today's behaviour before anything moves.*
+
+#### Phase 2 — `Route` becomes `Panel[]`. Additive.
+
+Every existing URL parses to a **single-element** stack and behaves
+byte-identically. Encoding the stack in a hash is the one place panels are
+*uglier* than the two-slot sketch — accept it, and keep single-panel URLs looking
+exactly as they do now so the common case stays readable and pasteable.
+
+*Lift: ~60 lines + tests. Low risk, additive.*
+
+#### Phase 3 — the panel host, and making views panel-safe.
+
+One shell: sidebar (desktop) + a host rendering the trailing N panels, with N
+from `useLayoutMode()`.
+
+⚠ **This is where the work actually is: every view currently assumes it owns the
+viewport** — `@back` semantics, full-width layout, sticky headers. Each must
+become correct as one of N. Eight views, mechanical but real, and more testable
+than "design a second shell" was.
+
+*Lift: ~350 lines of `.vue` + ~80 lines of lib/tests, plus the per-view audit.*
+
+#### Phase 4 — the proof pair.
+
+Stream pushing an editor panel, including the path-click rule above. Exercises
+push, pop and focus end to end.
+
+*Lift: ~100 lines.*
+
+#### Total, and the honest sequencing
+
+**Three agent units**: **(1+2) routing**, **(3) panel host + view audit**,
+**(4) proof pair** — 3 and 4 can merge if the host's push/pop API is specified up
+front, which is what phase 4 validates. The desktop **board** is a fourth, after
+step 9, consuming its layout-agnostic `lib/` unchanged.
+
+**Phases 1+2 are worth doing regardless of the panel decision.** They convert the
+app's only untested logic into tested pure logic for about half a unit. If ⟨Wes⟩
+#1 goes the other way, phase 1 still stands alone and phase 2 is skipped.
+
+**The risk is concentrated in phase 3, and it is design risk plus a mechanical
+audit** — which is the argument for settling ⟨Wes⟩ 1–5 before a work order rather
+than during one. Compared with the superseded two-shell sketch, phase 3's design
+risk is **lower** (one shell to get right, not two) and its mechanical share is
+**higher** (the view audit), which is the better trade: mechanical work is
+verifiable, design risk is not.

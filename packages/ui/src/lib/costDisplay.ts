@@ -68,18 +68,36 @@ export interface AgentView {
 
 export interface SessionView {
   readonly sessionId: string;
+  // The directory node this session hangs off.
+  readonly directoryPath: string;
+  // The session's own launch cwd (kept even for outside-roots sessions), or null.
+  readonly cwd: string | null;
+  // The human-given name, when the daemon's join found one.
+  readonly name: string | null;
+  // D37's identity ladder, already resolved by core (`name` → cwd basename →
+  // short id) and NEVER blank. The view renders this; it does not re-derive it.
+  readonly label: string;
   readonly own: RollupView;
   readonly subtree: RollupView;
   readonly agents: readonly AgentView[];
 }
 
-export interface ProjectView {
-  readonly projectKey: string;
-  // FALSE only for the single outside-VIMES_PROJECT_ROOTS bucket (rule 7).
+// A node of the D37 directory rollup: a real directory some session ran in, or an
+// ancestor of one. No project boundary is inferred anywhere — see decisions.md D37.
+export interface DirectoryView {
+  readonly directoryPath: string;
+  // The last path segment (or a sentinel bucket key) — never blank.
+  readonly label: string;
+  // Depth below the top of its own chain; a top-level node is 0.
+  readonly depth: number;
+  // FALSE only for the single outside-VIMES_PROJECT_ROOTS bucket (rule 9).
   readonly insideProjectRoots: boolean;
+  // What was spent by sessions launched in THIS directory itself.
   readonly own: RollupView;
+  // own + Σ children.subtree.
   readonly subtree: RollupView;
   readonly sessions: readonly SessionView[];
+  readonly children: readonly DirectoryView[];
 }
 
 export interface AttributionView {
@@ -92,21 +110,23 @@ export interface SpendHistoryPoint {
   readonly priced: MoneyAmount;
 }
 
-export interface ProjectSpendSeries {
-  readonly projectKey: string;
+export interface DirectorySpendSeries {
+  readonly directoryPath: string;
   readonly points: readonly SpendHistoryPoint[];
 }
 
 export interface SpendHistory {
   readonly grand: readonly SpendHistoryPoint[];
-  readonly byProject: readonly ProjectSpendSeries[];
+  // One series per DIRECTORY NODE (each node's subtree), so the selector can
+  // offer the same nodes the tree shows.
+  readonly byDirectory: readonly DirectorySpendSeries[];
 }
 
 export interface CostLedgerReadModel {
   readonly scopeLabel: string;
   readonly priceTableDate: string;
   readonly grandTotal: RollupView;
-  readonly projects: readonly ProjectView[];
+  readonly directories: readonly DirectoryView[];
   readonly spendHistory: SpendHistory;
   readonly byAttributionSkill: readonly AttributionView[];
   readonly byAttributionAgent: readonly AttributionView[];
@@ -321,23 +341,210 @@ export function spendAxisMax(bars: readonly SpendBar[] | null | undefined): Spen
 }
 
 /**
- * Resolve the spend series to chart for a selected project. `null`/absent
- * selection → the grand (all-projects) series. A selection that matches no
- * project series → [] (rather than silently falling back to grand, which would
- * misattribute the grand total to one project).
+ * Resolve the spend series to chart for a selected directory node.
+ * `null`/absent selection → the grand (everything) series. A selection that
+ * matches no series → [] (rather than silently falling back to grand, which
+ * would misattribute all spend to one node).
  */
 export function seriesForSelection(
   spendHistory: SpendHistory | null | undefined,
-  selectedProjectKey: string | null,
+  selectedDirectoryPath: string | null,
 ): readonly SpendHistoryPoint[] {
   if (spendHistory === null || spendHistory === undefined) {
     return [];
   }
-  if (selectedProjectKey === null) {
+  if (selectedDirectoryPath === null) {
     return Array.isArray(spendHistory.grand) ? spendHistory.grand : [];
   }
-  const match = (spendHistory.byProject ?? []).find((series) => series.projectKey === selectedProjectKey);
+  const match = (spendHistory.byDirectory ?? []).find(
+    (series) => series.directoryPath === selectedDirectoryPath,
+  );
   return match?.points ?? [];
+}
+
+// ── D37: the directory tree, flattened for rendering ────────────────────────
+
+// The node-key namespaces. A directory path and a session id can never collide
+// once each carries its own prefix.
+export function directoryRowKey(directoryPath: string): string {
+  return `dir:${directoryPath}`;
+}
+export function sessionRowKey(directoryPath: string, sessionId: string): string {
+  return `session:${directoryPath}::${sessionId}`;
+}
+
+// One rendered line of the ledger tree. The view walks a FLAT list and indents by
+// `depth`, so the nesting logic is unit-tested here instead of inside a template.
+export type LedgerTreeRow =
+  | {
+      readonly kind: 'directory';
+      readonly key: string;
+      readonly depth: number;
+      readonly directory: DirectoryView;
+      readonly expandable: boolean;
+      readonly expanded: boolean;
+    }
+  | {
+      readonly kind: 'session';
+      readonly key: string;
+      readonly depth: number;
+      readonly session: SessionView;
+      readonly expandable: boolean;
+      readonly expanded: boolean;
+    }
+  | {
+      readonly kind: 'agent';
+      readonly key: string;
+      readonly depth: number;
+      readonly agent: AgentView;
+    };
+
+// How deep the tree opens on first render: nodes SHALLOWER than this are
+// expanded, everything below starts collapsed. Two levels down from each root is
+// the granularity the D37 defect was hiding (root → category → repo) and it still
+// fits a phone; deeper is one tap away. Presentation only — it shapes no number.
+export const DEFAULT_EXPANDED_DIRECTORY_DEPTH = 2;
+
+/**
+ * The directory-node keys to expand on first render: every node whose depth is
+ * below `maxDepth`. Sessions are NOT expanded by default — a session's agents are
+ * a deliberate drill-down, not a default view.
+ */
+export function defaultExpandedKeys(
+  directories: readonly DirectoryView[] | null | undefined,
+  maxDepth: number = DEFAULT_EXPANDED_DIRECTORY_DEPTH,
+): string[] {
+  const keys: string[] = [];
+  for (const node of flattenDirectoryNodes(directories)) {
+    if (node.depth < maxDepth && node.children.length + node.sessions.length > 0) {
+      keys.push(directoryRowKey(node.directoryPath));
+    }
+  }
+  return keys;
+}
+
+/**
+ * Every directory node in the tree, pre-order (parent before its children) — the
+ * order the rows render in, and the order the history selector offers. Total: a
+ * missing/!Array node list yields [].
+ */
+export function flattenDirectoryNodes(
+  directories: readonly DirectoryView[] | null | undefined,
+): DirectoryView[] {
+  if (!Array.isArray(directories)) {
+    return [];
+  }
+  const flattened: DirectoryView[] = [];
+  const pendingStack: DirectoryView[] = [...directories].reverse();
+  while (pendingStack.length > 0) {
+    const node = pendingStack.pop()!;
+    flattened.push(node);
+    const children = Array.isArray(node.children) ? node.children : [];
+    for (let childIndex = children.length - 1; childIndex >= 0; childIndex -= 1) {
+      pendingStack.push(children[childIndex]!);
+    }
+  }
+  return flattened;
+}
+
+/**
+ * The rows to render, given which node keys are expanded.
+ *
+ * Order within an expanded directory: its OWN sessions first (they are that
+ * node's `own` money), then its child directories (deeper rollups). Agents of an
+ * expanded session follow that session, flattened by their own nesting depth.
+ *
+ * Depth is the render indent: a directory uses its tree depth; a session sits one
+ * level below its directory; an agent one below its session, plus its own depth
+ * in the agent tree.
+ */
+export function ledgerTreeRows(
+  directories: readonly DirectoryView[] | null | undefined,
+  expandedKeys: ReadonlySet<string>,
+): LedgerTreeRow[] {
+  const rows: LedgerTreeRow[] = [];
+  if (!Array.isArray(directories)) {
+    return rows;
+  }
+
+  const emitAgents = (agents: readonly AgentView[], baseDepth: number): void => {
+    const pendingStack: Array<{ agent: AgentView; depth: number }> = [];
+    for (let index = agents.length - 1; index >= 0; index -= 1) {
+      pendingStack.push({ agent: agents[index]!, depth: baseDepth });
+    }
+    while (pendingStack.length > 0) {
+      const { agent, depth } = pendingStack.pop()!;
+      rows.push({
+        kind: 'agent',
+        key: `agent:${agent.sessionId}::${agent.agentId}`,
+        depth,
+        agent,
+      });
+      const children = Array.isArray(agent.children) ? agent.children : [];
+      for (let index = children.length - 1; index >= 0; index -= 1) {
+        pendingStack.push({ agent: children[index]!, depth: depth + 1 });
+      }
+    }
+  };
+
+  // Pre-order DFS with an explicit stack (no recursion — path depth is unbounded).
+  const pendingDirectories: DirectoryView[] = [...directories].reverse();
+  while (pendingDirectories.length > 0) {
+    const node = pendingDirectories.pop()!;
+    const nodeKey = directoryRowKey(node.directoryPath);
+    const sessions = Array.isArray(node.sessions) ? node.sessions : [];
+    const children = Array.isArray(node.children) ? node.children : [];
+    const expandable = sessions.length + children.length > 0;
+    const expanded = expandable && expandedKeys.has(nodeKey);
+    rows.push({ kind: 'directory', key: nodeKey, depth: node.depth, directory: node, expandable, expanded });
+    if (!expanded) {
+      continue;
+    }
+    for (const session of sessions) {
+      const sessionKey = sessionRowKey(node.directoryPath, session.sessionId);
+      const agents = Array.isArray(session.agents) ? session.agents : [];
+      const sessionExpanded = agents.length > 0 && expandedKeys.has(sessionKey);
+      rows.push({
+        kind: 'session',
+        key: sessionKey,
+        depth: node.depth + 1,
+        session,
+        expandable: agents.length > 0,
+        expanded: sessionExpanded,
+      });
+      if (sessionExpanded) {
+        emitAgents(agents, node.depth + 2);
+      }
+    }
+    // Reversed so the stack pops them back into their natural order, immediately
+    // after this node and before any sibling still pending.
+    for (let childIndex = children.length - 1; childIndex >= 0; childIndex -= 1) {
+      pendingDirectories.push(children[childIndex]!);
+    }
+  }
+  return rows;
+}
+
+// One option of the spend-history selector: the SAME nodes the tree shows, in the
+// same pre-order.
+export interface DirectorySelectOption {
+  readonly directoryPath: string;
+  // The FULL directory path, deliberately — a bare segment would render two
+  // different `vimes` nodes under different roots as the same option, and a
+  // <select> collapses leading whitespace so an indent cannot disambiguate them.
+  readonly label: string;
+  // Tree depth, exposed so a caller can style the option without re-parsing paths.
+  readonly depth: number;
+}
+
+export function directorySelectOptions(
+  directories: readonly DirectoryView[] | null | undefined,
+): DirectorySelectOption[] {
+  return flattenDirectoryNodes(directories).map((node) => ({
+    directoryPath: node.directoryPath,
+    label: node.directoryPath,
+    depth: node.depth,
+  }));
 }
 
 // ── Emptiness ───────────────────────────────────────────────────────────────
@@ -346,7 +553,7 @@ export function seriesForSelection(
  * Classify the body into the state the view must render:
  * - 'disabled'  → ingestion is off; there is no ledger at all.
  * - 'empty'     → ingestion is on but nothing has been ingested yet.
- * - 'populated' → a real ledger with at least one project.
+ * - 'populated' → a real ledger with at least one directory node.
  *
  * 'disabled' and 'empty' are deliberately distinct: "the feature is off" and
  * "the feature is on but has seen no work" are different truths, and neither is
@@ -358,8 +565,8 @@ export function ledgerState(body: CostLedgerBody | null | undefined): LedgerStat
   if (body === null || body === undefined || body.ingestionEnabled !== true || body.ledger === null) {
     return 'disabled';
   }
-  const projects = body.ledger.projects;
-  return Array.isArray(projects) && projects.length > 0 ? 'populated' : 'empty';
+  const directories = body.ledger.directories;
+  return Array.isArray(directories) && directories.length > 0 ? 'populated' : 'empty';
 }
 
 // ── Attribution rows ────────────────────────────────────────────────────────

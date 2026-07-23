@@ -846,7 +846,15 @@ export function createDaemon(deps: DaemonDeps): Daemon {
   // to pure core. Referenced by the /api/cost/ledger route registered above; the
   // route only calls it per request, long after this store is initialized.
   const currentCostLedgerBody = (): CostLedgerBody =>
-    currentCostLedger({ costLedgerStore, projectRoots: config.projectRoots });
+    currentCostLedger({
+      costLedgerStore,
+      projectRoots: config.projectRoots,
+      // D37: the same projection the watchdog and the hub read, read FRESH per
+      // request. This is what turns a session leaf from a bare uuid into the name
+      // the human gave it; the ledger endpoint is manual-refresh only, so the
+      // extra projection boot rides no polling cadence.
+      readSessions: () => bootFromSnapshot(sessionsProjection, snapshotStore, store),
+    });
 
   // One ingest scan. NEVER throws outward: a dead or unreadable corpus, or any
   // store/IO failure, is swallowed and logged as a single line (never a payload

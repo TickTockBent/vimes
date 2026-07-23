@@ -1,8 +1,16 @@
 // ─── slice 5b step 3 — the tree + rollups (PURE, packages/core) ──────────────
 //
 // Assemble Step 2's per-row `PricedRow`s into the hierarchy Wes asked for —
-// project → session → subagent, as a genuine TREE (nesting is real to depth 3+,
-// survey Q2) — with dollar rollups that RECONCILE exactly.
+// directory → … → directory → session → subagent, as a genuine TREE (nesting is
+// real to depth 3+, survey Q2) — with dollar rollups that RECONCILE exactly.
+//
+// ⚠ D37: THE TOP OF THE TREE IS A DIRECTORY ROLLUP, NOT AN INFERRED PROJECT.
+// This module does NOT detect a project boundary — not `.git`, not `package.json`,
+// not any marker file, not a fixed depth below a root. A cwd is a FACT; a project
+// boundary is an INFERENCE, and Wes may work without a repo or with another VCS.
+// So every directory node is a real directory some session actually ran in, or an
+// ancestor of one, and the operator picks granularity by EXPANDING rather than by
+// trusting a boundary someone guessed (docs/decisions.md D37).
 //
 // Rule 0.3: pure arithmetic over data. No clock, no randomness, no I/O. This
 // module NEVER re-prices — it consumes the `PricedRow` Step 2 produced.
@@ -112,6 +120,20 @@ export interface AgentNode {
 
 export interface SessionNode {
   readonly sessionId: string;
+  // The directory node this session hangs off. For an inside-roots session this
+  // IS its launch cwd, verbatim (D37) — never a truncated/inferred project key;
+  // for an outside-roots session it is the shared sentinel bucket.
+  readonly directoryPath: string;
+  // The session's OWN launch cwd, normalized, kept even when the session is
+  // bucketed outside roots — it is what the identity ladder's basename rung
+  // reads. Null when the rows carried no usable cwd.
+  readonly cwd: string | null;
+  // The human-given session name, when the caller supplied one via
+  // `sessionNames`. Null = no name known (not "no name exists").
+  readonly name: string | null;
+  // The identity ladder (D37): `name` → cwd basename → short id. NEVER blank —
+  // a session leaf must always render as something a human can read.
+  readonly label: string;
   // Rows on this node directly = the session's own messages (agentId null).
   readonly own: RollupTotals;
   // Top-level agents: parent recovered as the session root, or unattributed.
@@ -119,15 +141,33 @@ export interface SessionNode {
   readonly subtree: RollupTotals;
 }
 
-export interface ProjectNode {
-  // The project directory (inside roots) or the shared outside-roots sentinel.
-  readonly projectKey: string;
+// A node of the DIRECTORY ROLLUP (D37). Every node is either a real directory a
+// session ran in, or an ancestor of one on the path down from a matched
+// `VIMES_PROJECT_ROOTS` entry — plus the two explicit sentinel buckets
+// (outside-roots, unknown-directory), which are top-level and childless.
+export interface DirectoryNode {
+  // The absolute directory path, normalized (no trailing/duplicate separators),
+  // or a sentinel bucket key. This is the node's identity on the wire.
+  readonly directoryPath: string;
+  // The last path segment — what a surface shows. Never blank: `/` labels as
+  // `/`, and a sentinel labels as itself.
+  readonly label: string;
+  // Depth below the top of ITS OWN chain (top-level node = 0). Lets a surface
+  // indent and pick a default expansion depth without re-parsing paths.
+  readonly depth: number;
   // FALSE only for the single outside-`VIMES_PROJECT_ROOTS` bucket.
   readonly insideProjectRoots: boolean;
+  // Sessions LAUNCHED IN THIS EXACT DIRECTORY. A session launched in a
+  // subdirectory belongs to that subdirectory's node, not this one.
   readonly sessions: readonly SessionNode[];
-  // No rows attach directly to a project (every row has a session), so own is
-  // always zero-valued; kept for a uniform node shape and reconciliation.
+  // Child directories, ascending by directoryPath.
+  readonly children: readonly DirectoryNode[];
+  // The spend of the sessions launched in THIS directory itself = Σ
+  // sessions.subtree. (Rows never attach to a directory — every row has a
+  // session — so `own` is a roll-up of this node's own sessions, which is
+  // exactly the "what was spent here, not below here" number.)
   readonly own: RollupTotals;
+  // own + Σ children.subtree, BY CONSTRUCTION.
   readonly subtree: RollupTotals;
 }
 
@@ -138,27 +178,45 @@ export interface AttributionGroup {
 }
 
 export interface CostTree {
-  readonly projects: readonly ProjectNode[];
-  // Grand total over every row = Σ project subtrees. Reconciles with the secondary
-  // groupings (each row lands in exactly one skill and one agent bucket).
+  // The TOP-LEVEL directory nodes, ascending by directoryPath. Each matched
+  // `VIMES_PROJECT_ROOTS` entry that has spend under it is one top-level node;
+  // a cwd that matched no root is its own top-level node; the two sentinel
+  // buckets sit here too.
+  readonly directories: readonly DirectoryNode[];
+  // Grand total over every row = Σ top-level directory subtrees. Reconciles with
+  // the secondary groupings (each row lands in exactly one skill and one agent
+  // bucket).
   readonly grandTotal: RollupTotals;
   readonly byAttributionSkill: readonly AttributionGroup[];
   readonly byAttributionAgent: readonly AttributionGroup[];
 }
 
 export interface BuildCostTreeOptions {
-  // Project-parent directories (injected data, pure — the daemon supplies the
-  // lab's category dirs). A row's project is the immediate child of the longest
-  // matched root. Empty (default) → project keys fall back to the honest full cwd.
+  // `VIMES_PROJECT_ROOTS` (injected data, pure — the daemon supplies the lab's
+  // roots). D37: these are the FILTER and the CEILING of the rollup, never a
+  // boundary detector. A row's directory is its cwd verbatim; the matched root
+  // is simply where its ancestor chain stops climbing. Empty (default) → every
+  // distinct cwd is its own top-level node, with no invented ancestors.
   readonly projectRoots?: readonly string[];
   // Externally-harvested agent→agent parent edges (parent-edge fix, unit 1). Applied
   // FIRST (authoritative), then row-derived edges fill the rest — see mergeParentEdges.
   // Absent/empty (default) → behaviour is exactly the row-only buildParentMap path.
   readonly parentEdges?: readonly ExplicitAgentParentEdge[];
+  // Human-given session names, keyed by the SAME session id the cost rows carry,
+  // for the D37 identity ladder (`name` → cwd basename → short id). Injected
+  // DATA, not a lookup: core stays pure and never reaches for a projection.
+  // Absent (default) → the ladder starts at the cwd basename.
+  readonly sessionNames?: Readonly<Record<string, string | null>>;
 }
 
 // The single explicit bucket for rows outside VIMES_PROJECT_ROOTS (rule 9).
 export const OUTSIDE_ROOTS_PROJECT_KEY = '<outside-project-roots>';
+// The bucket for a row that claims to be INSIDE roots but carries no usable cwd
+// (blank after normalization). Never seen in the live corpus; handled rather than
+// assumed away, and given a printable non-blank key so it can never render as an
+// empty directory label. A null cwd keeps its existing home in the outside bucket
+// — this sentinel deliberately does not move any row that already had one.
+export const UNKNOWN_DIRECTORY_KEY = '<unknown-directory>';
 // The bucket for a row whose sessionId is absent (never seen in the live corpus;
 // handled rather than assumed away).
 export const UNKNOWN_SESSION_KEY = '<unknown-session>';
@@ -349,47 +407,170 @@ function mergeParentEdges(
   return parentByChildNodeKey;
 }
 
-// ── Deliverable 2: project classification (rule 9) ───────────────────────────
-function isPathWithinRoot(candidatePath: string, root: string): boolean {
-  const rootWithBoundary = root.endsWith(PATH_SEPARATOR) ? root : root + PATH_SEPARATOR;
-  return candidatePath === root || candidatePath.startsWith(rootWithBoundary);
+// ── Deliverable 2: directory classification (rule 9 + D37) ───────────────────
+//
+// ⚠ Nothing below detects a project. It splits a path into segments and compares
+// prefixes — both facts about the string the row already carried.
+
+// Split a POSIX path into its non-empty segments, remembering whether it was
+// absolute. Empty segments (from `//`, or a trailing `/`) are dropped, so
+// `/a//b/` and `/a/b` are the SAME directory — path equivalence, not inference.
+function splitDirectorySegments(rawPath: string): { isAbsolute: boolean; segments: string[] } {
+  const isAbsolute = rawPath.startsWith(PATH_SEPARATOR);
+  const segments = rawPath.split(PATH_SEPARATOR).filter((segment) => segment.length > 0);
+  return { isAbsolute, segments };
 }
 
-// The project a row belongs to: the OUTSIDE bucket when not inside roots, else the
-// immediate child directory of the longest matched project-parent root, else (no
-// root matched / none configured) the honest full cwd. Never a slug (rule 9).
-export function resolveProjectKey(
-  row: CostTreeInputRow,
-  projectRoots: readonly string[],
-): { projectKey: string; insideProjectRoots: boolean } {
-  if (!row.insideProjectRoots || row.projectCwd === null) {
-    return { projectKey: OUTSIDE_ROOTS_PROJECT_KEY, insideProjectRoots: false };
+// The canonical spelling of a directory path: absolute paths keep their leading
+// separator (`/` alone for the filesystem root), relative ones are joined as-is.
+// A path with nothing in it normalizes to '' — the caller decides what that means.
+function normalizeDirectoryPath(rawPath: string): string {
+  const { isAbsolute, segments } = splitDirectorySegments(rawPath);
+  if (isAbsolute) {
+    return PATH_SEPARATOR + segments.join(PATH_SEPARATOR);
   }
-  const projectCwd = row.projectCwd;
-  let longestMatchedRoot: string | null = null;
+  return segments.join(PATH_SEPARATOR);
+}
+
+// TRUE when `candidatePath` is the root itself or sits beneath it. Both sides are
+// compared segment-wise, so `/a/bc` is never "inside" `/a/b`.
+function isPathWithinRoot(candidatePath: string, root: string): boolean {
+  const candidate = splitDirectorySegments(candidatePath);
+  const rootParts = splitDirectorySegments(root);
+  if (candidate.isAbsolute !== rootParts.isAbsolute) {
+    return false;
+  }
+  if (candidate.segments.length < rootParts.segments.length) {
+    return false;
+  }
+  return rootParts.segments.every((segment, index) => candidate.segments[index] === segment);
+}
+
+// The longest configured root that contains `directoryPath`, or null. Length is
+// measured in SEGMENTS (a longer path string is not necessarily a deeper root).
+function longestMatchingRoot(
+  directoryPath: string,
+  projectRoots: readonly string[],
+): string | null {
+  let bestRoot: string | null = null;
+  let bestSegmentCount = -1;
   for (const root of projectRoots) {
-    if (isPathWithinRoot(projectCwd, root) && (longestMatchedRoot === null || root.length > longestMatchedRoot.length)) {
-      longestMatchedRoot = root;
+    const normalizedRoot = normalizeDirectoryPath(root);
+    if (!isPathWithinRoot(directoryPath, normalizedRoot)) {
+      continue;
+    }
+    const segmentCount = splitDirectorySegments(normalizedRoot).segments.length;
+    if (segmentCount > bestSegmentCount) {
+      bestSegmentCount = segmentCount;
+      bestRoot = normalizedRoot;
     }
   }
-  if (longestMatchedRoot === null) {
-    // No project-parent root configured/matched: group by the honest cwd rather
-    // than invent a project boundary.
-    return { projectKey: projectCwd, insideProjectRoots: true };
+  return bestRoot;
+}
+
+/**
+ * The DIRECTORY a row belongs to (D37) — the row's own cwd, normalized, and
+ * nothing else. The OUTSIDE bucket when the row is not inside roots (or carries
+ * no cwd at all); the unknown-directory bucket when the cwd is present but blank.
+ *
+ * This function deliberately does NOT truncate the cwd to some level below a
+ * root: that truncation was the D37 defect (it grouped a whole category of
+ * repositories into one line). Rolling several cwds up into a shared parent is
+ * the TREE's job, and it does it with real ancestor directories.
+ */
+export function resolveDirectoryKey(
+  row: CostTreeInputRow,
+  projectRoots: readonly string[],
+): { directoryPath: string; insideProjectRoots: boolean } {
+  if (!row.insideProjectRoots || row.projectCwd === null) {
+    return { directoryPath: OUTSIDE_ROOTS_PROJECT_KEY, insideProjectRoots: false };
   }
-  const rootWithBoundary = longestMatchedRoot.endsWith(PATH_SEPARATOR)
-    ? longestMatchedRoot
-    : longestMatchedRoot + PATH_SEPARATOR;
-  const belowRoot = projectCwd.startsWith(rootWithBoundary)
-    ? projectCwd.slice(rootWithBoundary.length)
-    : '';
-  const firstSegment = belowRoot.split(PATH_SEPARATOR)[0];
-  if (firstSegment === undefined || firstSegment === '') {
-    // cwd IS the root exactly (e.g. a session launched at the project-parent) —
-    // no project segment below it; keep the cwd as the honest key.
-    return { projectKey: projectCwd, insideProjectRoots: true };
+  const normalizedCwd = normalizeDirectoryPath(row.projectCwd);
+  if (normalizedCwd === '') {
+    return { directoryPath: UNKNOWN_DIRECTORY_KEY, insideProjectRoots: true };
   }
-  return { projectKey: rootWithBoundary + firstSegment, insideProjectRoots: true };
+  // `projectRoots` is not consulted here at all: it bounds the ancestor chain in
+  // `ancestorChainFor`, it does not reshape the directory the session ran in.
+  void projectRoots;
+  return { directoryPath: normalizedCwd, insideProjectRoots: true };
+}
+
+// The chain of directory nodes from the top of the rollup down to
+// `directoryPath`, inclusive and in that order.
+//
+// - A sentinel bucket is its own single-node chain (it has no ancestors and must
+//   not be folded into the tree).
+// - Inside a matched root, the chain starts AT the root: the root is the ceiling
+//   of the rollup, so `…/projects` is the full-spend node and nothing above it is
+//   invented.
+// - With no root matched (or none configured), the chain is the cwd alone — a
+//   standalone top-level node. Climbing to `/` here would fabricate ancestors
+//   nobody asked for.
+function ancestorChainFor(directoryPath: string, projectRoots: readonly string[]): string[] {
+  if (directoryPath === OUTSIDE_ROOTS_PROJECT_KEY || directoryPath === UNKNOWN_DIRECTORY_KEY) {
+    return [directoryPath];
+  }
+  const matchedRoot = longestMatchingRoot(directoryPath, projectRoots);
+  if (matchedRoot === null) {
+    return [directoryPath];
+  }
+  const rootSegmentCount = splitDirectorySegments(matchedRoot).segments.length;
+  const { isAbsolute, segments } = splitDirectorySegments(directoryPath);
+  const chain: string[] = [matchedRoot];
+  for (let segmentIndex = rootSegmentCount; segmentIndex < segments.length; segmentIndex += 1) {
+    const prefixSegments = segments.slice(0, segmentIndex + 1);
+    chain.push(
+      isAbsolute
+        ? PATH_SEPARATOR + prefixSegments.join(PATH_SEPARATOR)
+        : prefixSegments.join(PATH_SEPARATOR),
+    );
+  }
+  return chain;
+}
+
+// The display label for a directory node: its last path segment. `/` labels as
+// `/`; a sentinel labels as itself. NEVER blank.
+function directoryLabelFor(directoryPath: string): string {
+  if (directoryPath === OUTSIDE_ROOTS_PROJECT_KEY || directoryPath === UNKNOWN_DIRECTORY_KEY) {
+    return directoryPath;
+  }
+  const { segments } = splitDirectorySegments(directoryPath);
+  const lastSegment = segments[segments.length - 1];
+  return lastSegment === undefined || lastSegment === '' ? directoryPath : lastSegment;
+}
+
+// How many leading characters of a session id make the last-resort short id. Long
+// enough to be distinguishable at a glance in a uuid corpus, short enough to fit a
+// phone row. Presentation only — it never keys anything.
+const SHORT_SESSION_ID_LENGTH = 8;
+
+/**
+ * The D37 session identity ladder: human `name` → cwd basename → short id.
+ *
+ * `sessionCwd` is the session's OWN launch directory, not the node it hangs off
+ * — an outside-roots session shares one bucket with 30 others, so labelling it
+ * with the bucket key would make every one of them look identical. Total: it
+ * NEVER returns a blank string, so a session leaf can never render empty. A
+ * session id shorter than the short-id length is used whole.
+ */
+export function sessionDisplayLabel(
+  sessionId: string,
+  sessionCwd: string | null,
+  sessionName: string | null,
+): string {
+  if (sessionName !== null && sessionName.trim().length > 0) {
+    return sessionName.trim();
+  }
+  if (sessionCwd !== null) {
+    const cwdBasename = directoryLabelFor(sessionCwd);
+    if (cwdBasename.trim().length > 0) {
+      return cwdBasename;
+    }
+  }
+  if (sessionId.trim().length > 0) {
+    return sessionId.slice(0, SHORT_SESSION_ID_LENGTH);
+  }
+  return UNKNOWN_SESSION_KEY;
 }
 
 // ── the build: bottom-up so every subtree = own + Σ children by construction ──
@@ -411,66 +592,113 @@ export function buildCostTree(
   // injected edges this equals buildParentMap(rows) exactly — same map, same keys.
   const parentMap = mergeParentEdges(options.parentEdges ?? [], rows);
 
-  // Pass 0: a session belongs to ONE project (project → session → agent). A
-  // session is launched in one directory, and its session-root records (agentId
-  // null) carry that launch cwd — the true project — even when subagents cd into
-  // worktrees that classify elsewhere (3 sessions span >1 classification in the
-  // live corpus). So each session's project is chosen from its root rows (the
-  // lexically smallest key, for determinism, if a session's roots ever disagree);
-  // a session with no root row (defensive — none in the corpus) falls back to the
-  // smallest project key among all its rows.
-  const rootProjectCandidates = new Map<string, Set<string>>();
-  const anyProjectCandidates = new Map<string, Set<string>>();
-  const projectClassificationByKey = new Map<string, boolean>();
+  // Pass 0: a session belongs to ONE directory. A session is launched in one
+  // directory, and its session-root records (agentId null) carry that launch cwd
+  // — the truth — even when subagents cd into worktrees that classify elsewhere
+  // (3 sessions span >1 classification in the live corpus). So each session's
+  // directory is chosen from its root rows (the lexically smallest, for
+  // determinism, if a session's roots ever disagree); a session with no root row
+  // (defensive — none in the corpus) falls back to the smallest among all its
+  // rows. D37 changed WHAT is chosen (the full cwd, not a truncation), not HOW.
+  const rootDirectoryCandidates = new Map<string, Set<string>>();
+  const anyDirectoryCandidates = new Map<string, Set<string>>();
+  const insideRootsByDirectory = new Map<string, boolean>();
+  // The session's raw launch cwd, chosen by the SAME rule and kept even when the
+  // session is bucketed outside roots — the identity ladder's basename rung reads
+  // it, and the outside bucket key would otherwise make 31 sessions look alike.
+  const rootCwdCandidates = new Map<string, Set<string>>();
+  const anyCwdCandidates = new Map<string, Set<string>>();
   for (const row of rows) {
     const sessionId = sessionKeyOf(row.sessionId);
-    const classification = resolveProjectKey(row, projectRoots);
-    projectClassificationByKey.set(classification.projectKey, classification.insideProjectRoots);
-    const anySet = anyProjectCandidates.get(sessionId) ?? new Set<string>();
-    anySet.add(classification.projectKey);
-    anyProjectCandidates.set(sessionId, anySet);
+    const classification = resolveDirectoryKey(row, projectRoots);
+    insideRootsByDirectory.set(classification.directoryPath, classification.insideProjectRoots);
+    const anySet = anyDirectoryCandidates.get(sessionId) ?? new Set<string>();
+    anySet.add(classification.directoryPath);
+    anyDirectoryCandidates.set(sessionId, anySet);
     if (row.agentId === null) {
-      const rootSet = rootProjectCandidates.get(sessionId) ?? new Set<string>();
-      rootSet.add(classification.projectKey);
-      rootProjectCandidates.set(sessionId, rootSet);
+      const rootSet = rootDirectoryCandidates.get(sessionId) ?? new Set<string>();
+      rootSet.add(classification.directoryPath);
+      rootDirectoryCandidates.set(sessionId, rootSet);
+    }
+
+    const normalizedCwd = row.projectCwd === null ? '' : normalizeDirectoryPath(row.projectCwd);
+    if (normalizedCwd !== '') {
+      const anyCwdSet = anyCwdCandidates.get(sessionId) ?? new Set<string>();
+      anyCwdSet.add(normalizedCwd);
+      anyCwdCandidates.set(sessionId, anyCwdSet);
+      if (row.agentId === null) {
+        const rootCwdSet = rootCwdCandidates.get(sessionId) ?? new Set<string>();
+        rootCwdSet.add(normalizedCwd);
+        rootCwdCandidates.set(sessionId, rootCwdSet);
+      }
     }
   }
-  const sessionProjectKey = new Map<string, string>();
-  for (const [sessionId, anySet] of anyProjectCandidates) {
-    const rootSet = rootProjectCandidates.get(sessionId);
+  const sessionDirectoryPath = new Map<string, string>();
+  for (const [sessionId, anySet] of anyDirectoryCandidates) {
+    const rootSet = rootDirectoryCandidates.get(sessionId);
     const candidates = rootSet !== undefined && rootSet.size > 0 ? rootSet : anySet;
     const chosen = [...candidates].sort()[0]!;
-    sessionProjectKey.set(sessionId, chosen);
+    sessionDirectoryPath.set(sessionId, chosen);
+  }
+  const sessionLaunchCwd = new Map<string, string>();
+  for (const [sessionId, anyCwdSet] of anyCwdCandidates) {
+    const rootCwdSet = rootCwdCandidates.get(sessionId);
+    const candidates = rootCwdSet !== undefined && rootCwdSet.size > 0 ? rootCwdSet : anyCwdSet;
+    sessionLaunchCwd.set(sessionId, [...candidates].sort()[0]!);
   }
 
   // Pass 1: bucket every row into exactly one node's `own`.
-  // project → session → (session-own | agent-own).
-  interface ProjectBuildState {
-    readonly projectKey: string;
+  // directory → … → directory → session → (session-own | agent-own).
+  interface DirectoryBuildState {
+    readonly directoryPath: string;
+    readonly depth: number;
     readonly insideProjectRoots: boolean;
     readonly sessionIds: string[];
+    readonly childDirectoryPaths: Set<string>;
+    // TRUE only for the first node of an ancestor chain — the roots of the forest.
+    isTopLevel: boolean;
   }
-  const projectStates = new Map<string, ProjectBuildState>();
+  const directoryStates = new Map<string, DirectoryBuildState>();
   const sessionOwnTotals = new Map<string, MutableTotals>();
   const sessionAgentIds = new Map<string, string[]>();
   const agentStates = new Map<string, AgentBuildState>();
 
-  const ensureProject = (projectKey: string, insideRoots: boolean): ProjectBuildState => {
-    let state = projectStates.get(projectKey);
-    if (state === undefined) {
-      state = { projectKey, insideProjectRoots: insideRoots, sessionIds: [] };
-      projectStates.set(projectKey, state);
-    }
-    return state;
+  // Materialize the whole ancestor chain for a directory, linking parent→child.
+  // Idempotent: an ancestor shared by two sessions is created once.
+  const ensureDirectoryChain = (directoryPath: string, insideRoots: boolean): void => {
+    const chain = ancestorChainFor(directoryPath, projectRoots);
+    chain.forEach((chainPath, chainDepth) => {
+      let state = directoryStates.get(chainPath);
+      if (state === undefined) {
+        state = {
+          directoryPath: chainPath,
+          depth: chainDepth,
+          // An ancestor of an inside-roots directory is itself inside roots; the
+          // flag is FALSE only for the outside bucket, which is its own chain.
+          insideProjectRoots: insideRoots,
+          sessionIds: [],
+          childDirectoryPaths: new Set<string>(),
+          isTopLevel: chainDepth === 0,
+        };
+        directoryStates.set(chainPath, state);
+      }
+      const parentPath = chainDepth === 0 ? null : chain[chainDepth - 1]!;
+      if (parentPath !== null) {
+        directoryStates.get(parentPath)!.childDirectoryPaths.add(chainPath);
+        // A node first seen as the top of a shorter chain (a session launched AT
+        // the root) is not top-level once a deeper chain reveals its parent.
+        state.isTopLevel = false;
+      }
+    });
   };
 
-  const ensureSession = (sessionId: string, projectKey: string): void => {
+  const ensureSession = (sessionId: string, directoryPath: string): void => {
     if (!sessionOwnTotals.has(sessionId)) {
       sessionOwnTotals.set(sessionId, newMutableTotals());
       sessionAgentIds.set(sessionId, []);
-      const projectState = projectStates.get(projectKey);
-      if (projectState !== undefined) {
-        projectState.sessionIds.push(sessionId);
+      const directoryState = directoryStates.get(directoryPath);
+      if (directoryState !== undefined) {
+        directoryState.sessionIds.push(sessionId);
       }
     }
   };
@@ -498,10 +726,10 @@ export function buildCostTree(
 
   for (const row of rows) {
     const sessionId = sessionKeyOf(row.sessionId);
-    const projectKey = sessionProjectKey.get(sessionId)!;
-    const insideProjectRoots = projectClassificationByKey.get(projectKey) ?? false;
-    ensureProject(projectKey, insideProjectRoots);
-    ensureSession(sessionId, projectKey);
+    const directoryPath = sessionDirectoryPath.get(sessionId)!;
+    const insideProjectRoots = insideRootsByDirectory.get(directoryPath) ?? false;
+    ensureDirectoryChain(directoryPath, insideProjectRoots);
+    ensureSession(sessionId, directoryPath);
 
     if (row.agentId === null) {
       // Session-root record: the session's own messages.
@@ -547,8 +775,9 @@ export function buildCostTree(
   }
 
   // Pass 3: freeze bottom-up. Agent subtree = own + Σ child subtrees (recursive);
-  // session subtree = own + Σ top-level agent subtrees; project subtree = Σ session
-  // subtrees; grand total = Σ project subtrees. Subtree === own + Σ children BY
+  // session subtree = own + Σ top-level agent subtrees; directory own = Σ its own
+  // sessions' subtrees; directory subtree = own + Σ child directory subtrees;
+  // grand total = Σ top-level directory subtrees. Subtree === own + Σ children BY
   // CONSTRUCTION — `assertTreeReconciles` verifies it independently.
   const frozenAgentCache = new Map<string, AgentNode>();
 
@@ -578,7 +807,9 @@ export function buildCostTree(
     return node;
   };
 
-  const buildSessionNode = (sessionId: string): SessionNode => {
+  const sessionNames = options.sessionNames ?? {};
+
+  const buildSessionNode = (sessionId: string, directoryPath: string): SessionNode => {
     const ownMutable = sessionOwnTotals.get(sessionId)!;
     const topLevelAgentIds = (sessionAgentIds.get(sessionId) ?? []).filter((agentId) => {
       const state = agentStates.get(nodeKey(sessionId, agentId))!;
@@ -591,34 +822,83 @@ export function buildCostTree(
     for (const agentNode of agentNodes) {
       addTotals(subtree, agentNode.subtree);
     }
+    // The session's own launch cwd — the sentinel buckets carry no directory, so
+    // the basename rung of the ladder has nothing to read there and falls through.
+    const sessionCwd =
+      directoryPath === OUTSIDE_ROOTS_PROJECT_KEY || directoryPath === UNKNOWN_DIRECTORY_KEY
+        ? sessionLaunchCwd.get(sessionId) ?? null
+        : directoryPath;
+    // `Object.hasOwn` (not a bare lookup) so an inherited key like "toString"
+    // can never masquerade as a session name (I8).
+    const sessionName = Object.hasOwn(sessionNames, sessionId) ? sessionNames[sessionId] ?? null : null;
     return {
       sessionId,
+      directoryPath,
+      cwd: sessionCwd,
+      name: sessionName,
+      label: sessionDisplayLabel(sessionId, sessionCwd, sessionName),
       own: freezeTotals(ownMutable),
       agents: agentNodes,
       subtree: freezeTotals(subtree),
     };
   };
 
-  const projectNodes: ProjectNode[] = [];
-  const sortedProjectKeys = [...projectStates.keys()].sort();
-  const grandTotal = newMutableTotals();
-  for (const projectKey of sortedProjectKeys) {
-    const projectState = projectStates.get(projectKey)!;
-    const sortedSessionIds = [...projectState.sessionIds].sort();
-    const sessionNodes = sortedSessionIds.map((sessionId) => buildSessionNode(sessionId));
-    const subtree = newMutableTotals();
-    for (const sessionNode of sessionNodes) {
-      addTotals(subtree, sessionNode.subtree);
+  // Freeze the directory forest bottom-up with an EXPLICIT stack rather than
+  // recursion: a pathological cwd can be arbitrarily deep, and a deep path must
+  // never blow the stack (I8, assertion 6).
+  const frozenDirectoryCache = new Map<string, DirectoryNode>();
+  const buildDirectoryNode = (rootPath: string): DirectoryNode => {
+    const pendingStack: string[] = [rootPath];
+    while (pendingStack.length > 0) {
+      const currentPath = pendingStack[pendingStack.length - 1]!;
+      if (frozenDirectoryCache.has(currentPath)) {
+        pendingStack.pop();
+        continue;
+      }
+      const state = directoryStates.get(currentPath)!;
+      const sortedChildPaths = [...state.childDirectoryPaths].sort();
+      const unfrozenChildPaths = sortedChildPaths.filter((childPath) => !frozenDirectoryCache.has(childPath));
+      if (unfrozenChildPaths.length > 0) {
+        pendingStack.push(...unfrozenChildPaths);
+        continue;
+      }
+      pendingStack.pop();
+      const sortedSessionIds = [...state.sessionIds].sort();
+      const sessionNodes = sortedSessionIds.map((sessionId) => buildSessionNode(sessionId, currentPath));
+      // `own` = the spend of the sessions launched in THIS directory itself.
+      const own = newMutableTotals();
+      for (const sessionNode of sessionNodes) {
+        addTotals(own, sessionNode.subtree);
+      }
+      const frozenOwn = freezeTotals(own);
+      const childNodes = sortedChildPaths.map((childPath) => frozenDirectoryCache.get(childPath)!);
+      const subtree = newMutableTotals();
+      addTotals(subtree, frozenOwn);
+      for (const childNode of childNodes) {
+        addTotals(subtree, childNode.subtree);
+      }
+      frozenDirectoryCache.set(currentPath, {
+        directoryPath: currentPath,
+        label: directoryLabelFor(currentPath),
+        depth: state.depth,
+        insideProjectRoots: state.insideProjectRoots,
+        sessions: sessionNodes,
+        children: childNodes,
+        own: frozenOwn,
+        subtree: freezeTotals(subtree),
+      });
     }
-    const frozenSubtree = freezeTotals(subtree);
-    projectNodes.push({
-      projectKey,
-      insideProjectRoots: projectState.insideProjectRoots,
-      sessions: sessionNodes,
-      own: emptyTotals(),
-      subtree: frozenSubtree,
-    });
-    addTotals(grandTotal, frozenSubtree);
+    return frozenDirectoryCache.get(rootPath)!;
+  };
+
+  const topLevelDirectoryPaths = [...directoryStates.values()]
+    .filter((state) => state.isTopLevel)
+    .map((state) => state.directoryPath)
+    .sort();
+  const directoryNodes = topLevelDirectoryPaths.map((rootPath) => buildDirectoryNode(rootPath));
+  const grandTotal = newMutableTotals();
+  for (const directoryNode of directoryNodes) {
+    addTotals(grandTotal, directoryNode.subtree);
   }
 
   // ── Deliverable 4: secondary flat groupings ────────────────────────────────
@@ -626,7 +906,7 @@ export function buildCostTree(
   const byAttributionAgent = groupRowsBy(rows, (row) => row.attributionAgent);
 
   return {
-    projects: projectNodes,
+    directories: directoryNodes,
     grandTotal: freezeTotals(grandTotal),
     byAttributionSkill,
     byAttributionAgent,
@@ -680,7 +960,7 @@ function groupRowsBy(
 
 // ── Deliverable 3: the reconciliation assertion (the load-bearing guard) ─────
 export interface ReconciliationViolation {
-  readonly nodeKind: 'agent' | 'session' | 'project' | 'grand-total';
+  readonly nodeKind: 'agent' | 'session' | 'directory' | 'grand-total';
   readonly nodeId: string;
   readonly field: string;
   readonly expected: number;
@@ -700,6 +980,9 @@ export function findReconciliationViolations(tree: CostTree): ReconciliationViol
     nodeId: string,
     expected: RollupTotals,
     actual: RollupTotals,
+    // Names the identity under test when a node has more than one (a directory
+    // checks both `subtree === own + Σ children` and `own === Σ sessions`).
+    fieldPrefix = '',
   ): void => {
     const fields: Array<[string, number, number]> = [
       ['pricedNanoDollars', expected.pricedNanoDollars, actual.pricedNanoDollars],
@@ -710,7 +993,8 @@ export function findReconciliationViolations(tree: CostTree): ReconciliationViol
       fields.push([`statusCounts.${status}`, expected.statusCounts[status], actual.statusCounts[status]]);
       fields.push([`tokensByStatus.${status}`, expected.tokensByStatus[status], actual.tokensByStatus[status]]);
     }
-    for (const [field, expectedValue, actualValue] of fields) {
+    for (const [fieldName, expectedValue, actualValue] of fields) {
+      const field = fieldPrefix + fieldName;
       if (expectedValue !== actualValue) {
         violations.push({
           nodeKind,
@@ -744,9 +1028,15 @@ export function findReconciliationViolations(tree: CostTree): ReconciliationViol
     compareTotals('agent', `${agentNode.sessionId}/${agentNode.agentId}`, expected, agentNode.subtree);
   };
 
+  // Walk the directory forest with an explicit stack (no recursion — a cwd can be
+  // arbitrarily deep and the verifier must survive it too).
   const grandExpected = newMutableTotals();
-  for (const projectNode of tree.projects) {
-    for (const sessionNode of projectNode.sessions) {
+  const pendingDirectories: DirectoryNode[] = [...tree.directories];
+  while (pendingDirectories.length > 0) {
+    const directoryNode = pendingDirectories.pop()!;
+    pendingDirectories.push(...directoryNode.children);
+
+    for (const sessionNode of directoryNode.sessions) {
       for (const agentNode of sessionNode.agents) {
         checkAgent(agentNode);
       }
@@ -756,12 +1046,21 @@ export function findReconciliationViolations(tree: CostTree): ReconciliationViol
       );
       compareTotals('session', sessionNode.sessionId, sessionExpected, sessionNode.subtree);
     }
-    const projectExpected = sumChildren(
-      projectNode.sessions.map((sessionNode) => sessionNode.subtree),
-      projectNode.own,
+    // Identity 1: a directory's `own` IS the roll-up of the sessions launched in it.
+    const ownExpected = sumChildren(
+      directoryNode.sessions.map((sessionNode) => sessionNode.subtree),
+      emptyTotals(),
     );
-    compareTotals('project', projectNode.projectKey, projectExpected, projectNode.subtree);
-    addTotals(grandExpected, projectNode.subtree);
+    compareTotals('directory', directoryNode.directoryPath, ownExpected, directoryNode.own, 'own.');
+    // Identity 2: the load-bearing one — subtree === own + Σ children.subtree.
+    const subtreeExpected = sumChildren(
+      directoryNode.children.map((childNode) => childNode.subtree),
+      directoryNode.own,
+    );
+    compareTotals('directory', directoryNode.directoryPath, subtreeExpected, directoryNode.subtree);
+  }
+  for (const topLevelDirectory of tree.directories) {
+    addTotals(grandExpected, topLevelDirectory.subtree);
   }
   compareTotals('grand-total', '<grand-total>', freezeTotals(grandExpected), tree.grandTotal);
 

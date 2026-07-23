@@ -174,9 +174,25 @@ describe('GET /api/cost/ledger', () => {
         '2026-07-20',
         '2026-07-21',
       ]);
-      // One project (alpha).
-      expect(body.ledger.projects).toHaveLength(1);
-      expect(body.ledger.projects[0].projectKey).toBe('/home/ticktockbent/projects/alpha');
+      // D37: one top-level directory (the configured root), with `alpha` nested
+      // under it as a real child directory rather than as a flat project entry.
+      expect(body.ledger.projects).toBeUndefined();
+      expect(body.ledger.directories).toHaveLength(1);
+      expect(body.ledger.directories[0].directoryPath).toBe('/home/ticktockbent/projects');
+      expect(body.ledger.directories[0].children).toHaveLength(1);
+      const alphaDirectory = body.ledger.directories[0].children[0];
+      expect(alphaDirectory.directoryPath).toBe('/home/ticktockbent/projects/alpha');
+      expect(alphaDirectory.label).toBe('alpha');
+      // The rollup survives JSON serialisation intact: the root's subtree is the
+      // child's, and the grand total is the root's.
+      expect(alphaDirectory.subtree.priced.nanoDollars).toBe(
+        body.ledger.directories[0].subtree.priced.nanoDollars,
+      );
+      expect(body.ledger.directories[0].subtree.priced.nanoDollars).toBe(
+        body.ledger.grandTotal.priced.nanoDollars,
+      );
+      // The session leaf renders readably, never as a bare uuid with no label.
+      expect(alphaDirectory.sessions[0].label.length).toBeGreaterThan(0);
     } finally {
       await daemon.stop();
     }

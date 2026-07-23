@@ -36,15 +36,15 @@ import {
 import {
   assertTreeReconciles,
   buildCostTree,
-  resolveProjectKey,
+  resolveDirectoryKey,
   OUTSIDE_ROOTS_PROJECT_KEY,
   UNKNOWN_SESSION_KEY,
   type AgentNode,
   type AttributionGroup,
   type CostTree,
   type CostTreeInputRow,
+  type DirectoryNode,
   type ExplicitAgentParentEdge,
-  type ProjectNode,
   type RollupTotals,
   type SessionNode,
 } from './costTree.js';
@@ -152,18 +152,35 @@ export interface AgentView {
 
 export interface SessionView {
   readonly sessionId: string;
+  // The directory node this session hangs off.
+  readonly directoryPath: string;
+  // The session's OWN launch cwd (kept even for outside-roots sessions), or null.
+  readonly cwd: string | null;
+  // The human-given name when the caller supplied one, else null.
+  readonly name: string | null;
+  // The D37 identity ladder — `name` → cwd basename → short id. NEVER blank, so
+  // the UI renders this and never has to invent a fallback of its own.
+  readonly label: string;
   readonly own: RollupView;
   readonly subtree: RollupView;
   readonly agents: readonly AgentView[];
 }
 
-export interface ProjectView {
-  readonly projectKey: string;
+// A node of the D37 directory rollup. Plain and serialisable; `children` nests.
+export interface DirectoryView {
+  readonly directoryPath: string;
+  // The last path segment (or the sentinel key) — never blank.
+  readonly label: string;
+  // Depth below the top of its own chain; a top-level node is 0.
+  readonly depth: number;
   // FALSE only for the single outside-VIMES_PROJECT_ROOTS bucket (rule 9).
   readonly insideProjectRoots: boolean;
+  // The spend of the sessions launched in THIS directory itself.
   readonly own: RollupView;
+  // own + Σ children.subtree.
   readonly subtree: RollupView;
   readonly sessions: readonly SessionView[];
+  readonly children: readonly DirectoryView[];
 }
 
 export interface AttributionView {
@@ -186,20 +203,47 @@ function toAgentView(agentNode: AgentNode): AgentView {
 function toSessionView(sessionNode: SessionNode): SessionView {
   return {
     sessionId: sessionNode.sessionId,
+    directoryPath: sessionNode.directoryPath,
+    cwd: sessionNode.cwd,
+    name: sessionNode.name,
+    label: sessionNode.label,
     own: toRollupView(sessionNode.own),
     subtree: toRollupView(sessionNode.subtree),
     agents: sessionNode.agents.map(toAgentView),
   };
 }
 
-function toProjectView(projectNode: ProjectNode): ProjectView {
-  return {
-    projectKey: projectNode.projectKey,
-    insideProjectRoots: projectNode.insideProjectRoots,
-    own: toRollupView(projectNode.own),
-    subtree: toRollupView(projectNode.subtree),
-    sessions: projectNode.sessions.map(toSessionView),
-  };
+// Depth is bounded only by how deep a cwd is, so this mirrors the tree with an
+// explicit stack instead of recursion (I8 — a pathological path must not blow it).
+function toDirectoryViews(directoryNodes: readonly DirectoryNode[]): DirectoryView[] {
+  const viewByPath = new Map<string, DirectoryView>();
+  const pendingStack: DirectoryNode[] = [...directoryNodes];
+  while (pendingStack.length > 0) {
+    const directoryNode = pendingStack[pendingStack.length - 1]!;
+    if (viewByPath.has(directoryNode.directoryPath)) {
+      pendingStack.pop();
+      continue;
+    }
+    const unconvertedChildren = directoryNode.children.filter(
+      (childNode) => !viewByPath.has(childNode.directoryPath),
+    );
+    if (unconvertedChildren.length > 0) {
+      pendingStack.push(...unconvertedChildren);
+      continue;
+    }
+    pendingStack.pop();
+    viewByPath.set(directoryNode.directoryPath, {
+      directoryPath: directoryNode.directoryPath,
+      label: directoryNode.label,
+      depth: directoryNode.depth,
+      insideProjectRoots: directoryNode.insideProjectRoots,
+      own: toRollupView(directoryNode.own),
+      subtree: toRollupView(directoryNode.subtree),
+      sessions: directoryNode.sessions.map(toSessionView),
+      children: directoryNode.children.map((childNode) => viewByPath.get(childNode.directoryPath)!),
+    });
+  }
+  return directoryNodes.map((directoryNode) => viewByPath.get(directoryNode.directoryPath)!);
 }
 
 function toAttributionView(group: AttributionGroup): AttributionView {
@@ -216,18 +260,26 @@ export interface SpendHistoryPoint {
   readonly priced: MoneyAmount;
 }
 
-export interface ProjectSpendSeries {
-  readonly projectKey: string;
+export interface DirectorySpendSeries {
+  readonly directoryPath: string;
   // Ascending by day (string sort of YYYY-MM-DD is chronological).
   readonly points: readonly SpendHistoryPoint[];
 }
 
 export interface SpendHistory {
-  // The grand daily series — every project summed, ascending by day.
+  // The grand daily series — every row summed, ascending by day.
   readonly grand: readonly SpendHistoryPoint[];
-  // Per-project daily series, ascending by projectKey; each series ascending by
-  // day. A project's points sum to that project's priced subtree total.
-  readonly byProject: readonly ProjectSpendSeries[];
+  // D37: one series per DIRECTORY NODE of the tree — not per leaf directory —
+  // ascending by directoryPath, each series ascending by day.
+  //
+  // A node's series is its SUBTREE, so its points sum to exactly the number the
+  // tree shows beside that node. That is what lets the history selector offer the
+  // same nodes the tree does: selecting `…/projects/infrastructure` charts the
+  // rollup of everything beneath it, and selecting `…/infrastructure/vimes`
+  // charts just that repo. A leaf-only keying would have left every interior node
+  // with no series, and `seriesForSelection` (correctly) never falls back to the
+  // grand series — the selector would have silently charted nothing.
+  readonly byDirectory: readonly DirectorySpendSeries[];
 }
 
 // ── the servable body ────────────────────────────────────────────────────────
@@ -237,11 +289,13 @@ export interface CostLedgerReadModel {
   // The price-table snapshot every figure priced against (rule 0.5), so the UI
   // can render "as of <date>".
   readonly priceTableDate: string;
-  // Grand total over every row = Σ project subtrees.
+  // Grand total over every row = Σ top-level directory subtrees.
   readonly grandTotal: RollupView;
-  // The project list (ascending by projectKey), each drillable to sessions →
-  // agents with per-status breakdowns at every node.
-  readonly projects: readonly ProjectView[];
+  // D37: the DIRECTORY ROLLUP — top-level nodes ascending by directoryPath, each
+  // nesting into child directories and drillable to sessions → agents with
+  // per-status breakdowns at every node. No project boundary is inferred
+  // anywhere: every node is a directory a session ran in, or an ancestor of one.
+  readonly directories: readonly DirectoryView[];
   readonly spendHistory: SpendHistory;
   // Secondary flat groupings (Step 3, deliverable 4) — spend by attributed skill
   // and by attributed agent, each with the ABSENT bucket kept, never dropped.
@@ -252,19 +306,30 @@ export interface CostLedgerReadModel {
 export interface BuildCostLedgerOptions {
   // The price table to price against. Defaults to the pinned slice-5b snapshot.
   readonly priceTable?: PriceTable;
-  // Project-parent roots (VIMES_PROJECT_ROOTS) for tree classification — passed
-  // straight through to buildCostTree so project keys match rule 7.
+  // VIMES_PROJECT_ROOTS — passed straight through to buildCostTree so directory
+  // classification matches binding data rule 9 ("Slugs are not projects":
+  // classification runs against cwd + insideProjectRoots, never the slug, and an
+  // outside-roots bucket must exist). Rule 7 is the unrelated "unknown model →
+  // UNPRICED, never $0".
   readonly projectRoots?: readonly string[];
   // Externally-harvested agent→agent parent edges (parent-edge fix, unit 1), passed
   // straight through to buildCostTree so the tree can nest agents whose usage rows
   // carry no toolUseResult edge. Absent (default) → row-only behaviour, unchanged.
   readonly parentEdges?: readonly ExplicitAgentParentEdge[];
+  // Human-given session names keyed by the SAME session id the cost rows carry
+  // (D37's identity-ladder top rung), passed straight through to buildCostTree.
+  // Injected data — core never reaches for the sessions projection itself.
+  readonly sessionNames?: Readonly<Record<string, string | null>>;
   // A test seam to inject a non-reconciling tree so the builder's reconciliation
   // guard can be exercised — absent in prod (buildCostTree reconciles by
   // construction, so no INPUT alone can make the builder's tree fail to reconcile).
   readonly buildTree?: (
     rows: readonly CostTreeInputRow[],
-    opts: { projectRoots: readonly string[]; parentEdges?: readonly ExplicitAgentParentEdge[] },
+    opts: {
+      projectRoots: readonly string[];
+      parentEdges?: readonly ExplicitAgentParentEdge[];
+      sessionNames?: Readonly<Record<string, string | null>>;
+    },
   ) => CostTree;
 }
 
@@ -293,23 +358,38 @@ function dayBucketOf(timestamp: string): string {
 }
 
 // The session key exactly as the tree keys it (null → the unknown-session
-// sentinel), so a row's history bucket lands under the same project the tree
+// sentinel), so a row's history bucket lands under the same directory the tree
 // consolidated its session into.
 function sessionKeyOf(sessionId: string | null): string {
   return sessionId ?? UNKNOWN_SESSION_KEY;
 }
 
-// Read sessionId → projectKey off the ALREADY-BUILT tree, so per-project history
-// reconciles with the tree's project totals (a session belongs to one project —
-// the tree already decided which; this does not re-decide it).
-function sessionToProjectKeyFromTree(tree: CostTree): Map<string, string> {
-  const sessionToProjectKey = new Map<string, string>();
-  for (const projectNode of tree.projects) {
-    for (const sessionNode of projectNode.sessions) {
-      sessionToProjectKey.set(sessionNode.sessionId, projectNode.projectKey);
+// Flatten the directory forest into pre-order (parents before children), with an
+// explicit stack — the same no-recursion posture as the rest of this file.
+function flattenDirectoryNodes(tree: CostTree): DirectoryNode[] {
+  const flattened: DirectoryNode[] = [];
+  const pendingStack: DirectoryNode[] = [...tree.directories].reverse();
+  while (pendingStack.length > 0) {
+    const directoryNode = pendingStack.pop()!;
+    flattened.push(directoryNode);
+    for (let childIndex = directoryNode.children.length - 1; childIndex >= 0; childIndex -= 1) {
+      pendingStack.push(directoryNode.children[childIndex]!);
     }
   }
-  return sessionToProjectKey;
+  return flattened;
+}
+
+// Read sessionId → the directory node it hangs off, off the ALREADY-BUILT tree,
+// so per-directory history reconciles with the tree's totals (a session belongs
+// to one directory — the tree already decided which; this does not re-decide it).
+function sessionToDirectoryPathFromTree(directoryNodes: readonly DirectoryNode[]): Map<string, string> {
+  const sessionToDirectoryPath = new Map<string, string>();
+  for (const directoryNode of directoryNodes) {
+    for (const sessionNode of directoryNode.sessions) {
+      sessionToDirectoryPath.set(sessionNode.sessionId, directoryNode.directoryPath);
+    }
+  }
+  return sessionToDirectoryPath;
 }
 
 /**
@@ -357,7 +437,7 @@ export function buildCostLedgerReadModel(
   }));
 
   const buildTreeFn = options.buildTree ?? buildCostTree;
-  const tree = buildTreeFn(treeRows, { projectRoots, parentEdges });
+  const tree = buildTreeFn(treeRows, { projectRoots, parentEdges, sessionNames: options.sessionNames });
   // The load-bearing guard — a non-reconciling tree is a lie; let it throw.
   assertTreeReconciles(tree);
 
@@ -367,29 +447,43 @@ export function buildCostLedgerReadModel(
     scopeLabel: COST_LEDGER_SCOPE_LABEL,
     priceTableDate: priceTable.effectiveDate,
     grandTotal: toRollupView(tree.grandTotal),
-    projects: tree.projects.map(toProjectView),
+    directories: toDirectoryViews(tree.directories),
     spendHistory,
     byAttributionSkill: tree.byAttributionSkill.map(toAttributionView),
     byAttributionAgent: tree.byAttributionAgent.map(toAttributionView),
   };
 }
 
-// Day-bucket the priced dollars into a grand series and a per-project series.
-// Only priced rows carry dollars; the rest add nothing here (they are surfaced
-// in the tree's status counts, never as a $0 point).
+// Day-bucket the priced dollars into a grand series and one series per DIRECTORY
+// NODE. Only priced rows carry dollars; the rest add nothing here (they are
+// surfaced in the tree's status counts, never as a $0 point).
+//
+// Two stages, deliberately: rows fold into the day-map of the EXACT directory
+// their session hangs off, then each node's series is that map plus its
+// children's — the same own + Σ(children) shape the totals use. Summing a node's
+// series independently from the rows would let the chart and the tree disagree.
 function buildSpendHistory(
   inputRows: readonly CostLedgerInputRow[],
   pricedByRowIndex: ReadonlyArray<{ status: PriceStatus; amountNanoDollars: number | null }>,
   tree: CostTree,
   projectRoots: readonly string[],
 ): SpendHistory {
-  const sessionToProjectKey = sessionToProjectKeyFromTree(tree);
+  const directoryNodes = flattenDirectoryNodes(tree);
+  const sessionToDirectoryPath = sessionToDirectoryPathFromTree(directoryNodes);
   const grandByDay = new Map<string, number>();
-  // projectKey → (day → nanoDollars)
-  const projectByDay = new Map<string, Map<string, number>>();
+  // directoryPath → (day → nanoDollars), for the sessions attached AT that node.
+  const ownByDayByDirectory = new Map<string, Map<string, number>>();
 
   const addNano = (target: Map<string, number>, day: string, nanoDollars: number): void => {
     target.set(day, (target.get(day) ?? 0) + nanoDollars);
+  };
+  const daysFor = (byDirectory: Map<string, Map<string, number>>, directoryPath: string): Map<string, number> => {
+    let days = byDirectory.get(directoryPath);
+    if (days === undefined) {
+      days = new Map<string, number>();
+      byDirectory.set(directoryPath, days);
+    }
+    return days;
   };
 
   inputRows.forEach((row, rowIndex) => {
@@ -398,36 +492,58 @@ function buildSpendHistory(
       return;
     }
     const day = dayBucketOf(row.timestamp);
-    const projectKey =
-      sessionToProjectKey.get(sessionKeyOf(row.sessionId)) ??
-      projectKeyFallback(row, projectRoots);
+    const directoryPath =
+      sessionToDirectoryPath.get(sessionKeyOf(row.sessionId)) ??
+      directoryPathFallback(row, projectRoots);
 
     addNano(grandByDay, day, priced.amountNanoDollars);
-    let daysForProject = projectByDay.get(projectKey);
-    if (daysForProject === undefined) {
-      daysForProject = new Map<string, number>();
-      projectByDay.set(projectKey, daysForProject);
-    }
-    addNano(daysForProject, day, priced.amountNanoDollars);
+    addNano(daysFor(ownByDayByDirectory, directoryPath), day, priced.amountNanoDollars);
   });
+
+  // Roll each node's own day-map up through its children (deepest first, so a
+  // parent always reads already-complete child maps).
+  const subtreeByDayByDirectory = new Map<string, Map<string, number>>();
+  for (let nodeIndex = directoryNodes.length - 1; nodeIndex >= 0; nodeIndex -= 1) {
+    const directoryNode = directoryNodes[nodeIndex]!;
+    const rolledUp = new Map<string, number>(ownByDayByDirectory.get(directoryNode.directoryPath) ?? []);
+    for (const childNode of directoryNode.children) {
+      const childDays = subtreeByDayByDirectory.get(childNode.directoryPath);
+      if (childDays !== undefined) {
+        for (const [day, nanoDollars] of childDays) {
+          addNano(rolledUp, day, nanoDollars);
+        }
+      }
+    }
+    subtreeByDayByDirectory.set(directoryNode.directoryPath, rolledUp);
+  }
+  // A fallback-classified row landed on a path with no node in the tree (the
+  // defensive branch below). Keep its series rather than drop its dollars.
+  for (const [directoryPath, ownDays] of ownByDayByDirectory) {
+    if (!subtreeByDayByDirectory.has(directoryPath)) {
+      subtreeByDayByDirectory.set(directoryPath, ownDays);
+    }
+  }
 
   return {
     grand: toSortedPoints(grandByDay),
-    byProject: [...projectByDay.keys()].sort().map((projectKey) => ({
-      projectKey,
-      points: toSortedPoints(projectByDay.get(projectKey)!),
-    })),
+    byDirectory: [...subtreeByDayByDirectory.keys()]
+      .sort()
+      .filter((directoryPath) => subtreeByDayByDirectory.get(directoryPath)!.size > 0)
+      .map((directoryPath) => ({
+        directoryPath,
+        points: toSortedPoints(subtreeByDayByDirectory.get(directoryPath)!),
+      })),
   };
 }
 
 // Defensive fallback: a row whose session is somehow not in the tree (never seen
 // in the corpus — every row has a session and every session is in the tree).
 // Classify it the same way the tree would rather than drop its dollars.
-function projectKeyFallback(row: CostLedgerInputRow, projectRoots: readonly string[]): string {
+function directoryPathFallback(row: CostLedgerInputRow, projectRoots: readonly string[]): string {
   if (row.sessionId === null) {
     return OUTSIDE_ROOTS_PROJECT_KEY;
   }
-  return resolveProjectKey(
+  return resolveDirectoryKey(
     {
       sessionId: row.sessionId,
       agentId: row.agentId,
@@ -441,7 +557,7 @@ function projectKeyFallback(row: CostLedgerInputRow, projectRoots: readonly stri
       priced: { status: 'unpriced', amountNanoDollars: null, priceTableDate: null, modelMatched: null, validated: null, flagReason: null, categories: null },
     },
     projectRoots,
-  ).projectKey;
+  ).directoryPath;
 }
 
 function toSortedPoints(byDay: Map<string, number>): SpendHistoryPoint[] {
