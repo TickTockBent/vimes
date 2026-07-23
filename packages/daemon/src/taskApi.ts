@@ -39,7 +39,12 @@ export interface TaskApiDeps {
   taskWriter: TaskWriter;
   // ONE explicit dispatch attempt. Deliberately a narrow function rather than the
   // `TaskDispatcher` itself, so no route can reach past it into the session host.
-  dispatchTask: (taskId: string) => DispatchAttemptResult;
+  //
+  // ⚠ ASYNC SINCE STEP 8, because worktree creation is a subprocess. This is the
+  // whole of the async ripple's reach into the API layer — the RESULT SHAPES are
+  // unchanged field-for-field, so the response envelope below is byte-identical for
+  // every outcome that existed before it.
+  dispatchTask: (taskId: string) => Promise<DispatchAttemptResult>;
   // The live allowlist union (config.projectRoots ∪ host.liveSessionCwds()), read
   // fresh per request — the SAME union and the SAME shape the file/git/search
   // APIs use.
@@ -275,8 +280,14 @@ export function registerTaskApi(app: Hono, deps: TaskApiDeps): void {
   // honest answer rather than an HTTP error, and 4xx-ing it would push clients
   // toward retry/backoff machinery for what is really "here is what happened."
   // The one exception is an unknown task — there was nothing to attempt.
-  app.post('/api/tasks/:taskId/dispatch', (context) => {
-    const result = deps.dispatchTask(context.req.param('taskId'));
+  //
+  // ⚠ The handler is ASYNC as of step 8 (worktree creation is a subprocess). Hono
+  // handlers may be async, and the ENVELOPE IS UNCHANGED: same 200, same
+  // `{ result }` body, same 404 for an unknown task. Step 8's new `worktree-failed`
+  // outcome rides the SAME 200 envelope as its sibling `spawn-failed`, for the same
+  // reason — it is a complete, honest answer about what happened, not an HTTP error.
+  app.post('/api/tasks/:taskId/dispatch', async (context) => {
+    const result = await deps.dispatchTask(context.req.param('taskId'));
     if (result.outcome === 'unknown-task') {
       return context.json({ error: 'not found' }, 404);
     }

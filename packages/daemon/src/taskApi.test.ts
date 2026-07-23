@@ -774,6 +774,105 @@ describe('POST /api/tasks/:taskId/dispatch — one explicit attempt', () => {
     }
     expect(harness.dispatchCallCount()).toBe(4);
   });
+
+  // ── slice 6 step 8, ASSERTION 12: the async ripple did not move the wire ────
+  //
+  // `dispatchTask` became async (worktree creation is a subprocess) and the Hono
+  // handler became async with it. That is a real change to the CALL, and it must be
+  // no change at all to the CONTRACT — slice 7's MCP surface is a client of these
+  // routes, and an envelope that shifted shape underneath it would be a silent
+  // break. The cases above already exercise every pre-existing outcome through the
+  // real route; this one pins the ENVELOPE ITSELF: the status, and the exact set of
+  // top-level body keys.
+
+  it('every pre-existing outcome still returns 200 with a body of exactly { result }', async () => {
+    const envelopeCases: ReadonlyArray<{
+      name: string;
+      build: () => Promise<{ harness: ApiHarness; taskId: string }>;
+      expectedOutcome: string;
+    }> = [
+      {
+        name: 'spawned',
+        expectedOutcome: 'spawned',
+        build: async () => {
+          const harness = buildApiHarness();
+          const task = await createTaskThrough(harness, { stage: 'planning' });
+          return { harness, taskId: task.taskId };
+        },
+      },
+      {
+        name: 'refused',
+        expectedOutcome: 'refused',
+        build: async () => {
+          const harness = buildApiHarness();
+          const task = await createTaskThrough(harness);
+          return { harness, taskId: task.taskId };
+        },
+      },
+      {
+        name: 'deferred',
+        expectedOutcome: 'deferred',
+        build: async () => {
+          const harness = buildApiHarness({
+            meters: {
+              meters: { 'window-5h': meterRecord({ resetsAt: '2026-07-22T13:00:00.000Z' }) },
+              history: {},
+            },
+          });
+          const task = await createTaskThrough(harness, {
+            stage: 'planning',
+            gates: { deferUntilReset: 'window-5h' },
+          });
+          return { harness, taskId: task.taskId };
+        },
+      },
+      {
+        name: 'spawn-failed',
+        expectedOutcome: 'spawn-failed',
+        build: async () => {
+          const harness = buildApiHarness();
+          harness.sessionHost.refuseNextSpawn('preflight-failed');
+          const task = await createTaskThrough(harness, { stage: 'implementing' });
+          return { harness, taskId: task.taskId };
+        },
+      },
+    ];
+
+    for (const envelopeCase of envelopeCases) {
+      const { harness, taskId } = await envelopeCase.build();
+      const response = await harness.request(`/api/tasks/${taskId}/dispatch`, postJson({}));
+
+      expect(response.status, `${envelopeCase.name}: still 200`).toBe(200);
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(Object.keys(body), `${envelopeCase.name}: exactly one top-level key`).toEqual([
+        'result',
+      ]);
+      expect((body.result as { outcome: string }).outcome).toBe(envelopeCase.expectedOutcome);
+    }
+  });
+
+  it('the DEFAULT daemon wiring is ISOLATION OFF — a worktree task spawns in projectRoot', async () => {
+    // ⚠ Step 8's shipping promise, asserted through the REAL route against a
+    // dispatcher built the way `app.ts` builds it minus the flag: `isolation` is
+    // `'worktree'` (D32's default, which the create route applies), and the session
+    // still lands in the project root. This harness names no worktree deps at all,
+    // which is exactly the point — the safe world is the one you get by saying
+    // nothing.
+    const harness = buildApiHarness();
+    const task = await createTaskThrough(harness, { stage: 'planning' });
+    expect(task.isolation).toBe('worktree');
+
+    const response = await harness.request(`/api/tasks/${task.taskId}/dispatch`, postJson({}));
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as DispatchResponse;
+    expect(body.result).toMatchObject({ outcome: 'spawned', cwd: harness.allowedRoot });
+    expect(harness.sessionHost.spawnCalls).toEqual([
+      { channel: 'sdk', cwd: harness.allowedRoot },
+    ]);
+    // And no `task_worktree_created` anywhere in the log.
+    expect(harness.taskEventTypes()).not.toContain(EVENT_TYPES.taskWorktreeCreated);
+  });
 });
 
 // ── assertion 14: I10, end to end over HTTP ──────────────────────────────────
@@ -1020,6 +1119,11 @@ function buildDaemonConfig(projectRoots: string[]): DaemonConfig {
     watchdogStaleAfterMs: 900_000,
     watchdogMaxStaleEpisodes: 3,
     watchdogRetryBackoffMs: [60_000],
+    // Worker isolation (slice 6 step 8): OFF in tests, which is also the shipped
+    // default — so no test daemon can create a worktree, and this root is never
+    // touched. The flip is a human's; see taskDispatcher.ts's isolation block.
+    worktreeIsolation: 'off',
+    worktreeRoot: '/tmp/vimes-test-worktrees-never-created',
   };
 }
 

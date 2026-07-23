@@ -3,6 +3,7 @@ import {
   dispatchRefused,
   resolveStageRunner,
   taskSessionAttached,
+  taskWorktreeCreated,
   type DispatchDeferReason,
   type DispatchRefuseReason,
   type EventInput,
@@ -12,6 +13,7 @@ import {
   type TasksState,
 } from '@vimes/core';
 import type { SessionHost } from './sessionHost.js';
+import type { WorktreeManager } from './worktreeManager.js';
 
 // ─── slice 6 step 4a — the dispatcher EXECUTOR (daemon I/O) ──────────────────
 //
@@ -33,25 +35,42 @@ import type { SessionHost } from './sessionHost.js';
 // the event-spam question that arrives with a polling loop, is deliberately out
 // of this unit. Nothing in this file subscribes to anything or sets an interval.
 
-// ─── THE ISOLATION SCOPE BOUNDARY — LOUD ON PURPOSE ──────────────────────────
+// ─── THE ISOLATION SCOPE BOUNDARY — STEP 8: BUILT, WIRED, SHIPPED OFF ────────
 //
-// **D32 pinned `worktree` as the default isolation. WORKTREE CREATION IS STEP 8.
-// Until step 8 lands, EVERY task — including one whose record says
-// `isolation: 'worktree'` — runs in `task.projectRoot`, i.e. ISOLATION IS NOT YET
-// HONOURED.**
+// Step 4a left this block saying "worktree creation is step 8, and until it lands
+// every task runs in `task.projectRoot`". **Step 8 has landed. The machinery is
+// here — and it is OFF BY DEFAULT.**
 //
-// `task.isolation` is therefore a field this step deliberately READS AND DOES NOT
-// ACT ON, which is exactly the kind of gap that becomes a silent bug: the record
-// says worktree, the board will say worktree, and two workers would happily edit
-// the same files. Rather than ignore the field quietly, the working directory is
-// resolved through an EXPLICIT INJECTED SEAM whose default is named and exported
-// below. Step 8 replaces this resolver with real worktree resolution; the test
-// `taskDispatcher.test.ts` ASSERTS the current (wrong-for-D32) behaviour, so the
-// day step 8 lands, that assertion reddens and the change is deliberate and
-// visible instead of accidental.
+// `VIMES_WORKTREE_ISOLATION` (config.ts, default **`off`**) decides which world the
+// daemon is in, and the two are exhaustive:
 //
-// If you are reading this because a worker clobbered another worker's files:
-// this is the gap, and step 8 is the fix. Do not paper over it here.
+//   • **`off` — TODAY'S BEHAVIOUR, BYTE-FOR-BYTE.** Every task, including one whose
+//     record says `isolation: 'worktree'`, resolves to `task.projectRoot`. No git
+//     command is issued, the worktree manager is never consulted, and step 4a's
+//     pinned assertions below hold unchanged. D32 is still not honoured, and it
+//     still says so out loud rather than pretending otherwise.
+//   • **`on`** — an `isolation: 'worktree'` task runs in its own git worktree, made
+//     by `WorktreeManager`. `shared-dir` still resolves to `projectRoot`, because
+//     that is what the field means.
+//
+// **WHY IT SHIPS OFF, stated so nobody "finishes the job" by flipping the default.**
+// Isolation changes WHERE REAL WORK EXECUTES ON A REAL MACHINE — new directories on
+// a real disk, new branches in a real repo, agents editing files a human is not
+// watching. That is precisely the class of change rule 0 reserves for evidence +
+// sign-off, and it is the same discipline the watchdog took: the detection machinery
+// shipped complete, and the destructive half waited for a human. The flip is Wes's,
+// made deliberately and while awake. Turning it on is a config change, not a code
+// change, which is exactly the property that makes the flip cheap AND reviewable.
+//
+// ⚠ **AND THE HALF THAT MATTERS MOST: A FAILED WORKTREE NEVER FALLS BACK TO
+// `projectRoot`.** See `dispatchTask`'s `worktree-failed` branch. An isolated task
+// that quietly ran in the shared directory would be the exact concurrency hazard
+// isolation exists to remove, reintroduced by the error handler, and it would be
+// INVISIBLE — the log would show an ordinary successful dispatch.
+
+// The `off`-world resolver, and the default of the `resolveWorkingDirectory` seam.
+// Unchanged from step 4a, deliberately: with the flag off the dispatcher must be
+// byte-identical to what it was, and this function is the whole of that promise.
 export function projectRootWorkingDirectory(task: TaskRecord): string {
   return task.projectRoot;
 }
@@ -91,15 +110,40 @@ export interface TaskDispatcherDeps {
   // no default: rule 0.2 forbids pinning a ⟨tune⟩ band as a silent default, and
   // this one decides whether a meter reading counts as current at all.
   staleAfterMs: number;
-  // Where a stage run executes. See the isolation boundary note above — the
-  // default is `task.projectRoot` and it is NOT D32-correct yet.
+  // Where a stage run executes WHEN NO WORKTREE IS INVOLVED — i.e. the flag is off,
+  // or the task asked for `shared-dir`. The default is `projectRootWorkingDirectory`
+  // and it is the whole of the flag-off behaviour.
   //
   // ⚠ CONSULTED ON THE SPAWN PATH ONLY. A RESUMED session keeps the cwd it was
   // created with — `SessionHost.resumeSession` takes no cwd and resumes "from the
   // RECORDED cwd" (I3) — and that is correct, not an omission: the hot author's
   // cache is scoped to machine+directory (D6), so moving it would throw away the
-  // exact thing the resume exists to keep. Step 8 makes that directory a worktree.
+  // exact thing the resume exists to keep. Under isolation the resumed session is
+  // already sitting IN its worktree, because that is where it was spawned.
   resolveWorkingDirectory?: (task: TaskRecord) => string;
+
+  // ── ISOLATION (step 8) — the two deps that make D32 real, and the flag ───────
+  //
+  // The worktree maker. Kept to `ensureWorktree` alone (`Pick`, the same narrowing
+  // the session-host seam uses): the dispatcher may CREATE a worker directory and
+  // may not destroy one. `removeWorktree` exists on the class and is wired to
+  // nothing — see its comment; when a worktree should be destroyed is Wes's policy
+  // decision, and a dispatcher that could reach it would be the place that decision
+  // got made by accident.
+  worktreeManager?: Pick<WorktreeManager, 'ensureWorktree'>;
+
+  // ⚠ **THE SHIPPING FLAG. DEFAULT `false` = TODAY'S BEHAVIOUR EXACTLY.**
+  //
+  // Optional, and its absence means OFF, so every existing construction of this
+  // class — app.ts before this step, and every test written before it — keeps the
+  // behaviour it had without naming the field. That is deliberate: the safe value
+  // is the one you get by saying nothing.
+  //
+  // When false, `task.isolation` is read and NOT acted on, exactly as in step 4a,
+  // and no git command is issued on any dispatch path. When true, an
+  // `isolation: 'worktree'` task gets a real worktree. `app.ts` passes
+  // `config.worktreeIsolation === 'on'`.
+  worktreeIsolationEnabled?: boolean;
 
   // ── THE INSTRUCTION SEAM — MACHINERY ONLY, CONTENT DELIBERATELY ABSENT ──────
   //
@@ -208,7 +252,45 @@ export type DispatchAttemptResult =
       // The session host's own refusal reason, verbatim. NOT a DispatchRefuseReason.
       readonly reason: string;
     }
+  | {
+      // ⚠ **STEP 8'S EXECUTION OUTCOME, AND THE SAFETY ONE.** The decision was to
+      // run this stage, the task asked for worktree isolation, the flag was on, and
+      // the worktree COULD NOT BE MADE. Nothing spawned, nothing resumed, no
+      // `task_session_attached` was written, and — the point — **the task did NOT
+      // fall back to `projectRoot`.**
+      //
+      // A fallback would be the tempting fix and it is the bug: an isolated task
+      // silently sharing the project directory with whatever else is running there
+      // is precisely the concurrency hazard isolation exists to remove, and it would
+      // leave a log indistinguishable from a healthy dispatch. Refusing to run is
+      // the honest answer; the caller decides what to do about it.
+      //
+      // A SIBLING of `spawn-failed`, not a `DispatchRefuseReason`: the two
+      // vocabularies stay apart exactly as steps 4a and 7 kept them. Putting this in
+      // the decision enum would make `dispatch_refused` claim the dispatcher refused
+      // work it actually attempted.
+      readonly outcome: 'worktree-failed';
+      readonly taskId: string;
+      // The manager's classified reason plus git's own words, verbatim. NOT a
+      // `DispatchRefuseReason`.
+      readonly reason: string;
+    }
   | { readonly outcome: 'unknown-task'; readonly taskId: string };
+
+// What the working-directory resolution produced. The FAILURE arm carries no
+// directory at all, deliberately: there is no "the directory we would have used"
+// field for a caller to reach for, so a fallback to `projectRoot` cannot be written
+// by accident from the shape of this type.
+type WorkingDirectoryResolution =
+  | {
+      readonly ok: true;
+      readonly cwd: string;
+      // Emitted BEFORE the spawn when a worktree was really created. Absent on the
+      // plain path and on a reuse — see `taskWorktreeCreated`'s own note on why a
+      // reuse must not claim a creation.
+      readonly worktreeEvent?: EventInput;
+    }
+  | { readonly ok: false; readonly reason: string };
 
 export class TaskDispatcher {
   private readonly deps: TaskDispatcherDeps;
@@ -264,8 +346,23 @@ export class TaskDispatcher {
    *     with non-events, and pillar 5 (attention is the scarce resource) losing.
    *
    *   • unknown task → a result saying so. No spawn, no event, no throw.
+   *
+   * ⚠ **ASYNC SINCE STEP 8, and the reason is structural rather than stylistic:**
+   * creating a worktree is a SUBPROCESS, and a subprocess cannot be awaited from a
+   * synchronous function. Nothing else about the contract moved — every RESULT SHAPE
+   * is unchanged field-for-field, so the `/api/tasks/:taskId/dispatch` envelope is
+   * byte-identical, and the method is still total (it returns a rejected promise for
+   * nothing; every path resolves to a result).
+   *
+   * ⚠ **STILL NO CONCURRENCY CONTROL, and that is unchanged rather than overlooked.**
+   * `dispatchTask` is called once per explicit request; two overlapping calls for the
+   * SAME task were already possible before this step and are still handled by
+   * `decideDispatch`'s `already-running` guard plus the session host's own I11
+   * backstop. `ensureWorktree` adds a third: it is idempotent, so a racing pair
+   * converges on one directory rather than two. What no layer has today is a lock —
+   * that is a scheduler's problem, and there is still no scheduler.
    */
-  dispatchTask(taskId: string): DispatchAttemptResult {
+  async dispatchTask(taskId: string): Promise<DispatchAttemptResult> {
     const task = this.deps.readTasks().tasks[taskId];
     if (task === undefined) {
       // The log is truth: we do not dispatch, and we do not record, a task that
@@ -314,7 +411,33 @@ export class TaskDispatcher {
           // scoped to machine+directory, and a resume lands in the same directory).
           return this.resumeStageRun(task, decision.stage, runnerPlan);
         }
-        const cwd = this.resolveWorkingDirectory(task);
+        // WHERE it runs. Under the flag this may create a git worktree, which is
+        // why the whole method is async.
+        const workingDirectory = await this.resolveSpawnWorkingDirectory(task);
+        if (!workingDirectory.ok) {
+          // ⚠ **NO FALLBACK. NO SPAWN. NO EVENT.** The task asked to be isolated and
+          // it could not be; running it in the shared project root anyway would be
+          // the concurrency hazard isolation exists to remove, and the log would show
+          // an ordinary successful dispatch. So nothing runs, and the failure is
+          // reported to the caller as a first-class outcome.
+          //
+          // Nothing is emitted here on purpose, matching `spawn-failed`: no session
+          // exists to attach, and no `dispatch_refused` is invented because that enum
+          // is the DECISION vocabulary and this decision was `spawn`. The failure is
+          // in the RESULT, which the API returns verbatim.
+          return {
+            outcome: 'worktree-failed',
+            taskId: task.taskId,
+            reason: workingDirectory.reason,
+          };
+        }
+        const cwd = workingDirectory.cwd;
+        if (workingDirectory.worktreeEvent !== undefined) {
+          // BEFORE the spawn, deliberately. The directory exists at this point and
+          // the session does not; recording it after the spawn would leave a window
+          // in which an agent is running somewhere the log has never mentioned.
+          this.deps.emit([workingDirectory.worktreeEvent]);
+        }
         // Stage runs are ORDINARY SESSIONS (spec §3.5) on the 'sdk' channel:
         // everything slices 1–5b built — stream, diff, cost, resume, attention —
         // applies to a stage run for free. There is no parallel session concept.
@@ -369,6 +492,72 @@ export class TaskDispatcher {
         };
       }
     }
+  }
+
+  /**
+   * WHERE this stage run executes — the whole of step 8's decision, in one place.
+   *
+   * Three worlds, and the first two are the same world:
+   *
+   *   1. **Flag OFF** (the default, and production today) → the injected
+   *      `resolveWorkingDirectory` seam, whose default is `task.projectRoot`.
+   *      `task.isolation` is not even read. **NO GIT COMMAND IS ISSUED**, which is
+   *      the assertable form of "byte-identical to before this step".
+   *   2. **Flag on, `isolation: 'shared-dir'`** → the same seam, same answer. That
+   *      is what the field means; D32 kept the per-task override precisely so a cost
+   *      surprise is a config change rather than a redesign.
+   *   3. **Flag on, `isolation: 'worktree'`** → the manager. Success carries the
+   *      worktree path and, when something was really created, the event that
+   *      records it. Failure carries a reason AND NO DIRECTORY.
+   *
+   * ⚠ A manager that is absent while the flag is on is a FAILURE, not a silent
+   * downgrade to `projectRoot`. It means somebody wired the daemon inconsistently,
+   * and the safe reading of "isolate this" plus "no isolator" is "do not run", not
+   * "run it in the shared directory and say nothing".
+   *
+   * Never throws: the manager's contract is a returned result, and a manager that
+   * broke it is caught here anyway.
+   */
+  private async resolveSpawnWorkingDirectory(
+    task: TaskRecord,
+  ): Promise<WorkingDirectoryResolution> {
+    if (this.deps.worktreeIsolationEnabled !== true || task.isolation !== 'worktree') {
+      return { ok: true, cwd: this.resolveWorkingDirectory(task) };
+    }
+    const worktreeManager = this.deps.worktreeManager;
+    if (worktreeManager === undefined) {
+      return { ok: false, reason: 'worktree-isolation-enabled-without-a-manager' };
+    }
+    let ensureResult;
+    try {
+      ensureResult = await worktreeManager.ensureWorktree(task);
+    } catch (ensureError) {
+      // The manager's contract is to refuse rather than throw, but a dispatcher must
+      // survive its adapters regardless — the same posture the spawn path takes.
+      return { ok: false, reason: `worktree-threw:${describeThrown(ensureError)}` };
+    }
+    if (!ensureResult.ok) {
+      // The classified reason AND git's own words, so a post-mortem does not need
+      // the daemon's stderr to tell "git is missing" from "that path is a file".
+      return { ok: false, reason: `${ensureResult.reason}:${ensureResult.detail}` };
+    }
+    return {
+      ok: true,
+      cwd: ensureResult.path,
+      // A REUSE CREATED NOTHING, so it events nothing. See the event's own note: a
+      // false `task_worktree_created` would be both an untrue fact in an append-only
+      // log and a near-zero reading poisoning D32's setup-cost column.
+      ...(ensureResult.reused
+        ? {}
+        : {
+            worktreeEvent: taskWorktreeCreated({
+              taskId: task.taskId,
+              path: ensureResult.path,
+              branch: ensureResult.branch,
+              setupMs: ensureResult.setupMs,
+            }),
+          }),
+    };
   }
 
   /**

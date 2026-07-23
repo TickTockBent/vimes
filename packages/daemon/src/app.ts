@@ -42,7 +42,8 @@ import { registerTaskApi } from './taskApi.js';
 import { TaskWriter } from './taskWriter.js';
 import { TaskDispatcher } from './taskDispatcher.js';
 import { TaskWatchdog } from './taskWatchdog.js';
-import type { GitRunner } from './gitAdapter.js';
+import { defaultGitRunner, type GitRunner } from './gitAdapter.js';
+import { WorktreeManager } from './worktreeManager.js';
 import {
   SearchService,
   createRipgrepPreflight,
@@ -421,6 +422,26 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     ids,
   });
 
+  // ─── worker isolation (slice 6 step 8) — BUILT, WIRED, AND OFF ─────────────
+  //
+  // The manager is constructed unconditionally so the wiring is exercised on every
+  // boot, but the DISPATCHER only consults it when `config.worktreeIsolation` is
+  // `'on'` — and that env var defaults to **`off`**, so on this machine today the
+  // manager is reachable and never reached. See taskDispatcher.ts's isolation block
+  // for why the flip is a human's.
+  //
+  // It shares the SAME injectable git runner the git API uses (`deps.gitRunner`,
+  // defaulting to the real one): one subprocess seam for git in the whole daemon,
+  // so a test that fakes git fakes all of it.
+  const worktreeManager = new WorktreeManager({
+    runner: deps.gitRunner ?? defaultGitRunner,
+    worktreeRoot: config.worktreeRoot,
+    // The INJECTED clock, stamped HERE at the boundary and nowhere deeper (rule
+    // 0.3), converted to epoch milliseconds because `setupMs` is a DURATION. This
+    // is the only place the worktree cost measurement touches a real clock.
+    nowMs: () => Date.parse(clock.now()),
+  });
+
   const taskDispatcher = new TaskDispatcher({
     // `sessionHost` is constructed further down; these thunks only run per
     // dispatch request, long after construction — the same deferral
@@ -446,12 +467,20 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     nowIso: () => clock.now(),
     // Null (poller disabled) → the degenerate band; see the constant's own note.
     staleAfterMs: deriveStaleAfterMs(config.usagePollIntervalMs) ?? NO_OBSERVATION_IS_FRESH_STALE_BAND_MS,
+    // ⚠ **OFF BY DEFAULT.** `VIMES_WORKTREE_ISOLATION` is `off` unless an operator
+    // sets it, so this is `false` on this machine today and every task resolves to
+    // `task.projectRoot` exactly as it did before step 8 — no git command is issued
+    // on any dispatch path. Flipping it changes WHERE REAL WORK EXECUTES on a real
+    // disk, which is Wes's call to make deliberately (rule 0).
+    worktreeIsolationEnabled: config.worktreeIsolation === 'on',
+    worktreeManager,
   });
 
   registerTaskApi(app, {
     taskWriter,
     // ONE explicit attempt per request. No loop, no timer, no scheduling — step
-    // 4a's boundary, unchanged.
+    // 4a's boundary, unchanged. The promise is step 8's async ripple and nothing
+    // more; the envelope the route returns is byte-identical.
     dispatchTask: (taskId) => taskDispatcher.dispatchTask(taskId),
     // The SAME allowlist union the file/git APIs use, verbatim, read fresh per
     // request. A task's projectRoot is a durable instruction to spawn a process

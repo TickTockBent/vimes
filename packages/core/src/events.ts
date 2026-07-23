@@ -113,6 +113,24 @@ export const EVENT_TYPES = {
   // session" had no data path. The dispatcher (packages/daemon/taskDispatcher)
   // emits exactly one of these per successful spawn.
   taskSessionAttached: 'task_session_attached',
+  // Slice-6 step 8: a task's ISOLATED WORKTREE was created, on the 'tasks' stream.
+  //
+  // This event is **THE CALIBRATION RECORD FOR D32's UNMEASURED AXIS**, and that is
+  // its primary job rather than a side effect. D32 chose worktree isolation on a
+  // known benefit against an *unmeasured cost* and said so in as many words: spike
+  // S2 "says nothing about … what worktree isolation COSTS in setup time, disk, and
+  // git overhead", and asked step 8 to "measure worktree setup cost as it lands".
+  // `setupMs` is that measurement, taken from the manager's injected clock, so the
+  // cost can be priced against real work from the log rather than re-measured by
+  // hand later. It plays exactly the role `wouldQuarantine` plays for the retry
+  // ⟨tune⟩s: a column that makes a future decision cheap and evidenced.
+  //
+  // ⚠ EMITTED ONLY WHEN A WORKTREE WAS ACTUALLY CREATED. `ensureWorktree` is
+  // idempotent, and a re-dispatch that REUSES an existing worktree creates nothing —
+  // eventing "created" there would be a false fact in an append-only log, and it
+  // would also poison the setup-cost column with near-zero readings that measure a
+  // `git worktree list` rather than a checkout.
+  taskWorktreeCreated: 'task_worktree_created',
   // Slice-6 step 6a: COURSE CORRECTION, on the SESSION stream. D5 settled the
   // mechanism (steer = inject into the live streaming-input queue; `interrupt()`
   // is the hard stop, not the fallback), so these two events are the SEMANTICS
@@ -514,6 +532,26 @@ export const taskSessionAttachedPayloadSchema = z.object({
   appSessionId: z.string(),
 });
 
+// task_worktree_created — one isolated worker directory, recorded at the moment it
+// came into existence (slice-6 step 8). Both names are DERIVED from the taskId by
+// `tasks/worktreePaths.ts`, so they are re-derivable rather than remembered; they
+// are carried anyway because the log is the audit trail for "which directory did
+// this worker actually edit?", and a fact you have to re-run a function to recover
+// is a fact an operator reading the log does not have.
+//
+// `setupMs` is D32's missing cost measurement — see the type's own note above. It
+// is a DURATION, never a timestamp, and it comes from the manager's INJECTED clock
+// (rule 0.3); nothing in this vocabulary calls a real clock.
+export const taskWorktreeCreatedPayloadSchema = z.object({
+  taskId: z.string(),
+  // The absolute path of the created worktree.
+  path: z.string(),
+  // The branch it checks out, e.g. `vimes/task-<id>`.
+  branch: z.string(),
+  // Wall-clock milliseconds the creation took, from the injected clock.
+  setupMs: z.number(),
+});
+
 // ——— course-correction payloads (slice-6 step 6a), on the SESSION stream ———
 //
 // correction_queued — VIMES accepted a correction and handed it to the SDK's
@@ -611,6 +649,7 @@ export const EVENT_PAYLOAD_SCHEMAS = {
   [EVENT_TYPES.taskTransitioned]: taskTransitionedPayloadSchema,
   [EVENT_TYPES.taskTransitionRejected]: taskTransitionRejectedPayloadSchema,
   [EVENT_TYPES.taskSessionAttached]: taskSessionAttachedPayloadSchema,
+  [EVENT_TYPES.taskWorktreeCreated]: taskWorktreeCreatedPayloadSchema,
   [EVENT_TYPES.correctionQueued]: correctionQueuedPayloadSchema,
   [EVENT_TYPES.correctionDelivered]: correctionDeliveredPayloadSchema,
 } as const;
@@ -647,6 +686,7 @@ export type TaskCreatedPayload = z.infer<typeof taskCreatedPayloadSchema>;
 export type TaskTransitionedPayload = z.infer<typeof taskTransitionedPayloadSchema>;
 export type TaskTransitionRejectedPayload = z.infer<typeof taskTransitionRejectedPayloadSchema>;
 export type TaskSessionAttachedPayload = z.infer<typeof taskSessionAttachedPayloadSchema>;
+export type TaskWorktreeCreatedPayload = z.infer<typeof taskWorktreeCreatedPayloadSchema>;
 export type CorrectionQueuedPayload = z.infer<typeof correctionQueuedPayloadSchema>;
 export type CorrectionDeliveredPayload = z.infer<typeof correctionDeliveredPayloadSchema>;
 
@@ -690,6 +730,7 @@ export type DomainEvent =
   | { type: typeof EVENT_TYPES.taskTransitioned; payload: TaskTransitionedPayload }
   | { type: typeof EVENT_TYPES.taskTransitionRejected; payload: TaskTransitionRejectedPayload }
   | { type: typeof EVENT_TYPES.taskSessionAttached; payload: TaskSessionAttachedPayload }
+  | { type: typeof EVENT_TYPES.taskWorktreeCreated; payload: TaskWorktreeCreatedPayload }
   | { type: typeof EVENT_TYPES.correctionQueued; payload: CorrectionQueuedPayload }
   | { type: typeof EVENT_TYPES.correctionDelivered; payload: CorrectionDeliveredPayload };
 
@@ -810,6 +851,19 @@ export function taskTransitionRejected(payload: TaskTransitionRejectedPayload): 
 // (`session_created`) already lives on the session stream.
 export function taskSessionAttached(payload: TaskSessionAttachedPayload): EventInput {
   return { stream: 'tasks', type: EVENT_TYPES.taskSessionAttached, payload };
+}
+
+// The isolated worker directory (step 8). Same 'tasks' stream as its siblings: it
+// is a fact about the TASK — where its work is happening — and the tasks
+// projection folds only its own stream.
+//
+// ⚠ NO PROJECTION FOLDS THIS TODAY, DELIBERATELY. `TaskRecord` has no worktree
+// field (slice 0 froze the record), and inventing one here would be a schema change
+// nobody signed off in a step whose whole discipline is "ship it off". The event is
+// the RECORD and the calibration column; a board column, if it is ever wanted, is a
+// later projection decision made against real logs.
+export function taskWorktreeCreated(payload: TaskWorktreeCreatedPayload): EventInput {
+  return { stream: 'tasks', type: EVENT_TYPES.taskWorktreeCreated, payload };
 }
 
 // The course-correction pair (step 6a). BOTH on the SESSION's own stream — which
