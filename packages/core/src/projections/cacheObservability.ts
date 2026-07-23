@@ -35,6 +35,13 @@ export interface CacheObservabilityRecord {
   // Raw service_tier from the latest block (D24 — no fabricated billing bucket),
   // or null when never observed.
   serviceTier: string | null;
+  // The event `ts` (ISO string) of the MOST RECENTLY OBSERVED usage_block for
+  // this session — an observed fact, never a clock read (rule 0.3, I6): the UI
+  // ages it against its own now to infer cache warmth. Null until the first
+  // block is observed. Follows the same latest-observation semantics as
+  // ttlTier/serviceTier: a counted-repeat is a later observation of the same
+  // turn, and for "last activity" it IS activity, so it advances this too.
+  latestBlockAt: string | null;
   // The messageIds already folded into the totals, in append order — the D17
   // dedupe key set. Blocks with no messageId are counted but leave no entry
   // here (they cannot be deduped).
@@ -56,6 +63,7 @@ function emptyRecord(appSessionId: string): CacheObservabilityRecord {
     cacheHitRate: 0,
     ttlTier: 'none',
     serviceTier: null,
+    latestBlockAt: null,
     countedMessageIds: [],
   };
 }
@@ -101,6 +109,9 @@ export const cacheObservabilityProjection: Projection<CacheObservabilityState> =
         ...priorRecord,
         ttlTier: latestTtlTier,
         serviceTier: latestServiceTier,
+        // A repeat is a later observation of the same turn — still activity, so
+        // it advances "last observed block" like ttlTier/serviceTier above.
+        latestBlockAt: event.ts,
       };
       return {
         perSession: { ...state.perSession, [payload.appSessionId]: refreshedRecord },
@@ -135,6 +146,8 @@ export const cacheObservabilityProjection: Projection<CacheObservabilityState> =
       }),
       ttlTier: latestTtlTier,
       serviceTier: latestServiceTier,
+      // The event's OWN ts (I6 deterministic under replay), never a clock read.
+      latestBlockAt: event.ts,
       countedMessageIds: nextCountedMessageIds,
     };
 

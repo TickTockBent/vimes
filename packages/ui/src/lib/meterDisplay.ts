@@ -35,6 +35,8 @@
 // strip needs is now computed server-side (packages/daemon/src/usageDerived.ts)
 // — that is the point of the derived endpoint.
 
+import { formatDuration } from './duration.js';
+
 // ── Mirrored wire shapes ────────────────────────────────────────────────────
 
 export type MeterKind = 'rolling-window' | 'weekly-cap' | 'monthly-credit';
@@ -312,27 +314,9 @@ function fallbackLabelFromMeterId(meterId: string, scopeLabel: string | null): s
 
 // ── Durations ───────────────────────────────────────────────────────────────
 
-// Deterministic, LOCALE-FREE duration rendering — no Intl/toLocaleString, which
-// vary by environment (rule 0.3 determinism carries into the UI's pure
-// derivations too). Input must be a non-negative span; callers handle <= 0.
-function formatDuration(spanMs: number): string {
-  const totalSeconds = Math.floor(spanMs / 1000);
-  if (totalSeconds < 60) {
-    return `${totalSeconds}s`;
-  }
-  const totalMinutes = Math.floor(totalSeconds / 60);
-  if (totalMinutes < 60) {
-    return `${totalMinutes}m`;
-  }
-  const totalHours = Math.floor(totalMinutes / 60);
-  const remainderMinutes = totalMinutes % 60;
-  if (totalHours < 24) {
-    return `${totalHours}h ${remainderMinutes}m`;
-  }
-  const totalDays = Math.floor(totalHours / 24);
-  const remainderHours = totalHours % 24;
-  return `${totalDays}d ${remainderHours}h`;
-}
+// `formatDuration` (the deterministic, LOCALE-FREE elapsed-span formatter) now
+// lives in ./duration.ts so the cache-warmth badge renders "26m" the SAME way
+// this strip does — one age formatter, not two (principle 9).
 
 /**
  * The age line. This is the user-facing half of the sharpened invariant, so it

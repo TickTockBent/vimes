@@ -7,7 +7,7 @@ import { collapseConsecutiveUsageEvents } from '../lib/usageCollapse.js';
 import { clampTextareaHeight, type TextareaMetrics } from '../lib/textareaGrow.js';
 import { initialKeyboardOffsetState, reduceKeyboardOffset, type KeyboardOffsetState } from '../lib/keyboardOffset.js';
 import { shouldSendSeenOnMount, shouldSendSeenOnVisibility } from '../lib/seenOnView.js';
-import { deriveCacheBadge, ttlTierLabel } from '../lib/cacheBadge.js';
+import { cacheWarmth, deriveCacheBadge, ttlTierLabel } from '../lib/cacheBadge.js';
 import { deriveCorrectionStatus, formatQueuedFor } from '../lib/correctionStatus.js';
 import GateCard from '../components/GateCard.vue';
 import MarkdownMessage from '../components/MarkdownMessage.vue';
@@ -150,18 +150,41 @@ const correctionQueuedForLabel = computed(() => {
   return status.kind === 'queued' ? formatQueuedFor(status.elapsedMs) : null;
 });
 
-// Slice 4 step 4: the fuller cache-observability line under the header — tier +
-// hit-rate % + raw service_tier (D24, never a fabricated billing-bucket label)
-// + tokensLabel. The list-row chip is the required deliverable; this is the
-// optional richer view for a session already open.
+// Slice 4 step 4 (reshaped to WARMTH in Q4): the fuller cache-observability line
+// under the header — tier + observed WARMTH (the last-write age vs the tier's
+// window, never a hit rate or a countdown) + raw service_tier (D24, never a
+// fabricated billing-bucket label) + tokensLabel. The list-row chip is the
+// required deliverable; this is the richer view for a session already open. The
+// age is aged against `correctionNowMs` — the SAME 1s-ticking local clock this
+// view already maintains for the correction status, injected into the pure
+// cacheWarmth (rule 0.3), not a second now-source.
 const cacheBadge = computed(() => deriveCacheBadge(store.cacheObservability[props.appSessionId]));
 const cacheDetailLabel = computed(() => {
   const badge = cacheBadge.value;
   if (badge === null) {
     return null;
   }
+  const warmth = cacheWarmth(badge.latestBlockAt, badge.ttlTier, correctionNowMs.value);
+  const tierLabel = ttlTierLabel(badge.ttlTier);
+  // The warmth headline shows the verdict AND its observed basis (the age), per
+  // Q4 — never a bare verdict. 'none' is just the tier; 'unknown' names the gap.
+  let warmthHeadline: string;
+  switch (warmth.state) {
+    case 'warm':
+      warmthHeadline = `${tierLabel} · warm · last write ${warmth.ageLabel ?? 'just now'}`;
+      break;
+    case 'cold':
+      warmthHeadline = `${tierLabel} · cold · last write ${warmth.ageLabel ?? 'unknown'}`;
+      break;
+    case 'unknown':
+      warmthHeadline = `${tierLabel} · last write time unknown`;
+      break;
+    case 'none':
+      warmthHeadline = tierLabel;
+      break;
+  }
   const serviceTierLabel = badge.serviceTier ?? 'unknown tier';
-  return `${ttlTierLabel(badge.ttlTier)} · ${badge.hitRatePercent}% hit · ${serviceTierLabel} · ${badge.tokensLabel}`;
+  return `${warmthHeadline} · ${serviceTierLabel} · ${badge.tokensLabel}`;
 });
 
 function dismissAttention(): void {
