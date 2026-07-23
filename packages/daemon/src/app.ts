@@ -428,7 +428,16 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     sessionHost: {
       spawnSession: (options) => sessionHost.spawnSession(options),
       isLive: (appSessionId) => sessionHost.isLive(appSessionId),
+      // Step 7: the fix loop resumes the hot author instead of spawning a
+      // stranger, and `sendMessage` is the (still-silent by default) instruction
+      // path. Same instance, same live registry — no second session authority.
+      resumeSession: (appSessionId) => sessionHost.resumeSession(appSessionId),
+      sendMessage: (appSessionId, text) => sessionHost.sendMessage(appSessionId, text),
     },
+    // ⚠ `composeStageInstruction` is deliberately NOT passed. Its default is
+    // `() => null` — a stage run is told nothing, exactly as before step 7. The
+    // words a review or a fix prompt should carry are Wes's decision and are not
+    // written anywhere in this step.
     emit: (events) => router.emit(events),
     readTasks: () => bootFromSnapshot(tasksProjection, snapshotStore, store),
     readMeters: () => currentMetersState(),

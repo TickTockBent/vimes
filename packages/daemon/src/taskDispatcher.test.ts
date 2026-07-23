@@ -7,7 +7,7 @@ import {
   type TaskRecord,
   type TasksState,
 } from '@vimes/core';
-import type { SpawnResult } from './sessionHost.js';
+import type { ResumeResult, SendResult, SpawnResult } from './sessionHost.js';
 import { TaskDispatcher, projectRootWorkingDirectory, type TaskDispatcherDeps } from './taskDispatcher.js';
 
 // ─── slice 6 step 4a — the dispatcher EXECUTOR ───────────────────────────────
@@ -27,18 +27,31 @@ const PROJECT_ROOT = '/home/ticktockbent/projects/infrastructure/vimes';
 const TASK_ID = 'task-dispatch-0001';
 const SPAWNED_SESSION_ID = 'cccccccc-0000-4000-8000-000000000001';
 const EXISTING_SESSION_ID = 'cccccccc-0000-4000-8000-000000000002';
+// The session that AUTHORED the work — the one a fix resumes and a review must
+// never touch.
+const HOT_AUTHOR_SESSION_ID = 'cccccccc-0000-4000-8000-000000000003';
+const SECOND_HOT_AUTHOR_SESSION_ID = 'cccccccc-0000-4000-8000-000000000004';
 const FIXED_NOW = '2026-07-22T12:00:00.000Z';
 // The meter staleness band, named by the caller (rule 0.2 — no default here).
 const STALE_AFTER_MS = 90_000;
 
 // A session host that RECORDS instead of spawning. Structurally satisfies
-// `Pick<SessionHost, 'spawnSession' | 'isLive'>`; the real class is never
-// constructed and never imported at runtime (the SpawnResult import above is
-// type-only).
+// `Pick<SessionHost, 'spawnSession' | 'isLive' | 'resumeSession' | 'sendMessage'>`;
+// the real class is never constructed and never imported at runtime (the result-type
+// imports above are type-only).
 class RecordingSessionHost {
   readonly spawnCalls: Array<{ channel: 'sdk' | 'pty'; cwd: string; name?: string }> = [];
+  // Step 7's instruments. `resumeCalls` is what proves a fix went to the hot
+  // author; `spawnCalls.length === 0` alongside it is what proves no stranger was
+  // hired as well — and on the review path the two swap roles.
+  readonly resumeCalls: string[] = [];
+  readonly sendCalls: Array<{ appSessionId: string; text: string }> = [];
   private nextSpawnResult: SpawnResult = { appSessionId: SPAWNED_SESSION_ID };
+  private nextResumeResult: ResumeResult | null = null;
+  private nextSendResult: SendResult = { ok: true };
   private spawnThrows: Error | null = null;
+  private resumeThrows: Error | null = null;
+  private sendThrows: Error | null = null;
   private readonly liveSessionIds = new Set<string>();
 
   spawnSession(options: { channel: 'sdk' | 'pty'; cwd: string; name?: string }): SpawnResult {
@@ -49,6 +62,24 @@ class RecordingSessionHost {
     return this.nextSpawnResult;
   }
 
+  // The real host hands back the SAME appSessionId (no new id, no fork — I3), and
+  // the fake must not be more generous than the thing it stands in for.
+  resumeSession(appSessionId: string): ResumeResult {
+    this.resumeCalls.push(appSessionId);
+    if (this.resumeThrows !== null) {
+      throw this.resumeThrows;
+    }
+    return this.nextResumeResult ?? { appSessionId };
+  }
+
+  sendMessage(appSessionId: string, text: string): SendResult {
+    this.sendCalls.push({ appSessionId, text });
+    if (this.sendThrows !== null) {
+      throw this.sendThrows;
+    }
+    return this.nextSendResult;
+  }
+
   isLive(appSessionId: string): boolean {
     return this.liveSessionIds.has(appSessionId);
   }
@@ -57,8 +88,24 @@ class RecordingSessionHost {
     this.nextSpawnResult = { refused: true, reason };
   }
 
+  refuseNextResume(reason: string): void {
+    this.nextResumeResult = { refused: true, reason };
+  }
+
+  refuseNextSend(reason: string): void {
+    this.nextSendResult = { refused: true, reason };
+  }
+
   throwOnSpawn(error: Error): void {
     this.spawnThrows = error;
+  }
+
+  throwOnResume(error: Error): void {
+    this.resumeThrows = error;
+  }
+
+  throwOnSend(error: Error): void {
+    this.sendThrows = error;
   }
 
   markLive(appSessionId: string): void {
@@ -114,6 +161,7 @@ function buildHarness(options: {
   meters?: MetersState;
   nowIso?: string;
   resolveWorkingDirectory?: TaskDispatcherDeps['resolveWorkingDirectory'];
+  composeStageInstruction?: TaskDispatcherDeps['composeStageInstruction'];
 } = {}): Harness {
   const sessionHost = new RecordingSessionHost();
   const emitted: EventInput[] = [];
@@ -140,6 +188,12 @@ function buildHarness(options: {
     ...(options.resolveWorkingDirectory === undefined
       ? {}
       : { resolveWorkingDirectory: options.resolveWorkingDirectory }),
+    // Omitted unless a case asks for one — so every OTHER case in this file runs
+    // against the real default (`() => null`, send nothing), which is the
+    // behaviour app.ts ships.
+    ...(options.composeStageInstruction === undefined
+      ? {}
+      : { composeStageInstruction: options.composeStageInstruction }),
   };
   return {
     dispatcher: new TaskDispatcher(deps),
@@ -505,5 +559,466 @@ describe('TaskDispatcher — the injected clock is the ONLY time source', () => 
     const firstRun = buildAndDispatch();
     const secondRun = buildAndDispatch();
     expect(JSON.stringify(secondRun)).toBe(JSON.stringify(firstRun));
+  });
+});
+
+// ─── slice 6 step 7 — review vs fix, executed ────────────────────────────────
+//
+// The pure rule lives in `packages/core/src/tasks/stageRunner.ts` and is
+// enumerated in its own test. What these cases hold is the EXECUTION half: that
+// the dispatcher makes the call the plan asked for and makes NO OTHER — because
+// "resumed the author" and "also spawned a stranger" would both satisfy a test
+// that only checked `resumeCalls`.
+
+function implementingRef(appSessionId: string): TaskRecord['sessionRefs'][number] {
+  return { stage: 'implementing', appSessionId };
+}
+
+describe('TaskDispatcher — the FIX LOOP resumes the hot author', () => {
+  it('resumes the author, calls spawnSession ZERO times, and attaches the session to the new stage', () => {
+    // Assertion 7. The task went implementing → review → implementing, so the
+    // work already has an author; resuming it avoids the new-agent cache miss
+    // (D6: the prompt cache is scoped to machine+directory, and a resume lands in
+    // the same directory).
+    const harness = buildHarness({
+      tasks: [
+        taskRecord({
+          stage: 'implementing',
+          sessionRefs: [implementingRef(HOT_AUTHOR_SESSION_ID)],
+        }),
+      ],
+    });
+    const result = harness.dispatcher.dispatchTask(TASK_ID);
+
+    expect(harness.sessionHost.resumeCalls).toEqual([HOT_AUTHOR_SESSION_ID]);
+    // ⚠ THE OTHER HALF OF THE CLAIM. A dispatcher that resumed the author AND
+    // spawned a fresh session would pass the line above while paying for exactly
+    // the cache miss the fix loop exists to avoid — and would leave two agents on
+    // one task.
+    expect(harness.sessionHost.spawnCalls).toHaveLength(0);
+
+    expect(harness.emitted).toHaveLength(1);
+    expect(harness.emitted[0]!.type).toBe(EVENT_TYPES.taskSessionAttached);
+    expect(harness.emitted[0]!.stream).toBe('tasks');
+    expect(harness.emitted[0]!.payload).toEqual({
+      taskId: TASK_ID,
+      stage: 'implementing',
+      // The id the HOST returned from the resume — the same session, not a new one.
+      appSessionId: HOT_AUTHOR_SESSION_ID,
+    });
+    expect(result).toEqual({
+      outcome: 'resumed',
+      taskId: TASK_ID,
+      stage: 'implementing',
+      appSessionId: HOT_AUTHOR_SESSION_ID,
+    });
+  });
+
+  it('resumes the MOST RECENT author when the task has been round the loop twice', () => {
+    const harness = buildHarness({
+      tasks: [
+        taskRecord({
+          stage: 'implementing',
+          sessionRefs: [
+            implementingRef(HOT_AUTHOR_SESSION_ID),
+            { stage: 'review', appSessionId: EXISTING_SESSION_ID },
+            implementingRef(SECOND_HOT_AUTHOR_SESSION_ID),
+          ],
+        }),
+      ],
+    });
+    harness.dispatcher.dispatchTask(TASK_ID);
+    expect(harness.sessionHost.resumeCalls).toEqual([SECOND_HOT_AUTHOR_SESSION_ID]);
+    expect(harness.sessionHost.spawnCalls).toHaveLength(0);
+  });
+
+  it('a FIRST-PASS implementing task still spawns — the resume is not unconditional', () => {
+    // The other direction, so the fix loop cannot degrade into "implementing never
+    // spawns". A planning ref is not an author.
+    const harness = buildHarness({
+      tasks: [
+        taskRecord({
+          stage: 'implementing',
+          sessionRefs: [{ stage: 'planning', appSessionId: EXISTING_SESSION_ID }],
+        }),
+      ],
+    });
+    const result = harness.dispatcher.dispatchTask(TASK_ID);
+
+    expect(harness.sessionHost.spawnCalls).toEqual([{ channel: 'sdk', cwd: PROJECT_ROOT }]);
+    expect(harness.sessionHost.resumeCalls).toEqual([]);
+    expect(result.outcome).toBe('spawned');
+  });
+
+  it('does NOT resolve a working directory for a resume — the author keeps its own cwd', () => {
+    // `resumeSession` takes no cwd (I3 resumes from the RECORDED one), and that is
+    // the directory the author's prompt cache is scoped to (D6). A resolver that
+    // ran here would imply a move the host cannot perform.
+    const resolverCalls: TaskRecord[] = [];
+    const harness = buildHarness({
+      tasks: [
+        taskRecord({ stage: 'implementing', sessionRefs: [implementingRef(HOT_AUTHOR_SESSION_ID)] }),
+      ],
+      resolveWorkingDirectory: (task) => {
+        resolverCalls.push(task);
+        return '/var/lib/vimes/worktrees/should-not-be-used';
+      },
+    });
+    const result = harness.dispatcher.dispatchTask(TASK_ID);
+
+    expect(resolverCalls).toEqual([]);
+    expect(result).not.toHaveProperty('cwd');
+  });
+});
+
+describe('TaskDispatcher — THE INDEPENDENCE RULE, executed', () => {
+  it('a review spawns a session that is NOT any implementing session on the task', () => {
+    // Assertion 8. The invariant is not "spawnSession was called" — it is that the
+    // session which reviews the work is NOT the session that wrote it. So the
+    // difference between the resulting appSessionId and every implementing ref is
+    // asserted directly, ref by ref; the call count is only the mechanism.
+    const implementingSessionIds = [HOT_AUTHOR_SESSION_ID, SECOND_HOT_AUTHOR_SESSION_ID];
+    const harness = buildHarness({
+      tasks: [
+        taskRecord({
+          stage: 'review',
+          sessionRefs: [
+            ...implementingSessionIds.map(implementingRef),
+            { stage: 'planning', appSessionId: EXISTING_SESSION_ID },
+          ],
+        }),
+      ],
+    });
+    const result = harness.dispatcher.dispatchTask(TASK_ID);
+
+    expect(harness.sessionHost.spawnCalls).toEqual([{ channel: 'sdk', cwd: PROJECT_ROOT }]);
+    expect(harness.sessionHost.resumeCalls).toEqual([]);
+    expect(result.outcome).toBe('spawned');
+
+    const reviewingSessionId = (result as { appSessionId: string }).appSessionId;
+    for (const authorSessionId of implementingSessionIds) {
+      expect(reviewingSessionId, `review must not run in author ${authorSessionId}`).not.toBe(
+        authorSessionId,
+      );
+    }
+    // And the attach records the REVIEW stage against the new session, so the
+    // board shows two distinct sessions on the task rather than one wearing both
+    // hats.
+    expect(harness.emitted[0]!.payload).toEqual({
+      taskId: TASK_ID,
+      stage: 'review',
+      appSessionId: reviewingSessionId,
+    });
+  });
+
+  it('never resumes for a review even when the author is the ONLY session on the task', () => {
+    const harness = buildHarness({
+      tasks: [
+        taskRecord({ stage: 'review', sessionRefs: [implementingRef(HOT_AUTHOR_SESSION_ID)] }),
+      ],
+    });
+    const result = harness.dispatcher.dispatchTask(TASK_ID);
+
+    expect(harness.sessionHost.resumeCalls).toEqual([]);
+    expect(harness.sessionHost.spawnCalls).toHaveLength(1);
+    expect(result).toMatchObject({ outcome: 'spawned', stage: 'review' });
+  });
+});
+
+describe('TaskDispatcher — a refused resume is an EXECUTION outcome, not a decision', () => {
+  it('emits no task_session_attached, does not throw, and reports the host reason', () => {
+    // Assertion 9, the mirror of the `spawn-failed` case. The host already evented
+    // its own refusal (I11's transition_rejected, or a preflight rejection), so
+    // nothing is double-recorded — and no `dispatch_refused` is invented, because
+    // that enum is the DECISION vocabulary and this decision was to run the stage.
+    const harness = buildHarness({
+      tasks: [
+        taskRecord({ stage: 'implementing', sessionRefs: [implementingRef(HOT_AUTHOR_SESSION_ID)] }),
+      ],
+    });
+    harness.sessionHost.refuseNextResume('session already has a live process');
+
+    let result: ReturnType<TaskDispatcher['dispatchTask']> | undefined;
+    expect(() => {
+      result = harness.dispatcher.dispatchTask(TASK_ID);
+    }).not.toThrow();
+
+    expect(harness.sessionHost.resumeCalls).toEqual([HOT_AUTHOR_SESSION_ID]);
+    // No fallback spawn. A refused resume must not silently become "hire a
+    // stranger instead": the caller decides what to do about it.
+    expect(harness.sessionHost.spawnCalls).toHaveLength(0);
+    expect(harness.emitted).toEqual([]);
+    expect(result).toEqual({
+      outcome: 'resume-failed',
+      taskId: TASK_ID,
+      appSessionId: HOT_AUTHOR_SESSION_ID,
+      reason: 'session already has a live process',
+    });
+  });
+
+  it('I11 IS THE BACKSTOP: a host that refuses a live session is honoured even if the decision missed it', () => {
+    // The two guards agree but are INDEPENDENT. `decideDispatch` refuses
+    // `already-running` from the dispatcher's view of liveness; `resumeSession`
+    // refuses from the host's own registry at the instant of the call. This case
+    // is the race the second guard exists for — the dispatcher believed the author
+    // was dormant, the host knew better — and the outcome is a refusal, never a
+    // second live run.
+    const harness = buildHarness({
+      tasks: [
+        taskRecord({ stage: 'implementing', sessionRefs: [implementingRef(HOT_AUTHOR_SESSION_ID)] }),
+      ],
+    });
+    harness.sessionHost.refuseNextResume('session already has a live process');
+    const result = harness.dispatcher.dispatchTask(TASK_ID);
+
+    expect(result.outcome).toBe('resume-failed');
+    expect(harness.emitted).toEqual([]);
+  });
+
+  it('survives a session host that THROWS on resume', () => {
+    const harness = buildHarness({
+      tasks: [
+        taskRecord({ stage: 'implementing', sessionRefs: [implementingRef(HOT_AUTHOR_SESSION_ID)] }),
+      ],
+    });
+    harness.sessionHost.throwOnResume(new Error('adapter exploded'));
+
+    let result: ReturnType<TaskDispatcher['dispatchTask']> | undefined;
+    expect(() => {
+      result = harness.dispatcher.dispatchTask(TASK_ID);
+    }).not.toThrow();
+
+    expect(harness.emitted).toEqual([]);
+    expect(result).toMatchObject({
+      outcome: 'resume-failed',
+      reason: 'resume-threw:adapter exploded',
+    });
+  });
+});
+
+describe('TaskDispatcher — the instruction seam (MACHINERY; the words are deferred)', () => {
+  // ⚠ NO PROMPT TEXT IS ASSERTED HERE BEYOND WHAT A TEST ITSELF SUPPLIES. What a
+  // review or fix prompt should SAY is Wes's decision and is explicitly out of
+  // this step; these cases prove only that a string handed to the seam arrives
+  // verbatim, once, and that the DEFAULT is silence.
+  const STUB_INSTRUCTION = 'test-only instruction text — not a product prompt';
+
+  it('the DEFAULT composer sends nothing at all, on both the spawn and the resume path', () => {
+    // Assertion 10, first half — and this is the whole of today's behaviour.
+    const spawnHarness = buildHarness();
+    spawnHarness.dispatcher.dispatchTask(TASK_ID);
+    expect(spawnHarness.sessionHost.sendCalls).toEqual([]);
+
+    const resumeHarness = buildHarness({
+      tasks: [
+        taskRecord({ stage: 'implementing', sessionRefs: [implementingRef(HOT_AUTHOR_SESSION_ID)] }),
+      ],
+    });
+    resumeHarness.dispatcher.dispatchTask(TASK_ID);
+    expect(resumeHarness.sessionHost.sendCalls).toEqual([]);
+  });
+
+  it('sends the composed string EXACTLY ONCE to the spawned session', () => {
+    const composerCalls: Array<{ taskId: string; mode: string }> = [];
+    const harness = buildHarness({
+      tasks: [taskRecord({ stage: 'review' })],
+      composeStageInstruction: (task, plan) => {
+        composerCalls.push({ taskId: task.taskId, mode: plan.mode });
+        return STUB_INSTRUCTION;
+      },
+    });
+    const result = harness.dispatcher.dispatchTask(TASK_ID);
+
+    expect(composerCalls).toEqual([{ taskId: TASK_ID, mode: 'spawn' }]);
+    expect(harness.sessionHost.sendCalls).toEqual([
+      { appSessionId: SPAWNED_SESSION_ID, text: STUB_INSTRUCTION },
+    ]);
+    expect(result).toMatchObject({ outcome: 'spawned', instructionDelivery: { status: 'sent' } });
+  });
+
+  it('sends the composed string EXACTLY ONCE to the RESUMED session', () => {
+    // Assertion 10's other path. The composer sees `mode: 'resume'` — the only way
+    // it can brief a returning author differently from a fresh one.
+    const composerCalls: string[] = [];
+    const harness = buildHarness({
+      tasks: [
+        taskRecord({ stage: 'implementing', sessionRefs: [implementingRef(HOT_AUTHOR_SESSION_ID)] }),
+      ],
+      composeStageInstruction: (_task, plan) => {
+        composerCalls.push(plan.mode === 'resume' ? `resume:${plan.appSessionId}` : 'spawn');
+        return STUB_INSTRUCTION;
+      },
+    });
+    const result = harness.dispatcher.dispatchTask(TASK_ID);
+
+    expect(composerCalls).toEqual([`resume:${HOT_AUTHOR_SESSION_ID}`]);
+    expect(harness.sessionHost.sendCalls).toEqual([
+      { appSessionId: HOT_AUTHOR_SESSION_ID, text: STUB_INSTRUCTION },
+    ]);
+    expect(result).toMatchObject({ outcome: 'resumed', instructionDelivery: { status: 'sent' } });
+  });
+
+  it('sends NOTHING when the composer returns null or an empty string', () => {
+    // An empty send would still cost a turn and would read to the agent as a
+    // prompt, so empty and null are the same instruction: none.
+    for (const composed of [null, ''] as const) {
+      const harness = buildHarness({ composeStageInstruction: () => composed });
+      const result = harness.dispatcher.dispatchTask(TASK_ID);
+      expect(harness.sessionHost.sendCalls).toEqual([]);
+      // ...and the result carries no delivery field at all, so the default path's
+      // envelope is byte-identical to step 4a's.
+      expect(result).not.toHaveProperty('instructionDelivery');
+    }
+  });
+
+  it('is never consulted at all when nothing runs — a refusal receives no brief', () => {
+    // The composer must not be a side-channel that fires on a path where no
+    // session exists.
+    let composerCallCount = 0;
+    const harness = buildHarness({
+      tasks: [
+        taskRecord({ stage: 'implementing', gates: { requireHeadroom: { meterId: 'window-5h', pct: 75 } } }),
+      ],
+      meters: metersStateWith(meterRecord({ percent: 40 })),
+      composeStageInstruction: () => {
+        composerCallCount += 1;
+        return STUB_INSTRUCTION;
+      },
+    });
+    expect(harness.dispatcher.dispatchTask(TASK_ID).outcome).toBe('refused');
+    expect(composerCallCount).toBe(0);
+    expect(harness.sessionHost.sendCalls).toEqual([]);
+  });
+
+  it('a refused or throwing send is REPORTED, never swallowed — and never unwinds the dispatch', () => {
+    // A stage run that silently never received its brief looks like a working
+    // dispatch and behaves like an idle agent. But the session exists and is
+    // attached, so the dispatch itself still succeeded: un-attaching it would
+    // leave a live session the task no longer references.
+    const refusedHarness = buildHarness({ composeStageInstruction: () => STUB_INSTRUCTION });
+    refusedHarness.sessionHost.refuseNextSend('session-dead');
+    const refusedResult = refusedHarness.dispatcher.dispatchTask(TASK_ID);
+    expect(refusedResult).toMatchObject({
+      outcome: 'spawned',
+      instructionDelivery: { status: 'not-delivered', reason: 'session-dead' },
+    });
+    expect(eventTypes(refusedHarness.emitted)).toEqual([EVENT_TYPES.taskSessionAttached]);
+
+    const throwingHarness = buildHarness({ composeStageInstruction: () => STUB_INSTRUCTION });
+    throwingHarness.sessionHost.throwOnSend(new Error('transport gone'));
+    let thrownResult: ReturnType<TaskDispatcher['dispatchTask']> | undefined;
+    expect(() => {
+      thrownResult = throwingHarness.dispatcher.dispatchTask(TASK_ID);
+    }).not.toThrow();
+    expect(thrownResult).toMatchObject({
+      instructionDelivery: { status: 'not-delivered', reason: 'send-threw:transport gone' },
+    });
+  });
+
+  it('a THROWING composer cannot take the dispatcher down', () => {
+    const harness = buildHarness({
+      composeStageInstruction: () => {
+        throw new Error('composer exploded');
+      },
+    });
+    let result: ReturnType<TaskDispatcher['dispatchTask']> | undefined;
+    expect(() => {
+      result = harness.dispatcher.dispatchTask(TASK_ID);
+    }).not.toThrow();
+    expect(harness.sessionHost.sendCalls).toEqual([]);
+    expect(result).toMatchObject({
+      outcome: 'spawned',
+      instructionDelivery: { status: 'not-delivered', reason: 'compose-threw:composer exploded' },
+    });
+  });
+});
+
+describe('TaskDispatcher — step 7 changes nothing about WHETHER a stage runs', () => {
+  it('I10 STILL HOLDS AGAINST A RESUMABLE TASK: a failed gate reaches neither spawn NOR resume', () => {
+    // Assertion 11, and the one worth stating loudest. The task has a hot author
+    // sitting right there, which is exactly the shape a "just resume it, it is
+    // cheap" shortcut would wave through — a resume is not free, it runs a real
+    // agent against a real budget. The headroom refusal must precede the runner.
+    const harness = buildHarness({
+      tasks: [
+        taskRecord({
+          stage: 'implementing',
+          sessionRefs: [implementingRef(HOT_AUTHOR_SESSION_ID)],
+          gates: { requireHeadroom: { meterId: 'window-5h', pct: 75 } },
+        }),
+      ],
+      meters: metersStateWith(meterRecord({ percent: 40 })),
+    });
+    const result = harness.dispatcher.dispatchTask(TASK_ID);
+
+    expect(harness.sessionHost.spawnCalls).toHaveLength(0);
+    expect(harness.sessionHost.resumeCalls).toEqual([]);
+    expect(harness.emitted).toHaveLength(1);
+    expect(harness.emitted[0]!.payload).toEqual({ taskId: TASK_ID, reason: 'headroom-insufficient' });
+    expect(result).toEqual({ outcome: 'refused', taskId: TASK_ID, reason: 'headroom-insufficient' });
+  });
+
+  it('already-running still refuses a task whose author is LIVE — before any resume is attempted', () => {
+    // `decideDispatch`'s guard, unchanged: a live author is not a resume candidate,
+    // it is an in-flight run. The host's I11 refusal would also catch this; the
+    // point is that we never get that far.
+    const harness = buildHarness({
+      tasks: [
+        taskRecord({ stage: 'implementing', sessionRefs: [implementingRef(HOT_AUTHOR_SESSION_ID)] }),
+      ],
+    });
+    harness.sessionHost.markLive(HOT_AUTHOR_SESSION_ID);
+    const result = harness.dispatcher.dispatchTask(TASK_ID);
+
+    expect(harness.sessionHost.resumeCalls).toEqual([]);
+    expect(harness.sessionHost.spawnCalls).toHaveLength(0);
+    expect(result).toEqual({ outcome: 'refused', taskId: TASK_ID, reason: 'already-running' });
+  });
+
+  it('a defer is still silent and still touches neither call', () => {
+    const harness = buildHarness({
+      tasks: [
+        taskRecord({
+          stage: 'implementing',
+          sessionRefs: [implementingRef(HOT_AUTHOR_SESSION_ID)],
+          gates: { deferUntilReset: 'window-5h' },
+        }),
+      ],
+      meters: metersStateWith(meterRecord({ resetsAt: '2026-07-22T13:00:00.000Z' })),
+    });
+    const result = harness.dispatcher.dispatchTask(TASK_ID);
+
+    expect(harness.emitted).toEqual([]);
+    expect(harness.sessionHost.spawnCalls).toHaveLength(0);
+    expect(harness.sessionHost.resumeCalls).toEqual([]);
+    expect(result.outcome).toBe('deferred');
+  });
+
+  it('a non-dispatchable stage still refuses, even holding an implementing ref', () => {
+    const harness = buildHarness({
+      tasks: [
+        taskRecord({ stage: 'done', sessionRefs: [implementingRef(HOT_AUTHOR_SESSION_ID)] }),
+      ],
+    });
+    const result = harness.dispatcher.dispatchTask(TASK_ID);
+
+    expect(harness.sessionHost.spawnCalls).toHaveLength(0);
+    expect(harness.sessionHost.resumeCalls).toEqual([]);
+    expect(result).toEqual({ outcome: 'refused', taskId: TASK_ID, reason: 'stage-not-dispatchable' });
+  });
+
+  it('the resume path is deterministic too — identical inputs, identical results and events', () => {
+    const buildAndDispatch = (): { result: unknown; emitted: EventInput[] } => {
+      const harness = buildHarness({
+        tasks: [
+          taskRecord({
+            stage: 'implementing',
+            sessionRefs: [implementingRef(HOT_AUTHOR_SESSION_ID)],
+          }),
+        ],
+      });
+      return { result: harness.dispatcher.dispatchTask(TASK_ID), emitted: harness.emitted };
+    };
+    expect(JSON.stringify(buildAndDispatch())).toBe(JSON.stringify(buildAndDispatch()));
   });
 });

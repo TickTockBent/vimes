@@ -93,6 +93,9 @@ export {
   type DispatchRefuseReason,
   type DispatchDeferReason,
 } from './tasks/dispatchDecision.js';
+// Step 7 — WHO runs a stage, kept a separate export (and a separate module) from
+// WHETHER it runs. See stageRunner.ts for why the two questions never merge.
+export { resolveStageRunner, type StageRunnerPlan } from './tasks/stageRunner.js';
 export {
   WATCHDOG_GOVERNED_LIVENESS,
   ALL_SESSION_LIVENESS,
