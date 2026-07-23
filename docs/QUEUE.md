@@ -186,3 +186,53 @@ rate is money saved; the tier says what the writes cost.
 ### Lift
 Small — a labelling change in `lib/cacheBadge.ts` plus the view, with tests. No
 new data is needed; everything required is already in the projection.
+
+
+### Q4, revised 2026-07-23 — replace hit rate with CACHE WARMTH, and relocate the rate
+
+*(Wes: "Cache hit success isn't a useful user metric, what would I do with that
+information? Maybe we change it to tell me whether the cache has expired?")*
+
+**Agreed, and the reason is that hit rate is a number the operator cannot move.**
+Prompt-cache behaviour is set by the CLI and the prompt structure; a metric with
+no lever is trivia, not a control. It is a tuning diagnostic wearing an operator
+badge.
+
+**Warmth is the right metric because it drives an actual decision: resume this
+session, or spawn a fresh one?** That is not a new idea here — it is D6's cache
+economics and step 7's hot-author resume rule, which `resolveStageRunner` already
+applies automatically for stage runs. Surfacing warmth gives the human the same
+lever the dispatcher already pulls for itself.
+
+⚠ **The honesty constraint, and it is the whole design.** VIMES **cannot observe
+cache state** — Anthropic never reports "warm". Any warmth figure is INFERRED
+from last-activity age + observed TTL tier, under assumptions that can be wrong:
+reads refresh the TTL, the cache is prefix-keyed so a changed prefix misses even
+inside the window, and multiple breakpoints exist.
+
+So it must **show its basis, not just a verdict** — observed age and observed
+tier, with remaining-warm time as visible arithmetic on them. Exactly the shape
+the usage meters already use (observation age and freshness beside the number).
+A flat "cache expires in 34m" is a fabricated certainty; "last activity 26m ago ·
+1h tier" is observed, and warm/cold styling follows from it. Pillar 4.
+
+**Do not delete the hit rate — RELOCATE it to the cost ledger.** It is useless on
+a session row and genuinely useful where the question "why did this cost what it
+did" is actually asked: reads bill at ×0.10 of base input, 1h writes at ×2.00,
+5m at ×1.25. Move a metric to where its question lives rather than deleting a
+correct measurement.
+
+### ⚠ A third hidden time base, found while answering the PTY question
+
+Wes: *"pty sessions do NOT have the cache badge."* Investigated — **not a PTY
+gap.** `transcript/mapper.ts:173` emits `usage_block` for any assistant record
+carrying `usage`, on either channel. All three PTY sessions in the live log are
+`custody: external`, and D10 mirrors an external transcript from **EOF** (history
+is signalled by `resync_marker`, never replayed), so none has produced an
+assistant turn since discovery: 5 user-role messages and 0 usage blocks between
+them. A VIMES-spawned PTY session, or a mirrored one doing real work, gets a badge.
+
+**But it exposes a real defect:** for a mirrored session the "cumulative" rate is
+cumulative **since VIMES started watching**, not for the session's life. That is a
+third time base hiding in one badge, and any redesign must either scope the
+figure honestly ("since adoption") or not present it as whole-session at all.
