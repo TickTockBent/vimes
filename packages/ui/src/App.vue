@@ -1,25 +1,117 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue';
-import SessionListView from './views/SessionListView.vue';
-import StreamView from './views/StreamView.vue';
-import FileTreeView from './views/FileTreeView.vue';
-import EditorView from './views/EditorView.vue';
-import SearchPanel from './views/SearchPanel.vue';
-import TerminalView from './views/TerminalView.vue';
-import GitPanel from './views/GitPanel.vue';
-import CostLedgerView from './views/CostLedgerView.vue';
-import TaskBoardView from './views/TaskBoardView.vue';
+import PanelHost from './components/PanelHost.vue';
 import { useVimesStore } from './stores/vimesStore.js';
-import { decideEditorReturn } from './lib/gitReview.js';
-import { parentDir } from './lib/treeNode.js';
-import { buildHash, type Route } from './lib/route.js';
-import { parsePanelStack, type PanelStack } from './lib/panelStack.js';
+import { type Route } from './lib/route.js';
+import {
+  buildPanelStackHash,
+  openPanelFrom,
+  parsePanelStack,
+  popPanel,
+  type PanelStack,
+} from './lib/panelStack.js';
+import { panelLinkClick } from './lib/panelLinkClick.js';
+import { useLayoutMode } from './lib/useLayoutMode.js';
 
 const store = useVimesStore();
-const hash = ref(window.location.hash);
+
+// ── the panel shell (desktop phase 3+4, D39) ────────────────────────────────
+//
+// THE MODEL. Navigation state is a STACK of panels (each a Route). The viewport
+// renders the TRAILING N panels side by side, N from useLayoutMode (width +
+// device override). Opening a view FROM panel i truncates the stack to [0..i]
+// then pushes (openPanelFrom); back pops the tail.
+//
+// WHY THE STACK IS A REF, NOT `computed(parsePanelStack(hash))`. Phase 2 kept
+// the stack length 1 and derived it straight from the hash. The shell needs
+// something phase 2 did not: the stack must retain HISTORY BELOW THE VISIBLE
+// WINDOW so `back` works. On a phone (N=1) opening a session gives the full
+// stack [list, stream] but only `stream` is visible — and the hash must stay
+// BYTE-IDENTICAL to today (`#/session/x`, a single-panel hash), not the
+// multi-panel `#/stack/...` that the full stack would encode. So the two are
+// split deliberately:
+//   • `panelStack` (this ref) is the SOURCE OF TRUTH — the full history, in
+//     memory, as deep as navigation made it.
+//   • the HASH mirrors only the VISIBLE window (trailing N). At N=1 that is
+//     always one panel, so buildPanelStackHash emits exactly today's hash for
+//     every transition (phase-2 byte-identity), which is the phone guarantee.
+// This is the one place this file departs from the work order's literal
+// "stack = computed(parsePanelStack(hash))" / "write buildPanelStackHash(newStack)"
+// wording — because writing the FULL stack would make a phone's URL multi-panel,
+// breaking the hard byte-identical requirement. The window is what a user sees
+// and would bookmark/share, so mirroring it is also the honest URL.
+const { panelCount } = useLayoutMode();
+
+// The session list is home — the bottom of every navigation stack. A deep-link
+// or reload lands on just the visible window (e.g. `#/session/x` → [stream]); we
+// synthesize the list root beneath it so "back" always eventually reaches home,
+// matching today's `navigateHome` from any view. A window that already starts at
+// the session list (home, or `#/meters`, or a `#/stack/` beginning with it) is
+// left untouched. Only ever PREPENDS — never reshapes the visible window, so the
+// mirrored hash and the N=1 byte-identity are unaffected.
+function seedStackFromHash(hashValue: string): PanelStack {
+  const parsedWindow = parsePanelStack(hashValue);
+  if (parsedWindow[0]!.view === 'sessionList') {
+    return parsedWindow;
+  }
+  return [{ view: 'sessionList', expandMeters: false }, ...parsedWindow];
+}
+
+const panelStack = ref<PanelStack>(seedStackFromHash(window.location.hash));
+
+// The last hash THIS component wrote. onHashChange compares against it so our
+// own writes (which mirror the visible window and would otherwise re-seed the
+// ref shallowly, destroying the in-memory history) are ignored, while genuinely
+// external changes (deep link, browser back/forward, a hand-edited URL) DO
+// re-seed. Deep browser-history depth is explicitly OUT of this POC, so a
+// re-seed producing a shallow stack (back then floors) is the accepted
+// behaviour for those external entries.
+let lastWrittenHash = window.location.hash;
+
+// Focus (D39 #4): the last-interacted panel takes the focus ring. Default is the
+// tail (the freshest panel). A mousedown anywhere in a column sets it; a pop
+// clamps it back into range. The ring only renders when MORE THAN ONE panel is
+// visible (see the `:focused` binding) so a phone (N=1) shows no ring and stays
+// byte-visually identical to today.
+const focusedIndex = ref<number>(panelStack.value.length - 1);
+
+// The trailing N panels, each tagged with its TRUE stack index so navigation
+// truncation (openPanelFrom) targets the right panel even though only a window
+// of the stack is on screen.
+const visiblePanels = computed(() => {
+  const stack = panelStack.value;
+  const visibleCount = Math.min(panelCount.value, stack.length);
+  const windowStart = stack.length - visibleCount;
+  return stack.slice(windowStart).map((route, localIndex) => ({
+    route,
+    trueIndex: windowStart + localIndex,
+  }));
+});
+
+// Write the new full stack to the ref and mirror its VISIBLE WINDOW to the hash.
+// Focus follows to the new tail (what you just opened, or the panel revealed by
+// a pop). Every navigation funnels through here so there is exactly one place
+// the hash is written and exactly one hash-vs-stack policy.
+function applyStack(newStack: PanelStack): void {
+  panelStack.value = newStack;
+  focusedIndex.value = newStack.length - 1;
+  const windowedHash = buildPanelStackHash(newStack.slice(-panelCount.value));
+  lastWrittenHash = windowedHash;
+  window.location.hash = windowedHash;
+}
 
 function onHashChange(): void {
-  hash.value = window.location.hash;
+  const currentHash = window.location.hash;
+  if (currentHash === lastWrittenHash) {
+    // Our own write echoing back — the ref is already the deep truth; leave it.
+    return;
+  }
+  // External navigation (deep link, browser back/forward, manual edit): re-seed
+  // from the hash. Loses any in-memory depth below the window, which is the
+  // accepted POC limit (deep browser-history integration is OUT).
+  panelStack.value = seedStackFromHash(currentHash);
+  focusedIndex.value = panelStack.value.length - 1;
+  lastWrittenHash = currentHash;
 }
 
 onMounted(() => {
@@ -30,101 +122,83 @@ onUnmounted(() => {
   window.removeEventListener('hashchange', onHashChange);
 });
 
-// ⚠ THE ROUTE MODEL LIVES IN lib/route.ts, INCLUDING ITS PRECEDENCE. This file
-// owns the I/O — reading `window.location.hash`, listening for `hashchange`,
-// writing the hash back — and nothing else about routing. What used to be a
-// hand-rolled parse plus eight independent `show*` booleans plus a v-if chain
-// whose ORDER was the only record of precedence is now one resolved route, and
-// route.ts has the tests App.vue never could (route.test.ts).
-//
-// So: do not add a `routePath === '/x'` check here. A new route is a rule in
-// route.ts's ROUTE_RULES, in its right precedence position, with a table row.
-//
-// PHASE 2 (D39): navigation state is now a STACK of panels, each a route. The
-// hash is parsed to that stack (lib/panelStack.ts), and this file renders the
-// TRAILING panel — the focused/visible one. With no multi-panel producer yet
-// (no push path; every navigate* still writes a single-panel hash), the stack is
-// ALWAYS length 1, so `activeRoute` is byte-identical to the old
-// `parseRoute(hash)`: the last element of `[parseRoute(hash)]` is exactly
-// `parseRoute(hash)`. Phase 3+4 renders more than the trailing panel; phase 2
-// renders exactly today's single view.
-const panelStack = computed<PanelStack>(() => parsePanelStack(hash.value));
-const activeRoute = computed<Route>(() => panelStack.value[panelStack.value.length - 1]!);
+// ── navigation handlers (PanelHost emit → stack write) ──────────────────────
+// Each opens its route FROM the emitting panel's index, so what was "forward" of
+// that panel is discarded (openPanelFrom). The old navigate* single-route hash
+// writes are GONE — nothing here sets the hash to a bare route, which would
+// silently drop the stack.
 
-// Narrowing projections of the ONE route — only one can ever be non-null,
-// because `parseRoute` returns a single discriminated value. The template's
-// chain is driven by these rather than by independent booleans, so the branches
-// cannot disagree about which view is showing.
-const editorRoute = computed(() => (activeRoute.value.view === 'editor' ? activeRoute.value : null));
-const fileTreeRoute = computed(() =>
-  activeRoute.value.view === 'fileTree' ? activeRoute.value : null,
-);
-const streamRoute = computed(() => (activeRoute.value.view === 'stream' ? activeRoute.value : null));
-// `/#/meters` — the deep-link target of the deployed threshold-notification push
-// (slice 5 step 4b). Same view as home, but the meters strip arrives EXPANDED,
-// because a user who tapped a usage alert wants every meter with its countdown,
-// age, freshness, burn rate and exhaustion projection — not a one-line summary
-// they must then find and tap. This is why a Route names props and not just a
-// view: two hashes, one component, different prop.
-const metersExpanded = computed(
-  () => activeRoute.value.view === 'sessionList' && activeRoute.value.expandMeters,
-);
+function openSessionPanel(index: number, appSessionId: string): void {
+  applyStack(openPanelFrom(panelStack.value, index, { view: 'stream', appSessionId }));
+}
+// The editor push — reached both from a view's `open` (file tree / search / git)
+// and from the marquee path-click below. returnToParam is carried for URL
+// fidelity but no longer honoured for "back": under the stack, popping the
+// editor reveals whatever panel it was pushed from, which is the context the old
+// decideEditorReturn/leaveEditor logic hand-rebuilt. (The git→editor→back
+// diff-refresh edge is a known follow-up, OUT of this POC.)
+function openEditorPanel(index: number, path: string, line?: number, returnTo?: 'git'): void {
+  applyStack(
+    openPanelFrom(panelStack.value, index, {
+      view: 'editor',
+      path,
+      line,
+      returnToParam: returnTo ?? null,
+    }),
+  );
+}
+function openFilesPanel(index: number, dir?: string | null): void {
+  applyStack(openPanelFrom(panelStack.value, index, { view: 'fileTree', initialDir: dir ?? null }));
+}
+function openSearchPanel(index: number): void {
+  applyStack(openPanelFrom(panelStack.value, index, { view: 'search' }));
+}
+function openTerminalPanel(index: number): void {
+  applyStack(openPanelFrom(panelStack.value, index, { view: 'terminal' }));
+}
+function openGitPanel(index: number): void {
+  applyStack(openPanelFrom(panelStack.value, index, { view: 'git' }));
+}
+function openCostPanel(index: number): void {
+  applyStack(openPanelFrom(panelStack.value, index, { view: 'cost' }));
+}
+function openTasksPanel(index: number): void {
+  applyStack(openPanelFrom(panelStack.value, index, { view: 'tasks' }));
+}
+// Back pops the TAIL (popPanel), not panel `index` — for the POC "back" always
+// means "drop the last panel". A length-1 stack pops to itself (the floor); on a
+// phone that reproduces today's "back from the one view goes home" because the
+// panel below the tail (e.g. the session list) is what the pop reveals.
+function backFrom(_index: number): void {
+  applyStack(popPanel(panelStack.value));
+}
 
-// Where EditorView's `back` lands. A WHITELIST (only 'git' is understood today —
-// see decideEditorReturn, unit-tested): anything absent or unrecognized falls
-// back to the file tree, which is exactly the pre-existing behavior. This is
-// deliberately not a general redirect mechanism, and it deliberately does NOT
-// live in route.ts — route.ts carries the raw `returnTo` param and has no opinion
-// about it.
-const editorReturnTarget = computed(() =>
-  decideEditorReturn(editorRoute.value === null ? null : editorRoute.value.returnToParam),
-);
-
-function navigateToSession(appSessionId: string): void {
-  window.location.hash = buildHash({ view: 'stream', appSessionId });
-}
-function navigateHome(): void {
-  window.location.hash = buildHash({ view: 'sessionList', expandMeters: false });
-}
-// `#/files` opens the tree. An optional `dir` param says WHICH directory to open;
-// without it the tree falls back to the first root (the pre-existing behavior).
-function navigateToFiles(dir?: string | null): void {
-  window.location.hash = buildHash({ view: 'fileTree', initialDir: dir ?? null });
-}
-function navigateToSearch(): void {
-  window.location.hash = buildHash({ view: 'search' });
-}
-function navigateToTerminal(): void {
-  window.location.hash = buildHash({ view: 'terminal' });
-}
-function navigateToGit(): void {
-  window.location.hash = buildHash({ view: 'git' });
-}
-function navigateToCost(): void {
-  window.location.hash = buildHash({ view: 'cost' });
-}
-function navigateToTasks(): void {
-  window.location.hash = buildHash({ view: 'tasks' });
-}
-function navigateToEditor(path: string, line?: number, returnTo?: 'git'): void {
-  window.location.hash = buildHash({
-    view: 'editor',
-    path,
-    line,
-    returnToParam: returnTo ?? null,
-  });
-}
-// The editor's back button: the git panel only when the route said so (and the
-// panel then restores + refreshes the diff), otherwise the file tree — reopened
-// at the file's OWN directory, so leaving an editor returns you where you were
-// instead of dropping you at the top-level root.
-function leaveEditor(): void {
-  if (editorReturnTarget.value === 'git') {
-    navigateToGit();
+// ── §E: a plain left-click on an in-app hash link PUSHES a panel ─────────────
+// Delegated on each column so it knows WHICH panel the link was in. The decision
+// (intercept vs let the browser handle it) is the pure, tested panelLinkClick;
+// this only extracts the DOM facts (the anchor's raw href, the modifier flags,
+// the button) and, on a hit, prevents the default new-tab and opens the route as
+// a panel FROM the clicked panel's index. Modifier/middle/right clicks return
+// null and fall through to the browser via the surviving href.
+function onPanelClick(clickEvent: MouseEvent, panelIndex: number): void {
+  const clickTarget = clickEvent.target as HTMLElement | null;
+  const anchor = clickTarget?.closest?.('a[href^="#/"]') as HTMLAnchorElement | null;
+  if (anchor === null || anchor === undefined) {
     return;
   }
-  const editedPath = editorRoute.value?.path ?? null;
-  navigateToFiles(editedPath === null ? null : parentDir(editedPath));
+  // getAttribute keeps the raw `#/...` hash; `.href` would be the absolute URL.
+  const rawHref = anchor.getAttribute('href') ?? '';
+  const routeToPush: Route | null = panelLinkClick({
+    href: rawHref,
+    hasModifier:
+      clickEvent.ctrlKey || clickEvent.metaKey || clickEvent.shiftKey || clickEvent.altKey,
+    button: clickEvent.button,
+  });
+  if (routeToPush === null) {
+    return;
+  }
+  clickEvent.preventDefault();
+  applyStack(openPanelFrom(panelStack.value, panelIndex, routeToPush));
 }
 
 const bannerText = computed(() => {
@@ -137,6 +211,7 @@ const bannerText = computed(() => {
 
 <template>
   <div class="flex min-h-screen flex-col">
+    <!-- Persistent chrome above the panel row — unchanged from today. -->
     <div v-if="bannerText" class="sticky top-0 z-30 bg-amber-500 px-4 py-2 text-center text-sm font-medium text-white">
       {{ bannerText }}
     </div>
@@ -154,48 +229,34 @@ const bannerText = computed(() => {
       </button>
     </div>
 
-    <!-- ⚠ This chain no longer DECIDES anything: `parseRoute` already picked the
-         view, and exactly one branch below can match. Precedence lives in
-         route.ts's ROUTE_RULES, where route.test.ts pins it — reordering these
-         elements can no longer change which view a hash renders. -->
-    <EditorView
-      v-if="editorRoute"
-      :key="editorRoute.path"
-      :path="editorRoute.path"
-      :line="editorRoute.line"
-      @back="leaveEditor"
-    />
-    <FileTreeView
-      v-else-if="fileTreeRoute"
-      :initial-dir="fileTreeRoute.initialDir"
-      @open="(path) => navigateToEditor(path)"
-      @search="navigateToSearch"
-      @back="navigateHome"
-    />
-    <SearchPanel
-      v-else-if="activeRoute.view === 'search'"
-      @open="(payload) => navigateToEditor(payload.path, payload.line)"
-      @back="navigateHome"
-    />
-    <TerminalView v-else-if="activeRoute.view === 'terminal'" @back="navigateHome" />
-    <GitPanel
-      v-else-if="activeRoute.view === 'git'"
-      @open-editor="(path) => navigateToEditor(path, undefined, 'git')"
-      @back="navigateHome"
-    />
-    <CostLedgerView v-else-if="activeRoute.view === 'cost'" @back="navigateHome" />
-    <TaskBoardView v-else-if="activeRoute.view === 'tasks'" @back="navigateHome" />
-    <StreamView v-else-if="streamRoute" :app-session-id="streamRoute.appSessionId" @back="navigateHome" />
-    <SessionListView
-      v-else
-      :expand-meters="metersExpanded"
-      @open="navigateToSession"
-      @open-files="navigateToFiles"
-      @open-search="navigateToSearch"
-      @open-terminal="navigateToTerminal"
-      @open-git="navigateToGit"
-      @open-cost="navigateToCost"
-      @open-tasks="navigateToTasks"
-    />
+    <!-- The panel row: the trailing N panels as equal columns, each its own
+         vertical scroll, a left divider between columns. At N=1 this is one
+         full-width column — no divider, no ring — rendering exactly today's
+         single view. -->
+    <div class="flex min-h-0 flex-1">
+      <div
+        v-for="(panel, localIndex) in visiblePanels"
+        :key="panel.trueIndex"
+        class="min-w-0 flex-1 overflow-y-auto"
+        :class="localIndex > 0 ? 'border-l border-slate-200 dark:border-slate-800' : ''"
+        @mousedown="focusedIndex = panel.trueIndex"
+        @click="onPanelClick($event, panel.trueIndex)"
+      >
+        <PanelHost
+          :route="panel.route"
+          :index="panel.trueIndex"
+          :focused="panel.trueIndex === focusedIndex && visiblePanels.length > 1"
+          @open="openSessionPanel"
+          @open-files="openFilesPanel"
+          @open-search="openSearchPanel"
+          @open-terminal="openTerminalPanel"
+          @open-git="openGitPanel"
+          @open-cost="openCostPanel"
+          @open-tasks="openTasksPanel"
+          @open-editor="openEditorPanel"
+          @back="backFrom"
+        />
+      </div>
+    </div>
   </div>
 </template>

@@ -12,6 +12,7 @@ import { describe, expect, it } from 'vitest';
 import { buildHash, parseRoute, type Route } from './route.js';
 import {
   buildPanelStackHash,
+  openPanelFrom,
   parsePanelStack,
   popPanel,
   pushPanel,
@@ -354,5 +355,61 @@ describe('mutation ops compose and survive a buildPanelStackHash/parsePanelStack
     // replaceTopPanel(B) -> [A, B]
     expect(composed).toEqual([STREAM_A, STREAM_B]);
     expect(parsePanelStack(buildPanelStackHash(composed))).toEqual(composed);
+  });
+});
+
+// ── ASSERTION 6: openPanelFrom — the shell's truncate-then-push navigation ────
+// The crux of phase 3+4: opening a view FROM panel `i` discards everything after
+// `i`, then pushes. A wrong-index / no-truncate bug is exactly what the
+// truncation cases below catch.
+
+describe('openPanelFrom', () => {
+  it('from the TAIL index is a plain push (nothing is truncated)', () => {
+    const stack: PanelStack = [STREAM_A, GIT];
+    // index 1 is the last panel → identical to pushPanel(stack, route).
+    expect(openPanelFrom(stack, 1, TERMINAL)).toEqual([STREAM_A, GIT, TERMINAL]);
+    expect(openPanelFrom(stack, 1, TERMINAL)).toEqual(pushPanel(stack, TERMINAL));
+  });
+
+  it('from index 0 truncates to [first, route] — the marquee list→push', () => {
+    // Clicking a session in the list (index 0) of [list, stream, editor] keeps
+    // only the list, then pushes: [list, stream].
+    const stack: PanelStack = [STREAM_A, GIT, TERMINAL];
+    expect(openPanelFrom(stack, 0, STREAM_B)).toEqual([STREAM_A, STREAM_B]);
+  });
+
+  it('from a middle index truncates the tail past that panel, then pushes', () => {
+    const stack: PanelStack = [STREAM_A, GIT, TERMINAL];
+    // From index 1: keep [STREAM_A, GIT], drop TERMINAL, push STREAM_B.
+    expect(openPanelFrom(stack, 1, STREAM_B)).toEqual([STREAM_A, GIT, STREAM_B]);
+  });
+
+  it('clamps a negative index to 0 (keep only the first panel, then push)', () => {
+    const stack: PanelStack = [STREAM_A, GIT, TERMINAL];
+    expect(openPanelFrom(stack, -5, STREAM_B)).toEqual([STREAM_A, STREAM_B]);
+  });
+
+  it('clamps an over-large index to the last panel (a plain push)', () => {
+    const stack: PanelStack = [STREAM_A, GIT];
+    expect(openPanelFrom(stack, 99, TERMINAL)).toEqual([STREAM_A, GIT, TERMINAL]);
+  });
+
+  it('does not mutate the original stack', () => {
+    const original: PanelStack = [STREAM_A, GIT, TERMINAL];
+    const snapshotBeforeOpen = [...original];
+    openPanelFrom(original, 0, STREAM_B);
+    expect(original).toEqual(snapshotBeforeOpen);
+  });
+
+  it('on an (impossible) empty stack starts a fresh one-panel stack — no throw', () => {
+    expect(() => openPanelFrom([], 0, STREAM_A)).not.toThrow();
+    expect(openPanelFrom([], 0, STREAM_A)).toEqual([STREAM_A]);
+    expect(openPanelFrom([], 5, STREAM_A)).toEqual([STREAM_A]);
+  });
+
+  it('the result round-trips through buildPanelStackHash/parsePanelStack', () => {
+    const opened = openPanelFrom([STREAM_A, GIT, TERMINAL], 0, GIT);
+    expect(opened).toEqual([STREAM_A, GIT]);
+    expect(parsePanelStack(buildPanelStackHash(opened))).toEqual(opened);
   });
 });

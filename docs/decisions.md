@@ -1153,3 +1153,48 @@ phase 2 (`Route` → `Panel[]`, additive, single-panel URLs byte-identical) then
 phase 3+4 merged (host + sidebar + the proof pair), since #5's lean scope is
 exactly that merge. The desktop board is a later unit consuming step 9's
 layout-agnostic `lib/` unchanged.
+
+## D40 — The panel shell mirrors only the VISIBLE window to the hash; the full stack lives in memory, rooted at the session list
+
+*2026-07-23. Discovered and decided during the panel-shell POC (D39 phase 3+4).
+This refines — does not reverse — phase 2's "the hash encodes the stack": it
+narrows WHAT the hash encodes once a stack can be deeper than the viewport shows.*
+
+**The tension.** Phase 2 kept the stack length 1 and derived it straight from the
+hash. The shell needs history *below* the visible window so "back" works — but on
+a phone (N=1) opening a session yields the stack `[list, stream]` while only
+`stream` is visible, and the hash MUST stay byte-identical to today
+(`#/session/x`, not the multi-panel `#/stack/…`). Encoding the full stack breaks
+the phone byte-identity that D39 and phase 2 make load-bearing.
+
+**Decision.** Split the two:
+- The **in-memory `ref` is the source of truth** — the full navigation history,
+  as deep as navigation made it.
+- The **hash mirrors only the trailing-N visible window.** At N=1 that is always
+  one panel, so `buildPanelStackHash([single]) === buildHash(single)` (the phase-2
+  invariant) and every phone URL/transition is byte-identical. The window is also
+  what a user sees and would bookmark/share, so it is the honest URL.
+
+**The invariant that makes "back" survive a reload: the session list is the root
+of every stack.** A deep-link/reload seeds the ref from just the visible window
+(`#/session/x` → `[stream]`); `seedStackFromHash` prepends the sessionList root
+when the window does not already start there, so back always reaches home —
+matching today's `navigateHome` from any view. Without it, back from a reloaded
+non-home view was a no-op (the regression the orchestrator's gate caught; the
+shipped shell fixes it).
+
+**Accepted limits (POC).** Depth *below* the mirrored window is not URL-persistent
+— a reload recovers the window plus the synthesized list root, not arbitrarily
+deep history. Deep browser-history integration (`history.back()` vs writing the
+popped hash) is deferred. `returnTo`/`decideEditorReturn` is now redundant under
+the stack (popping an editor reveals the panel it was pushed from); the param
+stays in `route.ts` (harmless) but the shell wires editor-back to a plain pop. The
+git→editor→back diff-refresh edge (GitPanel staying mounted beneath a popped
+editor) is a known follow-up, out of the POC path.
+
+**Why this is not a reversal of phase 2.** Phase 2's guarantee — every URL that
+worked before is byte-identical and single-panel URLs stay readable — is *upheld*
+here, not weakened: the window is single-panel on a phone precisely so those URLs
+stay pretty. D40 only answers the new question phase 2 never faced ("what does the
+hash show when the stack is deeper than the viewport"), and answers it in the
+direction phase 2's readability goal already pointed.
