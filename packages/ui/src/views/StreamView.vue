@@ -10,6 +10,7 @@ import { shouldSendSeenOnMount, shouldSendSeenOnVisibility } from '../lib/seenOn
 import { deriveCacheBadge, ttlTierLabel } from '../lib/cacheBadge.js';
 import { deriveCorrectionStatus, formatQueuedFor } from '../lib/correctionStatus.js';
 import GateCard from '../components/GateCard.vue';
+import MarkdownMessage from '../components/MarkdownMessage.vue';
 import type { EventRecord } from '../lib/types.js';
 
 const props = defineProps<{ appSessionId: string }>();
@@ -326,14 +327,20 @@ function resume(): void {
 
             <div v-else-if="block.kind === 'text'" class="flex" :class="roleOf(event) === 'user' ? 'justify-end' : 'justify-start'">
               <div
-                class="max-w-[85%] rounded-lg px-3 py-2 text-sm whitespace-pre-wrap"
+                class="max-w-[85%] min-w-0 rounded-lg px-3 py-2 text-sm"
                 :class="
                   roleOf(event) === 'user'
-                    ? 'bg-sky-600 text-white'
+                    ? 'bg-sky-600 text-white whitespace-pre-wrap'
                     : 'bg-slate-100 text-slate-900 dark:bg-slate-800 dark:text-slate-100'
                 "
               >
-                {{ block.text }}
+                <!-- ASSISTANT MESSAGES ONLY get markdown rendering — a user's
+                     own message renders exactly as typed (whitespace-pre-wrap
+                     above), because silently restyling what the operator
+                     typed would be confusing, and their own bubble is the one
+                     place literal fidelity matters most. -->
+                <template v-if="roleOf(event) === 'user'">{{ block.text }}</template>
+                <MarkdownMessage v-else :text="block.text" :cwd="session?.cwd ?? ''" />
               </div>
             </div>
           </template>
