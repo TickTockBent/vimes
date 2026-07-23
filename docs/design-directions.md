@@ -754,3 +754,58 @@ behaviour-shaping change, and the model is Wes's call.
 - Which semantics (#1 truncate-forward / #2 splice)?
 - Affordance: keep a single "back" everywhere, or "back" on phone + "close ×" on
   desktop panels (#3)?
+
+---
+
+## The end-state of the panel shell: the board IS the sidebar, orchestration IS the panels
+
+*(Wes, 2026-07-23, seeing the sidebar POC: "the sidebar would instead become the
+vertical kanban with the right panels becoming the orchestration chat and work
+panels — sessions, task creation, breakouts, terminals." Vision captured, not
+scheduled — this is where the panel shell is HEADING, and it reframes what the
+current pieces are FOR.)*
+
+**The claim.** The panel shell (D39/D40) is not an IDE layout — it is the
+substrate for the orchestration-first product. In the end-state:
+- **The left sidebar is the vertical KANBAN** (step 9's board), not the session
+  list. It is the ambient, always-visible view of all work moving through stages —
+  the thing you live in.
+- **The right panels are the WORK**: the orchestration chat (the conversation with
+  the orchestrator about a card), the session running it, task-creation forms,
+  breakout sub-sessions, terminals. You click a card in the board and its work
+  opens beside the board.
+
+**This is the convergence point of three threads already in this repo:**
+- **"Sessions should not be the landing page"** (2026-07-20) and **"the human
+  stays at the top and does not delve"** (the product-shape entry at the top of
+  this file) → the BOARD is the landing, and it is the sidebar. Sessions become a
+  work panel you open FROM a card, not the home surface.
+- **"An IDE platform, orchestration as an extension layer"** → the right panels
+  ARE that extension layer, made concrete: chat + work surfaces hung off the
+  board.
+- **D39/D40 (the panel stack) + step 9 (the board)** are the two mechanisms this
+  needs, and both now exist. The panel model is what lets "click a card → its
+  orchestration chat and session open beside the board" be one rule.
+
+**What this reframes.** The current **session-list-as-sidebar (D39 #3) is
+transitional** — it proved the sidebar *mechanism* (panel 0 rendered as fixed
+chrome) against a surface that already existed. The target swaps that content:
+the sidebar becomes the board, and the content panels grow new TYPES
+(orchestration chat, task-creation, breakouts) beyond today's views. Nothing built
+so far is wasted — the panel host, the layout-aware hash, the focus model, the
+close-× affordance all carry over unchanged; only WHAT fills the slots changes.
+
+**Sequencing implication (not a schedule).** The natural path from here:
+1. the panel POC stabilises (back semantics, affordance — in progress);
+2. a "board as the sidebar" swap (render the board where the session list is now —
+   it is already a panel-hostable view);
+3. new content-panel TYPES: the orchestration chat first (it is the missing core
+   surface), then task-creation and breakouts as first-class panels;
+4. sessions demote to a work panel opened from a card (this also answers Q2's
+   "demote the session list" half — under this model the session list may not need
+   to be a first-class surface at all).
+
+**Parked. Trigger:** after the panel POC is signed off AND the orchestration chat
+surface has a design. Do not swap the sidebar to the board until the board's
+role as home is deliberately decided — it is the "sessions should not be the
+landing page" call, finally actionable, and it is Wes's to make.
