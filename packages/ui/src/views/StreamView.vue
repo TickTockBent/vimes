@@ -8,6 +8,7 @@ import { clampTextareaHeight, type TextareaMetrics } from '../lib/textareaGrow.j
 import { initialKeyboardOffsetState, reduceKeyboardOffset, type KeyboardOffsetState } from '../lib/keyboardOffset.js';
 import { shouldSendSeenOnMount, shouldSendSeenOnVisibility } from '../lib/seenOnView.js';
 import { deriveCacheBadge, ttlTierLabel } from '../lib/cacheBadge.js';
+import { deriveCorrectionStatus, formatQueuedFor } from '../lib/correctionStatus.js';
 import GateCard from '../components/GateCard.vue';
 import type { EventRecord } from '../lib/types.js';
 
@@ -81,6 +82,15 @@ function handleVisibilityChange(): void {
   }
 }
 
+// Slice 6 step 6b: the ticking "queued for Ns" clock, same idiom as
+// SessionListView's meterClockHandle — a plain 1s setInterval bumping a local
+// "now" ref that only the correction-status computed reads, cleared on
+// unmount so a long-lived phone PWA doesn't accumulate leaked timers across
+// every session opened and closed.
+const CORRECTION_CLOCK_TICK_MS = 1_000;
+const correctionNowMs = ref(Date.now());
+let correctionClockHandle: ReturnType<typeof setInterval> | null = null;
+
 onMounted(() => {
   store.subscribe(props.appSessionId);
   if (shouldSendSeenOnMount()) {
@@ -92,6 +102,9 @@ onMounted(() => {
     window.visualViewport.addEventListener('resize', handleVisualViewportChange);
     window.visualViewport.addEventListener('scroll', handleVisualViewportChange);
   }
+  correctionClockHandle = setInterval(() => {
+    correctionNowMs.value = Date.now();
+  }, CORRECTION_CLOCK_TICK_MS);
 });
 
 onUnmounted(() => {
@@ -99,6 +112,10 @@ onUnmounted(() => {
   if (window.visualViewport) {
     window.visualViewport.removeEventListener('resize', handleVisualViewportChange);
     window.visualViewport.removeEventListener('scroll', handleVisualViewportChange);
+  }
+  if (correctionClockHandle !== null) {
+    clearInterval(correctionClockHandle);
+    correctionClockHandle = null;
   }
 });
 
@@ -119,6 +136,18 @@ const mirrored = computed(() => session.value?.custody === 'external');
 // D9: attention badge in the header — a glance never clears it; only the explicit
 // dismiss tap does (→ clear_attention).
 const attention = computed(() => session.value?.needsAttention ?? null);
+
+// Slice 6 step 6b (D5/D30): the composer's ambient "correction queued"
+// status. THE PILLAR-4 CONSTRAINT lives entirely in correctionStatus.ts — this
+// computed only reads its output, never invents a duration or a prediction of
+// its own. `correctionQueuedForLabel` is split out (rather than narrowing
+// `correctionStatus.value.kind === 'queued'` inline in the template) so the
+// template never has to prove the discriminated union to the type checker.
+const correctionStatus = computed(() => deriveCorrectionStatus(session.value, correctionNowMs.value));
+const correctionQueuedForLabel = computed(() => {
+  const status = correctionStatus.value;
+  return status.kind === 'queued' ? formatQueuedFor(status.elapsedMs) : null;
+});
 
 // Slice 4 step 4: the fuller cache-observability line under the header — tier +
 // hit-rate % + raw service_tier (D24, never a fabricated billing-bucket label)
@@ -359,6 +388,15 @@ function resume(): void {
       >
         Resume
       </button>
+      <div
+        v-if="!mirrored && correctionQueuedForLabel !== null"
+        role="status"
+        aria-live="polite"
+        class="flex flex-col gap-0.5 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200"
+      >
+        <span class="font-semibold">Correction queued · {{ correctionQueuedForLabel }}</span>
+        <span>It will be delivered once the current step finishes.</span>
+      </div>
       <form v-if="!mirrored" class="flex min-w-0 items-end gap-2" @submit.prevent="submitMessage">
         <textarea
           ref="composerRef"
