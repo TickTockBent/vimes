@@ -1,0 +1,104 @@
+// The panel STACK, layered over lib/route.ts (desktop phase 2, 2026-07-23). This
+// is route.ts's sibling: same posture (pure, no Vue/DOM/window/clock), same
+// totality law (I8 — never throws, for any input), same voice (name the quirks,
+// name why the encoding is shaped as it is). It lifts "the app is at ONE route"
+// to "the app is a STACK of routes (panels)" — D39's panel model — WITHOUT
+// changing any URL that works today.
+//
+// WHY A SEPARATE LAYER, AND WHY IT MAY NOT TOUCH route.ts. Phase 1 pinned
+// parseRoute/buildHash with a characterization table taken from pre-refactor
+// App.vue. Those are the SINGLE-PANEL primitives, finished and load-bearing; this
+// module CALLS and WRAPS them and never re-implements them. A panel is exactly a
+// Route here (D39): a richer Panel object (focus, stable id) is phase 3+4's
+// concern if it needs one, so phase 2 keeps the type honest — a stack is a list
+// of routes.
+//
+// THE ONE INVARIANT THE WHOLE RETROFIT RESTS ON. `buildPanelStackHash([route])`
+// returns EXACTLY `buildHash(route)` — byte-identical, down to the empty string
+// for home and every `/files` quirk. So today's URLs, bookmarks, and the
+// deep-link push target (`#/meters`, `#/session/x`) are unchanged, and a hash
+// with no stack marker parses to `[parseRoute(hash)]`. Multi-panel is the ONLY
+// thing that looks new, and it hides behind a reserved marker that a
+// single-panel URL can never wear.
+
+import { buildHash, parseRoute, type Route } from './route.js';
+
+// A panel holds exactly one route (D39). ALWAYS length >= 1 after a parse — the
+// app is never "at no panel", and every parse below guarantees it structurally
+// (see parsePanelStack). Phase 2 keeps `panel === Route`; phase 3+4 may enrich it.
+export type PanelStack = readonly Route[];
+
+// The reserved marker for a multi-panel hash. `#/stack/` can NEVER collide with a
+// single-panel URL: there is no `/stack` rule in route.ts's ROUTE_RULES (a
+// `#/stack/...` URL parses to the sessionList fallback TODAY, so reserving it is
+// purely additive — nothing real changes), and no `buildHash` output starts with
+// it (asserted in the test). Detection strips the optional leading '#' first,
+// exactly as route.ts's splitHash does, so `/stack/...` (no '#') is recognized too.
+const STACK_HASH_PREFIX = '#/stack/';
+const STACK_PATH_PREFIX = '/stack/';
+
+// decodeURIComponent THROWS on a malformed escape ('%', '%zz'). Totality (I8)
+// forbids a throw, so a malformed panel segment degrades to its raw, undecoded
+// form — the SAME posture route.ts takes in decodeSessionSegment. A junk segment
+// then simply parseRoutes to the sessionList fallback; it never crashes a parse.
+function decodePanelSegment(segment: string): string {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
+  }
+}
+
+// Total (I8): every input resolves to a stack of length >= 1, nothing throws.
+export function parsePanelStack(hash: string): PanelStack {
+  // Strip the optional leading '#' before testing for the marker — location.hash
+  // always supplies one, but a caller that stripped it gets the same answer.
+  const withoutLeadingHash = hash.startsWith('#') ? hash.slice(1) : hash;
+
+  if (!withoutLeadingHash.startsWith(STACK_PATH_PREFIX)) {
+    // TODAY'S WORLD, unchanged: no marker → exactly one panel, exactly the route
+    // parseRoute would have resolved. parseRoute is total, so this branch is
+    // total and its result is ALWAYS length 1. This is the byte-identical half of
+    // the invariant, on the parse side.
+    return [parseRoute(hash)];
+  }
+
+  // Multi-panel: split the remainder on '/'. Each panel's buildHash was
+  // encodeURIComponent'd on the way out, so its own '/' and '#' are escaped and
+  // cannot be mistaken for the '/' that joins panels — splitting is unambiguous.
+  // `String.split` on any string (even '') yields at least one element, so the
+  // result is ALWAYS length >= 1 — never an empty stack, even for a bare
+  // `#/stack/` (which yields one empty segment → one sessionList fallback).
+  const encodedPanels = withoutLeadingHash.slice(STACK_PATH_PREFIX.length).split('/');
+  return encodedPanels.map((segment) => parseRoute(decodePanelSegment(segment)));
+}
+
+// The inverse of parsePanelStack. Total: never throws, for any stack.
+export function buildPanelStackHash(stack: PanelStack): string {
+  // An empty stack should never occur — every parse yields length >= 1, and no
+  // caller produces one — but a total builder must still answer. '' is home: the
+  // safest possible "nothing", and it round-trips (parsePanelStack('') is the
+  // sessionList fallback), so a stray empty stack degrades gracefully, not into a
+  // throw.
+  if (stack.length === 0) {
+    return '';
+  }
+
+  // THE INVARIANT: a single panel is byte-identical to today. Not
+  // `#/stack/<enc(...)>` — literally buildHash(route). Every existing bookmark,
+  // paste, and deep-link target is emitted exactly as it is now, including the
+  // empty string for home and the two distinct `/files` encodings.
+  if (stack.length === 1) {
+    return buildHash(stack[0]!);
+  }
+
+  // Two or more panels: the reserved marker, then each panel's own buildHash,
+  // encodeURIComponent'd (so its internal '/', '#', '?' survive as %2F/%23/%3F),
+  // joined by the '/' that separates panels. An empty segment is fine — a home
+  // panel builds to '', encodeURIComponent('') is '', and split preserves the
+  // empty slot on the way back, so `[home, git]` round-trips through
+  // `#/stack//%23%2Fgit`.
+  return (
+    STACK_HASH_PREFIX + stack.map((route) => encodeURIComponent(buildHash(route))).join('/')
+  );
+}
