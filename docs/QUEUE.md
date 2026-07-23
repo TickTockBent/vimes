@@ -290,3 +290,7 @@ resolve the n:1 ambiguity — first-wins, or split), then a small unit consumes 
 preserved helper into the ledger. Until then the hit rate lives in code only,
 which matches your own read that it "isn't a useful user metric" on the row.
 
+**PARKED (Wes, 2026-07-23): low priority — revisit as a CLEANUP after the slice
+ends.** Trigger: slice-6 close. Not before. The badge fix already shipped; this
+is only the relocation bonus, and the preserved helper waits with its tests.
+

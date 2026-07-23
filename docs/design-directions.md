@@ -624,3 +624,76 @@ not moving is not the constraint; one at 40% burning fast is.
 - **Tier 2:** a **new project**, not a unit — native toolchain, release channel,
   and the credential decision above. Do not scope it further until ⟨Wes⟩ 3 is
   answered.
+
+---
+
+## Project onboarding — a standardized doc schema + an import workflow that reorganizes a project into it
+
+*(Wes, 2026-07-23: "a standardized project documentation schema with a project
+initialization workflow where we import a project into vimes and it runs a
+workflow to reorganize the project files using agent calls. We're not near that
+yet but it should be thought about." Captured, not scheduled.)*
+
+**The idea.** Two coupled pieces:
+1. **A standardized project-documentation schema** — a canonical shape for how a
+   project records its own design and state.
+2. **An import/init workflow** — bringing a project into VIMES kicks off a
+   workflow that uses agent calls to read the existing project and **reorganize
+   its files into the schema** (seed the docs, sort strays, write the index).
+
+**This is not greenfield — the schema already exists in embryo, in this repo.**
+The software-orchestration workflow's doc suite (`decisions.md`,
+`open-questions.md`, `design-principles.md`, `calibration.md`, `architecture.md`,
+`risk-register.md`, `design-directions.md`, `README.md` index) IS a standardized
+project-documentation schema, and `vimes/docs/` is its worked exemplar. The
+kickoff checklist in that skill is a **manual** version of the init workflow:
+scaffold the suite, migrate the spec's live parts, preserve `D#` numbering. So
+the novel work is (a) making the schema a **first-class, versioned VIMES
+artifact** rather than a convention living in a skill, and (b) **automating the
+init** as a dispatched workflow instead of a human running the checklist.
+
+**Where it sits in the product.** This is a concrete instance of the top entry
+("an IDE platform, orchestration as an extension layer") — the extension layer
+doing structured work *on* a project, not just hosting sessions *in* it. And its
+engine is the **slice-6/7 dispatcher**: a project-init workflow is a natural
+first real *product* consumer of the task/workflow machinery, downstream of it
+being stable. That ordering is the trigger (below).
+
+**⚠ The tensions worth flagging now, while they're cheap to note:**
+- **Reorganizing someone's files is a hard-to-reverse op on real work.** The
+  operating principle is confirm-before-destructive; this must be **git-native
+  and reversible** — run the reorg in a **worktree/branch (D32 already gives us
+  worktree isolation), never touch the working tree or `main`**, present a diff,
+  and land only on human sign-off. "Make it impossible, not forbidden": the reorg
+  cannot clobber because it structurally has no path to the live tree. This is
+  Rule-0.1 territory the day it's scoped.
+- **Observed truth over declared (0.7).** The import must *read* the project's
+  actual layout, never assume a conventional one — a classifier that infers "this
+  is where the design docs live" is inference, and inference gets the same
+  observed-not-declared discipline as everything else here (cf. D37's refusal to
+  infer a project boundary from `.git`/`package.json`).
+- **The schema needs versioning + migration**, the same way `calibration.md` pins
+  bands with assumptions and `decisions.md` preserves numbering across splits. An
+  imported project may carry an older schema version.
+- **D21 project roots** bound what "import a project" can reach
+  (`VIMES_PROJECT_ROOTS`); the reorg operates inside that fence.
+- **Multi-tenancy.** The schema has to hold for projects that are NOT VIMES and
+  NOT games — a service, a library, someone else's repo. The suite was designed
+  to generalize (that's why the skill was renamed off "slice"), but the schema-
+  as-artifact should be validated against a genuinely foreign project before it's
+  declared standard (define at first instance, generalize at the second).
+
+**Parked. Trigger:** after the dispatcher/workflow machinery (slice 6, and its
+review/fix loop) is a proven, stable product, AND there is a real second project
+to import as the first foreign test of the schema. Lean: this is downstream of
+the dispatcher earning trust, and its first build should be **schema-first**
+(pin the standardized shape and its versioning on one real import) before any
+automated file-moving is turned on. Do not scope the reorg workflow before the
+schema is validated against a non-VIMES project.
+
+### ⟨Wes⟩ — decisions, when this is revisited
+1. **Is the schema the software-orchestration doc suite promoted to an artifact,
+   or a new shape?** *(Lean: promote what exists — it's proven on three projects.)*
+2. **Does import ever write outside a worktree/branch?** *(Lean: no, ever. The
+   reorg lands via reviewed diff + sign-off, never in place.)*
+3. **Schema versioning + migration story** — mint it with the artifact, not after.
