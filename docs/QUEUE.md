@@ -52,3 +52,50 @@ to look in the wrong place is a small lie, and this project does not ship those.
 
 **Lift:** small — one view, plus a test if any pure logic falls out (collapse
 state is component state; probably nothing for `lib/`).
+
+
+---
+
+## Q2 — Session list scale: retention, and demoting it from a first-class surface
+
+*(Wes, 2026-07-23, after Q1 shipped: "I agree generally. We shouldn't persist
+every single old session. I have thoughts about that too, but this session list
+isn't a first class interface going forward. Let's make a note to revisit it
+after the running agent lands.")*
+
+**Trigger: after the routing-extraction unit lands.** ⟨Wes⟩ has thoughts to
+contribute before this is scoped — do not design it without him.
+
+### What Q1 did and deliberately did NOT fix
+
+Q1 made **New session** reachable without scrolling. It did nothing about the
+list's own scroll cost, which is the real complaint: a few dozen sessions today,
+unbounded growth ahead. Sorting/filtering/search were explicitly out of Q1's
+scope and stay out until this entry is scoped.
+
+### The two halves, and they are different decisions
+
+1. **Retention** — *"we shouldn't persist every single old session."* This is not
+   a UI question. Sessions are event-sourced; a dormant session from two weeks
+   ago is still a stream in an append-only log (I12). So "don't persist" means
+   deciding what **archived** means: hidden from a list, or actually pruned from
+   the store? Pruning touches I6 (replay equivalence) and the D12 event-log
+   growth item already parked in `design-directions.md` — **those two should be
+   decided together, not separately.**
+2. **Demotion** — *"this session list isn't a first class interface going
+   forward."* This is the concrete form of the 2026-07-20 note *"sessions should
+   not be the landing page"*, whose stated trigger was *"revisit when slice 6/7
+   UI is designed"*. **The board now exists (`115e728`), so that trigger has
+   fired.** Under the panel model, this is a question about the panel stack's
+   initial state, not a new view.
+
+### Why they interact
+
+If the board becomes home and sessions become a drill-down, the list's scroll
+cost matters far less — it stops being the surface you live in. **Demotion may
+substantially dissolve the problem retention was going to solve**, so decide the
+demotion first and re-measure the pain before designing archiving.
+
+⚠ Retention is the half with a **destructive** option in it. Anything that
+removes events is rule-0.1 territory and earns a decision record before a work
+order, not during one.
