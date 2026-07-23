@@ -66,9 +66,9 @@ export interface CurrentCostLedgerArgs {
   // matches binding data rule 9 (cwd + insideProjectRoots, never the slug).
   projectRoots: readonly string[];
   // The sessions projection, read FRESH per request (same pattern the watchdog
-  // and the hub already use). It supplies the top rung of D37's identity ladder
-  // — the human-given session name. Absent → the ladder simply starts one rung
-  // lower (cwd basename → short id); a name is never fabricated.
+  // and the hub already use). It supplies the top rung of the identity ladder —
+  // `name ?? derivedTitle`. Absent → every session falls to the distinguishing
+  // fallback rung; a title is never fabricated.
   readSessions?: () => SessionsState;
 }
 
@@ -76,37 +76,57 @@ export interface CurrentCostLedgerArgs {
  * The join between the sessions projection and the cost rows: cost rows are keyed
  * by the CLAUDE session id (the `sessionId` field of the transcript JSONL), while
  * the projection is keyed by the VIMES app session id and records the claude ids
- * it has observed for each. Both are mapped to the same name so a cost row joins
+ * it has observed for each. Both are mapped to the same title so a cost row joins
  * whichever id it happens to carry — the two id spaces are both uuids and never
  * collide.
  *
- * A blank name is dropped rather than mapped: the ladder must fall through to the
- * cwd basename, not render an empty leaf.
+ * ⚠ **`name ?? derivedTitle`, and the ORDER is the whole of Q3.** `name` is
+ * HUMAN-supplied and only ever human-supplied (`session_created` from the spawn
+ * op, `session_renamed` from the WS rename op — nothing else writes it);
+ * `derivedTitle` is what the projection auto-derived from the first qualifying
+ * user message. A human rename therefore wins here for the same reason it wins
+ * everywhere: not because a rule says so, but because the auto-titler never
+ * touched the field it would have to overwrite.
+ *
+ * Named "titles", not "names", because after this resolution the two are
+ * indistinguishable downstream — calling the merged value a "name" would invite
+ * a later reader to treat an auto-title as human intent.
+ *
+ * A blank title is dropped rather than mapped: the ladder must fall through to
+ * the distinguishing fallback, not render an empty leaf.
  *
  * FIRST-WINS per id. A resumed or forked session can leave the same claude id
  * observed under two app sessions; first-wins makes the label a deterministic
  * function of the event log rather than of map-iteration luck.
  */
-export function sessionNamesByCostSessionId(
+export function sessionTitlesByCostSessionId(
   sessionsState: SessionsState,
 ): Record<string, string> {
-  const namesBySessionId: Record<string, string> = {};
-  const claimId = (sessionId: string, name: string): void => {
-    if (!Object.hasOwn(namesBySessionId, sessionId)) {
-      namesBySessionId[sessionId] = name;
+  const titlesBySessionId: Record<string, string> = {};
+  const claimId = (sessionId: string, title: string): void => {
+    if (!Object.hasOwn(titlesBySessionId, sessionId)) {
+      titlesBySessionId[sessionId] = title;
     }
   };
   for (const sessionRecord of Object.values(sessionsState.sessions)) {
-    const name = sessionRecord.name;
-    if (name === null || name.trim().length === 0) {
+    // `name` first: a human rename outranks whatever the system derived.
+    const humanName = sessionRecord.name;
+    const derivedTitle = sessionRecord.derivedTitle;
+    const title =
+      humanName !== null && humanName.trim().length > 0
+        ? humanName
+        : derivedTitle !== undefined && derivedTitle.trim().length > 0
+          ? derivedTitle
+          : null;
+    if (title === null) {
       continue;
     }
-    claimId(sessionRecord.appSessionId, name);
+    claimId(sessionRecord.appSessionId, title);
     for (const claudeSessionId of sessionRecord.claudeSessionIds) {
-      claimId(claudeSessionId.id, name);
+      claimId(claudeSessionId.id, title);
     }
   }
-  return namesBySessionId;
+  return titlesBySessionId;
 }
 
 /**
@@ -133,15 +153,15 @@ export function currentCostLedger(args: CurrentCostLedgerArgs): CostLedgerBody {
       childAgentId: edge.childAgentId,
       parentAgentId: edge.parentAgentId,
     }));
-  // The human-given session names (D37's identity ladder, top rung). Read only
-  // when a reader was wired; the tree degrades to cwd basename → short id
-  // otherwise rather than inventing a second source of session names.
-  const sessionNames =
-    args.readSessions === undefined ? undefined : sessionNamesByCostSessionId(args.readSessions());
+  // The session titles (`name ?? derivedTitle` — the identity ladder's top rung).
+  // Read only when a reader was wired; the tree degrades to the distinguishing
+  // fallback otherwise rather than inventing a second source of session titles.
+  const sessionTitles =
+    args.readSessions === undefined ? undefined : sessionTitlesByCostSessionId(args.readSessions());
   const ledger = buildCostLedgerReadModel(inputRows, {
     projectRoots: args.projectRoots,
     parentEdges,
-    sessionNames,
+    sessionTitles,
   });
   return { ingestionEnabled: true, ledger };
 }

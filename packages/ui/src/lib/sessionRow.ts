@@ -1,3 +1,4 @@
+import { resolveSessionLabel } from './sessionLabel.js';
 import type { AttentionReason, Custody, Liveness, SessionRecord } from './types.js';
 
 export interface SessionRow {
@@ -48,13 +49,21 @@ function cwdTail(cwd: string): string {
 
 export function deriveSessionRow(session: SessionRecord): SessionRow {
   const style = LIVENESS_STYLE[session.liveness];
-  const idPrefix = session.appSessionId.slice(0, 8);
   // Default 'host' when custody is absent (projection predating the field).
   const custody: Custody = session.custody ?? 'host';
   const mirrored = custody === 'external';
   return {
     appSessionId: session.appSessionId,
-    label: session.name ?? idPrefix,
+    // Q3: the ONE ladder (lib/sessionLabel.ts), shared with the cost ledger so
+    // the two views can never call the same session different things.
+    // `createdAt` is this surface's "earliest observed" instant — the ledger
+    // passes its earliest cost row instead; the rung is the same.
+    label: resolveSessionLabel({
+      sessionId: session.appSessionId,
+      name: session.name,
+      derivedTitle: session.derivedTitle,
+      earliestActivityAt: session.createdAt,
+    }),
     channel: session.channel,
     cwdTail: cwdTail(session.cwd),
     liveness: session.liveness,

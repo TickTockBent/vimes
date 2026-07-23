@@ -27,6 +27,8 @@
 
 // The four pricing outcomes (mirrors packages/core PriceStatus). 'priced' is the
 // only one that carries dollars; the other three are the un-knowns.
+import { resolveSessionLabel } from './sessionLabel.js';
+
 export type PriceStatus = 'priced' | 'unpriced' | 'unpriceable' | 'flagged';
 
 // The three un-known statuses, in the order they are surfaced beside a total.
@@ -72,10 +74,18 @@ export interface SessionView {
   readonly directoryPath: string;
   // The session's own launch cwd (kept even for outside-roots sessions), or null.
   readonly cwd: string | null;
-  // The human-given name, when the daemon's join found one.
-  readonly name: string | null;
-  // D37's identity ladder, already resolved by core (`name` → cwd basename →
-  // short id) and NEVER blank. The view renders this; it does not re-derive it.
+  // The session's title as the daemon resolved it — `name ?? derivedTitle` — or
+  // null when it has neither. Null is exactly the condition the "unnamed" badge
+  // wants, so the view tests this rather than inspecting the label text.
+  readonly title: string | null;
+  // The earliest `timestamp` across this session's cost rows, or null. The time
+  // half of the fallback rung.
+  readonly earliestRowTimestamp: string | null;
+  // Core's own resolution of the same ladder, for non-browser consumers of
+  // GET /api/cost/ledger. ⚠ **THIS VIEW DOES NOT RENDER IT** — it calls
+  // `sessionLabelFor` (lib/sessionLabel.ts), the same function the session list
+  // calls, so the two views cannot call one session two different things. That
+  // divergence is the defect this whole change exists to remove.
   readonly label: string;
   readonly own: RollupView;
   readonly subtree: RollupView;
@@ -523,6 +533,28 @@ export function ledgerTreeRows(
     }
   }
   return rows;
+}
+
+/**
+ * The label for a session row in the cost ledger — **the same function the
+ * session list uses** (`resolveSessionLabel`, lib/sessionLabel.ts).
+ *
+ * The daemon already collapsed `name ?? derivedTitle` into `title` before it
+ * reached the wire, so that single string is the ladder's top rung here; the
+ * fallback's time half is the session's earliest cost row rather than the
+ * record's `createdAt`, which is the same fact measured from the data this
+ * surface actually has.
+ *
+ * ⚠ Deliberately does NOT read `session.cwd`. Under D37 the parent directory row
+ * already renders that basename, so using it here is what made a `death` folder
+ * list three more rows called `death`.
+ */
+export function sessionLabelFor(session: SessionView): string {
+  return resolveSessionLabel({
+    sessionId: session.sessionId,
+    name: session.title,
+    earliestActivityAt: session.earliestRowTimestamp,
+  });
 }
 
 // One option of the spend-history selector: the SAME nodes the tree shows, in the

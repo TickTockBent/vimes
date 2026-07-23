@@ -20,6 +20,7 @@ import {
   type Liveness,
 } from '../events.js';
 import { isTranscriptAppendEventType } from '../tasks/watchdogDecision.js';
+import { deriveSessionTitle } from '../sessionIdentity.js';
 
 export interface SessionsState {
   sessions: Record<string, SessionRecord>;
@@ -423,15 +424,46 @@ export const sessionsProjection: Projection<SessionsState> = {
       // `withTranscriptAppendHeartbeat` above ALREADY advanced the heartbeat
       // before this switch ran — this case composes with that fold rather than
       // duplicating it (the same composition the attention setters use).
+      //
+      // ── Q3: the same event also AUTO-TITLES the session, write-once ───────
+      //
+      // ⚠ **THIS FOLD NEVER WRITES `name`.** It writes `derivedTitle` and
+      // nothing else. That is the whole of Q3's decision made structural: Wes's
+      // rule *"if a user name has been set the system never automatically
+      // changes it"* stops being a rule anyone can forget and becomes
+      // impossible, because the only code that auto-titles does not touch the
+      // human field. Display resolves `name ?? derivedTitle ?? <fallback>`
+      // (sessionIdentity.ts `resolveSessionLabel`). No flag: `name !== null`
+      // already means "a human chose this".
       case EVENT_TYPES.message: {
         const parsed = messagePayloadSchema.safeParse(event.payload);
         if (!parsed.success) {
           return state;
         }
-        return withSession(state, parsed.data.appSessionId, (session) => ({
-          ...session,
-          turnInFlight: true,
-        }));
+        const messagePayload = parsed.data;
+        return withSession(state, messagePayload.appSessionId, (session) => {
+          const turningSession: SessionRecord = { ...session, turnInFlight: true };
+          // ⚠ **WRITE-ONCE, and both halves of the guard matter.** Only a
+          // `user` message can title a session (an assistant turn is the
+          // model's words, not the operator's ask), and only when no title
+          // exists yet — a long session must not re-title itself on every
+          // prompt, and a replay must produce the same value a live fold did
+          // (I6). `undefined` is the ONLY "not yet titled" state: the field is
+          // absent until this line sets it, and never cleared.
+          if (messagePayload.role !== 'user' || turningSession.derivedTitle !== undefined) {
+            return turningSession;
+          }
+          // Returns null for a shape that is not a title (empty, a bare slash
+          // command, a harness wrapper, or content with no text blocks at all —
+          // `tool_result` arrives as a `user` message and is the common case).
+          // A null leaves the field ABSENT, never `''`, so the next real prompt
+          // still gets to title the session.
+          const derivedTitle = deriveSessionTitle(messagePayload.content);
+          if (derivedTitle === null) {
+            return turningSession;
+          }
+          return { ...turningSession, derivedTitle };
+        });
       }
 
       case EVENT_TYPES.correctionDelivered: {

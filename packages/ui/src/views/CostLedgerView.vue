@@ -10,11 +10,13 @@ import {
   ledgerState,
   ledgerTreeRows,
   seriesForSelection,
+  sessionLabelFor,
   spendAxisMax,
   spendBars,
   unknownTokenBadges,
   unvalidatedNote,
   type RollupView,
+  type SessionView,
 } from '../lib/costDisplay.js';
 
 // This view is statically imported by App.vue (like SessionListView), and it
@@ -121,6 +123,10 @@ function unvalidatedFor(rollup: RollupView) {
 }
 function hasUnknownFor(rollup: RollupView) {
   return hasUnknownTokens(rollup);
+}
+// Q3: the one shared ladder (lib/sessionLabel.ts), re-exposed for the template.
+function sessionLabel(session: SessionView) {
+  return sessionLabelFor(session);
 }
 </script>
 
@@ -306,8 +312,11 @@ function hasUnknownFor(rollup: RollupView) {
               </div>
             </template>
 
-            <!-- A session launched in that exact directory. `label` is core's
-                 identity ladder (name → cwd basename → short id): never blank. -->
+            <!-- A session launched in that exact directory. The label comes from
+                 `sessionLabelFor` — the SAME ladder the session list uses
+                 (`title` → `Jul 19 23:25 · a1b2c3d4`), so one session can never
+                 be called two things in two views. There is no cwd-basename
+                 rung: this row's parent directory already shows that name. -->
             <template v-else-if="row.kind === 'session'">
               <button
                 type="button"
@@ -321,9 +330,9 @@ function hasUnknownFor(rollup: RollupView) {
                   <span class="w-3 shrink-0 text-slate-400" aria-hidden="true">
                     {{ row.expandable ? (row.expanded ? '▾' : '▸') : '' }}
                   </span>
-                  <span class="truncate text-xs text-slate-600 dark:text-slate-300">{{ row.session.label }}</span>
+                  <span class="truncate text-xs text-slate-600 dark:text-slate-300">{{ sessionLabel(row.session) }}</span>
                   <span
-                    v-if="row.session.name === null"
+                    v-if="row.session.title === null"
                     class="shrink-0 font-mono text-[10px] text-slate-400 dark:text-slate-500"
                     :title="row.session.sessionId"
                   >

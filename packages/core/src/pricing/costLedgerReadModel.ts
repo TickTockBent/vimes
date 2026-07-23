@@ -156,10 +156,17 @@ export interface SessionView {
   readonly directoryPath: string;
   // The session's OWN launch cwd (kept even for outside-roots sessions), or null.
   readonly cwd: string | null;
-  // The human-given name when the caller supplied one, else null.
-  readonly name: string | null;
-  // The D37 identity ladder — `name` → cwd basename → short id. NEVER blank, so
-  // the UI renders this and never has to invent a fallback of its own.
+  // The session's title as the caller resolved it — `name ?? derivedTitle` from
+  // the sessions projection — else null. Null here means "no human name AND no
+  // derived title", which is exactly the condition a surface wants to mark.
+  readonly title: string | null;
+  // The earliest `timestamp` across this session's rows, or null. Carried so a
+  // surface can re-derive the same label without a second data source.
+  readonly earliestRowTimestamp: string | null;
+  // The identity ladder — `title` → `Jul 19 23:25 · a1b2c3d4`. NEVER blank.
+  //
+  // ⚠ There is deliberately NO cwd-basename rung: under D37 the parent DIRECTORY
+  // node already renders that exact string (sessionIdentity.ts).
   readonly label: string;
   readonly own: RollupView;
   readonly subtree: RollupView;
@@ -205,7 +212,8 @@ function toSessionView(sessionNode: SessionNode): SessionView {
     sessionId: sessionNode.sessionId,
     directoryPath: sessionNode.directoryPath,
     cwd: sessionNode.cwd,
-    name: sessionNode.name,
+    title: sessionNode.title,
+    earliestRowTimestamp: sessionNode.earliestRowTimestamp,
     label: sessionNode.label,
     own: toRollupView(sessionNode.own),
     subtree: toRollupView(sessionNode.subtree),
@@ -316,10 +324,10 @@ export interface BuildCostLedgerOptions {
   // straight through to buildCostTree so the tree can nest agents whose usage rows
   // carry no toolUseResult edge. Absent (default) → row-only behaviour, unchanged.
   readonly parentEdges?: readonly ExplicitAgentParentEdge[];
-  // Human-given session names keyed by the SAME session id the cost rows carry
-  // (D37's identity-ladder top rung), passed straight through to buildCostTree.
-  // Injected data — core never reaches for the sessions projection itself.
-  readonly sessionNames?: Readonly<Record<string, string | null>>;
+  // Session titles (`name ?? derivedTitle`) keyed by the SAME session id the cost
+  // rows carry — the identity ladder's top rung — passed straight through to
+  // buildCostTree. Injected data: core never reaches for the sessions projection.
+  readonly sessionTitles?: Readonly<Record<string, string | null>>;
   // A test seam to inject a non-reconciling tree so the builder's reconciliation
   // guard can be exercised — absent in prod (buildCostTree reconciles by
   // construction, so no INPUT alone can make the builder's tree fail to reconcile).
@@ -328,7 +336,7 @@ export interface BuildCostLedgerOptions {
     opts: {
       projectRoots: readonly string[];
       parentEdges?: readonly ExplicitAgentParentEdge[];
-      sessionNames?: Readonly<Record<string, string | null>>;
+      sessionTitles?: Readonly<Record<string, string | null>>;
     },
   ) => CostTree;
 }
@@ -426,6 +434,10 @@ export function buildCostLedgerReadModel(
     attributionAgent: row.attributionAgent,
     attributionSkill: row.attributionSkill,
     sourceKind: row.sourceKind,
+    // Carried into the tree for ONE purpose: the earliest row per session, which
+    // is the time half of the identity ladder's fallback rung. No new field —
+    // the history pass below already reads the same `timestamp`.
+    timestamp: row.timestamp,
     tokens: {
       inputTokens: row.inputTokens,
       outputTokens: row.outputTokens,
@@ -437,7 +449,7 @@ export function buildCostLedgerReadModel(
   }));
 
   const buildTreeFn = options.buildTree ?? buildCostTree;
-  const tree = buildTreeFn(treeRows, { projectRoots, parentEdges, sessionNames: options.sessionNames });
+  const tree = buildTreeFn(treeRows, { projectRoots, parentEdges, sessionTitles: options.sessionTitles });
   // The load-bearing guard — a non-reconciling tree is a lie; let it throw.
   assertTreeReconciles(tree);
 

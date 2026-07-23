@@ -15,7 +15,15 @@ export interface SessionRecord {
   cwd: string;
   liveness: Liveness;
   needsAttention: { reason: AttentionReason; since: string } | null;
+  // HUMAN-supplied, and only ever human-supplied: `session_created` from the
+  // spawn op and `session_renamed` from the WS rename op are its only writers.
+  // The auto-titler writes `derivedTitle` instead, which is why a user name is
+  // never overwritten (Q3 — structural, not a rule).
   name: string | null;
+  // SYSTEM-derived from the session's first qualifying user message, written
+  // once and never changed. Optional (mirrors packages/core/src/schemas.ts):
+  // absent means "no title derived", never `''`.
+  derivedTitle?: string;
   createdAt: string;
   // D10: 'external' = a mirrored (read-only) terminal-started/historical session;
   // 'host' = VIMES-owned. Optional here so a projection predating the field (or a
