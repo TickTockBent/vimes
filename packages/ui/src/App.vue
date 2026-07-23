@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import PanelHost from './components/PanelHost.vue';
 import { useVimesStore } from './stores/vimesStore.js';
 import { type Route } from './lib/route.js';
@@ -40,7 +40,14 @@ const store = useVimesStore();
 // wording — because writing the FULL stack would make a phone's URL multi-panel,
 // breaking the hard byte-identical requirement. The window is what a user sees
 // and would bookmark/share, so mirroring it is also the honest URL.
-const { panelCount } = useLayoutMode();
+// showSidebar (D39 #3): at desktop width the session list — which is ALREADY the
+// root of every stack (stack[0], D40) — renders as fixed left-hand chrome (a
+// sidebar) instead of as a panel column. This is NOT a second list: it is the
+// SAME stack[0], rendered by the SAME PanelHost/SessionListView, just laid out as
+// a sidebar rather than windowed into the flex row. So nav, meters, new-session
+// and D40 all come for free with nothing to drift (the whole point of D39 #3).
+// Below desktop width showSidebar is false and the phone/tablet path is untouched.
+const { panelCount, showSidebar } = useLayoutMode();
 
 // The session list is home — the bottom of every navigation stack. A deep-link
 // or reload lands on just the visible window (e.g. `#/session/x` → [stream]); we
@@ -88,6 +95,56 @@ const visiblePanels = computed(() => {
   }));
 });
 
+// ── the desktop sidebar split (D39 #3) ───────────────────────────────────────
+//
+// When showSidebar is true the sidebar renders stack[0] (the session list) and
+// the CONTENT area renders the panels AFTER the root — stack.slice(1) — windowed
+// to the trailing (panelCount - 1), because the sidebar consumes one of the N
+// layout slots (desktop panelCount 3 → sidebar + up to 2 content columns). Each
+// content panel keeps its TRUE stack index so openPanelFrom still targets the
+// right panel through the window. Same shape as visiblePanels above, only the
+// windowed range differs; the +1 restores the index the leading slice(1) drops.
+// (This computed is only READ in the showSidebar template arm; the v-else arm
+// still uses visiblePanels verbatim, so the phone path is untouched.)
+// The sidebar always renders the stack ROOT — stack[0], the session list. The
+// stack is never empty (seedStackFromHash prepends the list root, popPanel floors
+// at length 1), so the root is always present; the assertion just gives the
+// template a plain Route rather than Route | undefined.
+const sidebarRoute = computed<Route>(() => panelStack.value[0]!);
+
+const contentPanels = computed(() => {
+  const stack = panelStack.value;
+  const contentPanelSlots = Math.max(1, panelCount.value - 1);
+  const contentStack = stack.slice(1); // everything past the list root (stack[0])
+  const visibleCount = Math.min(contentPanelSlots, contentStack.length);
+  const windowStart = contentStack.length - visibleCount;
+  return contentStack.slice(windowStart).map((route, localIndex) => ({
+    route,
+    trueIndex: 1 + windowStart + localIndex,
+  }));
+});
+
+// THE ONE hash-vs-layout policy (D40, made layout-aware). Every hash write —
+// applyStack on navigation AND the resize re-mirror below — funnels through here,
+// so there is a single place that decides what the URL shows.
+//   • Not sidebar → EXACTLY today's write: the trailing-panelCount window. This
+//     expression is deliberately left byte-identical to 70ec17d because the phone
+//     byte-identity guarantee (D40) rests on it — do not reshape it.
+//   • Sidebar → mirror only the CONTENT window (the same routes contentPanels
+//     shows): stack.slice(1) trailing (panelCount - 1). seedStackFromHash re-adds
+//     the list root on reseed, so this round-trips; and one desktop stream mirrors
+//     to `#/session/x` — the SAME hash a phone produces for that state, so URLs
+//     stay portable across devices. Empty content → buildPanelStackHash([]) → ''
+//     → home.
+function mirroredHashFor(stack: PanelStack): string {
+  if (showSidebar.value) {
+    const contentPanelSlots = Math.max(1, panelCount.value - 1);
+    const contentWindow = stack.slice(1).slice(-contentPanelSlots);
+    return buildPanelStackHash(contentWindow);
+  }
+  return buildPanelStackHash(stack.slice(-panelCount.value));
+}
+
 // Write the new full stack to the ref and mirror its VISIBLE WINDOW to the hash.
 // Focus follows to the new tail (what you just opened, or the panel revealed by
 // a pop). Every navigation funnels through here so there is exactly one place
@@ -95,10 +152,27 @@ const visiblePanels = computed(() => {
 function applyStack(newStack: PanelStack): void {
   panelStack.value = newStack;
   focusedIndex.value = newStack.length - 1;
-  const windowedHash = buildPanelStackHash(newStack.slice(-panelCount.value));
+  const windowedHash = mirroredHashFor(newStack);
   lastWrittenHash = windowedHash;
   window.location.hash = windowedHash;
 }
+
+// Re-mirror the hash when a resize crosses a layout boundary. applyStack only
+// runs on NAVIGATION, so a pure resize — crossing SIDEBAR_MIN_WIDTH_PX (sidebar
+// ⇄ row) or a panelCount breakpoint (the window widens/narrows) — would otherwise
+// leave the URL windowed for the OLD layout. This re-writes the mirror for the
+// CURRENT stack (the ref is the source of truth; we do NOT re-seed it — the
+// window changed, the history did not). Guarded by lastWrittenHash so it is a
+// no-op when the mirror is unchanged and never loops against our own write /
+// onHashChange's echo check.
+watch([showSidebar, panelCount], () => {
+  const reMirroredHash = mirroredHashFor(panelStack.value);
+  if (reMirroredHash === lastWrittenHash) {
+    return;
+  }
+  lastWrittenHash = reMirroredHash;
+  window.location.hash = reMirroredHash;
+});
 
 function onHashChange(): void {
   const currentHash = window.location.hash;
@@ -229,11 +303,81 @@ const bannerText = computed(() => {
       </button>
     </div>
 
-    <!-- The panel row: the trailing N panels as equal columns, each its own
-         vertical scroll, a left divider between columns. At N=1 this is one
-         full-width column — no divider, no ring — rendering exactly today's
-         single view. -->
-    <div class="flex min-h-0 flex-1">
+    <!-- DESKTOP (D39 #3): the session list becomes ambient LEFT-HAND CHROME. This
+         is not a new list — it is stack[0] (already the stack root, D40) rendered
+         as a fixed-width sidebar via the SAME PanelHost/SessionListView instead of
+         as a windowed panel column. To its right, the CONTENT window (stack.slice(1)
+         trailing panelCount-1). Meters / new-session / nav ride along inside
+         SessionListView for free, so there is nothing to drift. -->
+    <div v-if="showSidebar" class="flex min-h-0 flex-1">
+      <!-- The sidebar column: fixed width, its own scroll, a right divider. It is
+           CHROME, so it takes NO focus ring (:focused=false) and no @mousedown. It
+           carries the SAME nav/@open handlers a content panel does (a click in the
+           list opens FROM index 0 → openPanelFrom truncates to [list] then pushes),
+           plus onPanelClick so an in-app hash link inside it pushes a panel rather
+           than hard-navigating the browser. -->
+      <div
+        class="w-80 shrink-0 overflow-y-auto border-r border-slate-200 dark:border-slate-800"
+        @click="onPanelClick($event, 0)"
+      >
+        <PanelHost
+          :route="sidebarRoute"
+          :index="0"
+          :focused="false"
+          @open="openSessionPanel"
+          @open-files="openFilesPanel"
+          @open-search="openSearchPanel"
+          @open-terminal="openTerminalPanel"
+          @open-git="openGitPanel"
+          @open-cost="openCostPanel"
+          @open-tasks="openTasksPanel"
+          @open-editor="openEditorPanel"
+          @back="backFrom"
+        />
+      </div>
+
+      <!-- The content area: the trailing content panels beside the sidebar, each
+           tagged with its TRUE stack index (openPanelFrom targets it). The ring
+           rule is UNCHANGED — a content panel rings only when MORE THAN ONE content
+           panel is visible. Empty (only the list is open) → a centred placeholder. -->
+      <div class="flex min-h-0 flex-1">
+        <div
+          v-for="(panel, localIndex) in contentPanels"
+          :key="panel.trueIndex"
+          class="min-w-0 flex-1 overflow-y-auto"
+          :class="localIndex > 0 ? 'border-l border-slate-200 dark:border-slate-800' : ''"
+          @mousedown="focusedIndex = panel.trueIndex"
+          @click="onPanelClick($event, panel.trueIndex)"
+        >
+          <PanelHost
+            :route="panel.route"
+            :index="panel.trueIndex"
+            :focused="panel.trueIndex === focusedIndex && contentPanels.length > 1"
+            @open="openSessionPanel"
+            @open-files="openFilesPanel"
+            @open-search="openSearchPanel"
+            @open-terminal="openTerminalPanel"
+            @open-git="openGitPanel"
+            @open-cost="openCostPanel"
+            @open-tasks="openTasksPanel"
+            @open-editor="openEditorPanel"
+            @back="backFrom"
+          />
+        </div>
+        <div
+          v-if="contentPanels.length === 0"
+          class="flex min-h-0 flex-1 items-center justify-center p-8 text-center text-sm text-slate-500 dark:text-slate-400"
+        >
+          Select a session, or start one from the sidebar.
+        </div>
+      </div>
+    </div>
+
+    <!-- PHONE / TABLET: UNCHANGED from 70ec17d. The panel row: the trailing N
+         panels as equal columns, each its own vertical scroll, a left divider
+         between columns. At N=1 this is one full-width column — no divider, no
+         ring — rendering exactly today's single view. -->
+    <div v-else class="flex min-h-0 flex-1">
       <div
         v-for="(panel, localIndex) in visiblePanels"
         :key="panel.trueIndex"

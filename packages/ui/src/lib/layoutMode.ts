@@ -115,3 +115,32 @@ export function resolvePanelCount(
   }
   return panelCountForWidth(width, breakpoints);
 }
+
+// ── the sidebar threshold (D39 #3) ───────────────────────────────────────────
+//
+// D39 #3 renders the session list (stack[0]) as ambient left-hand chrome — a
+// fixed-width sidebar — instead of as a panel column, but ONLY at true desktop
+// width. Below this the current panel paradigm stands: the session list is a
+// normal panel in the flex row (phone at N=1, tablet at N=2). Tablet
+// [768, 1280) deliberately keeps that paradigm for this POC — a sidebar wants
+// real horizontal room to be "ambient" rather than cramping the content, and a
+// 1024px-ish tablet does not have it to spare. So the sidebar switches on at the
+// SAME 1280 boundary the desktop (3-panel) tier begins at: sidebar ⇔ desktop.
+//
+// This is a PRESENTATION constant, not a ⟨tune⟩ band — a shape decision (which
+// layout paradigm at which width), not a threshold calibrated against live
+// behaviour, so no Gate-D pin is owed. It is a plain function of width, unit-
+// tested without a browser, exactly like panelCountForWidth above.
+export const SIDEBAR_MIN_WIDTH_PX = 1280; // = the desktop breakpoint
+
+// True only at desktop width. A non-finite width (NaN, ±Infinity) short-circuits
+// to false the same way resolvePanelCount floors non-finite width to 1 — a
+// degenerate viewport gets the simplest paradigm (the panel row), never the
+// sidebar, since `NaN >= n` is false anyway but the explicit guard keeps that
+// answer independent of the constant's value.
+export function shouldShowSidebar(width: number): boolean {
+  if (!Number.isFinite(width)) {
+    return false;
+  }
+  return width >= SIDEBAR_MIN_WIDTH_PX;
+}

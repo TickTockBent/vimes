@@ -8,6 +8,8 @@ import {
   MAX_PANELS,
   panelCountForWidth,
   resolvePanelCount,
+  shouldShowSidebar,
+  SIDEBAR_MIN_WIDTH_PX,
   type LayoutBreakpoint,
 } from './layoutMode.js';
 
@@ -150,6 +152,42 @@ describe('resolvePanelCount — a non-finite width falls back to 1', () => {
 
   it('a valid override still wins even when width is non-finite', () => {
     expect(resolvePanelCount(NaN, 2)).toBe(2);
+  });
+});
+
+// ── the sidebar threshold (D39 #3) ────────────────────────────────────────────
+
+describe('shouldShowSidebar — the desktop sidebar threshold', () => {
+  it('SIDEBAR_MIN_WIDTH_PX is the desktop breakpoint (1280)', () => {
+    expect(SIDEBAR_MIN_WIDTH_PX).toBe(1280);
+  });
+
+  it('below the threshold → false (phone and tablet keep the panel row)', () => {
+    expect(shouldShowSidebar(320)).toBe(false); // phone
+    expect(shouldShowSidebar(767)).toBe(false); // phone/tablet edge
+    expect(shouldShowSidebar(768)).toBe(false); // tablet — no sidebar this POC
+    expect(shouldShowSidebar(1024)).toBe(false); // tablet
+    expect(shouldShowSidebar(1279)).toBe(false); // just below desktop
+  });
+
+  it('at and above the threshold → true (desktop gets the sidebar)', () => {
+    expect(shouldShowSidebar(1280)).toBe(true); // exactly at the boundary
+    expect(shouldShowSidebar(1281)).toBe(true);
+    expect(shouldShowSidebar(1920)).toBe(true);
+    expect(shouldShowSidebar(Number.MAX_SAFE_INTEGER)).toBe(true);
+  });
+
+  it('a non-finite width → false, never the sidebar', () => {
+    expect(shouldShowSidebar(NaN)).toBe(false);
+    expect(shouldShowSidebar(Infinity)).toBe(false);
+    expect(shouldShowSidebar(-Infinity)).toBe(false);
+  });
+
+  it('is stable across repeated calls (no clock/window read)', () => {
+    const atThreshold = shouldShowSidebar(SIDEBAR_MIN_WIDTH_PX);
+    for (let i = 0; i < 50; i++) {
+      expect(shouldShowSidebar(SIDEBAR_MIN_WIDTH_PX)).toBe(atThreshold);
+    }
   });
 });
 
