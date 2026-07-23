@@ -1111,3 +1111,45 @@ can never acquire a pending correction to go stale. `correction_delivered`
 arriving for a human typing into an external PTY is already an explicit no-op
 that refuses to create the field. **Two independent guards, so no pinned test was
 added**; this paragraph exists so the next reader does not re-derive it.
+
+## D39 — Desktop is the PANEL STACK; N by breakpoint with a device-remembered override; sidebar replaces the session list; focus is last-interacted
+
+*2026-07-23. Wes signed off the five gating questions from `design-directions.md`
+→ PANELS. This entry records the answers so a work order can be written against
+them; the design rationale stays in `design-directions.md` (append-only there
+too — this does not edit it).*
+
+The desktop shell is the **panel stack**: navigation state is a list of panels,
+each holding one route; the viewport renders as many trailing panels as fit; back
+pops. The phone is the **degenerate case** (`N = 1`), so today's behaviour is a
+one-element stack and survives untouched.
+
+1. **Adopt the panel stack — YES.** It is simpler than the two-slot alternative
+   (one slot type, one back rule, no param namespacing, one shell), it is the
+   reason desktop is worth building, and retrofitting the router later is the
+   rewrite. Phase 1 (routing → a pure tested lib) already shipped as `d2bf45e`.
+2. **N is chosen by a width breakpoint** at common phone / tablet / desktop
+   boundaries, **with a user override remembered on the device** (localStorage).
+   The computed N is the default; the override wins when set and persists per
+   device. localStorage is device-local presentation state — it is NOT event-log
+   state and never becomes a projection input (rule 0.3 boundary).
+3. **The sidebar session list REPLACES `SessionListView` on desktop.** Two lists
+   of the same thing is exactly the drift the model exists to prevent (principle
+   9). On a phone the session list stays a panel; on desktop it becomes ambient
+   chrome in the sidebar. Wes: "let's see what this looks like" — so the first
+   desktop build shows it and we judge from the lived view.
+4. **Focus = the last-interacted / last-clicked panel.** It takes keyboard input
+   and global actions, shows a **visible focus border**, and when it hosts a text
+   entry that entry shows a visibly **active cursor**. This is decided BEFORE the
+   shell is built, not after (it shapes the host's event model).
+5. **First unit is LEAN — proof of concept: the shell plus the stream→editor
+   panel pair.** Not every view's panel treatment at once. That pair exercises
+   push, pop, and focus end to end, which is what a POC has to prove. The full
+   per-view audit (all eight views as one-of-N) follows once the pair validates
+   the host's push/pop/focus API.
+
+**Sequencing consequence.** The retrofit is phases 2→4 (phase 1 shipped):
+phase 2 (`Route` → `Panel[]`, additive, single-panel URLs byte-identical) then
+phase 3+4 merged (host + sidebar + the proof pair), since #5's lean scope is
+exactly that merge. The desktop board is a later unit consuming step 9's
+layout-agnostic `lib/` unchanged.
