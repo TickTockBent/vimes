@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useVimesStore } from '../stores/vimesStore.js';
-import { deriveSessionRow } from '../lib/sessionRow.js';
+import { deriveSessionRow, type SessionRow } from '../lib/sessionRow.js';
+import { partitionSessionsByRecency } from '../lib/sessionListPartition.js';
+import type { SessionRecord } from '../lib/types.js';
 import {
   initialKillConfirmState,
   isConfirmingKill,
@@ -67,14 +69,27 @@ const killConfirm = ref<KillConfirmState>(initialKillConfirmState);
 const renamingId = ref<string | null>(null);
 const renameDraft = ref('');
 
+// Q2 (docs/QUEUE.md) — the "Show N older sessions" reveal. Plain component
+// state (a `ref<boolean>`), same pattern as `spawnFormExpanded`/`metersExpanded`
+// above: there is no branching worth a lib/ module here, the toggle IS the
+// logic. The TESTED logic is the partition itself (lib/sessionListPartition.ts)
+// — this ref only decides whether the `older` bucket it produces is rendered.
+// Collapsed by default: that is the "age out" (fully reversible, one tap away).
+const showOlderSessions = ref(false);
+
+function toggleOlderSessions(): void {
+  showOlderSessions.value = !showOlderSessions.value;
+}
+
 // Clock-free: session identity + sort only. The cache badge (which ticks its age
 // live) is a SEPARATE clock-dependent map below, so a one-second age tick never
-// re-sorts the whole list.
-const rows = computed(() =>
+// re-sorts the whole list. Kept as raw SessionRecords (not yet derived to
+// SessionRow) because the Q2 age-out partition needs `createdAt`, which
+// SessionRow does not carry — deriving happens AFTER partitioning, below.
+const sortedSessions = computed<SessionRecord[]>(() =>
   Object.values(store.sessions)
     .slice()
-    .sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0))
-    .map((session) => deriveSessionRow(session)),
+    .sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0)),
 );
 
 function spawn(): void {
@@ -213,10 +228,80 @@ const METER_CLOCK_TICK_MS = 1_000;
 const localNowMs = ref(Date.now());
 let meterClockHandle: ReturnType<typeof setInterval> | null = null;
 
+// ── Session list age-out (Q2, docs/QUEUE.md) — DISPLAY ONLY ─────────────────
+// The tested split lives in lib/sessionListPartition.ts; this block only picks
+// the presentation constants and feeds the partition a STABLE clock.
+//
+// Defaults (presentation constants, not a ⟨tune⟩ band — no Gate-D):
+// - recencyWindowMs = 7 days. "The sessions you're actually using are always
+//   right there without scrolling; the long tail is one tap away."
+// - minVisible = 12. Enough that a normal working set never touches the
+//   disclosure, small enough that the frame (below) does not need to grow to
+//   fit it on a phone.
+const SESSION_LIST_RECENCY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+const SESSION_LIST_MIN_VISIBLE = 12;
+
+// THE CLOCK: reuses `localNowMs` (no second now-source, per the work order) but
+// QUANTIZES it to the minute, so the partition recomputes at most once a
+// minute instead of on every one-second meter tick — recomputing membership
+// every second would let a row hop the visible/older boundary mid-scroll. This
+// is a `computed` derived FROM `localNowMs`, not a second `setInterval`: it
+// only produces a new value when `localNowMs` crosses into a new minute
+// bucket, and it also naturally jumps on mount (localNowMs's initial value)
+// and whenever the component re-renders after a session-set change (the
+// partition computed below also depends on `sortedSessions`, so an add/remove
+// recomputes immediately regardless of the clock bucket).
+const SESSION_LIST_CLOCK_QUANTUM_MS = 60_000;
+const sessionListNowMs = computed(
+  () => Math.floor(localNowMs.value / SESSION_LIST_CLOCK_QUANTUM_MS) * SESSION_LIST_CLOCK_QUANTUM_MS,
+);
+
+// Pillar 5 (attention is scarce): a session that is live or actively flagged
+// must never be tucked behind "show older" just because it is chronologically
+// old — e.g. a long-running session started three weeks ago that is STILL
+// running, or one sitting on a gate waiting for a decision. Lean, stated per
+// the work order: an actionable bell (`needsAttention !== null`) OR a live
+// liveness ('running'/'spawning') is always-visible, regardless of age.
+function isSessionAlwaysVisible(session: SessionRecord): boolean {
+  return session.needsAttention !== null || session.liveness === 'running' || session.liveness === 'spawning';
+}
+
+const sessionPartition = computed(() =>
+  partitionSessionsByRecency(sortedSessions.value, sessionListNowMs.value, {
+    recencyWindowMs: SESSION_LIST_RECENCY_WINDOW_MS,
+    minVisible: SESSION_LIST_MIN_VISIBLE,
+    isAlwaysVisible: isSessionAlwaysVisible,
+  }),
+);
+
+// Derive to SessionRow AFTER partitioning (partitioning needs `createdAt`,
+// which SessionRow does not carry — see the `sortedSessions` comment above).
+const visibleRows = computed(() => sessionPartition.value.visible.map((session) => deriveSessionRow(session)));
+const olderRows = computed(() => sessionPartition.value.older.map((session) => deriveSessionRow(session)));
+
+// A discriminated render-list so the row template appears ONCE (Q2 fix: the
+// row markup was previously duplicated verbatim across `visibleRows` and
+// `olderRows` v-fors). The toggle sits between the visible rows and the
+// (conditionally shown) older rows as a non-row interleaved item.
+type SessionListItem = { kind: 'row'; row: SessionRow } | { kind: 'toggle' };
+
+const sessionListItems = computed<SessionListItem[]>(() => {
+  const items: SessionListItem[] = visibleRows.value.map((row) => ({ kind: 'row', row }));
+  if (olderRows.value.length > 0) {
+    items.push({ kind: 'toggle' });
+    if (showOlderSessions.value) {
+      for (const row of olderRows.value) items.push({ kind: 'row', row });
+    }
+  }
+  return items;
+});
+
 // The cache-warmth chip per session, aged against the SAME ticking clock the
-// meter ages use. Isolated from `rows` so the once-a-second age tick recomputes
-// only these small chips, never the session sort. A session with no
-// cache-observability record has no entry → the template shows no chip.
+// meter ages use. Isolated from `sortedSessions`/`visibleRows`/`olderRows` so
+// the once-a-second age tick recomputes only these small chips, never the
+// session sort or the (deliberately once-a-minute) age-out partition. A
+// session with no cache-observability record has no entry → the template
+// shows no chip.
 const cacheBadges = computed(() => {
   const nowMs = localNowMs.value;
   const byAppSessionId: Record<string, ReturnType<typeof cacheBadgeFor>> = {};
@@ -571,100 +656,139 @@ onUnmounted(() => {
       </ul>
     </section>
 
-    <ul class="flex flex-col gap-2">
-      <li
-        v-for="row in rows"
-        :key="row.appSessionId"
-        class="flex flex-col gap-2 rounded-lg border border-slate-200 p-3 dark:border-slate-800"
-      >
-        <button
-          type="button"
-          class="flex min-h-[44px] w-full flex-col gap-1 text-left"
-          @click="emit('open', row.appSessionId)"
-        >
-          <div class="flex items-center justify-between gap-2">
-            <span class="truncate font-medium">{{ row.label }}</span>
-            <span class="flex shrink-0 items-center gap-1">
-              <span
-                v-if="row.mirrored"
-                class="rounded-full bg-violet-100 px-2 py-0.5 text-xs font-semibold text-violet-800 dark:bg-violet-900/50 dark:text-violet-200"
-              >
-                mirrored
-              </span>
-              <span class="rounded-full px-2 py-0.5 text-xs font-semibold" :class="row.livenessColorClass">
-                {{ row.livenessLabel }}
-              </span>
-            </span>
-          </div>
-          <div class="flex items-center justify-between gap-2 text-sm text-slate-500 dark:text-slate-400">
-            <span class="flex min-w-0 items-center gap-1.5">
-              <span class="truncate">{{ row.channel }} · {{ row.cwdTail }}</span>
-              <span
-                v-if="cacheBadges[row.appSessionId]"
-                class="shrink-0 rounded-full px-1.5 py-0.5 text-xs font-semibold"
-                :class="cacheBadges[row.appSessionId]?.toneClass"
-                :title="cacheBadges[row.appSessionId]?.title"
-              >
-                {{ cacheBadges[row.appSessionId]?.label }}
-              </span>
-            </span>
-            <span
-              v-if="row.attention.visible"
-              class="shrink-0 rounded-full bg-orange-100 px-2 py-0.5 text-xs font-semibold text-orange-800 dark:bg-orange-900/50 dark:text-orange-200"
+    <!-- Q2 (docs/QUEUE.md) — the session list gets its OWN scrollable frame
+         instead of growing the page: `max-h-[55vh]` + `overflow-y-auto` on this
+         wrapper means the list scrolls WITHIN itself, and the header, the Q1
+         "+ New session" affordance, and the meters strip above stay reachable
+         with zero page scroll. 55vh leaves ~45% of a phone viewport for that
+         chrome — on a typical portrait phone (iPhone SE, 667px tall) the
+         header + collapsed spawn affordance + collapsed meters strip together
+         run well under half the screen, so this frame is the one thing that
+         scrolls. DISPLAY ONLY: nothing inside is removed, only bounded. -->
+    <div class="max-h-[55vh] overflow-y-auto">
+      <ul class="flex flex-col gap-2">
+        <template v-for="item in sessionListItems" :key="item.kind === 'row' ? item.row.appSessionId : 'older-toggle'">
+          <li
+            v-if="item.kind === 'row'"
+            class="flex flex-col gap-2 rounded-lg border border-slate-200 p-3 dark:border-slate-800"
+          >
+            <button
+              type="button"
+              class="flex min-h-[44px] w-full flex-col gap-1 text-left"
+              @click="emit('open', item.row.appSessionId)"
             >
-              {{ row.attention.label }}
-            </span>
-          </div>
-        </button>
+              <div class="flex items-center justify-between gap-2">
+                <span class="truncate font-medium">{{ item.row.label }}</span>
+                <span class="flex shrink-0 items-center gap-1">
+                  <span
+                    v-if="item.row.mirrored"
+                    class="rounded-full bg-violet-100 px-2 py-0.5 text-xs font-semibold text-violet-800 dark:bg-violet-900/50 dark:text-violet-200"
+                  >
+                    mirrored
+                  </span>
+                  <span class="rounded-full px-2 py-0.5 text-xs font-semibold" :class="item.row.livenessColorClass">
+                    {{ item.row.livenessLabel }}
+                  </span>
+                </span>
+              </div>
+              <div class="flex items-center justify-between gap-2 text-sm text-slate-500 dark:text-slate-400">
+                <span class="flex min-w-0 items-center gap-1.5">
+                  <span class="truncate">{{ item.row.channel }} · {{ item.row.cwdTail }}</span>
+                  <span
+                    v-if="cacheBadges[item.row.appSessionId]"
+                    class="shrink-0 rounded-full px-1.5 py-0.5 text-xs font-semibold"
+                    :class="cacheBadges[item.row.appSessionId]?.toneClass"
+                    :title="cacheBadges[item.row.appSessionId]?.title"
+                  >
+                    {{ cacheBadges[item.row.appSessionId]?.label }}
+                  </span>
+                </span>
+                <span
+                  v-if="item.row.attention.visible"
+                  class="shrink-0 rounded-full bg-orange-100 px-2 py-0.5 text-xs font-semibold text-orange-800 dark:bg-orange-900/50 dark:text-orange-200"
+                >
+                  {{ item.row.attention.label }}
+                </span>
+              </div>
+            </button>
 
-        <div v-if="renamingId === row.appSessionId" class="flex items-center gap-2">
-          <input
-            v-model="renameDraft"
-            type="text"
-            maxlength="120"
-            class="min-h-[36px] min-w-0 flex-1 rounded-md border border-slate-300 px-2 text-sm dark:border-slate-700 dark:bg-slate-900"
-            @keyup.enter="commitRename(row.appSessionId)"
-            @keyup.esc="cancelRename"
-          />
-          <button type="button" class="min-h-[36px] rounded-md bg-sky-600 px-3 text-sm font-semibold text-white active:bg-sky-700" @click="commitRename(row.appSessionId)">
-            Save
-          </button>
-          <button type="button" class="min-h-[36px] rounded-md px-2 text-sm text-slate-500 active:bg-slate-100 dark:active:bg-slate-900" @click="cancelRename">
-            Cancel
-          </button>
-        </div>
+            <div v-if="renamingId === item.row.appSessionId" class="flex items-center gap-2">
+              <input
+                v-model="renameDraft"
+                type="text"
+                maxlength="120"
+                class="min-h-[36px] min-w-0 flex-1 rounded-md border border-slate-300 px-2 text-sm dark:border-slate-700 dark:bg-slate-900"
+                @keyup.enter="commitRename(item.row.appSessionId)"
+                @keyup.esc="cancelRename"
+              />
+              <button type="button" class="min-h-[36px] rounded-md bg-sky-600 px-3 text-sm font-semibold text-white active:bg-sky-700" @click="commitRename(item.row.appSessionId)">
+                Save
+              </button>
+              <button type="button" class="min-h-[36px] rounded-md px-2 text-sm text-slate-500 active:bg-slate-100 dark:active:bg-slate-900" @click="cancelRename">
+                Cancel
+              </button>
+            </div>
 
-        <div v-else class="flex items-center gap-2 text-sm">
-          <button
-            v-if="row.canAdopt"
-            type="button"
-            class="min-h-[36px] rounded-md bg-violet-600 px-3 font-semibold text-white active:bg-violet-700"
-            @click="adopt(row.appSessionId)"
-          >
-            Adopt
-          </button>
-          <button
-            v-if="row.canKill"
-            type="button"
-            class="min-h-[36px] rounded-md px-3 font-semibold active:bg-rose-100 dark:active:bg-rose-900/40"
-            :class="isConfirmingKill(killConfirm, row.appSessionId) ? 'bg-rose-600 text-white' : 'border border-rose-300 text-rose-700 dark:border-rose-800 dark:text-rose-300'"
-            @click="tapKill(row.appSessionId)"
-          >
-            {{ killLabel(row.appSessionId) }}
-          </button>
-          <button
-            v-if="row.canRename"
-            type="button"
-            class="min-h-[36px] rounded-md border border-slate-300 px-3 text-slate-600 active:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:active:bg-slate-900"
-            @click="startRename(row.appSessionId, row.label)"
-          >
-            Rename
-          </button>
-        </div>
-      </li>
-      <li v-if="rows.length === 0" class="p-3 text-center text-sm text-slate-500 dark:text-slate-400">
-        No sessions yet — spawn one above, or Discover terminal-started ones.
-      </li>
-    </ul>
+            <div v-else class="flex items-center gap-2 text-sm">
+              <button
+                v-if="item.row.canAdopt"
+                type="button"
+                class="min-h-[36px] rounded-md bg-violet-600 px-3 font-semibold text-white active:bg-violet-700"
+                @click="adopt(item.row.appSessionId)"
+              >
+                Adopt
+              </button>
+              <button
+                v-if="item.row.canKill"
+                type="button"
+                class="min-h-[36px] rounded-md px-3 font-semibold active:bg-rose-100 dark:active:bg-rose-900/40"
+                :class="isConfirmingKill(killConfirm, item.row.appSessionId) ? 'bg-rose-600 text-white' : 'border border-rose-300 text-rose-700 dark:border-rose-800 dark:text-rose-300'"
+                @click="tapKill(item.row.appSessionId)"
+              >
+                {{ killLabel(item.row.appSessionId) }}
+              </button>
+              <button
+                v-if="item.row.canRename"
+                type="button"
+                class="min-h-[36px] rounded-md border border-slate-300 px-3 text-slate-600 active:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:active:bg-slate-900"
+                @click="startRename(item.row.appSessionId, item.row.label)"
+              >
+                Rename
+              </button>
+            </div>
+          </li>
+
+          <!-- Q2's age-out disclosure toggle, interleaved between the visible
+               and (conditionally shown) older rows. `older` is only ever
+               non-empty rows the partition decided are NOT recent (or the
+               floor would have kept them in `visible`) — tapping this
+               reveals them, fully reversible, never a second fetch (they
+               were already loaded). No `aria-controls`: with a single flat
+               list there is no longer a single stable container id to point
+               it at (the previous `id="older-sessions"` wrapper existed only
+               to dodge a repeated id across two separate `<ul>`s, which no
+               longer exist) — `aria-expanded` alone still tells assistive
+               tech the toggle's own state. -->
+          <li v-else class="flex flex-col gap-2">
+            <button
+              type="button"
+              class="flex min-h-[44px] w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-slate-300 text-sm font-medium text-slate-600 active:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:active:bg-slate-900"
+              :aria-expanded="showOlderSessions"
+              @click="toggleOlderSessions()"
+            >
+              <span aria-hidden="true">{{ showOlderSessions ? '▴' : '▾' }}</span>
+              {{ showOlderSessions ? 'Hide older sessions' : `Show ${olderRows.length} older sessions` }}
+            </button>
+          </li>
+        </template>
+
+        <!-- The floor rule (lib/sessionListPartition.ts) means `visible` is
+             only empty when `older` is too — this cannot fire while
+             `minVisible >= 1` and any session exists. -->
+        <li v-if="sessionListItems.length === 0" class="p-3 text-center text-sm text-slate-500 dark:text-slate-400">
+          No sessions yet — spawn one above, or Discover terminal-started ones.
+        </li>
+      </ul>
+    </div>
   </div>
 </template>
