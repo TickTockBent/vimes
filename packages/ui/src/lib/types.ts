@@ -21,6 +21,11 @@ export interface SessionRecord {
   // 'host' = VIMES-owned. Optional here so a projection predating the field (or a
   // hand-built test record) reads as host-owned via deriveSessionRow.
   custody?: Custody;
+  // D5/D30: the `ts` of the last `correction_queued` VIMES accepted, cleared to
+  // `null` when the matching `correction_delivered` is observed. Optional here
+  // (mirrors packages/core/src/schemas.ts) so a projection predating the field
+  // reads as "nothing queued" via correctionStatus.ts's deriveCorrectionStatus.
+  pendingCorrectionAt?: string | null;
 }
 
 export interface EventRecord {
