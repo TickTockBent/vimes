@@ -57,6 +57,51 @@ describe('cacheObservabilityProjection', () => {
     expect(record.countedMessageIds).toEqual(['msg-1']);
   });
 
+  // ——— Q4 §A: latestBlockAt — the observed ts of the latest usage_block ———
+  it('§A: latestBlockAt is the event ts of the observed block (count path, assertion 1)', () => {
+    const state = stateFromLog([
+      [usageBlock({ appSessionId: APP_SESSION_ID, usage: spikeCUsage, messageId: 'msg-1' })],
+    ]);
+    // First appended event is stamped '2026-01-01T00:00:00.000Z' (SteppingClock).
+    expect(state.perSession[APP_SESSION_ID]!.latestBlockAt).toBe('2026-01-01T00:00:00.000Z');
+  });
+
+  it('§A: a counted-repeat REFRESHES latestBlockAt to the later observation (assertion 2)', () => {
+    const state = stateFromLog([
+      [
+        usageBlock({ appSessionId: APP_SESSION_ID, usage: spikeCUsage, messageId: 'turn-a' }),
+        usageBlock({ appSessionId: APP_SESSION_ID, usage: spikeCUsage, messageId: 'turn-a' }),
+      ],
+    ]);
+    const record = state.perSession[APP_SESSION_ID]!;
+    // Counted ONCE (tokens not doubled) but the repeat is still activity, so the
+    // "last observed block" advances to the second event's ts (+1000ms).
+    expect(record.sampleCount).toBe(1);
+    expect(record.latestBlockAt).toBe('2026-01-01T00:00:01.000Z');
+  });
+
+  it('§A: a new messageId advances latestBlockAt to its own ts', () => {
+    const state = stateFromLog([
+      [
+        usageBlock({ appSessionId: APP_SESSION_ID, usage: spikeCUsage, messageId: 'turn-a' }),
+        usageBlock({ appSessionId: APP_SESSION_ID, usage: spikeCUsage, messageId: 'turn-b' }),
+      ],
+    ]);
+    expect(state.perSession[APP_SESSION_ID]!.latestBlockAt).toBe('2026-01-01T00:00:01.000Z');
+  });
+
+  it('§A: latestBlockAt is deterministic across two replays of the same log (I6 — no clock read, assertion 4)', () => {
+    const batches = [
+      [usageBlock({ appSessionId: APP_SESSION_ID, usage: spikeCUsage, messageId: 'turn-a' })],
+      [usageBlock({ appSessionId: APP_SESSION_ID, usage: spikeCUsage, messageId: 'turn-b' })],
+    ];
+    const first = stateFromLog(batches);
+    const second = stateFromLog(batches);
+    expect(second.perSession[APP_SESSION_ID]!.latestBlockAt).toBe(
+      first.perSession[APP_SESSION_ID]!.latestBlockAt,
+    );
+  });
+
   // ——— D17 HEADLINE: identical snapshots repeating under one message.id count ONCE ———
   it('D17: two usage_blocks with the SAME messageId count ONCE (no double-count)', () => {
     const state = stateFromLog([

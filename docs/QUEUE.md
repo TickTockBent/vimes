@@ -255,3 +255,38 @@ them. A VIMES-spawned PTY session, or a mirrored one doing real work, gets a bad
 cumulative **since VIMES started watching**, not for the session's life. That is a
 third time base hiding in one badge, and any redesign must either scope the
 figure honestly ("since adoption") or not present it as whole-session at all.
+
+### ✅ SHIPPED (badge) / ⚠ HALTED (relocation) — 2026-07-23
+
+**The badge is fixed and shipped.** It now shows observed **warmth** — the TTL
+tier + how long since the last observed cache write, styled warm (green) / cold
+(amber), `unknown` for a pre-field daemon (never a fabricated age), `none` for no
+cache. No countdown (pillar 4 — activity re-writes and extends the cache, so an
+"expires in" would be a fabricated certainty). Core gained an observed
+`latestBlockAt` (the event `ts`, deterministic under replay, I6); the UI ages it
+against the meters' own ticking clock (rule 0.3 — clock injected, `cacheWarmth`
+is pure). One shared `formatDuration` (extracted to `lib/duration.ts`) now serves
+both the meters and the badge (principle 9).
+
+**⚠ The hit-rate RELOCATION halted on a structural finding (rule 0.1).** The cost
+ledger cannot join the hit rate without a new session-key mapping:
+`costLedgerApi.ts:76-79` — cost rows are keyed by the **Claude transcript session
+id**, `cacheObservability` by the VIMES **appSessionId**, and the only bridge is a
+title map with a documented **n:1 first-wins ambiguity** (one Claude session seen
+under two app sessions). A direct `cacheObservability[sessionId]` lookup would
+silently miss. Wiring it needs either a new read-model field or a
+claudeSessionId→appSessionId join **plus a decision on the n:1 ambiguity** — a
+work order's worth of design, and a ⟨Wes⟩ call, not a patch.
+
+**The hit-rate helper is PRESERVED, not deleted** — moved to `lib/cacheHitRate.ts`
+(`cacheHitRatePercent`) with its edge-case tests carried over byte-for-byte, ready
+to consume once the join is designed. Its header carries the **"since adoption"**
+honesty caveat: for a mirrored/adopted session the cumulative rate is cumulative
+since VIMES started watching, so wherever it lands it must read `hit rate
+(observed)`, never whole-session lifetime.
+
+**⟨Wes⟩ decides next:** design the claudeSessionId↔appSessionId join (and how to
+resolve the n:1 ambiguity — first-wins, or split), then a small unit consumes the
+preserved helper into the ledger. Until then the hit rate lives in code only,
+which matches your own read that it "isn't a useful user metric" on the row.
+

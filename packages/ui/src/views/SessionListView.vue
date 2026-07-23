@@ -9,7 +9,14 @@ import {
   type KillConfirmState,
 } from '../lib/killConfirm.js';
 import { isBellActionable, pushStateLabel } from '../lib/pushState.js';
-import { deriveCacheBadge, ttlTierLabel, ttlTierTone, type CacheTtlTone } from '../lib/cacheBadge.js';
+import {
+  cacheBadgeChipLabel,
+  cacheWarmth,
+  cacheWarmthTone,
+  deriveCacheBadge,
+  ttlTierLabel,
+  type CacheTtlTone,
+} from '../lib/cacheBadge.js';
 import {
   refreshNotice,
   usageStripModel,
@@ -60,14 +67,14 @@ const killConfirm = ref<KillConfirmState>(initialKillConfirmState);
 const renamingId = ref<string | null>(null);
 const renameDraft = ref('');
 
+// Clock-free: session identity + sort only. The cache badge (which ticks its age
+// live) is a SEPARATE clock-dependent map below, so a one-second age tick never
+// re-sorts the whole list.
 const rows = computed(() =>
   Object.values(store.sessions)
     .slice()
     .sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0))
-    .map((session) => ({
-      ...deriveSessionRow(session),
-      cacheBadge: cacheBadgeFor(session.appSessionId),
-    })),
+    .map((session) => deriveSessionRow(session)),
 );
 
 function spawn(): void {
@@ -151,10 +158,12 @@ function bellIcon(): string {
   }
 }
 
-// ── Cache-observability badge (slice 4 step 4) — a compact TTL-tier + hit-rate
-// chip joining the step-2 projection to this row by appSessionId. Small on
-// purpose (principle 11): it informs, it doesn't dominate the row. Only the
-// tone KEY comes from cacheBadge.ts — the color mapping lives here.
+// ── Cache-observability badge (slice 4 step 4; reshaped to WARMTH in Q4) — a
+// compact chip joining the step-2 projection to this row by appSessionId. It now
+// shows the observed TTL tier + how long since the last observed cache write,
+// styled warm/cold, NEVER a hit rate or a countdown (pillar 4). Small on purpose
+// (principle 11): it informs, it doesn't dominate the row. Only the tone KEY
+// comes from cacheBadge.ts — the colour mapping lives here.
 const TONE_CLASS: Readonly<Record<CacheTtlTone, string>> = {
   green: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/50 dark:text-emerald-200',
   amber: 'bg-amber-100 text-amber-800 dark:bg-amber-900/50 dark:text-amber-200',
@@ -162,14 +171,23 @@ const TONE_CLASS: Readonly<Record<CacheTtlTone, string>> = {
   slate: 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300',
 };
 
-function cacheBadgeFor(appSessionId: string) {
+// `nowMs` is INJECTED (rule 0.3): the age lives in cacheWarmth, never a clock
+// read here. The clock is the meters' own ticking `localNowMs` (below) — the
+// SAME source the usage-meter ages count against, so the badge does not spin up
+// a second now.
+function cacheBadgeFor(appSessionId: string, nowMs: number) {
   const badge = deriveCacheBadge(store.cacheObservability[appSessionId]);
   if (badge === null) {
     return null;
   }
+  const warmth = cacheWarmth(badge.latestBlockAt, badge.ttlTier, nowMs);
+  // The observed basis, kept on the tooltip so a "cold" chip (which abbreviates
+  // the age to the word "cold") still shows how old the last write actually is.
+  const ageBasis = warmth.ageLabel !== null ? ` · last write ${warmth.ageLabel}` : '';
   return {
-    label: `${ttlTierLabel(badge.ttlTier)} · ${badge.hitRatePercent}%`,
-    toneClass: TONE_CLASS[ttlTierTone(badge.ttlTier)],
+    label: cacheBadgeChipLabel(badge.ttlTier, warmth),
+    toneClass: TONE_CLASS[cacheWarmthTone(warmth.state)],
+    title: `cache: ${ttlTierLabel(badge.ttlTier)} · ${warmth.state}${ageBasis}`,
   };
 }
 
@@ -194,6 +212,19 @@ function cacheBadgeFor(appSessionId: string) {
 const METER_CLOCK_TICK_MS = 1_000;
 const localNowMs = ref(Date.now());
 let meterClockHandle: ReturnType<typeof setInterval> | null = null;
+
+// The cache-warmth chip per session, aged against the SAME ticking clock the
+// meter ages use. Isolated from `rows` so the once-a-second age tick recomputes
+// only these small chips, never the session sort. A session with no
+// cache-observability record has no entry → the template shows no chip.
+const cacheBadges = computed(() => {
+  const nowMs = localNowMs.value;
+  const byAppSessionId: Record<string, ReturnType<typeof cacheBadgeFor>> = {};
+  for (const appSessionId of Object.keys(store.cacheObservability)) {
+    byAppSessionId[appSessionId] = cacheBadgeFor(appSessionId, nowMs);
+  }
+  return byAppSessionId;
+});
 
 const metersExpanded = ref(props.expandMeters);
 // Arriving on `/#/meters` (a tapped usage alert) while already mounted must
@@ -569,12 +600,12 @@ onUnmounted(() => {
             <span class="flex min-w-0 items-center gap-1.5">
               <span class="truncate">{{ row.channel }} · {{ row.cwdTail }}</span>
               <span
-                v-if="row.cacheBadge !== null"
+                v-if="cacheBadges[row.appSessionId]"
                 class="shrink-0 rounded-full px-1.5 py-0.5 text-xs font-semibold"
-                :class="row.cacheBadge.toneClass"
-                :title="`cache: ${row.cacheBadge.label}`"
+                :class="cacheBadges[row.appSessionId]?.toneClass"
+                :title="cacheBadges[row.appSessionId]?.title"
               >
-                {{ row.cacheBadge.label }}
+                {{ cacheBadges[row.appSessionId]?.label }}
               </span>
             </span>
             <span
