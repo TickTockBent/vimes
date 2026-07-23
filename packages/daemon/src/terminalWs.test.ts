@@ -105,6 +105,11 @@ function buildConfig(overrides: Partial<DaemonConfig> = {}): DaemonConfig {
     watchdogStaleAfterMs: 900_000,
     watchdogMaxStaleEpisodes: 3,
     watchdogRetryBackoffMs: [60_000],
+    // Worker isolation (slice 6 step 8): OFF in tests, which is also the shipped
+    // default — so no test daemon can create a worktree, and this root is never
+    // touched. The flip is a human's; see taskDispatcher.ts's isolation block.
+    worktreeIsolation: 'off',
+    worktreeRoot: '/tmp/vimes-test-worktrees-never-created',
     ...overrides,
   };
 }

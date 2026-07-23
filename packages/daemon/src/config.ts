@@ -135,7 +135,46 @@ export interface DaemonConfig {
   // it is refused now, while refusing it is free.
   // VIMES_WATCHDOG_BACKOFF_MS overrides (comma-separated).
   watchdogRetryBackoffMs: number[];
+  // ─── worker isolation (slice 6 step 8) ─────────────────────────────────────
+  //
+  // ⚠ **THE SHIPPING FLAG, AND IT DEFAULTS TO `off`.**
+  //
+  // `off` — every task, including one whose record says `isolation: 'worktree'`,
+  // runs in `task.projectRoot`. Byte-identical to the behaviour before step 8; no
+  // git command is issued on any dispatch path. D32 is NOT honoured, and the
+  // dispatcher says so out loud rather than pretending otherwise.
+  // `on`  — an `isolation: 'worktree'` task runs in its own git worktree.
+  //
+  // This is NOT a ⟨tune⟩ number and rule 0.2 is not what governs it — it is rule 0
+  // itself. Isolation changes WHERE REAL WORK EXECUTES ON A REAL MACHINE: new
+  // directories on a real disk, new branches in a real repo, agents editing files
+  // nobody is watching. The whole path is built, wired and tested; the flip is a
+  // human's, made deliberately, exactly as the watchdog's destructive half waited.
+  // An unrecognised value is REFUSED at this boundary rather than read as `off` —
+  // see parseWorktreeIsolation.
+  // VIMES_WORKTREE_ISOLATION overrides.
+  worktreeIsolation: WorktreeIsolationMode;
+  // The parent directory every task worktree is created under.
+  //
+  // ⚠ **DEFAULTS TO A SIBLING OF THE DATA DIR, AND DELIBERATELY NOT INSIDE ANY
+  // PROJECT ROOT.** The file/git/search/task APIs all scope themselves to
+  // `projectRoots ∪ live-session cwds`, and the file browser lists what is under
+  // them. A worktree root inside a project root would make every task's private
+  // worker directory show up as if it were a project — a browsable, editable
+  // sibling of the real repo — and would put N copies of a checkout inside the
+  // very tree the allowlist exists to fence. Beside the data dir it is the
+  // daemon's own bookkeeping, which is what it is.
+  //
+  // (Live-session cwds still enter the allowlist while a stage run is alive, which
+  // is correct and is how the review panel can diff a worker's actual work.)
+  // VIMES_WORKTREE_ROOT overrides.
+  worktreeRoot: string;
 }
+
+// The two worlds, named. A string union rather than a boolean because the env var
+// is the operator-facing surface and `VIMES_WORKTREE_ISOLATION=on` reads as what it
+// does, where `=true` would not say what it is true ABOUT.
+export type WorktreeIsolationMode = 'off' | 'on';
 
 const DEFAULT_PORT = 4600;
 const DEFAULT_HOOK_PORT = 4601;
@@ -185,6 +224,13 @@ const DEFAULT_WATCHDOG_MAX_STALE_EPISODES = 3;
 // retries, so nothing waits these delays; the curve exists because
 // `WatchdogPolicy` requires one. NEVER empty — see parseRetryBackoffMs.
 const DEFAULT_WATCHDOG_RETRY_BACKOFF_MS: readonly number[] = [60_000, 300_000, 900_000];
+
+// ⚠ **`off`. THE SAFE VALUE IS THE ONE YOU GET BY SAYING NOTHING.** See the field's
+// own note: this is a rule-0 flip, not a ⟨tune⟩ knob.
+const DEFAULT_WORKTREE_ISOLATION: WorktreeIsolationMode = 'off';
+// Appended to the data dir's own name to form its SIBLING: `~/.vimes` →
+// `~/.vimes-worktrees`, `/var/lib/vimes` → `/var/lib/vimes-worktrees`.
+const WORKTREE_ROOT_SIBLING_SUFFIX = '-worktrees';
 
 function expandHome(path: string): string {
   if (path === '~') {
@@ -268,6 +314,33 @@ function parseRetryBackoffMs(rawValue: string | undefined, variableName: string)
   return parsedDelays;
 }
 
+// The isolation flag. Case- and whitespace-insensitive ('ON' and ' on ' both mean
+// on), because an operator who meant to turn it on and typed it in caps should not
+// silently get the off world.
+//
+// ⚠ **AN UNRECOGNISED VALUE IS REFUSED, LOUDLY, RATHER THAN READ AS `off`.** Off is
+// the safe direction, so defaulting to it looks harmless — but the failure it hides
+// is the DANGEROUS one in the other sense: an operator who set
+// `VIMES_WORKTREE_ISOLATION=true` and believed their workers were isolated would be
+// running every task in the shared project root while thinking otherwise, and
+// nothing would ever tell them. A daemon that will not boot is a much better
+// outcome than a silent lie about isolation.
+function parseWorktreeIsolation(
+  rawValue: string | undefined,
+  variableName: string,
+): WorktreeIsolationMode {
+  if (rawValue === undefined || rawValue.trim() === '') {
+    return DEFAULT_WORKTREE_ISOLATION;
+  }
+  const normalizedValue = rawValue.trim().toLowerCase();
+  if (normalizedValue === 'off' || normalizedValue === 'on') {
+    return normalizedValue;
+  }
+  throw new Error(
+    `${variableName} must be 'off' or 'on', got '${rawValue}' — refusing to guess, because guessing 'off' would let an operator believe workers are isolated when they are not`,
+  );
+}
+
 function parsePositiveInteger(rawValue: string, variableName: string): number {
   const parsedValue = Number(rawValue);
   if (!Number.isInteger(parsedValue) || parsedValue < 0) {
@@ -284,12 +357,14 @@ export function loadConfigFromEnv(env: NodeJS.ProcessEnv = process.env): DaemonC
   const rawDbPath = env.VIMES_DB_PATH;
   const dbPath = expandHome(rawDbPath === undefined || rawDbPath === '' ? '~/.vimes/events.db' : rawDbPath);
   const rawDataDir = env.VIMES_DATA_DIR;
+  const dataDir = rawDataDir === undefined || rawDataDir === '' ? dirname(dbPath) : expandHome(rawDataDir);
+  const rawWorktreeRoot = env.VIMES_WORKTREE_ROOT;
 
   return {
     port: rawPort === undefined ? DEFAULT_PORT : parsePositiveInteger(rawPort, 'VIMES_PORT'),
     hookPort: rawHookPort === undefined ? DEFAULT_HOOK_PORT : parsePositiveInteger(rawHookPort, 'VIMES_HOOK_PORT'),
     dbPath,
-    dataDir: rawDataDir === undefined || rawDataDir === '' ? dirname(dbPath) : expandHome(rawDataDir),
+    dataDir,
     expectedCliVersion:
       env.VIMES_EXPECTED_CLI_VERSION === undefined || env.VIMES_EXPECTED_CLI_VERSION === ''
         ? undefined
@@ -367,5 +442,16 @@ export function loadConfigFromEnv(env: NodeJS.ProcessEnv = process.env): DaemonC
       env.VIMES_WATCHDOG_BACKOFF_MS,
       'VIMES_WATCHDOG_BACKOFF_MS',
     ),
+    // An unrecognised value throws rather than defaulting — see the parser.
+    worktreeIsolation: parseWorktreeIsolation(
+      env.VIMES_WORKTREE_ISOLATION,
+      'VIMES_WORKTREE_ISOLATION',
+    ),
+    // A SIBLING of the data dir, resolved absolute. Never inside a project root —
+    // see the field's own note for why that matters to the file browser.
+    worktreeRoot:
+      rawWorktreeRoot === undefined || rawWorktreeRoot === ''
+        ? resolve(`${dataDir}${WORKTREE_ROOT_SIBLING_SUFFIX}`)
+        : resolve(expandHome(rawWorktreeRoot)),
   };
 }
