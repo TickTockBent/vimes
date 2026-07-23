@@ -33,6 +33,7 @@
 // token sums, at every node and rolled up. An un-known that reads as $0 is a lie.
 
 import type { PriceStatus, PricedRow } from './priceUsageRow.js';
+import { resolveSessionLabel } from '../sessionIdentity.js';
 
 // ── the input row ────────────────────────────────────────────────────────────
 // The attribution-relevant fields of the daemon's `CostUsageRow` (costCorpus.ts),
@@ -62,6 +63,14 @@ export interface CostTreeInputRow {
   readonly attributionAgent: string | null;
   readonly attributionSkill: string | null;
   readonly sourceKind: string;
+
+  // The row's own ISO instant, as the ledger stored it. Used for ONE thing: the
+  // earliest row per session, which is the time half of the session identity
+  // ladder's fallback rung. No new data source — `CostUsageRow.timestamp` was
+  // already ingested and already carried into the read model for the spend
+  // history. Optional so a caller that does not have it still builds a tree; the
+  // fallback then degrades to the short id alone rather than inventing a time.
+  readonly timestamp?: string | null;
 
   // The row's raw token counts (Step 1's six fields, minus the cache aggregate).
   // Optional: dollars come entirely from `priced`, so omitting this leaves dollar
@@ -125,14 +134,28 @@ export interface SessionNode {
   // for an outside-roots session it is the shared sentinel bucket.
   readonly directoryPath: string;
   // The session's OWN launch cwd, normalized, kept even when the session is
-  // bucketed outside roots — it is what the identity ladder's basename rung
-  // reads. Null when the rows carried no usable cwd.
+  // bucketed outside roots. Null when the rows carried no usable cwd.
+  //
+  // ⚠ **THE LABEL NO LONGER READS THIS, AND MUST NOT.** Under D37's directory
+  // rollup a session's cwd basename IS its parent directory node's own label
+  // (15 of 23 live directory nodes), so labelling a session with it produced a
+  // `death` folder containing three more rows called `death`. The field stays
+  // because it is a true fact about the session that a surface may want to show
+  // beside the label; it is not a rung of the ladder.
   readonly cwd: string | null;
-  // The human-given session name, when the caller supplied one via
-  // `sessionNames`. Null = no name known (not "no name exists").
-  readonly name: string | null;
-  // The identity ladder (D37): `name` → cwd basename → short id. NEVER blank —
-  // a session leaf must always render as something a human can read.
+  // The session's title as the CALLER resolved it — `name ?? derivedTitle` from
+  // the sessions projection, supplied via `sessionTitles`. Null = neither exists
+  // (not "no title exists anywhere"); core never fabricates one.
+  readonly title: string | null;
+  // The earliest `timestamp` across this session's rows, or null when no row
+  // carried one. The time half of the fallback rung — and, because it is the
+  // first spend this session ever produced, a true fact about it rather than a
+  // render-time clock read (rule 0.3).
+  readonly earliestRowTimestamp: string | null;
+  // The identity ladder: `title` → the distinguishing fallback
+  // (`Jul 19 23:25 · a1b2c3d4`). NEVER blank — a session leaf must always render
+  // as something a human can read. See sessionIdentity.ts for why there is no
+  // cwd-basename rung between them.
   readonly label: string;
   // Rows on this node directly = the session's own messages (agentId null).
   readonly own: RollupTotals;
@@ -202,11 +225,16 @@ export interface BuildCostTreeOptions {
   // FIRST (authoritative), then row-derived edges fill the rest — see mergeParentEdges.
   // Absent/empty (default) → behaviour is exactly the row-only buildParentMap path.
   readonly parentEdges?: readonly ExplicitAgentParentEdge[];
-  // Human-given session names, keyed by the SAME session id the cost rows carry,
-  // for the D37 identity ladder (`name` → cwd basename → short id). Injected
-  // DATA, not a lookup: core stays pure and never reaches for a projection.
-  // Absent (default) → the ladder starts at the cwd basename.
-  readonly sessionNames?: Readonly<Record<string, string | null>>;
+  // Session TITLES, keyed by the SAME session id the cost rows carry, for the
+  // top rung of the identity ladder. Injected DATA, not a lookup: core stays
+  // pure and never reaches for a projection.
+  //
+  // Named `sessionTitles`, not `sessionNames`, because the daemon resolves
+  // `name ?? derivedTitle` before handing them over (Q3) — a human rename and a
+  // system-derived title arrive here indistinguishable, and calling the merged
+  // value a "name" would invite someone to treat an auto-title as human intent.
+  // Absent (default) → every session falls to the fallback rung.
+  readonly sessionTitles?: Readonly<Record<string, string | null>>;
 }
 
 // The single explicit bucket for rows outside VIMES_PROJECT_ROOTS (rule 9).
@@ -539,38 +567,24 @@ function directoryLabelFor(directoryPath: string): string {
   return lastSegment === undefined || lastSegment === '' ? directoryPath : lastSegment;
 }
 
-// How many leading characters of a session id make the last-resort short id. Long
-// enough to be distinguishable at a glance in a uuid corpus, short enough to fit a
-// phone row. Presentation only — it never keys anything.
-const SHORT_SESSION_ID_LENGTH = 8;
-
 /**
- * The D37 session identity ladder: human `name` → cwd basename → short id.
+ * The session identity ladder, for the cost tree: `title` → the distinguishing
+ * fallback. One line, because the ladder itself lives in ONE place
+ * (`sessionIdentity.ts`) and this module does not own a second opinion about
+ * what a session is called.
  *
- * `sessionCwd` is the session's OWN launch directory, not the node it hangs off
- * — an outside-roots session shares one bucket with 30 others, so labelling it
- * with the bucket key would make every one of them look identical. Total: it
- * NEVER returns a blank string, so a session leaf can never render empty. A
- * session id shorter than the short-id length is used whole.
+ * ⚠ **THERE IS NO CWD-BASENAME RUNG. DO NOT REINTRODUCE ONE.** Under D37 the
+ * parent DIRECTORY node already renders that exact string, so the rung carried
+ * zero information and produced a `death` folder containing three more rows
+ * called `death`. `sessionIdentity.ts` has the full argument; `costTree.test.ts`
+ * has the regression pin that reddens if it comes back.
  */
 export function sessionDisplayLabel(
   sessionId: string,
-  sessionCwd: string | null,
-  sessionName: string | null,
+  sessionTitle: string | null,
+  earliestRowTimestamp: string | null,
 ): string {
-  if (sessionName !== null && sessionName.trim().length > 0) {
-    return sessionName.trim();
-  }
-  if (sessionCwd !== null) {
-    const cwdBasename = directoryLabelFor(sessionCwd);
-    if (cwdBasename.trim().length > 0) {
-      return cwdBasename;
-    }
-  }
-  if (sessionId.trim().length > 0) {
-    return sessionId.slice(0, SHORT_SESSION_ID_LENGTH);
-  }
-  return UNKNOWN_SESSION_KEY;
+  return resolveSessionLabel({ sessionId, name: sessionTitle, earliestActivityAt: earliestRowTimestamp });
 }
 
 // ── the build: bottom-up so every subtree = own + Σ children by construction ──
@@ -608,8 +622,20 @@ export function buildCostTree(
   // it, and the outside bucket key would otherwise make 31 sessions look alike.
   const rootCwdCandidates = new Map<string, Set<string>>();
   const anyCwdCandidates = new Map<string, Set<string>>();
+  // The EARLIEST row timestamp per session — the time half of the identity
+  // ladder's fallback. Compared as strings: the corpus stores ISO-8601 UTC
+  // (`…Z`), which sorts lexicographically in the same order it sorts
+  // chronologically, so this needs no `Date` and stays inside the grep gate.
+  const earliestRowTimestampBySession = new Map<string, string>();
   for (const row of rows) {
     const sessionId = sessionKeyOf(row.sessionId);
+    const rowTimestamp = row.timestamp;
+    if (typeof rowTimestamp === 'string' && rowTimestamp.length > 0) {
+      const currentEarliest = earliestRowTimestampBySession.get(sessionId);
+      if (currentEarliest === undefined || rowTimestamp < currentEarliest) {
+        earliestRowTimestampBySession.set(sessionId, rowTimestamp);
+      }
+    }
     const classification = resolveDirectoryKey(row, projectRoots);
     insideRootsByDirectory.set(classification.directoryPath, classification.insideProjectRoots);
     const anySet = anyDirectoryCandidates.get(sessionId) ?? new Set<string>();
@@ -807,7 +833,7 @@ export function buildCostTree(
     return node;
   };
 
-  const sessionNames = options.sessionNames ?? {};
+  const sessionTitles = options.sessionTitles ?? {};
 
   const buildSessionNode = (sessionId: string, directoryPath: string): SessionNode => {
     const ownMutable = sessionOwnTotals.get(sessionId)!;
@@ -822,21 +848,23 @@ export function buildCostTree(
     for (const agentNode of agentNodes) {
       addTotals(subtree, agentNode.subtree);
     }
-    // The session's own launch cwd — the sentinel buckets carry no directory, so
-    // the basename rung of the ladder has nothing to read there and falls through.
+    // The session's own launch cwd — reported as a fact about the session, and
+    // deliberately NOT consulted by the label (see `SessionNode.cwd`).
     const sessionCwd =
       directoryPath === OUTSIDE_ROOTS_PROJECT_KEY || directoryPath === UNKNOWN_DIRECTORY_KEY
         ? sessionLaunchCwd.get(sessionId) ?? null
         : directoryPath;
     // `Object.hasOwn` (not a bare lookup) so an inherited key like "toString"
-    // can never masquerade as a session name (I8).
-    const sessionName = Object.hasOwn(sessionNames, sessionId) ? sessionNames[sessionId] ?? null : null;
+    // can never masquerade as a session title (I8).
+    const sessionTitle = Object.hasOwn(sessionTitles, sessionId) ? sessionTitles[sessionId] ?? null : null;
+    const earliestRowTimestamp = earliestRowTimestampBySession.get(sessionId) ?? null;
     return {
       sessionId,
       directoryPath,
       cwd: sessionCwd,
-      name: sessionName,
-      label: sessionDisplayLabel(sessionId, sessionCwd, sessionName),
+      title: sessionTitle,
+      earliestRowTimestamp,
+      label: sessionDisplayLabel(sessionId, sessionTitle, earliestRowTimestamp),
       own: freezeTotals(ownMutable),
       agents: agentNodes,
       subtree: freezeTotals(subtree),

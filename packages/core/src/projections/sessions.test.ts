@@ -1260,3 +1260,226 @@ describe('sessions projection — I5/I6 restart byte-identity', () => {
     expect(replayedSerialized).toBe(liveSerialized);
   });
 });
+
+// ─── Q3: the AUTO-TITLE fold — assertions 1, 2, 3, 6, 7 ──────────────────────
+//
+// The invariant under test is structural: the projection writes `derivedTitle`
+// and NEVER `name`, so "the system never overwrites a user-set name" cannot be
+// violated by a code path that does not exist.
+describe('sessions projection — derivedTitle (Q3)', () => {
+  const UNNAMED_SESSION_ID = 'aaaaaaaa-0000-4000-8000-00000000ab01';
+
+  function makeStoreFor(batches: EventInput[][]): MemoryEventStore {
+    const store = makeStore();
+    for (const batch of batches) {
+      store.append(batch);
+    }
+    return store;
+  }
+
+  function foldTitleLog(batches: EventInput[][]): ReturnType<typeof sessionsProjection.init> {
+    return replayFromEmpty(sessionsProjection, readAllStreamsGrouped(makeStoreFor(batches)));
+  }
+
+  function bornUnnamed(): EventInput {
+    return sessionCreated({
+      appSessionId: UNNAMED_SESSION_ID,
+      channel: 'sdk',
+      cwd: '/home/ticktockbent/projects/content/death',
+      name: null,
+      forkedFrom: null,
+      taskRef: null,
+    });
+  }
+
+  function userSays(content: unknown): EventInput {
+    return message({ appSessionId: UNNAMED_SESSION_ID, role: 'user', content });
+  }
+
+  // ASSERTION 2 — the first qualifying user message sets it.
+  it('the first qualifying user message becomes the derived title', () => {
+    const state = foldTitleLog([
+      [bornUnnamed()],
+      [userSays('Look at the development plan and write next-steps.md')],
+    ]);
+    expect(state.sessions[UNNAMED_SESSION_ID]!.derivedTitle).toBe(
+      'Look at the development plan and write next-steps.md',
+    );
+  });
+
+  // ASSERTION 2 — WRITE-ONCE. A long session must not re-title itself.
+  it('a SECOND user message does NOT change it', () => {
+    const state = foldTitleLog([
+      [bornUnnamed()],
+      [userSays('Do a general health check on the local system')],
+      [userSays('How many processes are using a high amount of memory?')],
+      [userSays('How many claude instances running?')],
+    ]);
+    expect(state.sessions[UNNAMED_SESSION_ID]!.derivedTitle).toBe(
+      'Do a general health check on the local system',
+    );
+  });
+
+  it('an ASSISTANT message never titles a session — the model does not name the work', () => {
+    const state = foldTitleLog([
+      [bornUnnamed()],
+      [message({ appSessionId: UNNAMED_SESSION_ID, role: 'assistant', content: "I'll start by reading the plan." })],
+    ]);
+    expect(state.sessions[UNNAMED_SESSION_ID]!.derivedTitle).toBeUndefined();
+    // …but it is still a transcript append and still starts a turn.
+    expect(state.sessions[UNNAMED_SESSION_ID]!.turnInFlight).toBe(true);
+  });
+
+  // ASSERTION 3 — each skip rule, and the ABSENT (not '') outcome.
+  it.each([
+    ['an empty message', ''],
+    ['whitespace only', '   \n  '],
+    ['a bare slash command', '/compact'],
+    ['a tool_result block', [{ type: 'tool_result', content: 'total 120', tool_use_id: 'toolu_01' }]],
+    ['the local-command-caveat wrapper', '<local-command-caveat>Caveat: The messages below …</local-command-caveat>'],
+    ['the command-name wrapper', '<command-name>/compact</command-name>'],
+    ['the local-command-stdout wrapper', '<local-command-stdout>Compacted</local-command-stdout>'],
+    ['the task-notification wrapper', '<task-notification>agent finished</task-notification>'],
+    ['a continuation summary', 'This session is being continued from a previous conversation that ran out of context.'],
+  ])('%s leaves derivedTitle ABSENT', (_label, content) => {
+    const state = foldTitleLog([[bornUnnamed()], [userSays(content)]]);
+    expect(state.sessions[UNNAMED_SESSION_ID]!.derivedTitle).toBeUndefined();
+  });
+
+  // The live `d85bc8f8` session, verbatim: FIVE user messages, every one of them
+  // skippable. It must end with NO title — absent, never `''` — which is exactly
+  // why the fallback rung has to distinguish.
+  it('a session whose ONLY user messages are skippable ends with no derivedTitle at all', () => {
+    const state = foldTitleLog([
+      [bornUnnamed()],
+      [userSays('/compact')],
+      [userSays('This session is being continued from a previous conversation that ran out of context.')],
+      [userSays('<local-command-caveat>Caveat: …</local-command-caveat>')],
+      [userSays('<command-name>/compact</command-name>')],
+      [userSays('<local-command-stdout>Compacted</local-command-stdout>')],
+    ]);
+    const record = state.sessions[UNNAMED_SESSION_ID]!;
+    expect(record.derivedTitle).toBeUndefined();
+    expect(Object.hasOwn(record, 'derivedTitle')).toBe(false);
+    expect(sessionsProjection.serialize(state)).not.toContain('derivedTitle');
+  });
+
+  it('a skipped message does not burn the slot — the next real prompt still titles it', () => {
+    const state = foldTitleLog([
+      [bornUnnamed()],
+      [userSays('/compact')],
+      [userSays([{ type: 'tool_result', content: 'noise' }])],
+      [userSays('Fix the cost ledger session labels')],
+    ]);
+    expect(state.sessions[UNNAMED_SESSION_ID]!.derivedTitle).toBe('Fix the cost ledger session labels');
+  });
+
+  // ASSERTION 4 — array content, and a shape nobody recognizes (I8).
+  it('array-shaped content extracts its text blocks; an unknown shape never throws', () => {
+    const state = foldTitleLog([
+      [bornUnnamed()],
+      [userSays([{ type: 'text', text: 'Review the current codebase' }])],
+    ]);
+    expect(state.sessions[UNNAMED_SESSION_ID]!.derivedTitle).toBe('Review the current codebase');
+
+    for (const hostileContent of [null, 42, { nested: true }, [null, 7, { type: 'text' }]]) {
+      expect(() => foldTitleLog([[bornUnnamed()], [userSays(hostileContent)]])).not.toThrow();
+    }
+  });
+
+  // ASSERTION 5 — collapse + truncate at the same bound renameSession enforces.
+  it('collapses whitespace and truncates at 120', () => {
+    const state = foldTitleLog([
+      [bornUnnamed()],
+      [userSays(`  Write   a\n\nlong   prompt ${'z'.repeat(300)}  `)],
+    ]);
+    const derivedTitle = state.sessions[UNNAMED_SESSION_ID]!.derivedTitle!;
+    expect(derivedTitle).toHaveLength(120);
+    expect(derivedTitle.startsWith('Write a long prompt zzz')).toBe(true);
+  });
+
+  // ⚠ ASSERTION 6 — THE STRUCTURAL GUARANTEE. No path in this projection writes
+  // `name` from a `message`. A human-named session keeps its name through any
+  // number of user turns; the derived title lands beside it, never over it.
+  it('a message NEVER writes `name` — a human-named session keeps its name', () => {
+    const state = foldTitleLog([
+      [createInput()], // `name: 'synthetic session'`
+      [message({ appSessionId: APP_SESSION_ID, role: 'user', content: 'do the thing' })],
+      [message({ appSessionId: APP_SESSION_ID, role: 'user', content: 'and then this other thing' })],
+    ]);
+    const record = state.sessions[APP_SESSION_ID]!;
+    expect(record.name).toBe('synthetic session');
+    expect(record.derivedTitle).toBe('do the thing');
+  });
+
+  it('a rename after auto-titling wins, and the derived title is left untouched beneath it', () => {
+    const state = foldTitleLog([
+      [bornUnnamed()],
+      [userSays('the first prompt')],
+      [sessionRenamed({ appSessionId: UNNAMED_SESSION_ID, name: 'what Wes calls it' })],
+      [userSays('a later prompt')],
+    ]);
+    const record = state.sessions[UNNAMED_SESSION_ID]!;
+    expect(record.name).toBe('what Wes calls it');
+    expect(record.derivedTitle).toBe('the first prompt');
+  });
+
+  // ASSERTION 1 + 7 — the field is optional, old records load unchanged, and a
+  // snapshot cut that already carries a derived title replays byte-identically.
+  it('a record with NO derivedTitle serializes identically (backward compatibility, I6)', () => {
+    const store = makeStore();
+    store.append([bornUnnamed()]);
+    const oldShapeState = replayFromEmpty(sessionsProjection, readAllStreamsGrouped(store));
+    const snapshotStore = new MemorySnapshotStore();
+    snapshotStore.save({
+      projectionId: sessionsProjection.id,
+      lastAppliedSeq: { [UNNAMED_SESSION_ID]: 1 },
+      state: oldShapeState,
+      savedAt: '2026-01-01T00:00:00.000Z',
+    });
+    expect(sessionsProjection.serialize(bootFromSnapshot(sessionsProjection, snapshotStore, store))).toBe(
+      sessionsProjection.serialize(oldShapeState),
+    );
+  });
+
+  it('I6 holds across a cut whose SNAPSHOT already carries the derived title', () => {
+    const store = makeStore();
+    store.append([bornUnnamed()]);
+    store.append([userSays('the title-setting prompt')]);
+    const cutState = replayFromEmpty(sessionsProjection, readAllStreamsGrouped(store));
+    expect(cutState.sessions[UNNAMED_SESSION_ID]!.derivedTitle).toBe('the title-setting prompt');
+
+    const snapshotStore = new MemorySnapshotStore();
+    snapshotStore.save({
+      projectionId: sessionsProjection.id,
+      lastAppliedSeq: { [UNNAMED_SESSION_ID]: 2 },
+      state: cutState,
+      savedAt: '2026-01-01T00:00:00.000Z',
+    });
+    // The tail after the cut: more user turns, which must NOT re-title.
+    store.append([userSays('a second prompt that must not win')]);
+    store.append([userSays('nor a third')]);
+
+    const booted = bootFromSnapshot(sessionsProjection, snapshotStore, store);
+    const replayed = replayFromEmpty(sessionsProjection, readAllStreamsGrouped(store));
+    expect(sessionsProjection.serialize(booted)).toBe(sessionsProjection.serialize(replayed));
+    expect(booted.sessions[UNNAMED_SESSION_ID]!.derivedTitle).toBe('the title-setting prompt');
+  });
+
+  it('a PAYLOAD without derivedTitle parses, folds and serializes unchanged (I8)', () => {
+    const store = makeStore();
+    store.append([bornUnnamed()]);
+    const bornState = replayFromEmpty(sessionsProjection, readAllStreamsGrouped(store));
+    const hostileRecord: EventRecord = {
+      eventId: '00000000-0000-4000-8000-0000000f1a19',
+      seq: 2,
+      stream: UNNAMED_SESSION_ID,
+      ts: '2026-01-01T00:10:00.000Z',
+      type: EVENT_TYPES.message,
+      payload: { appSessionId: UNNAMED_SESSION_ID, role: 'user' },
+    };
+    const folded = sessionsProjection.apply(bornState, hostileRecord);
+    expect(folded.sessions[UNNAMED_SESSION_ID]!.derivedTitle).toBeUndefined();
+    expect(folded.sessions[UNNAMED_SESSION_ID]!.turnInFlight).toBe(true);
+  });
+});

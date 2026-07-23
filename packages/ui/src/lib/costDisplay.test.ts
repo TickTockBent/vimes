@@ -71,7 +71,8 @@ function session(sessionId: string, overrides: Partial<SessionView> = {}): Sessi
     sessionId,
     directoryPath: '/p',
     cwd: '/p',
-    name: null,
+    title: null,
+    earliestRowTimestamp: null,
     label: sessionId,
     own: rollup(),
     subtree: rollup(),
@@ -341,7 +342,7 @@ const LAB_TREE: DirectoryView[] = [
               session('vimes-sess', {
                 directoryPath: '/p/infrastructure/vimes',
                 label: 'the ledger rewrite',
-                name: 'the ledger rewrite',
+                title: 'the ledger rewrite',
                 agents: [agent('parent', [agent('child')])],
               }),
             ],

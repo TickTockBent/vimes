@@ -117,6 +117,32 @@ export const sessionRecordSchema = z.object({
   // turn ended) and by a `liveness_changed` to a non-live state. NEVER set by
   // liveness — see the fold in projections/sessions.ts.
   turnInFlight: z.boolean().optional(),
+  // ── Q3: the SYSTEM-owned title, and the reason `name` is not it ────────────
+  //
+  // OPTIONAL-only, exactly like the four fields above and for the same reason:
+  // nothing validates a snapshot's records against this schema on load, so a
+  // record written before this field existed must still load and serialize
+  // identically (I6). **ABSENT STAYS ABSENT, NEVER `''`** — the same discipline
+  // `taskRecordSchema.title` documents: an empty string is a title someone
+  // chose, and an untitled session is a different fact from a session titled
+  // with nothing.
+  //
+  // ⚠ **TWO FIELDS, AND THE SYSTEM WRITES ONLY THIS ONE.** Wes's rule is *"if a
+  // user name has been set the system never automatically changes it"*. `name`
+  // has exactly two writers, both HUMAN — `session_created` (the spawn op's
+  // optional name) and `session_renamed` (one emitter, `renameSession`,
+  // reachable only from the WS `rename` op). The auto-titler writes
+  // `derivedTitle` and nothing else, so the rule is not something a future
+  // change can forget: it is IMPOSSIBLE, because the code that would break it
+  // does not touch that field. Display resolves `name ?? derivedTitle ??
+  // <fallback>` (core/sessionIdentity.ts `resolveSessionLabel`).
+  //
+  // **No flag is needed.** `name !== null` already means "a human chose this".
+  //
+  // WRITE-ONCE: set from the first qualifying user `message` and never changed
+  // after, so a long session does not re-title itself on every prompt and a
+  // replay produces the same value as a live fold (I6).
+  derivedTitle: z.string().optional(),
 });
 export type SessionRecord = z.infer<typeof sessionRecordSchema>;
 

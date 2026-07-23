@@ -364,10 +364,10 @@ describe('D37 — the servable body carries the directory tree and a series per 
     expect(model.directories.map((node) => node.directoryPath)).toEqual(['/home/ticktockbent/projects']);
   });
 
-  it('session views carry the ladder: injected names win, the rest fall back to the basename', () => {
+  it('session views carry the ladder: injected titles win, the rest fall back — never to the basename', () => {
     const model = buildCostLedgerReadModel(NESTED_ROWS, {
       projectRoots: PROJECT_ROOTS,
-      sessionNames: { 'wire-daemon': 'daemon spike' },
+      sessionTitles: { 'wire-daemon': 'daemon spike' },
     });
     const findSession = (sessionId: string) => {
       const pending = [...model.directories];
@@ -382,9 +382,12 @@ describe('D37 — the servable body carries the directory tree and a series per 
       return undefined;
     };
     expect(findSession('wire-daemon')!.label).toBe('daemon spike');
-    expect(findSession('wire-daemon')!.name).toBe('daemon spike');
-    expect(findSession('wire-vimes')!.label).toBe('vimes');
-    expect(findSession('wire-vimes')!.name).toBeNull();
+    expect(findSession('wire-daemon')!.title).toBe('daemon spike');
+    // ⚠ The untitled one must NOT read `vimes` — that is its parent directory
+    // node's own label, and restating it is the defect this ladder removed.
+    expect(findSession('wire-vimes')!.label).not.toBe('vimes');
+    expect(findSession('wire-vimes')!.title).toBeNull();
+    expect(findSession('wire-vimes')!.label).toContain('wire-vim');
     expect(findSession('wire-vimes')!.cwd).toBe('/home/ticktockbent/projects/infrastructure/vimes');
     expect(findSession('wire-vimes')!.directoryPath).toBe('/home/ticktockbent/projects/infrastructure/vimes');
   });

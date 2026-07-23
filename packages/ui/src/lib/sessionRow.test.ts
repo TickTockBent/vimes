@@ -16,14 +16,35 @@ function makeSession(overrides: Partial<SessionRecord> = {}): SessionRecord {
 }
 
 describe('deriveSessionRow', () => {
-  it('falls back to an appSessionId prefix when name is null', () => {
+  it('falls back to createdAt + a short id when there is no name and no derived title', () => {
     const row = deriveSessionRow(makeSession({ name: null, appSessionId: 'app-12345678-abcd' }));
-    expect(row.label).toBe('app-1234');
+    expect(row.label).toBe('Jan 01 00:00 · app-1234');
   });
 
   it('prefers the session name when present', () => {
     const row = deriveSessionRow(makeSession({ name: 'dongfu build' }));
     expect(row.label).toBe('dongfu build');
+  });
+
+  // Q3: the ladder is `name` → `derivedTitle` → fallback, and the FIRST rung is
+  // human-only. The auto-titler never writes `name`, so a human rename cannot be
+  // overwritten — this asserts the display half of that invariant.
+  it('a derived title beats the fallback, and a human name beats the derived title', () => {
+    expect(deriveSessionRow(makeSession({ name: null, derivedTitle: 'fix the ledger' })).label).toBe(
+      'fix the ledger',
+    );
+    expect(
+      deriveSessionRow(makeSession({ name: 'dongfu build', derivedTitle: 'fix the ledger' })).label,
+    ).toBe('dongfu build');
+  });
+
+  // ⚠ THE REGRESSION PIN, list side: the row already shows `cwdTail` separately,
+  // so a label that repeats it says nothing. This is the same defect the cost
+  // ledger had, in the other view.
+  it('the label never falls back to the cwd basename', () => {
+    const row = deriveSessionRow(makeSession({ name: null, cwd: '/home/wes/projects/content/death' }));
+    expect(row.cwdTail).toBe('death');
+    expect(row.label).not.toBe('death');
   });
 
   it('takes the last path segment as the cwd tail', () => {

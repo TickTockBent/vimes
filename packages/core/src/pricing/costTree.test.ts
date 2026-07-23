@@ -678,7 +678,11 @@ describe('D37 assertion 6: hostile and degenerate paths never throw and never es
     expectMoneyStaysInTheTree(tree, 9);
     const node = findDirectory(tree, unicodeCwd)!;
     expect(node.label).toBe('prójekt-Ω');
-    expect(node.sessions[0]!.label).toBe('prójekt-Ω');
+    // The DIRECTORY keeps the unicode segment verbatim; the SESSION under it is
+    // labelled by the identity ladder, which never reads a cwd — so this row
+    // shows the session, not a second copy of the folder above it.
+    expect(node.sessions[0]!.cwd).toBe(unicodeCwd);
+    expect(node.sessions[0]!.label).toBe('uni');
   });
 
   it('a VERY deep path builds and verifies without blowing the stack', () => {
@@ -706,66 +710,164 @@ describe('D37 assertion 6: hostile and degenerate paths never throw and never es
   });
 });
 
-describe('D37 assertion 8: the session identity ladder never renders blank', () => {
-  it('a named session shows its NAME', () => {
+describe('the session identity ladder never renders blank — and never restates its parent', () => {
+  it('a TITLED session shows its title', () => {
     const rows: CostTreeInputRow[] = [
       row({ sessionId: 'sess-named', projectCwd: '/home/ticktockbent/projects/alpha', priced: priced(1) }),
     ];
     const tree = buildCostTree(rows, {
       projectRoots: LAB_ROOTS,
-      sessionNames: { 'sess-named': 'the ledger rewrite' },
+      sessionTitles: { 'sess-named': 'the ledger rewrite' },
     });
     const session = findDirectory(tree, '/home/ticktockbent/projects/alpha')!.sessions[0]!;
-    expect(session.name).toBe('the ledger rewrite');
+    expect(session.title).toBe('the ledger rewrite');
     expect(session.label).toBe('the ledger rewrite');
   });
 
-  it('an UNNAMED session shows its cwd basename', () => {
+  // ⚠ THE REGRESSION PIN (assertion 9). This is the defect Wes reported: under
+  // D37 the parent directory node is ALREADY labelled `alpha`, so a session
+  // whose cwd basename is `alpha` rendering as `alpha` made one folder look like
+  // it contained several copies of itself. If anyone reintroduces the
+  // cwd-basename rung — at any position in the ladder — this test reddens.
+  it('an UNTITLED session does NOT render its cwd basename (the D37 defect)', () => {
     const rows: CostTreeInputRow[] = [
-      row({ sessionId: 'sess-unnamed', projectCwd: '/home/ticktockbent/projects/alpha', priced: priced(1) }),
+      row({
+        sessionId: 'sess-unnamed',
+        projectCwd: '/home/ticktockbent/projects/alpha',
+        timestamp: '2026-07-19T23:25:51.371Z',
+        priced: priced(1),
+      }),
     ];
-    const tree = buildCostTree(rows, { projectRoots: LAB_ROOTS, sessionNames: { other: 'not mine' } });
-    const session = findDirectory(tree, '/home/ticktockbent/projects/alpha')!.sessions[0]!;
-    expect(session.name).toBeNull();
-    expect(session.label).toBe('alpha');
+    const tree = buildCostTree(rows, { projectRoots: LAB_ROOTS, sessionTitles: { other: 'not mine' } });
+    const directory = findDirectory(tree, '/home/ticktockbent/projects/alpha')!;
+    const session = directory.sessions[0]!;
+    expect(session.title).toBeNull();
+    expect(directory.label).toBe('alpha');
+    expect(session.label).not.toBe('alpha');
+    expect(session.label).not.toBe(directory.label);
+    expect(session.label).toBe('Jul 19 23:25 · sess-unn');
   });
 
-  it('a BLANK name falls through to the basename rather than rendering empty', () => {
+  it('a BLANK title falls through to the fallback rather than rendering empty', () => {
     const rows: CostTreeInputRow[] = [
-      row({ sessionId: 'sess-blank', projectCwd: '/home/ticktockbent/projects/alpha', priced: priced(1) }),
+      row({
+        sessionId: 'sess-blank',
+        projectCwd: '/home/ticktockbent/projects/alpha',
+        timestamp: '2026-07-19T23:25:51.371Z',
+        priced: priced(1),
+      }),
     ];
-    const tree = buildCostTree(rows, { projectRoots: LAB_ROOTS, sessionNames: { 'sess-blank': '   ' } });
-    expect(findDirectory(tree, '/home/ticktockbent/projects/alpha')!.sessions[0]!.label).toBe('alpha');
+    const tree = buildCostTree(rows, { projectRoots: LAB_ROOTS, sessionTitles: { 'sess-blank': '   ' } });
+    expect(findDirectory(tree, '/home/ticktockbent/projects/alpha')!.sessions[0]!.label).toBe(
+      'Jul 19 23:25 · sess-bla',
+    );
   });
 
-  it('with NEITHER name nor cwd it shows a short id — and an outside session keeps its own basename', () => {
+  // Assertion 10: 38%+ of sessions reach the fallback, so it is the rung that
+  // has to do the distinguishing work. Two untitled sessions in ONE directory —
+  // the shape that produced `death / death / death / death`.
+  it('the fallback DISTINGUISHES two untitled sessions in the same directory', () => {
     const rows: CostTreeInputRow[] = [
-      // No usable cwd at all → the last rung.
+      row({
+        sessionId: '101609cc-06b4-4db4-a81a-b292eb2966cb',
+        projectCwd: '/home/ticktockbent/projects/alpha',
+        timestamp: '2026-07-21T21:36:46.099Z',
+        priced: priced(1),
+      }),
+      // Created ONE MILLISECOND later, in the same directory — this pair is real
+      // (live event log), and it is why the short id rides along with the time.
+      row({
+        sessionId: '6e8b0f55-dc21-4aa3-a972-35c0670ccff6',
+        projectCwd: '/home/ticktockbent/projects/alpha',
+        timestamp: '2026-07-21T21:36:46.100Z',
+        priced: priced(2),
+      }),
+    ];
+    const tree = buildCostTree(rows, { projectRoots: LAB_ROOTS });
+    const sessions = findDirectory(tree, '/home/ticktockbent/projects/alpha')!.sessions;
+    expect(sessions).toHaveLength(2);
+    const labels = sessions.map((session) => session.label);
+    expect(new Set(labels).size).toBe(2);
+    expect(labels).toEqual(
+      expect.arrayContaining(['Jul 21 21:36 · 101609cc', 'Jul 21 21:36 · 6e8b0f55']),
+    );
+  });
+
+  it('the earliest row timestamp is the one that shows, whatever order the rows arrive in', () => {
+    const rows: CostTreeInputRow[] = [
+      row({ sessionId: 'sess-t', projectCwd: '/home/ticktockbent/projects/alpha', timestamp: '2026-07-20T08:00:00.000Z', priced: priced(1) }),
+      row({ sessionId: 'sess-t', projectCwd: '/home/ticktockbent/projects/alpha', timestamp: '2026-06-01T04:05:00.000Z', priced: priced(1) }),
+      row({ sessionId: 'sess-t', projectCwd: '/home/ticktockbent/projects/alpha', timestamp: '2026-07-21T09:00:00.000Z', priced: priced(1) }),
+    ];
+    const session = findDirectory(
+      buildCostTree(rows, { projectRoots: LAB_ROOTS }),
+      '/home/ticktockbent/projects/alpha',
+    )!.sessions[0]!;
+    expect(session.earliestRowTimestamp).toBe('2026-06-01T04:05:00.000Z');
+    expect(session.label).toBe('Jun 01 04:05 · sess-t');
+  });
+
+  it('a row with no timestamp degrades to the short id — never a fabricated time', () => {
+    const rows: CostTreeInputRow[] = [
       row({ sessionId: '0123456789abcdef-long', projectCwd: '', priced: priced(1) }),
-      // Bucketed outside roots, but its OWN cwd basename is still readable — the
-      // bucket key would have made every outside session look identical.
       row({ sessionId: 'outside-1', insideProjectRoots: false, projectCwd: '/tmp/scratchcwd', priced: priced(2) }),
     ];
     const tree = buildCostTree(rows, { projectRoots: LAB_ROOTS });
     const unknownDirectory = tree.directories.find((node) => node.directoryPath === UNKNOWN_DIRECTORY_KEY)!;
+    expect(unknownDirectory.sessions[0]!.earliestRowTimestamp).toBeNull();
     expect(unknownDirectory.sessions[0]!.label).toBe('01234567');
+    // The outside-roots session keeps its own cwd as a FACT on the node, but the
+    // label must not read it — `scratchcwd` is not an identity, it is a folder.
     const outside = tree.directories.find((node) => node.directoryPath === OUTSIDE_ROOTS_PROJECT_KEY)!;
-    expect(outside.sessions[0]!.label).toBe('scratchcwd');
+    expect(outside.sessions[0]!.cwd).toBe('/tmp/scratchcwd');
+    expect(outside.sessions[0]!.label).toBe('outside-');
   });
 
   it('the ladder itself is total: no input combination yields a blank label', () => {
-    expect(sessionDisplayLabel('abcdefghij', '/a/b', 'a name')).toBe('a name');
-    expect(sessionDisplayLabel('abcdefghij', '/a/b', null)).toBe('b');
+    expect(sessionDisplayLabel('abcdefghij', 'a name', '2026-07-19T23:25:00.000Z')).toBe('a name');
+    expect(sessionDisplayLabel('abcdefghij', null, '2026-07-19T23:25:00.000Z')).toBe('Jul 19 23:25 · abcdefgh');
     expect(sessionDisplayLabel('abcdefghij', null, null)).toBe('abcdefgh');
     expect(sessionDisplayLabel('abc', null, null)).toBe('abc');
     expect(sessionDisplayLabel('', null, null).length).toBeGreaterThan(0);
     expect(sessionDisplayLabel('', '', '').length).toBeGreaterThan(0);
-    // An inherited Object key must never be mistaken for a supplied name.
+    // A malformed timestamp is dropped, not rendered — never `NaN`/`Invalid Date`.
+    expect(sessionDisplayLabel('abcdefghij', null, 'yesterday afternoon')).toBe('abcdefgh');
+    expect(sessionDisplayLabel('abcdefghij', null, '2026-13-19T23:25:00.000Z')).toBe('abcdefgh');
+    // An inherited Object key must never be mistaken for a supplied title.
     const treeWithPrototypeKey = buildCostTree(
-      [row({ sessionId: 'toString', projectCwd: '/home/ticktockbent/projects/alpha', priced: priced(1) })],
-      { projectRoots: LAB_ROOTS, sessionNames: {} },
+      [row({ sessionId: 'toString', projectCwd: '/home/ticktockbent/projects/alpha', timestamp: '2026-07-19T23:25:00.000Z', priced: priced(1) })],
+      { projectRoots: LAB_ROOTS, sessionTitles: {} },
     );
-    expect(findDirectory(treeWithPrototypeKey, '/home/ticktockbent/projects/alpha')!.sessions[0]!.label).toBe('alpha');
+    expect(findDirectory(treeWithPrototypeKey, '/home/ticktockbent/projects/alpha')!.sessions[0]!.label).toBe(
+      'Jul 19 23:25 · toString',
+    );
+  });
+
+  // Assertion 11: the label must not depend on the ambient environment.
+  it('the fallback is locale- and TZ-free: the same bytes on every machine', () => {
+    const originalTimeZone = process.env.TZ;
+    const originalLanguage = process.env.LANG;
+    const labelUnder = (timeZone: string, language: string): string => {
+      process.env.TZ = timeZone;
+      process.env.LANG = language;
+      return sessionDisplayLabel('a1b2c3d4-e5f6', null, '2026-07-19T23:25:51.371Z');
+    };
+    try {
+      expect(labelUnder('UTC', 'en_US.UTF-8')).toBe('Jul 19 23:25 · a1b2c3d4');
+      expect(labelUnder('Pacific/Kiritimati', 'de_DE.UTF-8')).toBe('Jul 19 23:25 · a1b2c3d4');
+      expect(labelUnder('America/Los_Angeles', 'ja_JP.UTF-8')).toBe('Jul 19 23:25 · a1b2c3d4');
+    } finally {
+      if (originalTimeZone === undefined) {
+        delete process.env.TZ;
+      } else {
+        process.env.TZ = originalTimeZone;
+      }
+      if (originalLanguage === undefined) {
+        delete process.env.LANG;
+      } else {
+        process.env.LANG = originalLanguage;
+      }
+    }
   });
 });
 

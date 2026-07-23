@@ -14,7 +14,7 @@ import type {
 } from './costCorpus.js';
 import { ingestCostCorpus } from './costIngest.js';
 import { SqliteCostStore } from './sqliteCostStore.js';
-import { currentCostLedger, sessionNamesByCostSessionId } from './costLedgerApi.js';
+import { currentCostLedger, sessionTitlesByCostSessionId } from './costLedgerApi.js';
 
 // ─── slice 5b step 5 — the machine EXIT GATE (end-to-end fixture corpus) ──────
 //
@@ -849,17 +849,21 @@ describe('slice-5b machine exit gate — the whole cost pipeline over an adversa
     }
   });
 
-  it('D37 — the session-name join lights the ladder up, and its absence degrades honestly', async () => {
+  it('Q3 — the session-title join lights the ladder up, and its absence degrades honestly', async () => {
     const store = new SqliteCostStore({ path: nextLedgerPath() });
     try {
       await ingestFixture(store, buildFixtureFiles(true));
 
-      // Without a sessions reader: the ladder starts at the cwd basename. No
-      // second source of session names is invented.
+      // Without a sessions reader: every session falls to the distinguishing
+      // fallback. No second source of session titles is invented, and — the
+      // point of this whole change — the label is NOT the parent directory's own
+      // name repeated back at the operator.
       const withoutNames = ledgerBodyFor(store);
       const vimesWithoutNames = directoryAt(withoutNames, PROJECT_KEY_VIMES)!;
-      expect(vimesWithoutNames.sessions[0]!.name).toBeNull();
-      expect(vimesWithoutNames.sessions[0]!.label).toBe('vimes');
+      expect(vimesWithoutNames.label).toBe('vimes');
+      expect(vimesWithoutNames.sessions[0]!.title).toBeNull();
+      expect(vimesWithoutNames.sessions[0]!.label).not.toBe('vimes');
+      expect(vimesWithoutNames.sessions[0]!.label).toContain(SESSION_VIMES.slice(0, 8));
 
       // With one: the human name wins for the session it names, and only that one.
       const bodyWithNames = currentCostLedger({
@@ -875,11 +879,76 @@ describe('slice-5b machine exit gate — the whole cost pipeline over an adversa
           },
           // The projection carries far more per session than the join reads; the
           // cast keeps this fixture to the two fields that matter here.
-        } as unknown as Parameters<typeof sessionNamesByCostSessionId>[0]),
+        } as unknown as Parameters<typeof sessionTitlesByCostSessionId>[0]),
       });
       const namedLedger = bodyWithNames.ledger!;
       expect(directoryAt(namedLedger, PROJECT_KEY_VIMES)!.sessions[0]!.label).toBe('the vimes run');
-      expect(directoryAt(namedLedger, PROJECT_KEY_DAOTREE)!.sessions[0]!.label).toBe('daotree');
+      // The session the join did NOT name still refuses its parent's label.
+      expect(directoryAt(namedLedger, PROJECT_KEY_DAOTREE)!.sessions[0]!.label).not.toBe('daotree');
+      // ⚠ ASSERTION 12 — `name ?? derivedTitle` reaches the tree through this
+      // reader, and the ORDER is Q3's whole point: the auto-titler never wrote
+      // `name`, so a human rename cannot be overwritten by anything.
+      const titles = sessionTitlesByCostSessionId({
+        sessions: {
+          'app-human-named': {
+            appSessionId: 'app-human-named',
+            claudeSessionIds: [{ id: 'claude-human', jsonlPath: '/a.jsonl', observedAt: DAY_ONE }],
+            name: 'what Wes calls it',
+            derivedTitle: 'what the system derived',
+          },
+          'app-derived-only': {
+            appSessionId: 'app-derived-only',
+            claudeSessionIds: [{ id: 'claude-derived', jsonlPath: '/b.jsonl', observedAt: DAY_ONE }],
+            name: null,
+            derivedTitle: 'Look at the development plan',
+          },
+          'app-neither': {
+            appSessionId: 'app-neither',
+            claudeSessionIds: [{ id: 'claude-neither', jsonlPath: '/c.jsonl', observedAt: DAY_ONE }],
+            name: null,
+          },
+          'app-blank': {
+            appSessionId: 'app-blank',
+            claudeSessionIds: [],
+            name: '   ',
+            derivedTitle: '  ',
+          },
+        },
+      } as unknown as Parameters<typeof sessionTitlesByCostSessionId>[0]);
+      // A human name wins over a derived title, on BOTH id spaces.
+      expect(titles['app-human-named']).toBe('what Wes calls it');
+      expect(titles['claude-human']).toBe('what Wes calls it');
+      // A derived title is used when there is no human name.
+      expect(titles['app-derived-only']).toBe('Look at the development plan');
+      expect(titles['claude-derived']).toBe('Look at the development plan');
+      // Neither, and blank-only, are DROPPED — the ladder must fall through to
+      // the distinguishing fallback rather than render an empty leaf.
+      expect(Object.hasOwn(titles, 'app-neither')).toBe(false);
+      expect(Object.hasOwn(titles, 'claude-neither')).toBe(false);
+      expect(Object.hasOwn(titles, 'app-blank')).toBe(false);
+
+      // And it arrives at the tree: a derived title alone lights the top rung.
+      const derivedBody = currentCostLedger({
+        costLedgerStore: store,
+        projectRoots: PROJECT_ROOTS,
+        readSessions: () => ({
+          sessions: {
+            'app-session-1': {
+              appSessionId: 'app-session-1',
+              claudeSessionIds: [{ id: SESSION_VIMES, jsonlPath: '/fake.jsonl', observedAt: DAY_ONE }],
+              name: null,
+              derivedTitle: 'derived, not renamed',
+            },
+          },
+        } as unknown as Parameters<typeof sessionTitlesByCostSessionId>[0]),
+      });
+      expect(directoryAt(derivedBody.ledger!, PROJECT_KEY_VIMES)!.sessions[0]!.label).toBe(
+        'derived, not renamed',
+      );
+      expect(directoryAt(derivedBody.ledger!, PROJECT_KEY_VIMES)!.sessions[0]!.title).toBe(
+        'derived, not renamed',
+      );
+
       // The join changes labels only — never a figure.
       expect(namedLedger.grandTotal.priced.nanoDollars).toBe(EXPECTED_GRAND_DEDUPED_NANO);
     } finally {

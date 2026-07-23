@@ -35,6 +35,20 @@ export {
   type SnapshotStore,
 } from './projections/projection.js';
 export { sessionsProjection, type SessionsState } from './projections/sessions.js';
+// Q3: what a session is CALLED — the auto-title derivation and THE identity
+// ladder. One module, so no consumer grows a second opinion (principle 9).
+export {
+  deriveSessionTitle,
+  extractMessageText,
+  formatSessionFallbackLabel,
+  formatSessionTimestamp,
+  resolveSessionLabel,
+  HARNESS_WRAPPER_TITLE_PREFIXES,
+  SESSION_TITLE_MAX_LENGTH,
+  SHORT_SESSION_ID_LENGTH,
+  UNKNOWN_SESSION_LABEL,
+  type SessionLabelInputs,
+} from './sessionIdentity.js';
 export {
   metersProjection,
   meterSample,
