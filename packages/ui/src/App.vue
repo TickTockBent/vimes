@@ -12,6 +12,7 @@ import TaskBoardView from './views/TaskBoardView.vue';
 import { useVimesStore } from './stores/vimesStore.js';
 import { decideEditorReturn } from './lib/gitReview.js';
 import { parentDir } from './lib/treeNode.js';
+import { buildHash, parseRoute, type Route } from './lib/route.js';
 
 const store = useVimesStore();
 const hash = ref(window.location.hash);
@@ -28,111 +29,79 @@ onUnmounted(() => {
   window.removeEventListener('hashchange', onHashChange);
 });
 
-// Parse the hash into a path + query params. Format: `#/files?path=/a/b&line=3`.
-interface ParsedRoute {
-  routePath: string;
-  params: URLSearchParams;
-}
-const route = computed<ParsedRoute>(() => {
-  const raw = hash.value.startsWith('#') ? hash.value.slice(1) : hash.value;
-  const questionIndex = raw.indexOf('?');
-  const routePath = questionIndex >= 0 ? raw.slice(0, questionIndex) : raw;
-  const params = new URLSearchParams(questionIndex >= 0 ? raw.slice(questionIndex + 1) : '');
-  return { routePath, params };
-});
+// ⚠ THE ROUTE MODEL LIVES IN lib/route.ts, INCLUDING ITS PRECEDENCE. This file
+// owns the I/O — reading `window.location.hash`, listening for `hashchange`,
+// writing the hash back — and nothing else about routing. What used to be a
+// hand-rolled parse plus eight independent `show*` booleans plus a v-if chain
+// whose ORDER was the only record of precedence is now one resolved route, and
+// route.ts has the tests App.vue never could (route.test.ts).
+//
+// So: do not add a `routePath === '/x'` check here. A new route is a rule in
+// route.ts's ROUTE_RULES, in its right precedence position, with a table row.
+const activeRoute = computed<Route>(() => parseRoute(hash.value));
 
-const activeSessionId = computed<string | null>(() => {
-  const match = /^\/session\/(.+)$/.exec(route.value.routePath);
-  return match?.[1] ? decodeURIComponent(match[1]) : null;
-});
-
-// `#/files` with a `path` param is the editor; without it, the tree.
-const editorTarget = computed<{ path: string; line?: number } | null>(() => {
-  if (route.value.routePath !== '/files') {
-    return null;
-  }
-  const path = route.value.params.get('path');
-  if (path === null) {
-    return null;
-  }
-  const lineRaw = route.value.params.get('line');
-  const line = lineRaw !== null ? Number(lineRaw) : undefined;
-  return { path, line: line !== undefined && Number.isFinite(line) ? line : undefined };
-});
+// Narrowing projections of the ONE route — only one can ever be non-null,
+// because `parseRoute` returns a single discriminated value. The template's
+// chain is driven by these rather than by independent booleans, so the branches
+// cannot disagree about which view is showing.
+const editorRoute = computed(() => (activeRoute.value.view === 'editor' ? activeRoute.value : null));
+const fileTreeRoute = computed(() =>
+  activeRoute.value.view === 'fileTree' ? activeRoute.value : null,
+);
+const streamRoute = computed(() => (activeRoute.value.view === 'stream' ? activeRoute.value : null));
+// `/#/meters` — the deep-link target of the deployed threshold-notification push
+// (slice 5 step 4b). Same view as home, but the meters strip arrives EXPANDED,
+// because a user who tapped a usage alert wants every meter with its countdown,
+// age, freshness, burn rate and exhaustion projection — not a one-line summary
+// they must then find and tap. This is why a Route names props and not just a
+// view: two hashes, one component, different prop.
+const metersExpanded = computed(
+  () => activeRoute.value.view === 'sessionList' && activeRoute.value.expandMeters,
+);
 
 // Where EditorView's `back` lands. A WHITELIST (only 'git' is understood today —
 // see decideEditorReturn, unit-tested): anything absent or unrecognized falls
 // back to the file tree, which is exactly the pre-existing behavior. This is
-// deliberately not a general redirect mechanism.
-const editorReturnTarget = computed(() => decideEditorReturn(route.value.params.get('returnTo')));
-
-const showFileTree = computed(() => route.value.routePath === '/files' && editorTarget.value === null);
-// The directory `#/files?dir=…` asked for (set when returning from the editor).
-// Absent → the tree opens at its first root, exactly as before.
-const fileTreeInitialDir = computed(() => route.value.params.get('dir'));
-const showSearch = computed(() => route.value.routePath === '/search');
-const showTerminal = computed(() => route.value.routePath === '/terminal');
-const showGit = computed(() => route.value.routePath === '/git');
-// `#/cost` — the cost-ledger view (slice 5b step 4b). Statically imported like
-// the other views; it pulls in no heavy dep, so it adds no lazy chunk.
-const showCost = computed(() => route.value.routePath === '/cost');
-// `#/tasks` — the task board (slice 6 step 9). Statically imported like the
-// other views; it pulls in no heavy dep, so it adds no lazy chunk.
-//
-// ⚠ THIS ROUTE RENDERS THE MOBILE BOARD. A desktop layout is a separate unit and
-// will need its own decision about how the two share (or do not share) a route —
-// they are different presentations, not one responsive compromise.
-const showTasks = computed(() => route.value.routePath === '/tasks');
-// `/#/meters` — the deep-link target of the deployed threshold-notification push
-// (slice 5 step 4b). It used to fall through to SessionListView by ACCIDENT,
-// which was correct only because the meters strip happens to live there. Claim
-// it deliberately: same view, but the strip arrives EXPANDED, because a user who
-// tapped a usage alert wants every meter with its countdown, age, freshness,
-// burn rate and exhaustion projection — not a one-line summary they must then
-// find and tap. Deliberately NOT a separate lazily-loaded view: SessionListView
-// is already statically imported, so this adds no chunk and cannot disturb the
-// build-manifest lazy-chunk gate.
-const showMeters = computed(() => route.value.routePath === '/meters');
+// deliberately not a general redirect mechanism, and it deliberately does NOT
+// live in route.ts — route.ts carries the raw `returnTo` param and has no opinion
+// about it.
+const editorReturnTarget = computed(() =>
+  decideEditorReturn(editorRoute.value === null ? null : editorRoute.value.returnToParam),
+);
 
 function navigateToSession(appSessionId: string): void {
-  window.location.hash = `#/session/${encodeURIComponent(appSessionId)}`;
+  window.location.hash = buildHash({ view: 'stream', appSessionId });
 }
 function navigateHome(): void {
-  window.location.hash = '';
+  window.location.hash = buildHash({ view: 'sessionList', expandMeters: false });
 }
 // `#/files` opens the tree. An optional `dir` param says WHICH directory to open;
 // without it the tree falls back to the first root (the pre-existing behavior).
 function navigateToFiles(dir?: string | null): void {
-  if (dir !== undefined && dir !== null && dir.length > 0) {
-    window.location.hash = `#/files?dir=${encodeURIComponent(dir)}`;
-    return;
-  }
-  window.location.hash = '#/files';
+  window.location.hash = buildHash({ view: 'fileTree', initialDir: dir ?? null });
 }
 function navigateToSearch(): void {
-  window.location.hash = '#/search';
+  window.location.hash = buildHash({ view: 'search' });
 }
 function navigateToTerminal(): void {
-  window.location.hash = '#/terminal';
+  window.location.hash = buildHash({ view: 'terminal' });
 }
 function navigateToGit(): void {
-  window.location.hash = '#/git';
+  window.location.hash = buildHash({ view: 'git' });
 }
 function navigateToCost(): void {
-  window.location.hash = '#/cost';
+  window.location.hash = buildHash({ view: 'cost' });
 }
 function navigateToTasks(): void {
-  window.location.hash = '#/tasks';
+  window.location.hash = buildHash({ view: 'tasks' });
 }
 function navigateToEditor(path: string, line?: number, returnTo?: 'git'): void {
-  const params = new URLSearchParams({ path });
-  if (line !== undefined) {
-    params.set('line', String(line));
-  }
-  if (returnTo !== undefined) {
-    params.set('returnTo', returnTo);
-  }
-  window.location.hash = `#/files?${params.toString()}`;
+  window.location.hash = buildHash({
+    view: 'editor',
+    path,
+    line,
+    returnToParam: returnTo ?? null,
+  });
 }
 // The editor's back button: the git panel only when the route said so (and the
 // panel then restores + refreshes the diff), otherwise the file tree — reopened
@@ -143,7 +112,7 @@ function leaveEditor(): void {
     navigateToGit();
     return;
   }
-  const editedPath = editorTarget.value?.path ?? null;
+  const editedPath = editorRoute.value?.path ?? null;
   navigateToFiles(editedPath === null ? null : parentDir(editedPath));
 }
 
@@ -174,37 +143,41 @@ const bannerText = computed(() => {
       </button>
     </div>
 
+    <!-- ⚠ This chain no longer DECIDES anything: `parseRoute` already picked the
+         view, and exactly one branch below can match. Precedence lives in
+         route.ts's ROUTE_RULES, where route.test.ts pins it — reordering these
+         elements can no longer change which view a hash renders. -->
     <EditorView
-      v-if="editorTarget"
-      :key="editorTarget.path"
-      :path="editorTarget.path"
-      :line="editorTarget.line"
+      v-if="editorRoute"
+      :key="editorRoute.path"
+      :path="editorRoute.path"
+      :line="editorRoute.line"
       @back="leaveEditor"
     />
     <FileTreeView
-      v-else-if="showFileTree"
-      :initial-dir="fileTreeInitialDir"
+      v-else-if="fileTreeRoute"
+      :initial-dir="fileTreeRoute.initialDir"
       @open="(path) => navigateToEditor(path)"
       @search="navigateToSearch"
       @back="navigateHome"
     />
     <SearchPanel
-      v-else-if="showSearch"
+      v-else-if="activeRoute.view === 'search'"
       @open="(payload) => navigateToEditor(payload.path, payload.line)"
       @back="navigateHome"
     />
-    <TerminalView v-else-if="showTerminal" @back="navigateHome" />
+    <TerminalView v-else-if="activeRoute.view === 'terminal'" @back="navigateHome" />
     <GitPanel
-      v-else-if="showGit"
+      v-else-if="activeRoute.view === 'git'"
       @open-editor="(path) => navigateToEditor(path, undefined, 'git')"
       @back="navigateHome"
     />
-    <CostLedgerView v-else-if="showCost" @back="navigateHome" />
-    <TaskBoardView v-else-if="showTasks" @back="navigateHome" />
-    <StreamView v-else-if="activeSessionId" :app-session-id="activeSessionId" @back="navigateHome" />
+    <CostLedgerView v-else-if="activeRoute.view === 'cost'" @back="navigateHome" />
+    <TaskBoardView v-else-if="activeRoute.view === 'tasks'" @back="navigateHome" />
+    <StreamView v-else-if="streamRoute" :app-session-id="streamRoute.appSessionId" @back="navigateHome" />
     <SessionListView
       v-else
-      :expand-meters="showMeters"
+      :expand-meters="metersExpanded"
       @open="navigateToSession"
       @open-files="navigateToFiles"
       @open-search="navigateToSearch"
