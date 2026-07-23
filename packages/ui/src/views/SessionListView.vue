@@ -402,7 +402,7 @@ onUnmounted(() => {
   <div class="mx-auto flex max-w-lg flex-col gap-4 p-4">
     <div class="flex items-center justify-between gap-2">
       <h1 class="text-lg font-semibold">Sessions</h1>
-      <div class="flex items-center gap-2">
+      <div class="flex flex-wrap items-center gap-x-2 gap-y-2">
         <button
           type="button"
           class="flex min-h-[44px] items-center gap-1 rounded-md border px-3 text-sm font-medium disabled:opacity-50"
