@@ -159,7 +159,7 @@ export interface SessionView {
 
 export interface ProjectView {
   readonly projectKey: string;
-  // FALSE only for the single outside-VIMES_PROJECT_ROOTS bucket (rule 7).
+  // FALSE only for the single outside-VIMES_PROJECT_ROOTS bucket (rule 9).
   readonly insideProjectRoots: boolean;
   readonly own: RollupView;
   readonly subtree: RollupView;

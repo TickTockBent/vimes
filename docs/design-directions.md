@@ -239,3 +239,28 @@ there is no partial-parse-while-streaming problem to solve.
 
 Natural slot: alongside or just before step 9 (the kanban board), which is the
 next UI work either way.
+
+**Widened 2026-07-23 (Wes): clickable file paths ride along.** A path an agent
+mentions becomes a link opening the VIMES editor in a new tab, at the right line.
+Folded into the same unit rather than taken separately, because the parser must
+exist first and a second agent would only re-read the same file.
+
+It is a small lift because three pieces already exist and none is rebuilt:
+`App.vue:49` already routes `#/files?path=…&line=…` to the editor and
+`EditorView.vue:77` already calls `goToLine`; `fileApi.ts` already answers **403
+with zero product bytes** for anything outside `VIMES_PROJECT_ROOTS`, so the
+allowlist stays a daemon fact the UI neither repeats nor can widen (principle 9);
+and the session `cwd` needed to resolve a relative path is already on the session
+record.
+
+**Detection is CODE-SPAN ONLY, never prose** — free-text path detection is a
+false-positive swamp (`and/or`, `application/json`) and agents wrap paths in
+backticks anyway. A span qualifies only with a leading `/`, `./`, `../`, `~/` or
+a recognised source extension; everything else stays an ordinary code node. The
+fail-safe direction is "render as code": a missed link costs a click, a wrong one
+is a confusing dead end. `file:line` is parsed because it is the convention agents
+already use.
+
+**No existence check in v1** — verifying would make a deliberately pure,
+deterministic module async. A path the agent invented opens the editor and
+reports not-found, which is honest. Revisit only if dead links prove common.

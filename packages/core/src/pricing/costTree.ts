@@ -44,11 +44,11 @@ export interface CostTreeInputRow {
   readonly toolUseResultAgentId: string | null;
 
   readonly projectSlug: string;
-  // The record's own cwd. Slugs are NOT projects (rule 7); classification runs
+  // The record's own cwd. Slugs are NOT projects (rule 9); classification runs
   // against cwd + insideProjectRoots, never the slug directory name.
   readonly projectCwd: string | null;
   // FALSE = the outside-`VIMES_PROJECT_ROOTS` bucket. Retained + labelled, never
-  // dropped (rule 7).
+  // dropped (rule 9).
   readonly insideProjectRoots: boolean;
 
   readonly attributionAgent: string | null;
@@ -157,7 +157,7 @@ export interface BuildCostTreeOptions {
   readonly parentEdges?: readonly ExplicitAgentParentEdge[];
 }
 
-// The single explicit bucket for rows outside VIMES_PROJECT_ROOTS (rule 7).
+// The single explicit bucket for rows outside VIMES_PROJECT_ROOTS (rule 9).
 export const OUTSIDE_ROOTS_PROJECT_KEY = '<outside-project-roots>';
 // The bucket for a row whose sessionId is absent (never seen in the live corpus;
 // handled rather than assumed away).
@@ -349,7 +349,7 @@ function mergeParentEdges(
   return parentByChildNodeKey;
 }
 
-// ── Deliverable 2: project classification (rule 7) ───────────────────────────
+// ── Deliverable 2: project classification (rule 9) ───────────────────────────
 function isPathWithinRoot(candidatePath: string, root: string): boolean {
   const rootWithBoundary = root.endsWith(PATH_SEPARATOR) ? root : root + PATH_SEPARATOR;
   return candidatePath === root || candidatePath.startsWith(rootWithBoundary);
@@ -357,7 +357,7 @@ function isPathWithinRoot(candidatePath: string, root: string): boolean {
 
 // The project a row belongs to: the OUTSIDE bucket when not inside roots, else the
 // immediate child directory of the longest matched project-parent root, else (no
-// root matched / none configured) the honest full cwd. Never a slug (rule 7).
+// root matched / none configured) the honest full cwd. Never a slug (rule 9).
 export function resolveProjectKey(
   row: CostTreeInputRow,
   projectRoots: readonly string[],
