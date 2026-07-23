@@ -1198,3 +1198,37 @@ here, not weakened: the window is single-panel on a phone precisely so those URL
 stay pretty. D40 only answers the new question phase 2 never faced ("what does the
 hash show when the stack is deeper than the viewport"), and answers it in the
 direction phase 2's readability goal already pointed.
+
+## D41 — A panel's "back" is TRUNCATE-FORWARD; the affordance reads "back" on phone, "close ×" on a desktop panel
+
+*2026-07-23. Settles the open question captured in `design-directions.md` → "Panel
+back/close semantics", which the shell POC surfaced (Wes clicked back on a middle
+panel and the tail closed). Wes's call: option #1 + the #3 affordance.*
+
+**Behaviour — truncate-forward.** Back on panel *i* closes panel *i* and
+everything opened after it (its downstream children):
+`closePanelAt(stack, i) = stack.slice(0, max(1, i))` — never empties (floors at the
+session-list root, D40). This mirrors how OPENING already works (`openPanelFrom`
+discards everything forward of the acting panel), so the stack stays a linear
+drill-path and an editor opened FROM a file closes WITH the file rather than being
+orphaned. On the tail, `closePanelAt` equals `popPanel`, so the **phone path is
+unchanged** — on a phone only the tail is visible, and back there still walks up
+one panel at a time.
+
+*Rejected:* splice/close-one (keep the downstream panel, re-parent it) — it
+disagrees with `openPanelFrom` and muddies the drill model; and global
+"back = pop tail" — the bug proved users read the button as belonging to the panel
+it is on.
+
+**Affordance — layout-aware label, same action.** The action is `closePanelAt`
+everywhere; only the label/icon differs by context: a **phone** panel's button
+reads/behaves as "← back" (pop the one visible panel = go up), while a **desktop**
+content panel's button reads "close ✕" (close this specific panel + its children).
+Implemented by threading a `backKind: 'back' | 'close'` context to each view's
+existing back button (App knows the layout: desktop content panel → 'close', else
+'back') — NOT by moving the affordance out of the views, which would be a larger
+refactor deferred for now.
+
+**Scope note.** This is the panel-lifecycle affordance living in each view's back
+button for now. A future clean-up could move panel chrome (close/back) into the
+shell (`PanelHost`) so views stop owning it — noted, not scheduled.

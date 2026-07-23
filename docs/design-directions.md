@@ -700,7 +700,12 @@ schema is validated against a non-VIMES project.
 
 ---
 
-## Panel "back" / close semantics — what should a per-panel back button DO? (open, POC surfaced it)
+## Panel "back" / close semantics — what should a per-panel back button DO? ✅ DECIDED → D41
+
+*✅ 2026-07-23: Wes chose **truncate-forward** (#1) + the **"close ×" on desktop
+panels** affordance (#3). Recorded as D41 in `decisions.md`; the options and
+reasoning below are kept for the record.*
+
 
 *(Wes, 2026-07-23, testing the shell: clicked back on the FILES panel of
 `[list, files, editor]` and the EDITOR closed, not files. His framing: "this is
