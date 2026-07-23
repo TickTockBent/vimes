@@ -1,20 +1,20 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import { useVimesStore } from '../stores/vimesStore.js';
 import {
   attributionRows,
+  defaultExpandedKeys,
+  directorySelectOptions,
   formatMoney,
   hasUnknownTokens,
   ledgerState,
+  ledgerTreeRows,
   seriesForSelection,
   spendAxisMax,
   spendBars,
   unknownTokenBadges,
   unvalidatedNote,
-  type AgentView,
-  type ProjectView,
   type RollupView,
-  type SessionView,
 } from '../lib/costDisplay.js';
 
 // This view is statically imported by App.vue (like SessionListView), and it
@@ -39,20 +39,28 @@ const body = computed(() => store.costLedger);
 const state = computed(() => ledgerState(body.value));
 const ledger = computed(() => body.value?.ledger ?? null);
 
-// ── Tree expand/collapse ────────────────────────────────────────────────────
-// One reactive set of expanded node keys; every node starts collapsed. Keys are
-// namespaced by level so a session id can never collide with a project key.
+// ── Tree expand/collapse (D37: a DIRECTORY rollup) ──────────────────────────
+// One reactive set of expanded node keys, namespaced by kind in costDisplay so a
+// session id can never collide with a directory path. The tree opens to a useful
+// depth (root → category → repo) and is collapsed below it: this view is driven
+// from a phone, where a fully expanded deep tree is unusable.
+//
+// `userHasTouchedTree` keeps a manual collapse from being undone by the next
+// refresh: once the operator has expressed an opinion, the default stops applying.
 const expandedKeys = ref<Set<string>>(new Set());
-function projectKeyOf(project: ProjectView): string {
-  return `project:${project.projectKey}`;
-}
-function sessionKeyOf(project: ProjectView, session: SessionView): string {
-  return `session:${project.projectKey}::${session.sessionId}`;
-}
-function isExpanded(nodeKey: string): boolean {
-  return expandedKeys.value.has(nodeKey);
-}
+const userHasTouchedTree = ref(false);
+watch(
+  () => ledger.value?.directories,
+  (directories) => {
+    if (!userHasTouchedTree.value) {
+      expandedKeys.value = new Set(defaultExpandedKeys(directories));
+    }
+  },
+  { immediate: true },
+);
+
 function toggle(nodeKey: string): void {
+  userHasTouchedTree.value = true;
   const next = new Set(expandedKeys.value);
   if (next.has(nodeKey)) {
     next.delete(nodeKey);
@@ -62,47 +70,29 @@ function toggle(nodeKey: string): void {
   expandedKeys.value = next;
 }
 
-// Flatten an agent subtree into rows carrying their depth, in pre-order. This
-// renders WHATEVER tree arrives: today every agent sits at the session root
-// (depth 0, the flat reality), and it will indent automatically once the parent
-// edge is persisted — no view change needed.
-interface FlatAgentRow {
-  agent: AgentView;
-  depth: number;
-}
-function flattenAgents(agents: readonly AgentView[], depth = 0): FlatAgentRow[] {
-  const rows: FlatAgentRow[] = [];
-  for (const agent of agents) {
-    rows.push({ agent, depth });
-    if (agent.children.length > 0) {
-      rows.push(...flattenAgents(agent.children, depth + 1));
-    }
-  }
-  return rows;
-}
+// The flat row list the template renders — directories, their own sessions, and
+// (for an expanded session) its agents, each carrying its indent depth. All the
+// nesting logic lives in costDisplay.ts, where it is unit-tested.
+const treeRows = computed(() => ledgerTreeRows(ledger.value?.directories, expandedKeys.value));
 
-// True when any agent anywhere has a resolved parent — i.e. the tree is NOT flat
-// anymore. Drives whether we show the "currently flat" honesty note.
+// True when no agent anywhere has a resolved parent — i.e. the agent tree is
+// still flat. Drives the honesty note; it disappears on its own once nesting is real.
 const treeIsFlat = computed(() => {
-  const projects = ledger.value?.projects ?? [];
-  for (const project of projects) {
-    for (const session of project.sessions) {
-      for (const row of flattenAgents(session.agents)) {
-        if (row.agent.parentResolved || row.depth > 0) {
-          return false;
-        }
-      }
+  for (const row of treeRows.value) {
+    if (row.kind === 'agent' && (row.agent.parentResolved || row.depth > 0)) {
+      return false;
     }
   }
   return true;
 });
 
 // ── Spend history ───────────────────────────────────────────────────────────
-// null selection = the grand (all-projects) series. A project can be selected to
-// swap the series to its own (seriesForSelection guards a non-matching key).
-const selectedProjectKey = ref<string | null>(null);
-const projectKeysForSelect = computed(() => (ledger.value?.projects ?? []).map((project) => project.projectKey));
-const bars = computed(() => spendBars(seriesForSelection(ledger.value?.spendHistory, selectedProjectKey.value)));
+// null selection = the grand (everything) series. Any directory node can be
+// selected to swap the series to that node's subtree (seriesForSelection guards
+// a non-matching key and never falls back to grand).
+const selectedDirectoryPath = ref<string | null>(null);
+const directoryOptions = computed(() => directorySelectOptions(ledger.value?.directories));
+const bars = computed(() => spendBars(seriesForSelection(ledger.value?.spendHistory, selectedDirectoryPath.value)));
 // The y-axis top tick: same series, same `nanoDollars` field `heightPercent`
 // was derived from — so the axis label and the bar heights cannot disagree.
 // null for an empty/all-zero series (spendAxisMax refuses to fabricate one).
@@ -209,14 +199,15 @@ function hasUnknownFor(rollup: RollupView) {
       <section class="flex flex-col gap-3 rounded-lg border border-slate-200 p-4 dark:border-slate-800">
         <div class="flex items-center justify-between gap-2">
           <h2 class="text-sm font-semibold">Spend over time</h2>
+          <!-- The SAME nodes the tree shows, so any rollup level can be charted. -->
           <select
-            v-model="selectedProjectKey"
+            v-model="selectedDirectoryPath"
             class="min-h-[36px] max-w-[55%] truncate rounded-md border border-slate-300 px-2 text-xs dark:border-slate-700 dark:bg-slate-900"
-            aria-label="Spend history project"
+            aria-label="Spend history directory"
           >
-            <option :value="null">All projects</option>
-            <option v-for="projectKey in projectKeysForSelect" :key="projectKey" :value="projectKey">
-              {{ projectKey }}
+            <option :value="null">Everything</option>
+            <option v-for="option in directoryOptions" :key="option.directoryPath" :value="option.directoryPath">
+              {{ option.label }}
             </option>
           </select>
         </div>
@@ -256,9 +247,11 @@ function hasUnknownFor(rollup: RollupView) {
         </template>
       </section>
 
-      <!-- Project → session → agent tree. -->
+      <!-- D37: directory rollup → session → agent tree. Every row is a real
+           directory a session ran in (or an ancestor of one) — no project
+           boundary is inferred anywhere. -->
       <section class="flex flex-col gap-2 rounded-lg border border-slate-200 p-4 dark:border-slate-800">
-        <h2 class="text-sm font-semibold">Projects</h2>
+        <h2 class="text-sm font-semibold">Where it went</h2>
         <!-- The honest flat-tree note: agents currently all sit at the session
              root because the parent edge is not persisted yet. It disappears on
              its own once agents start resolving parents. -->
@@ -267,89 +260,116 @@ function hasUnknownFor(rollup: RollupView) {
           will fill in automatically once that lands.
         </p>
 
-        <ul class="flex flex-col gap-1">
-          <li v-for="project in ledger.projects" :key="projectKeyOf(project)" class="rounded-md border border-slate-100 dark:border-slate-800/70">
-            <button
-              type="button"
-              class="flex min-h-[44px] w-full items-center justify-between gap-2 px-3 py-2 text-left"
-              :aria-expanded="isExpanded(projectKeyOf(project))"
-              @click="toggle(projectKeyOf(project))"
+        <!-- One flat list, indented by row depth. The nesting decisions live in
+             costDisplay.ts (ledgerTreeRows), where they are unit-tested. -->
+        <ul class="flex flex-col">
+          <li v-if="treeRows.length === 0" class="px-2 py-1 text-xs text-slate-400">No directories recorded.</li>
+          <li v-for="row in treeRows" :key="row.key" class="border-b border-slate-100 last:border-b-0 dark:border-slate-800/70">
+            <!-- A directory node: its subtree total, and the un-knowns beneath it. -->
+            <template v-if="row.kind === 'directory'">
+              <button
+                type="button"
+                class="flex min-h-[44px] w-full items-center justify-between gap-2 py-2 pr-2 text-left"
+                :style="{ paddingLeft: `${0.25 + row.depth * 0.85}rem` }"
+                :aria-expanded="row.expanded"
+                :disabled="!row.expandable"
+                @click="toggle(row.key)"
+              >
+                <span class="flex min-w-0 items-center gap-1.5">
+                  <span class="w-3 shrink-0 text-slate-400" aria-hidden="true">
+                    {{ row.expandable ? (row.expanded ? '▾' : '▸') : '' }}
+                  </span>
+                  <span class="truncate text-sm font-medium">{{ row.directory.label }}</span>
+                  <span
+                    v-if="!row.directory.insideProjectRoots"
+                    class="shrink-0 rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-600 dark:bg-slate-800 dark:text-slate-300"
+                  >
+                    outside roots
+                  </span>
+                </span>
+                <span class="shrink-0 text-sm font-semibold tabular-nums">
+                  {{ formatMoney(row.directory.subtree.priced.nanoDollars) }}
+                </span>
+              </button>
+              <div
+                v-if="hasUnknownFor(row.directory.subtree)"
+                class="flex flex-wrap gap-1 pb-1.5"
+                :style="{ paddingLeft: `${1.25 + row.depth * 0.85}rem` }"
+              >
+                <span
+                  v-for="badge in badgesFor(row.directory.subtree)"
+                  :key="badge.status"
+                  class="rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-600 dark:bg-slate-800 dark:text-slate-300"
+                >
+                  +{{ badge.tokensLabel }} {{ badge.label }}
+                </span>
+              </div>
+            </template>
+
+            <!-- A session launched in that exact directory. `label` is core's
+                 identity ladder (name → cwd basename → short id): never blank. -->
+            <template v-else-if="row.kind === 'session'">
+              <button
+                type="button"
+                class="flex min-h-[40px] w-full items-center justify-between gap-2 py-1.5 pr-2 text-left"
+                :style="{ paddingLeft: `${0.25 + row.depth * 0.85}rem` }"
+                :aria-expanded="row.expanded"
+                :disabled="!row.expandable"
+                @click="toggle(row.key)"
+              >
+                <span class="flex min-w-0 items-center gap-1.5">
+                  <span class="w-3 shrink-0 text-slate-400" aria-hidden="true">
+                    {{ row.expandable ? (row.expanded ? '▾' : '▸') : '' }}
+                  </span>
+                  <span class="truncate text-xs text-slate-600 dark:text-slate-300">{{ row.session.label }}</span>
+                  <span
+                    v-if="row.session.name === null"
+                    class="shrink-0 font-mono text-[10px] text-slate-400 dark:text-slate-500"
+                    :title="row.session.sessionId"
+                  >
+                    session
+                  </span>
+                </span>
+                <span class="shrink-0 text-xs font-semibold tabular-nums">
+                  {{ formatMoney(row.session.subtree.priced.nanoDollars) }}
+                </span>
+              </button>
+              <div
+                v-if="hasUnknownFor(row.session.subtree)"
+                class="flex flex-wrap gap-1 pb-1"
+                :style="{ paddingLeft: `${1.25 + row.depth * 0.85}rem` }"
+              >
+                <span
+                  v-for="badge in badgesFor(row.session.subtree)"
+                  :key="badge.status"
+                  class="rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-600 dark:bg-slate-800 dark:text-slate-300"
+                >
+                  +{{ badge.tokensLabel }} {{ badge.label }}
+                </span>
+              </div>
+            </template>
+
+            <!-- An agent under an expanded session. -->
+            <div
+              v-else
+              class="flex items-center justify-between gap-2 py-1 pr-2 text-xs"
+              :style="{ paddingLeft: `${1 + row.depth * 0.85}rem` }"
             >
               <span class="flex min-w-0 items-center gap-1.5">
-                <span class="shrink-0 text-slate-400" aria-hidden="true">{{ isExpanded(projectKeyOf(project)) ? '▾' : '▸' }}</span>
-                <span class="truncate text-sm font-medium">{{ project.projectKey }}</span>
+                <span class="truncate font-mono text-slate-500 dark:text-slate-400">{{ row.agent.agentId }}</span>
                 <span
-                  v-if="!project.insideProjectRoots"
-                  class="shrink-0 rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-600 dark:bg-slate-800 dark:text-slate-300"
+                  class="shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-semibold"
+                  :class="
+                    row.agent.parentResolved
+                      ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/50 dark:text-emerald-200'
+                      : 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400'
+                  "
                 >
-                  outside roots
+                  {{ row.agent.parentResolved ? 'attributed' : 'session-root' }}
                 </span>
               </span>
-              <span class="shrink-0 text-sm font-semibold tabular-nums">{{ formatMoney(project.subtree.priced.nanoDollars) }}</span>
-            </button>
-            <div v-if="hasUnknownFor(project.subtree)" class="flex flex-wrap gap-1 px-3 pb-1.5">
-              <span
-                v-for="badge in badgesFor(project.subtree)"
-                :key="badge.status"
-                class="rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-600 dark:bg-slate-800 dark:text-slate-300"
-              >
-                +{{ badge.tokensLabel }} {{ badge.label }}
-              </span>
+              <span class="shrink-0 tabular-nums">{{ formatMoney(row.agent.subtree.priced.nanoDollars) }}</span>
             </div>
-
-            <!-- Sessions -->
-            <ul v-if="isExpanded(projectKeyOf(project))" class="flex flex-col gap-0.5 border-t border-slate-100 px-2 py-1 dark:border-slate-800/70">
-              <li v-if="project.sessions.length === 0" class="px-2 py-1 text-xs text-slate-400">No sessions.</li>
-              <li v-for="session in project.sessions" :key="sessionKeyOf(project, session)">
-                <button
-                  type="button"
-                  class="flex min-h-[40px] w-full items-center justify-between gap-2 px-2 py-1.5 text-left"
-                  :aria-expanded="isExpanded(sessionKeyOf(project, session))"
-                  @click="toggle(sessionKeyOf(project, session))"
-                >
-                  <span class="flex min-w-0 items-center gap-1.5">
-                    <span class="shrink-0 text-slate-400" aria-hidden="true">{{ isExpanded(sessionKeyOf(project, session)) ? '▾' : '▸' }}</span>
-                    <span class="truncate font-mono text-xs text-slate-600 dark:text-slate-300">{{ session.sessionId }}</span>
-                  </span>
-                  <span class="shrink-0 text-xs font-semibold tabular-nums">{{ formatMoney(session.subtree.priced.nanoDollars) }}</span>
-                </button>
-                <div v-if="hasUnknownFor(session.subtree)" class="flex flex-wrap gap-1 px-2 pb-1 pl-6">
-                  <span
-                    v-for="badge in badgesFor(session.subtree)"
-                    :key="badge.status"
-                    class="rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-600 dark:bg-slate-800 dark:text-slate-300"
-                  >
-                    +{{ badge.tokensLabel }} {{ badge.label }}
-                  </span>
-                </div>
-
-                <!-- Agents (flattened; indents by depth once nesting is real) -->
-                <ul v-if="isExpanded(sessionKeyOf(project, session))" class="flex flex-col">
-                  <li v-if="session.agents.length === 0" class="px-2 py-1 pl-6 text-xs text-slate-400">No agents.</li>
-                  <li
-                    v-for="row in flattenAgents(session.agents)"
-                    :key="`${row.agent.sessionId}::${row.agent.agentId}`"
-                    class="flex items-center justify-between gap-2 py-1 text-xs"
-                    :style="{ paddingLeft: `${1.5 + row.depth * 0.75}rem`, paddingRight: '0.5rem' }"
-                  >
-                    <span class="flex min-w-0 items-center gap-1.5">
-                      <span class="truncate font-mono text-slate-500 dark:text-slate-400">{{ row.agent.agentId }}</span>
-                      <span
-                        class="shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-semibold"
-                        :class="
-                          row.agent.parentResolved
-                            ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/50 dark:text-emerald-200'
-                            : 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400'
-                        "
-                      >
-                        {{ row.agent.parentResolved ? 'attributed' : 'session-root' }}
-                      </span>
-                    </span>
-                    <span class="shrink-0 tabular-nums">{{ formatMoney(row.agent.subtree.priced.nanoDollars) }}</span>
-                  </li>
-                </ul>
-              </li>
-            </ul>
           </li>
         </ul>
       </section>

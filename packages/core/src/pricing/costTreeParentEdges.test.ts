@@ -74,8 +74,12 @@ function findAgentNode(tree: ReturnType<typeof buildCostTree>, agentId: string):
     }
     return undefined;
   };
-  for (const project of tree.projects) {
-    for (const session of project.sessions) {
+  // D37: walk the whole directory forest, not a flat project list.
+  const pendingDirectories = [...tree.directories];
+  while (pendingDirectories.length > 0) {
+    const directoryNode = pendingDirectories.pop()!;
+    pendingDirectories.push(...directoryNode.children);
+    for (const session of directoryNode.sessions) {
       const found = walk(session.agents);
       if (found !== undefined) {
         return found;
@@ -284,9 +288,16 @@ describe('end-to-end through the read model', () => {
       parentEdges,
     });
 
-    const allAgents = model.projects.flatMap((project) =>
-      project.sessions.flatMap((session) => session.agents),
-    );
+    // D37: collect the agents from every session of every directory node.
+    const allAgents: AgentView[] = [];
+    const pendingDirectories = [...model.directories];
+    while (pendingDirectories.length > 0) {
+      const directoryNode = pendingDirectories.pop()!;
+      pendingDirectories.push(...directoryNode.children);
+      for (const session of directoryNode.sessions) {
+        allAgents.push(...session.agents);
+      }
+    }
     const parentView = findAgentView(allAgents, 'P')!;
     const childView = findAgentView(allAgents, 'C')!;
     expect(parentView.children.map((child) => child.agentId)).toContain('C');
