@@ -71,3 +71,34 @@ that hides a regression.
 consumer of the same machinery, and a second consumer is what makes the real
 seams visible rather than guessed. Decompose then, against two known callers,
 with the harness green on both sides of the change.
+
+---
+
+## `sessionRefs` dedupes on `appSessionId` alone — one session, one recorded stage
+
+**Constraint. Surfaced 2026-07-22 by slice-6 step 7; currently harmless, written
+down because the next change could make it not.**
+
+`tasksProjection` folds `task_session_attached` idempotently **keyed on
+`appSessionId` only** — not on `(appSessionId, stage)`. Probed against the built
+`dist` with real events:
+
+- same session + same stage → one ref (a true no-op);
+- same session + a **different** stage → still **one ref, keeping the ORIGINAL
+  stage**.
+
+**Why it is lossless today:** the only resume `resolveStageRunner` can emit is an
+`implementing` session for an `implementing` stage (step 7), so every repeat
+attach is an exact duplicate of a ref already in state. The event is still
+appended — the log records what happened; idempotence is the projection's
+business, not the dispatcher's.
+
+**Why it is written down:** the moment a rule resumes a session *across* stages —
+a reviewer reused for a follow-up review, an author resumed to plan — the board
+will silently under-report which stages that session actually ran. The dispatcher
+must not paper over it with a synthetic session id; the fix, if it is ever needed,
+is a deliberate projection change (key on stage + session) with its own I6 pass.
+
+Related: the independence rule (step 7) means a *review* never resumes at all, so
+the pressure toward cross-stage resume comes from the fix/optimisation side —
+which is exactly the side that will argue for it on cost grounds.
