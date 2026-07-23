@@ -330,16 +330,48 @@ that breaks both levers re-triggers it, rule 0.6.)
      `watchdog_stale` records what we *would* have done — this step is now the
      calibration instrument that earns ⟨tune 3⟩ and the backoff curve. **Needs:
      the watchdog running against real stage runs, then Wes prices it.**
-6. **Course correction** — the verb the kill criterion protects. Per D5 this is a
-   `correction` verb + its event + the board affordance over the EXISTING
-   `sendMessage()` path, plus the *queued → delivered* rendering and the
-   watchdog's "queued correction is not staleness" rule.
-7. **Stage-runner verbs: review vs fix**, independence rule baked in.
-8. **Isolation + worktree management** — build to **D32: default `worktree`**,
-   per-task override honoured. NOTE the untested axis: measure worktree setup cost
-   (time, disk, git overhead) as it lands, and keep the override cheap in case the
-   cost surprises. No code carries an isolation default today (the schema enum is
-   reserved but unset), so this is the first place the default becomes real.
+6. ~~**Course correction**~~ ✅ **DONE 2026-07-22** (6a core/daemon, 6b UI). The
+   verb the kill criterion protects. `correction_queued` (we are the author) and
+   `correction_delivered` (we are the WITNESS — observed in the transcript, rule
+   0.7) are deliberately two facts; the gap between them is the point, since D5
+   measured 30.4 s against a 40 s tool with an unbounded worst case.
+   ⚠ **The discriminator was MEASURED, not inferred**, and the measurement
+   corrected S1's prose: `commandMode` is `prompt` ×72 / `task-notification` ×62
+   over 134 real attachments, so keying on the attachment TYPE alone would have
+   false-positived on ~46% — and a false correction event makes the watchdog
+   protect a run nobody is steering. `origin.kind==='human'` is evidence, never a
+   filter (25 `prompt` records lack it, the population our own injections
+   resemble). Closes D30's "a queued correction is not staleness", which 5a had
+   been honouring with nothing feeding it. The UI states elapsed time and the
+   mechanism, and **never an ETA** (pillar 4: an operator who believes delivery is
+   imminent waits instead of using the hard stop).
+7. ~~**Stage-runner verbs: review vs fix**~~ ✅ **DONE 2026-07-22.**
+   `resolveStageRunner` (pure) answers *who runs a stage*, deliberately NOT inside
+   `decideDispatch` — folding cache economics into the function carrying I10 would
+   stop I10 being assertable alone. **Review wants independence** (an agent
+   reviewing its own work shares its own misunderstanding) → always a fresh
+   session; **fixes want the hot author** → resume it, cache-warm. Resume is an
+   OPTIMISATION, independence is a CORRECTNESS RULE, and the rule wins where they
+   meet — guarded by enumeration over 7540 inputs with a control arm proving the
+   enumeration is non-vacuous.
+   ⚠ **The stage-instruction TEXT is deferred to Wes.** A stage run is currently
+   told nothing at all; `composeStageInstruction` is an injected seam defaulting to
+   sending nothing. Prompt content is product design, not an implementation detail.
+8. ~~**Isolation + worktree management**~~ ✅ **BUILT + WIRED 2026-07-22 —
+   SHIPPED OFF.** Closes the gap open since 4a (every task ran in `projectRoot`
+   regardless of `isolation`, so two tasks in one repo edited the same files).
+   ⏸ **`VIMES_WORKTREE_ISOLATION` defaults to `off`**; with it off behaviour is
+   byte-identical and 4a's pin test passes unedited. **Wes flips it** — isolation
+   changes where real work executes. An unrecognised value is refused at boot
+   rather than read as `off` (a silent false sense of safety beats no boot? no —
+   the reverse, hence the refusal). A failed worktree **never** falls back to
+   `projectRoot`; `worktree-failed` is an execution outcome that spawns nothing.
+   `task_worktree_created` carries `setupMs`, so the build order's "untested axis"
+   is measured from the first run. `removeWorktree` is built and **wired to
+   nothing** — when a worktree should die is a policy decision (disk vs preserved
+   context) and it is Wes's.
+   ⚠ `dispatchTask` is now **async** (worktree creation is a subprocess); the HTTP
+   envelope is unchanged.
 9. **Kanban UI.**
 10. **Watchdog scenario profile** + the deliberate six→seven assertion change.
 
