@@ -822,7 +822,10 @@ export function createDaemon(deps: DaemonDeps): Daemon {
         nowIso: () => clock.now(),
       });
     } catch (error) {
-      // eslint-disable-next-line no-console
+      // A failed ingest pass is non-fatal — the next tick retries, so the daemon
+      // must not die here. There is no event for a missed pass, which makes
+      // stderr the only place the operator would ever learn of it; journald
+      // (vimes.service) captures it. Message only, never the stack or the paths.
       console.warn(
         'vimes-daemon: cost ingest failed:',
         error instanceof Error ? error.message : String(error),
@@ -950,7 +953,10 @@ export function createDaemon(deps: DaemonDeps): Daemon {
         const expected = config.expectedCliVersion ?? null;
         if (expected === null || ptyObservedVersion !== expected) {
           router.emit([runtimeDriftObserved({ expected, observed: ptyObservedVersion, channel: 'pty' })]);
-          // eslint-disable-next-line no-console
+          // E4 drift is warn-only, never fatal: the event above is the durable
+          // record, and this stderr line is the half a human actually sees. The
+          // deploy procedure checks the boot output in journald for exactly this
+          // string, so it is written unconditionally rather than behind a level.
           console.warn(
             `vimes-daemon: CLI runtime drift — expected=${expected ?? '(unpinned)'} observed=${ptyObservedVersion ?? '(unknown)'}`,
           );
@@ -973,7 +979,10 @@ export function createDaemon(deps: DaemonDeps): Daemon {
               binaryPath: sdkObservation.binaryPath,
             }),
           ]);
-          // eslint-disable-next-line no-console
+          // Same warn-only contract as the pty channel above; stderr is the
+          // operator-visible half of the drift record. This one also names the
+          // resolved binary, because an SDK-channel mismatch is usually the
+          // vendored CLI moving under us rather than a deliberate pin change.
           console.warn(
             `vimes-daemon: SDK CLI runtime drift — expected=${expectedSdk} observed=${sdkObservedVersion ?? '(unknown)'} binary=${sdkObservation.binaryPath ?? '(unresolved)'}`,
           );

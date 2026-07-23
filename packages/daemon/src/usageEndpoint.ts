@@ -236,7 +236,10 @@ export function createUsageEndpointAdapter(deps: UsageEndpointAdapterDeps): Usag
   const warn =
     deps.warn ??
     ((message: string): void => {
-      // eslint-disable-next-line no-console
+      // The default sink is stderr on purpose: daemon diagnostics belong in the
+      // journal (vimes.service), not in the event log — a poll warning is not a
+      // fact about a session. Anything that needs them elsewhere injects `warn`,
+      // which is also how tests capture them without touching stderr.
       console.warn(message);
     });
 

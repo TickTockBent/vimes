@@ -225,7 +225,10 @@ export async function sendMeterAlertPush(
   const warn =
     deps.warn ??
     ((message: string): void => {
-      // eslint-disable-next-line no-console
+      // The default sink is stderr on purpose: the auditable outcome is already
+      // an event (`meter_push_outcome`), so this line is operator diagnostics
+      // only and belongs in the journal (vimes.service). Callers that need it
+      // elsewhere — tests included — inject `warn`.
       console.warn(message);
     });
   const payloadJson = JSON.stringify(buildMeterAlertPushPayload(alert, nowIso));
