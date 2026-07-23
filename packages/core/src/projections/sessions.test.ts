@@ -1054,6 +1054,138 @@ describe('sessions projection — turnInFlight (D35)', () => {
     expect(nextState.sessions[APP_SESSION_ID]!.turnInFlight).toBe(true);
   });
 
+  // ── adoption clears the turn a MIRRORED session could never end (D35) ──────
+  //
+  // ⚠ THE GAP THIS CLOSES, MEASURED ON THE LIVE LOG (stream `d85bc8f8`, five
+  // such messages). The tailer emits `message` events for an
+  // externally-discovered session, so the fold sets `turnInFlight: true` — and
+  // nothing can ever clear it: VIMES is not driving that process, so no
+  // `run_completed` arrives, and discovery parks its liveness at `interrupted`
+  // and leaves it there. Harmless while mirrored (the host refuses every send
+  // with `external-custody` before anything is emitted, and a refused send emits
+  // nothing) — but `session_adopted` flips custody to 'host' and deliberately
+  // leaves liveness alone, so the FIRST send after adoption would read a stale
+  // `true` and record a phantom course-correction.
+  describe('adoption (D10 + D35)', () => {
+    const discoveredInput = sessionCreated({
+      appSessionId: APP_SESSION_ID,
+      channel: 'pty',
+      cwd: '/home/user/project',
+      name: null,
+      forkedFrom: null,
+      taskRef: null,
+      custody: 'external',
+    });
+    const parkedAtInterrupted = livenessChanged({
+      appSessionId: APP_SESSION_ID,
+      to: 'interrupted',
+      cause: 'discovered-external',
+    });
+    // What the TAILER emits while mirroring someone else's session.
+    const mirroredTranscriptMessage = message({
+      appSessionId: APP_SESSION_ID,
+      role: 'assistant',
+      content: 'work VIMES is only watching',
+    });
+
+    // ASSERTION 1.
+    it('a mirrored session whose tailer messages set turnInFlight has it CLEARED by session_adopted', () => {
+      const { state: beforeAdoption } = foldLog([
+        [discoveredInput],
+        [parkedAtInterrupted],
+        [mirroredTranscriptMessage],
+      ]);
+      // The premise, stated rather than assumed: the mirror really does set it,
+      // and nothing in the mirrored log can clear it.
+      expect(beforeAdoption.sessions[APP_SESSION_ID]!.turnInFlight).toBe(true);
+
+      const { state } = foldLog([
+        [discoveredInput],
+        [parkedAtInterrupted],
+        [mirroredTranscriptMessage],
+        [sessionAdopted({ appSessionId: APP_SESSION_ID, via: 'explicit' })],
+      ]);
+      expect(state.sessions[APP_SESSION_ID]!.turnInFlight).toBe(false);
+    });
+
+    // ASSERTION 2 — the pre-existing behaviour, PINNED, so this clear cannot
+    // quietly widen into the liveness axis it must not touch.
+    it('session_adopted still flips custody to host and still leaves liveness UNTOUCHED', () => {
+      const { state } = foldLog([
+        [discoveredInput],
+        [parkedAtInterrupted],
+        [mirroredTranscriptMessage],
+        [sessionAdopted({ appSessionId: APP_SESSION_ID, via: 'explicit' })],
+      ]);
+      const record = state.sessions[APP_SESSION_ID]!;
+      expect(record.custody).toBe('host');
+      // Custody and liveness are SEPARATE AXES (D10). Adoption says who owns the
+      // process, never what it is doing.
+      expect(record.liveness).toBe('interrupted');
+    });
+
+    it('adoption clears to false even on a session that had no turn — unknown resolves to false', () => {
+      const { state } = foldLog([
+        [discoveredInput],
+        [parkedAtInterrupted],
+        [sessionAdopted({ appSessionId: APP_SESSION_ID, via: 'resume' })],
+      ]);
+      expect(state.sessions[APP_SESSION_ID]!.turnInFlight).toBe(false);
+    });
+
+    it('a message AFTER adoption sets it truthfully again — the clear is a reset, not a mute', () => {
+      const { state } = foldLog([
+        [discoveredInput],
+        [parkedAtInterrupted],
+        [mirroredTranscriptMessage],
+        [sessionAdopted({ appSessionId: APP_SESSION_ID, via: 'explicit' })],
+        [message({ appSessionId: APP_SESSION_ID, role: 'user', content: 'now VIMES is driving' })],
+      ]);
+      expect(state.sessions[APP_SESSION_ID]!.turnInFlight).toBe(true);
+    });
+
+    it('adoption for an unknown session still fabricates nothing', () => {
+      const { state } = foldLog([[sessionAdopted({ appSessionId: 'ghost', via: 'explicit' })]]);
+      expect(state.sessions.ghost).toBeUndefined();
+    });
+
+    // ASSERTION 3 — I6 across the new clear, at every cut point.
+    it('I6: boot(snapshot+tail) equals replay-from-empty at EVERY cut across the adoption', () => {
+      const store = makeStore();
+      store.append([discoveredInput]);
+      store.append([parkedAtInterrupted]);
+      store.append([mirroredTranscriptMessage]); // ← the mirror sets it
+      store.append([sessionAdopted({ appSessionId: APP_SESSION_ID, via: 'explicit' })]); // ← the clear
+      store.append([message({ appSessionId: APP_SESSION_ID, role: 'user', content: 'a real turn' })]);
+
+      const records = readAllStreamsGrouped(store);
+      const fullReplaySerialized = sessionsProjection.serialize(
+        replayFromEmpty(sessionsProjection, records),
+      );
+      // Non-vacuity: the fixture must actually move the field.
+      expect(fullReplaySerialized).toContain('turnInFlight');
+
+      for (let cutPoint = 0; cutPoint <= records.length; cutPoint += 1) {
+        const snapshotStore = new MemorySnapshotStore();
+        snapshotStore.save({
+          projectionId: sessionsProjection.id,
+          lastAppliedSeq: cutPoint === 0 ? {} : { [APP_SESSION_ID]: records[cutPoint - 1]!.seq },
+          state: replayFromEmpty(sessionsProjection, records.slice(0, cutPoint)),
+          savedAt: '2026-01-01T00:00:00.000Z',
+        });
+        expect(
+          sessionsProjection.serialize(bootFromSnapshot(sessionsProjection, snapshotStore, store)),
+          `cut ${cutPoint}`,
+        ).toBe(fullReplaySerialized);
+      }
+
+      // The cut that carries the STALE `true` across the snapshot boundary really
+      // does hold it, so the loop above cannot go quietly vacuous.
+      const mirroredState = replayFromEmpty(sessionsProjection, records.slice(0, 3));
+      expect(mirroredState.sessions[APP_SESSION_ID]!.turnInFlight).toBe(true);
+    });
+  });
+
   // ASSERTION 7 — I6 across the NEW field, with the snapshot cut placed where it
   // matters: INSIDE the turn, so the boot has to carry `turnInFlight: true`
   // across the snapshot boundary and then clear it from the tail. A cut only at

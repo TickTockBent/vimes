@@ -1071,3 +1071,43 @@ line the ledger already holds when it refuses to render an unpriced row as `$0`:
 real spend collapsing to `$0.00` is the identical lie in different clothing, and a
 per-agent breakdown is full of genuinely sub-cent rows. A true zero still renders
 `$0.00`, so the two remain distinguishable.
+
+## D35 (addendum) — adoption also resets `turnInFlight`
+
+*2026-07-23 (Wes: "fix the adoption residue"). Appended rather than edited into
+D35 above, which is already committed (`471f21b`) — decisions.md is append-only.
+Found by the orchestrator during verification of D35, not by the test suite.*
+
+**The residue.** A mirrored session accumulates a turn that nothing can ever end.
+The tailer emits `message` events for an externally-discovered session
+(`custody:'external'`, parked at `liveness:'interrupted'` by
+`cause:'discovered-external'`), so D35's fold sets `turnInFlight: true` — but
+VIMES is not driving that process, so no `run_completed` arrives and its liveness
+never moves. Confirmed against the live log: stream `d85bc8f8` carries 5 such
+messages.
+
+**Why it was harmless right up until it wasn't.** While the session stays
+mirrored, `sessionHost.ts:739` refuses every send with `external-custody` before
+anything is emitted, and a refused send emits nothing. But `session_adopted`
+flips custody to `'host'` and deliberately leaves liveness untouched (D10 —
+separate axes). So the first send after adopting a mirrored session would read a
+stale `true` and record a phantom course-correction — the exact defect D35 exists
+to kill, surviving in a narrower case.
+
+**Decision: `session_adopted` clears `turnInFlight` to `false`, unconditionally.**
+Not "leave it alone": adoption means VIMES has just taken custody of a process it
+was **never driving**, so what that process is doing is genuinely UNKNOWN — and
+unknown resolves to `false`, the same fail-safe direction the rest of D35 takes.
+An absent correction record costs the watchdog a protection it did not need; a
+phantom one switches the staleness guard off on a run nobody is steering. The
+next `message` sets it truthfully anyway, so the clear is a reset, not a mute.
+**Liveness stays untouched** — this does not widen the D10 separation.
+
+**`pendingCorrectionAt` does NOT have the same shape, and the reason is worth
+recording** (raised by the implementing agent; verified rather than assumed). It
+is set only by `correction_queued`, which the hub emits only *after* an accepted
+send — and mirrored sends are refused before that point. So a mirrored session
+can never acquire a pending correction to go stale. `correction_delivered`
+arriving for a human typing into an external PTY is already an explicit no-op
+that refuses to create the field. **Two independent guards, so no pinned test was
+added**; this paragraph exists so the next reader does not re-derive it.

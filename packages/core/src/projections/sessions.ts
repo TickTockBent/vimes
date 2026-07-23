@@ -329,9 +329,34 @@ export const sessionsProjection: Projection<SessionsState> = {
         }
         // D10: adoption flips custody to 'host' — the session is now VIMES-owned
         // (writable/killable/resumable). Liveness is untouched (a separate axis).
+        //
+        // ── D35: adoption also RESETS `turnInFlight`, and only ever to false ──
+        //
+        // ⚠ **A MIRRORED SESSION ACCUMULATES A TURN NOTHING CAN END.** The tailer
+        // emits `message` events for an externally-discovered session, so the
+        // fold above sets `turnInFlight: true` — but VIMES is not driving that
+        // process, so no `run_completed` ever arrives and its liveness never
+        // moves (discovery parks it at `interrupted` and leaves it there). While
+        // the session stays mirrored that is harmless: the host refuses every
+        // send with `external-custody` before anything is emitted, and a refused
+        // send emits nothing. Adoption is where it would start to lie — the very
+        // next send would read a stale `true` and record a phantom
+        // course-correction, which is the defect D35 exists to kill.
+        //
+        // `false` rather than "leave it alone" because adoption means VIMES has
+        // just taken custody of a process it was NEVER DRIVING: what that process
+        // is doing right now is genuinely UNKNOWN, and unknown resolves to
+        // false — the same fail-safe direction the rest of D35 takes. An absent
+        // correction record costs the watchdog a protection it did not need; a
+        // phantom one switches the staleness guard OFF on a run nobody is
+        // steering. The next `message` sets it truthfully anyway.
+        //
+        // ⚠ LIVENESS STAYS UNTOUCHED HERE. Custody and liveness are separate
+        // axes (the D10 line above), and this clear does not widen that.
         return withSession(state, parsed.data.appSessionId, (session) => ({
           ...session,
           custody: 'host',
+          turnInFlight: false,
         }));
       }
 
