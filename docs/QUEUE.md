@@ -9,6 +9,39 @@ reason `slice-6-test-plan.md` lives here. Delete an entry when it ships.
 
 ---
 
+---
+
+## ▶ NEXT SESSION STARTS HERE (2026-07-23, end of day)
+
+Slice 6's build steps **0–9 are done** (step 9 = the board). It is **one test away
+from its exit gate.** The critical path, in order:
+
+1. **⟨Wes⟩ stage-instruction prompt content — a real blocker.** A dispatched worker
+   is currently **told NOTHING** (`slice-6-test-plan.md` → T4: "the dispatched
+   session will be told NOTHING — deferred to you"). T7 needs a worker to actually
+   do work, so this gates the exit gate. Unblock this first.
+2. **T2 — the correction path end-to-end.** Unblocked since D35, still untested.
+   Gates T7.
+3. **T7 — the slice-6 human exit gate.** "One real feature you actually wanted,
+   moved backlog → done through the board, where you corrected a worker mid-run and
+   the correction landed without killing the run." T1 ✅, board ✅ — so after 1 & 2
+   this is reachable, and it is what everything so far has been rehearsal for.
+
+**Fable can take solo, no sign-off needed:** slice-6 **step 10** (watchdog scenario
+profile + the six→seven assertion change — the last build step); the
+`@hono/node-server` <2.0.5 bump (Windows-only vector, we run Linux); D40's panel
+follow-ups (git→editor→back diff-refresh, the override-picker UI).
+
+**Other ⟨Wes⟩ items:** flip `VIMES_WORKTREE_ISOLATION` (still `off`; it changes
+where real work executes) · `removeWorktree` is built and wired to NOTHING pending
+a disk-vs-preserved-context policy · the Gate-D ⟨tune⟩s keeping step 5c
+(quarantine + retry) blocked · Q2's retention half · Q4's relocation (parked to
+slice close) · the board-as-sidebar / orchestration-chat end-state trigger
+(`design-directions.md`).
+
+**Deploy state at close:** daemon current — no restart owed. Everything after Q4
+was UI-only and already live via the gate's dist rebuild.
+
 ## Q1 — "New session" belongs at the TOP of the mobile session list
 
 *(Wes, 2026-07-23: "put 'new session' at the top rather than forcing the user to
