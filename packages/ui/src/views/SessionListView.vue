@@ -42,6 +42,18 @@ const cwd = ref(localStorage.getItem(LAST_CWD_KEY) ?? '');
 const channel = ref<'sdk' | 'pty'>('sdk');
 const spawning = ref(false);
 
+// Q1 (scratchpad/QUEUE.md) — the spawn form moved to a collapsed affordance at
+// the TOP of the view so "New session" is reachable with zero scrolling past a
+// few dozen historical sessions. This is plain component state, same pattern
+// as `metersExpanded` below: a `ref<boolean>` with no branching worth a lib/
+// module and nothing pure to unit-test — the toggle IS the logic.
+// Collapsed is the default on load (spec: "Collapsed is the default").
+const spawnFormExpanded = ref(false);
+
+function toggleSpawnForm(): void {
+  spawnFormExpanded.value = !spawnFormExpanded.value;
+}
+
 // Confirm-tap-again state for kill (no browser confirm(), D-scope).
 const killConfirm = ref<KillConfirmState>(initialKillConfirmState);
 // The row currently being renamed inline, and its draft text.
@@ -72,7 +84,14 @@ function spawn(): void {
     },
     // A refused spawn (e.g. cwd-outside-project-roots) must still clear the
     // local pending flag — the refusal itself surfaces via store.lastRefusal
-    // and its dismiss banner (App.vue), same as any other refused op.
+    // and its dismiss banner (App.vue), same as any other refused op. That
+    // banner is sticky at the App.vue root, driven purely by store state, and
+    // is entirely independent of `spawnFormExpanded` below (Q1) — so a
+    // refusal is visible whether the collapsed affordance is open or closed.
+    // We deliberately do NOT auto-collapse the form here: it only closes on
+    // an explicit tap of the toggle, so on a refusal the operator sees BOTH
+    // the still-open form (with its now-cleared spawning state) and the
+    // global banner — belt and suspenders, no second refusal surface built.
     onRefused: () => {
       spawning.value = false;
     },
@@ -340,6 +359,69 @@ onUnmounted(() => {
         </button>
       </div>
     </div>
+
+    <!-- Q1 (scratchpad/QUEUE.md, 2026-07-23) — collapsed "+ New session"
+         affordance at the very TOP of the view, immediately below the header
+         row and above the (possibly-expanded) usage meters strip. Placed here
+         rather than below the meters so it stays reachable with ZERO
+         scrolling on a phone regardless of the meters' own expanded state —
+         the meters section is the one part of this view tall enough to
+         threaten that on its own. Collapsed, this is a single row; a plain
+         reorder of the four-row form would have pushed the session list below
+         the fold instead, trading one scroll for another (decided, not a
+         rewrite — see the work order). -->
+    <div class="flex flex-col gap-2">
+      <button
+        type="button"
+        class="flex min-h-[44px] w-full items-center justify-center gap-1.5 rounded-lg border border-sky-300 bg-sky-50 text-sm font-semibold text-sky-700 active:bg-sky-100 dark:border-sky-800 dark:bg-sky-950 dark:text-sky-300 dark:active:bg-sky-900"
+        :aria-expanded="spawnFormExpanded"
+        aria-controls="new-session-form"
+        @click="toggleSpawnForm()"
+      >
+        <span aria-hidden="true">{{ spawnFormExpanded ? '▴' : '+' }}</span>
+        {{ spawnFormExpanded ? 'Close' : 'New session' }}
+      </button>
+
+      <!-- The existing form, moved verbatim: same fields, same v-model
+           bindings, same @submit.prevent="spawn" — only the disclosure
+           wrapper is new. spawn(), the store call, `channel`, and `cwd`
+           handling are untouched (explicitly out of scope for Q1). The form
+           is NOT auto-collapsed on submit — see the onRefused comment above
+           for why staying open is part of the refusal-visibility guarantee. -->
+      <form
+        v-if="spawnFormExpanded"
+        id="new-session-form"
+        class="flex flex-col gap-2 rounded-lg border border-slate-200 p-3 dark:border-slate-800"
+        @submit.prevent="spawn"
+      >
+        <label class="text-sm font-medium" for="new-session-cwd">New session · cwd</label>
+        <input
+          id="new-session-cwd"
+          v-model="cwd"
+          type="text"
+          placeholder="/home/wes/projects/games/dongfu"
+          class="min-h-[44px] rounded-md border border-slate-300 px-3 text-sm dark:border-slate-700 dark:bg-slate-900"
+        />
+        <div class="flex items-center gap-4 text-sm">
+          <label class="flex items-center gap-1">
+            <input v-model="channel" type="radio" value="sdk" />
+            SDK
+          </label>
+          <label class="flex items-center gap-1">
+            <input v-model="channel" type="radio" value="pty" />
+            PTY
+          </label>
+        </div>
+        <button
+          type="submit"
+          class="min-h-[44px] rounded-md bg-sky-600 font-semibold text-white active:bg-sky-700 disabled:opacity-50"
+          :disabled="spawning || cwd.trim().length === 0"
+        >
+          {{ spawning ? 'Spawning…' : 'Spawn session' }}
+        </button>
+      </form>
+    </div>
+
     <p v-if="store.pushState === 'off'" class="-mt-2 text-xs text-slate-500 dark:text-slate-400">
       Tap the bell to enable push notifications for gates and completions.
     </p>
@@ -550,36 +632,8 @@ onUnmounted(() => {
         </div>
       </li>
       <li v-if="rows.length === 0" class="p-3 text-center text-sm text-slate-500 dark:text-slate-400">
-        No sessions yet — spawn one below, or Discover terminal-started ones.
+        No sessions yet — spawn one above, or Discover terminal-started ones.
       </li>
     </ul>
-
-    <form class="flex flex-col gap-2 rounded-lg border border-slate-200 p-3 dark:border-slate-800" @submit.prevent="spawn">
-      <label class="text-sm font-medium" for="new-session-cwd">New session · cwd</label>
-      <input
-        id="new-session-cwd"
-        v-model="cwd"
-        type="text"
-        placeholder="/home/wes/projects/games/dongfu"
-        class="min-h-[44px] rounded-md border border-slate-300 px-3 text-sm dark:border-slate-700 dark:bg-slate-900"
-      />
-      <div class="flex items-center gap-4 text-sm">
-        <label class="flex items-center gap-1">
-          <input v-model="channel" type="radio" value="sdk" />
-          SDK
-        </label>
-        <label class="flex items-center gap-1">
-          <input v-model="channel" type="radio" value="pty" />
-          PTY
-        </label>
-      </div>
-      <button
-        type="submit"
-        class="min-h-[44px] rounded-md bg-sky-600 font-semibold text-white active:bg-sky-700 disabled:opacity-50"
-        :disabled="spawning || cwd.trim().length === 0"
-      >
-        {{ spawning ? 'Spawning…' : 'Spawn session' }}
-      </button>
-    </form>
   </div>
 </template>
