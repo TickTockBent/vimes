@@ -7,7 +7,7 @@
 // untested branch here worth a test (it is glue, and glue is jsdom-shaped).
 
 import { computed, onUnmounted, ref, type ComputedRef } from 'vue';
-import { MAX_PANELS, resolvePanelCount } from './layoutMode.js';
+import { MAX_PANELS, resolvePanelCount, shouldShowSidebar } from './layoutMode.js';
 
 // A single localStorage key holds the per-device override (D39 #2). A missing or
 // non-integer value → null, which resolvePanelCount treats as "no override, use
@@ -47,6 +47,11 @@ export interface LayoutMode {
   // How many trailing panels the viewport should render, reactive to width and
   // the stored override.
   readonly panelCount: ComputedRef<number>;
+  // Whether the session list (stack[0]) renders as the ambient desktop sidebar
+  // (D39 #3) instead of as a panel column — reactive to width, off below the
+  // desktop breakpoint. Derived from the SAME width ref as panelCount, so there
+  // is no second resize listener and the two never disagree about "how wide".
+  readonly showSidebar: ComputedRef<boolean>;
   // The largest N the default breakpoint table offers — for an override control.
   readonly maxPanels: number;
   // Set (and persist) the per-device override. Pass null to CLEAR it (fall back
@@ -74,6 +79,11 @@ export function useLayoutMode(): LayoutMode {
 
   const panelCount = computed(() => resolvePanelCount(width.value, override.value));
 
+  // The sidebar is a pure function of width (the override only affects HOW MANY
+  // panels show, never WHICH layout paradigm) — all arithmetic stays in
+  // layoutMode.ts; this is the same reactive-width read panelCount uses.
+  const showSidebar = computed(() => shouldShowSidebar(width.value));
+
   function setOverride(next: number | null): void {
     override.value = next;
     if (!hasBrowser) {
@@ -94,5 +104,5 @@ export function useLayoutMode(): LayoutMode {
     setOverride(null);
   }
 
-  return { panelCount, maxPanels: MAX_PANELS, setOverride, clearOverride };
+  return { panelCount, showSidebar, maxPanels: MAX_PANELS, setOverride, clearOverride };
 }
