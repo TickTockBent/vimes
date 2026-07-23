@@ -24,7 +24,13 @@ import type { DaemonConfig } from './config.js';
 import { registerTaskApi, type CreateTaskResponse, type DispatchResponse, type ProposeTransitionResponse } from './taskApi.js';
 import { TaskWriter } from './taskWriter.js';
 import { TaskDispatcher } from './taskDispatcher.js';
-import type { SdkQueryFactory, SdkStreamMessage, SpawnResult } from './sessionHost.js';
+import type {
+  ResumeResult,
+  SdkQueryFactory,
+  SdkStreamMessage,
+  SendResult,
+  SpawnResult,
+} from './sessionHost.js';
 
 // ─── slice 6 step 4b — the task API over real HTTP requests ──────────────────
 //
@@ -89,6 +95,24 @@ class RecordingSessionHost {
 
   isLive(appSessionId: string): boolean {
     return this.liveSessionIds.has(appSessionId);
+  }
+
+  // ⚠ Step 7 widened the dispatcher's session-host seam (resume for the fix loop,
+  // sendMessage for the instruction seam). Both are recorded and BOTH MUST STAY AT
+  // ZERO CALLS for the API's cases: every task this file dispatches is a first-pass
+  // run with no prior implementing ref, so `resolveStageRunner` says spawn. If one
+  // of these ever fires here, the API surface changed shape without anyone saying so.
+  readonly resumeCalls: string[] = [];
+  readonly sendCalls: Array<{ appSessionId: string; text: string }> = [];
+
+  resumeSession(appSessionId: string): ResumeResult {
+    this.resumeCalls.push(appSessionId);
+    return { appSessionId };
+  }
+
+  sendMessage(appSessionId: string, text: string): SendResult {
+    this.sendCalls.push({ appSessionId, text });
+    return { ok: true };
   }
 
   refuseNextSpawn(reason: string): void {
@@ -668,6 +692,11 @@ describe('POST /api/tasks/:taskId/dispatch — one explicit attempt', () => {
     expect(body.result).toMatchObject({ outcome: 'spawned', taskId: task.taskId, stage: 'planning' });
     expect(harness.dispatchCallCount()).toBe(1);
     expect(harness.sessionHost.spawnCalls).toEqual([{ channel: 'sdk', cwd: harness.allowedRoot }]);
+    // Step 7, through the REAL route: a first-pass run resumes nothing and — with
+    // the default (silent) instruction composer that app.ts also uses — sends
+    // nothing. The API's behaviour is unchanged by the stage runner landing.
+    expect(harness.sessionHost.resumeCalls).toEqual([]);
+    expect(harness.sessionHost.sendCalls).toEqual([]);
   });
 
   it('deferred → 200 + the envelope (and a defer still emits nothing)', async () => {
