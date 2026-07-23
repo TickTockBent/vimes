@@ -675,6 +675,11 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     pushSubscriptions,
     searchService,
     terminalHost,
+    // D35: the SAME projection read the watchdog above uses, read FRESH per
+    // `send` op — the hub asks "was a turn already in flight?" and emits
+    // `correction_queued` only then. Wiring it here is what stops an opening
+    // prompt to an idle session from being recorded as a course-correction.
+    readSessions: () => bootFromSnapshot(sessionsProjection, snapshotStore, store),
   });
 
   httpServer.on('upgrade', (request, socket, head) => {

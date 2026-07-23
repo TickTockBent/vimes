@@ -96,6 +96,27 @@ export const sessionRecordSchema = z.object({
   // as stale, which raises attention, which pushes a notification to a real
   // person's phone about work that was fine.
   pendingCorrectionAt: z.string().nullable().optional(),
+  // ── D35: is a model turn actually IN FLIGHT right now? ────────────────────
+  //
+  // OPTIONAL-only, exactly like the three fields above and for the same reason:
+  // a record written before this field existed must still load and serialize
+  // identically, so the projection leaves it ABSENT until a `message` sets it.
+  // (`.optional()` without `.nullable()` matches `staleEpisodes` — the cleared
+  // value here is `false`, a real value, not "cleared to null"; there is no
+  // third state to encode.)
+  //
+  // ⚠ **THIS IS NOT `liveness`, AND CONFUSING THE TWO IS THE DEFECT D35 WAS
+  // WRITTEN ABOUT.** `liveness: 'running'` means the PROCESS is alive; an SDK
+  // session sits in streaming-input mode, `running`, from `liveness_changed
+  // {cause:'spawn'}` onward — before any prompt exists. `turnInFlight` means a
+  // turn VIMES delivered has not finished yet. Session `138d3ef4` was `running`
+  // with no turn in flight and got its opening prompt recorded as a
+  // course-correction; that trace is why the two facts are separate fields.
+  //
+  // Set by `message` (VIMES delivered a turn), cleared by `run_completed` (the
+  // turn ended) and by a `liveness_changed` to a non-live state. NEVER set by
+  // liveness — see the fold in projections/sessions.ts.
+  turnInFlight: z.boolean().optional(),
 });
 export type SessionRecord = z.infer<typeof sessionRecordSchema>;
 

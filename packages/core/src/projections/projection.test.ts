@@ -14,6 +14,7 @@ import {
   lineQuarantined,
   livenessChanged,
   message,
+  runCompleted,
   seen,
   sessionCreated,
   taskCreated,
@@ -97,6 +98,17 @@ function buildMultiStreamStore(): MemoryEventStore {
   // PAST the staleness reports, which do not advance it.
   store.append([message({ appSessionId: APP_1, role: 'assistant', content: 'working' })]);
   store.append([usageBlock({ appSessionId: APP_1, usage: { input_tokens: 12 } })]);
+  // ── the turn boundary (D35) ───────────────────────────────────────────────
+  // ⚠ EXTENDED AGAIN, for the third time and for the same reason: a fold the I6
+  // fixture never exercises is a fold I6 does not cover. `turnInFlight` is SET by
+  // the `message` above and CLEARED here, so both branches sit inside replay
+  // equivalence and the field is order-dependent across cut points — a snapshot
+  // taken between the two has to carry `true` forward and let the tail clear it.
+  // `run_completed` is a transcript append AND an attention setter, so it is
+  // placed BEFORE the staleness reports: the heartbeat still ends on the resume
+  // mapping below, and the attention state still ends on 'stale', exactly as the
+  // pre-D35 fixture asserted.
+  store.append(withNotificationTrigger(runCompleted({ appSessionId: APP_1 })));
   store.append(withNotificationTrigger(watchdogStale({ appSessionId: APP_1, retryNumber: 1 })));
   store.append([seen({ appSessionId: APP_1 })]);
   store.append(withNotificationTrigger(watchdogStale({ appSessionId: APP_1, retryNumber: 2 })));
@@ -375,6 +387,35 @@ describe('projection I6 — boot(snapshot+tail) equals replay-from-empty', () =>
       (record) => record.stream === APP_1 && record.type === 'claude_session_mapped',
     );
     expect(state.sessions[APP_1]!.lastAppendAt).toBe(app1LastAppend[0]!.ts);
+  });
+
+  it('the sessions I6 fixture folds BOTH turnInFlight branches (D35)', () => {
+    // The explicit statement of what the I6 case above replays for the D35 fold,
+    // so "I6 covers turnInFlight" is asserted rather than claimed — the
+    // non-vacuity guard only proves the fixture moves the projection AT ALL, and
+    // it already cleared that on every pre-D35 event.
+    const store = buildMultiStreamStore();
+    const records = readAllStreamsGrouped(store);
+    const state = replayFromEmpty(sessionsProjection, records);
+
+    // APP_1: a message set it, `run_completed` cleared it.
+    expect(state.sessions[APP_1]!.turnInFlight).toBe(false);
+    // ...and the cut point that lands between them really does hold `true`, so
+    // the flag has to survive a snapshot boundary rather than being re-derived.
+    const messageIndex = records.findIndex(
+      (record) => record.stream === APP_1 && record.type === 'message',
+    );
+    expect(messageIndex).toBeGreaterThanOrEqual(0);
+    const midTurnState = replayFromEmpty(sessionsProjection, records.slice(0, messageIndex + 1));
+    expect(midTurnState.sessions[APP_1]!.turnInFlight).toBe(true);
+
+    // APP_2 was never prompted: the field is never invented.
+    expect(state.sessions[APP_2]!.turnInFlight).toBeUndefined();
+
+    // ⚠ The other four events in `run_completed`'s shared case group are still
+    // attention-only: APP_1's final attention state is the watchdog's 'stale',
+    // set AFTER the completion, exactly as the pre-D35 fixture folded it.
+    expect(state.sessions[APP_1]!.needsAttention).toMatchObject({ reason: 'stale' });
   });
 
   it('holds for the meters stub projection at every cut point', () => {

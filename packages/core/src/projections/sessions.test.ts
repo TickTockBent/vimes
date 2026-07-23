@@ -740,6 +740,366 @@ describe('sessions projection — pendingCorrectionAt (D5/D30, slice 6 step 6a)'
   }
 });
 
+// ─── D35 — turnInFlight, and the run_completed clear (slice 6, correction fix) ─
+//
+// The defect this block pins was measured, not imagined: an operator sent a
+// FIRST prompt to a freshly spawned session and the composer said "Correction
+// queued" for a correction he had not made, and it never cleared. Both halves
+// live here — the bit that says a turn is genuinely running, and the clear that
+// covers the correction shape NO tailer can observe (delivered after the turn
+// ended: an ordinary user message, no attachment, on any channel).
+describe('sessions projection — turnInFlight (D35)', () => {
+  function foldLog(batches: EventInput[][]): {
+    state: ReturnType<typeof sessionsProjection.init>;
+    records: EventRecord[];
+  } {
+    const store = makeStore();
+    for (const batch of batches) {
+      store.append(batch);
+    }
+    const records = readAllStreamsGrouped(store);
+    return { state: replayFromEmpty(sessionsProjection, records), records };
+  }
+
+  const userTurnInput = message({
+    appSessionId: APP_SESSION_ID,
+    role: 'user',
+    content: 'synthetic opening prompt',
+  });
+  const queuedInput = correctionQueued({
+    appSessionId: APP_SESSION_ID,
+    text: 'synthetic steer: prefer the smaller change',
+  });
+
+  // ASSERTION 2.
+  it('a message event SETS turnInFlight', () => {
+    const { state } = foldLog([[createInput()], [userTurnInput]]);
+    expect(state.sessions[APP_SESSION_ID]!.turnInFlight).toBe(true);
+  });
+
+  it('an assistant message sets it too — both roles mean the run is mid-turn', () => {
+    const { state } = foldLog([
+      [createInput()],
+      [message({ appSessionId: APP_SESSION_ID, role: 'assistant', content: 'working' })],
+    ]);
+    expect(state.sessions[APP_SESSION_ID]!.turnInFlight).toBe(true);
+  });
+
+  // ASSERTION 1 — the field is ABSENT until a message sets it, so a record from
+  // before D35 (and a session that has never been prompted) serializes exactly as
+  // it did before this field existed.
+  it('is ABSENT on a session that has never been prompted (old-shape bytes)', () => {
+    const { state } = foldLog([[createInput()]]);
+    expect(state.sessions[APP_SESSION_ID]!.turnInFlight).toBeUndefined();
+    expect(sessionsProjection.serialize(state)).not.toContain('turnInFlight');
+  });
+
+  it('an OLD snapshot lacking turnInFlight boots, folds forward, and never throws (I8)', () => {
+    const store = makeStore();
+    store.append([createInput()]);
+    const preD35Record = {
+      appSessionId: APP_SESSION_ID,
+      channel: 'sdk',
+      cwd: '/home/user/project',
+      claudeSessionIds: [],
+      liveness: 'running',
+      needsAttention: null,
+      seenAt: null,
+      forkedFrom: null,
+      taskRef: null,
+      observedTtlTier: 'unknown',
+      observedBillingBucket: 'unknown',
+      name: 'synthetic session',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      provider: 'claude-code',
+      custody: 'host',
+      lastAppendAt: '2026-01-01T00:00:00.000Z',
+      // NOTE: no turnInFlight, no pendingCorrectionAt — this is the pre-D35 shape.
+    } as SessionRecord;
+    const snapshotStore = new MemorySnapshotStore();
+    snapshotStore.save({
+      projectionId: sessionsProjection.id,
+      lastAppliedSeq: { [APP_SESSION_ID]: 1 },
+      state: { sessions: { [APP_SESSION_ID]: preD35Record } },
+      savedAt: '2026-01-01T00:00:00.000Z',
+    });
+    // The boot itself must not reject the old record...
+    let booted: ReturnType<typeof sessionsProjection.init> | null = null;
+    expect(() => {
+      booted = bootFromSnapshot(sessionsProjection, snapshotStore, store);
+    }).not.toThrow();
+    expect(booted!.sessions[APP_SESSION_ID]!.turnInFlight).toBeUndefined();
+
+    // ...and the tail must fold onto it normally.
+    store.append([userTurnInput]);
+    const bootedWithTail = bootFromSnapshot(sessionsProjection, snapshotStore, store);
+    expect(bootedWithTail.sessions[APP_SESSION_ID]!.turnInFlight).toBe(true);
+  });
+
+  // ASSERTION 3 — the turn boundary, and THE load-bearing clear.
+  it('run_completed clears turnInFlight AND pendingCorrectionAt', () => {
+    const { state } = foldLog([
+      [createInput()],
+      [userTurnInput],
+      [queuedInput],
+      withNotificationTrigger(runCompleted({ appSessionId: APP_SESSION_ID })),
+    ]);
+    const record = state.sessions[APP_SESSION_ID]!;
+    expect(record.turnInFlight).toBe(false);
+    expect(record.pendingCorrectionAt).toBeNull();
+    // ...and the attention behaviour it already had is untouched.
+    expect(record.needsAttention).toMatchObject({ reason: 'completed' });
+  });
+
+  it('run_completed clears a correction that was NEVER observed delivered — the whole point', () => {
+    // ⚠ THE SHAPE NO TAILER CAN SEE. A correction delivered after the turn ended
+    // arrives as an ordinary user message with no attachment, so there is no
+    // `correction_delivered` on ANY channel — and on the SDK channel there never
+    // is one at all (the transcript is skipped). Without this clear the indicator
+    // sticks forever, which is exactly what the operator hit.
+    const { state } = foldLog([
+      [createInput()],
+      [userTurnInput],
+      [queuedInput],
+      withNotificationTrigger(runCompleted({ appSessionId: APP_SESSION_ID })),
+    ]);
+    expect(state.sessions[APP_SESSION_ID]!.pendingCorrectionAt).toBeNull();
+    // No delivery was ever observed — the clear came from the turn boundary alone.
+    const { records } = foldLog([
+      [createInput()],
+      [userTurnInput],
+      [queuedInput],
+      withNotificationTrigger(runCompleted({ appSessionId: APP_SESSION_ID })),
+    ]);
+    expect(records.some((record) => record.type === EVENT_TYPES.correctionDelivered)).toBe(false);
+  });
+
+  // ASSERTION 4 — liveness CLEARS, and never sets.
+  const nonLiveTransitions: Array<[string, 'dormant' | 'interrupted' | 'dead']> = [
+    ['dormant', 'dormant'],
+    ['interrupted', 'interrupted'],
+    ['dead', 'dead'],
+  ];
+
+  for (const [label, target] of nonLiveTransitions) {
+    it(`liveness_changed to ${label} clears turnInFlight`, () => {
+      const { state } = foldLog([
+        [createInput()],
+        [userTurnInput],
+        [livenessChanged({ appSessionId: APP_SESSION_ID, to: target, cause: 'synthetic' })],
+      ]);
+      expect(state.sessions[APP_SESSION_ID]!.turnInFlight).toBe(false);
+      expect(state.sessions[APP_SESSION_ID]!.liveness).toBe(target);
+    });
+  }
+
+  it('liveness_changed {to: running, cause: spawn} does NOT set turnInFlight — THE PHANTOM', () => {
+    // ⚠ THE MEASURED DEFECT, PINNED. Session `138d3ef4` was `liveness:'running'`
+    // from `liveness_changed{cause:'spawn'}` BEFORE any prompt existed — an SDK
+    // session sits in streaming-input mode awaiting its first turn and is
+    // `running` throughout. `running` means the PROCESS is alive, not that a turn
+    // is in flight, and a gate built on liveness would have emitted the phantom
+    // anyway (D35 rejected alternative (a), disproved by this trace).
+    const { state } = foldLog([
+      [createInput()],
+      [livenessChanged({ appSessionId: APP_SESSION_ID, to: 'running', cause: 'spawn' })],
+    ]);
+    expect(state.sessions[APP_SESSION_ID]!.turnInFlight).toBeUndefined();
+    expect(state.sessions[APP_SESSION_ID]!.liveness).toBe('running');
+    expect(sessionsProjection.serialize(state)).not.toContain('turnInFlight');
+  });
+
+  it('a resume (dormant → spawning) does NOT clear a turn that is still in flight', () => {
+    // `spawning` is a live state: a resume in flight has not ended anything.
+    const { state } = foldLog([
+      [createInput()],
+      [userTurnInput],
+      [livenessChanged({ appSessionId: APP_SESSION_ID, to: 'spawning', cause: 'resume' })],
+    ]);
+    expect(state.sessions[APP_SESSION_ID]!.turnInFlight).toBe(true);
+  });
+
+  it('liveness_changed never RE-sets a cleared flag, in either direction', () => {
+    const { state } = foldLog([
+      [createInput()],
+      [userTurnInput],
+      [livenessChanged({ appSessionId: APP_SESSION_ID, to: 'dormant', cause: 'idle' })],
+      [livenessChanged({ appSessionId: APP_SESSION_ID, to: 'spawning', cause: 'resume' })],
+      [livenessChanged({ appSessionId: APP_SESSION_ID, to: 'running', cause: 'resumed' })],
+    ]);
+    expect(state.sessions[APP_SESSION_ID]!.turnInFlight).toBe(false);
+  });
+
+  // ASSERTION 5 — THE REGRESSION GUARD FOR THE SHARED `case` GROUP.
+  //
+  // `run_completed` shares its case with four other attention setters. Only
+  // `run_completed` gained the two clears; the other four must behave EXACTLY as
+  // they did before, byte for byte. A fold that gave `watchdog_stale` a
+  // correction-clearing side effect would release the watchdog's own protection
+  // the instant it reported — and `gate_fired` clearing a steer would drop a
+  // correction that is still genuinely queued.
+  const otherSettersInTheSharedCase: Array<[string, EventInput, string]> = [
+    ['gate_fired', gateFired({ appSessionId: APP_SESSION_ID, prompt: 'approve?' }), 'gate'],
+    ['question_asked', questionAsked({ appSessionId: APP_SESSION_ID, prompt: 'which?' }), 'question'],
+    ['watchdog_stale', watchdogStale({ appSessionId: APP_SESSION_ID }), 'stale'],
+    ['task_quarantined', taskQuarantined({ appSessionId: APP_SESSION_ID, taskId: 't1' }), 'quarantined'],
+  ];
+
+  for (const [label, input, reason] of otherSettersInTheSharedCase) {
+    it(`${label} still sets attention (${reason}) and clears NEITHER turnInFlight NOR pendingCorrectionAt`, () => {
+      const { state, records } = foldLog([
+        [createInput()],
+        [userTurnInput],
+        [queuedInput],
+        withNotificationTrigger(input),
+      ]);
+      const record = state.sessions[APP_SESSION_ID]!;
+      expect(record.needsAttention).toMatchObject({ reason });
+      // The turn is still running and the steer is still queued.
+      expect(record.turnInFlight).toBe(true);
+      const queuedRecord = records.find(
+        (candidate) => candidate.type === EVENT_TYPES.correctionQueued,
+      )!;
+      expect(record.pendingCorrectionAt).toBe(queuedRecord.ts);
+    });
+  }
+
+  it('watchdog_stale still counts its episode, unchanged', () => {
+    const { state } = foldLog([
+      [createInput()],
+      [userTurnInput],
+      withNotificationTrigger(watchdogStale({ appSessionId: APP_SESSION_ID })),
+      withNotificationTrigger(watchdogStale({ appSessionId: APP_SESSION_ID })),
+    ]);
+    expect(state.sessions[APP_SESSION_ID]!.staleEpisodes).toBe(2);
+  });
+
+  // ASSERTION 6 — the earlier, more precise clear is untouched.
+  it('correction_delivered still clears pendingCorrectionAt and does NOT touch turnInFlight', () => {
+    const { state } = foldLog([
+      [createInput()],
+      [userTurnInput],
+      [queuedInput],
+      [correctionDelivered({ appSessionId: APP_SESSION_ID, commandMode: 'prompt' })],
+    ]);
+    const record = state.sessions[APP_SESSION_ID]!;
+    expect(record.pendingCorrectionAt).toBeNull();
+    // Delivery is not the end of the turn — the run is still mid-turn, and D35
+    // keeps `correction_delivered` as the earlier clear, not a turn boundary.
+    expect(record.turnInFlight).toBe(true);
+  });
+
+  it('a delivery with nothing pending is STILL a no-op, and still invents no field', () => {
+    const { state: bornState } = foldLog([[createInput()]]);
+    const { state } = foldLog([
+      [createInput()],
+      [correctionDelivered({ appSessionId: APP_SESSION_ID, commandMode: 'prompt' })],
+    ]);
+    expect(state.sessions[APP_SESSION_ID]!.pendingCorrectionAt).toBeUndefined();
+    expect(sessionsProjection.serialize(state)).toBe(sessionsProjection.serialize(bornState));
+  });
+
+  // Totality (I8): a malformed `message` payload leaves the record alone rather
+  // than stamping a turn onto it.
+  const malformedMessagePayloads: Array<[string, unknown]> = [
+    ['null payload', null],
+    ['empty object', {}],
+    ['appSessionId of the wrong type', { appSessionId: 42, role: 'user', content: 'x' }],
+    ['a missing role', { appSessionId: APP_SESSION_ID, content: 'x' }],
+    ['a bare string', 'not-an-object'],
+    ['an array', [1, 2, 3]],
+  ];
+
+  for (const [label, payload] of malformedMessagePayloads) {
+    it(`a message with ${label} never sets turnInFlight and never throws (I8)`, () => {
+      const { state: bornState } = foldLog([[createInput()]]);
+      const hostileRecord: EventRecord = {
+        eventId: '00000000-0000-4000-8000-0000000f1a17',
+        seq: 2,
+        stream: APP_SESSION_ID,
+        ts: '2026-01-01T00:10:00.000Z',
+        type: EVENT_TYPES.message,
+        payload,
+      };
+      let foldedState: ReturnType<typeof sessionsProjection.init> | null = null;
+      expect(() => {
+        foldedState = sessionsProjection.apply(bornState, hostileRecord);
+      }).not.toThrow();
+      expect(foldedState!.sessions[APP_SESSION_ID]!.turnInFlight).toBeUndefined();
+    });
+  }
+
+  it('a message for an unknown session fabricates nothing', () => {
+    const { state } = foldLog([
+      [createInput()],
+      [message({ appSessionId: 'ghost', role: 'user', content: 'hi' })],
+    ]);
+    expect(state.sessions.ghost).toBeUndefined();
+  });
+
+  it('purity: the input state and its records are never mutated', () => {
+    const { state: bornState } = foldLog([[createInput()]]);
+    const bornRecord = bornState.sessions[APP_SESSION_ID]!;
+    const messageRecord: EventRecord = {
+      eventId: '00000000-0000-4000-8000-0000000f1a18',
+      seq: 2,
+      stream: APP_SESSION_ID,
+      ts: '2026-01-01T00:10:00.000Z',
+      type: EVENT_TYPES.message,
+      payload: { appSessionId: APP_SESSION_ID, role: 'user', content: 'hi' },
+    };
+    const nextState = sessionsProjection.apply(bornState, messageRecord);
+    expect(nextState.sessions[APP_SESSION_ID]).not.toBe(bornRecord);
+    expect(bornRecord.turnInFlight).toBeUndefined();
+    expect(nextState.sessions[APP_SESSION_ID]!.turnInFlight).toBe(true);
+  });
+
+  // ASSERTION 7 — I6 across the NEW field, with the snapshot cut placed where it
+  // matters: INSIDE the turn, so the boot has to carry `turnInFlight: true`
+  // across the snapshot boundary and then clear it from the tail. A cut only at
+  // the ends would never exercise that.
+  it('I6: boot(snapshot+tail) equals replay-from-empty at EVERY cut, including mid-turn', () => {
+    const store = makeStore();
+    store.append([createInput()]);
+    store.append([livenessChanged({ appSessionId: APP_SESSION_ID, to: 'running', cause: 'spawn' })]);
+    store.append([userTurnInput]); // ← the set
+    store.append([queuedInput]);
+    store.append(withNotificationTrigger(runCompleted({ appSessionId: APP_SESSION_ID }))); // ← the clears
+    store.append([message({ appSessionId: APP_SESSION_ID, role: 'user', content: 'a second turn' })]);
+    store.append([livenessChanged({ appSessionId: APP_SESSION_ID, to: 'dormant', cause: 'idle' })]);
+
+    const records = readAllStreamsGrouped(store);
+    const fullReplaySerialized = sessionsProjection.serialize(
+      replayFromEmpty(sessionsProjection, records),
+    );
+    // Non-vacuity: the fixture must actually move the field, or the equivalence
+    // below would pass while testing nothing.
+    expect(fullReplaySerialized).toContain('turnInFlight');
+
+    // EVERY cut, not three — the mid-turn ones (snapshot holds the `message`
+    // that set the flag, tail holds the `run_completed` that clears it) are the
+    // ones the shared I6 helper's coarse cut points can miss.
+    for (let cutPoint = 0; cutPoint <= records.length; cutPoint += 1) {
+      const snapshotStore = new MemorySnapshotStore();
+      snapshotStore.save({
+        projectionId: sessionsProjection.id,
+        lastAppliedSeq: cutPoint === 0 ? {} : { [APP_SESSION_ID]: records[cutPoint - 1]!.seq },
+        state: replayFromEmpty(sessionsProjection, records.slice(0, cutPoint)),
+        savedAt: '2026-01-01T00:00:00.000Z',
+      });
+      expect(
+        sessionsProjection.serialize(bootFromSnapshot(sessionsProjection, snapshotStore, store)),
+        `cut ${cutPoint}`,
+      ).toBe(fullReplaySerialized);
+    }
+
+    // And the cut that carries the flag ACROSS the snapshot boundary really does
+    // hold it — stated so the loop above cannot go quietly vacuous.
+    const snapshotInsideTheTurn = replayFromEmpty(sessionsProjection, records.slice(0, 3));
+    expect(snapshotInsideTheTurn.sessions[APP_SESSION_ID]!.turnInFlight).toBe(true);
+  });
+});
+
 describe('sessions projection — I5/I6 restart byte-identity', () => {
   it('live router-subscribed applier equals replay-from-empty, byte-identical', () => {
     const store = makeStore();
