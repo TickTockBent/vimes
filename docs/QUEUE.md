@@ -1,13 +1,9 @@
 # Small queued items (dispatch-ready, waiting on a free slot / no conflict)
 
-*Q1 SHIPPED 2026-07-23. Entry kept until the next compaction, then delete.*
-
 Work items, not design records — decisions live in `decisions.md`, design in
 `design-directions.md`. Kept in `docs/` (not `scratchpad/`, which is gitignored
 working space) so the queue is durable and reachable from the phone, the same
 reason `slice-6-test-plan.md` lives here. Delete an entry when it ships.
-
----
 
 ---
 
@@ -42,52 +38,6 @@ slice close) · the board-as-sidebar / orchestration-chat end-state trigger
 **Deploy state at close:** daemon current — no restart owed. Everything after Q4
 was UI-only and already live via the gate's dist rebuild.
 
-## Q1 — "New session" belongs at the TOP of the mobile session list
-
-*(Wes, 2026-07-23: "put 'new session' at the top rather than forcing the user to
-scroll past every historical session.")*
-
-**File:** `packages/ui/src/views/SessionListView.vue` (575 lines). The spawn
-`<form>` currently sits at the BOTTOM, after the session `<ul>`.
-
-✅ **UNBLOCKED 2026-07-23** — step 9 landed (`115e728`) and did touch this file,
-adding the board nav entry, exactly as predicted. Dispatch against that HEAD.
-
-### The design question, decided when dispatched
-
-The literal reorder moves a **four-row** form (label · cwd input · SDK/PTY radios
-· submit) above the list, which pushes every session below the fold on a phone.
-That trades "scroll to reach New Session" for "scroll to reach your sessions" —
-the same cost, relocated.
-
-**Recommended instead: a collapsed `+ New session` affordance at the top that
-expands the form inline.** One row instead of four; New Session is the first
-thing you see; the list stays visible. Same intent, no trade.
-
-✅ **DECIDED 2026-07-23 (Wes): the collapsed affordance.** Context he gave —
-*"right now I have a few dozen sessions on the list and it takes quite a scroll
-to start a new one. Fine in testing, not a great quality of life for actual
-use."* So the target is **reaching New Session without scrolling at all**, while
-keeping the list itself immediately visible.
-
-### ⚠ The stale string that must move with it
-
-`SessionListView.vue:543` — the empty state reads *"No sessions yet — spawn one
-**below**, or Discover terminal-started ones."* That sentence becomes **wrong**
-the moment the form moves up. Update it in the same change; a UI that tells you
-to look in the wrong place is a small lie, and this project does not ship those.
-
-### Also check while in there
-- The form keeps its `min-h-[44px]` touch targets (phone-first).
-- Collapsed state must not hide a **failed spawn's** refusal message — a refusal
-  that arrives while the form is collapsed still has to reach the operator.
-- Dark-mode classes preserved.
-
-**Lift:** small — one view, plus a test if any pure logic falls out (collapse
-state is component state; probably nothing for `lib/`).
-
-
----
 
 ## Q2 — Session list scale: retention, and demoting it from a first-class surface
 
@@ -136,73 +86,6 @@ order, not during one.
 
 ---
 
-## Q3 — Sessions need a readable title
-
-*(Wes, 2026-07-23: "User originated sessions should also optionally have some
-kind of title even if we have to *generate* that title with a cheap haiku call
-or something, or we could just use the first user prompt as the title. System
-originated sessions can have a title set.")*
-
-**Half of this is already built.** `SessionRecord.name` exists, `session_renamed`
-sets it, and the list has a Rename button. What is missing is that a session
-*starts* nameless, so a few dozen of them are indistinguishable.
-
-### ✅ DECIDED 2026-07-23 (Wes): auto-named, user-renamable, and a user name is never overwritten
-
-> *"sessions should have a name set, but renamable by the user and if a user name
-> has been set the system never automatically changes it."*
-
-**Implement it structurally, not as a rule.** Two fields, and the system writes
-only one of them:
-
-- `name` — **human-supplied, and ONLY human-supplied.** Verified: `session_renamed`
-  has exactly one emitter (`sessionHost.renameSession:895`, reachable only from
-  the WS `rename` op), and the only other writer is `session_created` from the
-  spawn op's optional name. Nothing in the system auto-writes it today.
-- `derivedTitle` — **system-owned**, written at birth, never touching `name`.
-- Display is `name ?? derivedTitle`.
-
-⚠ **The point: the auto-titler must never write `name`.** Then "the system never
-automatically changes a user-set name" is not a rule that a future change can
-forget — it is impossible, because the code that would do it does not touch that
-field. Same move as structural escaping over a sanitizer, and the panel shell
-over a fork-discipline rule: **make it impossible, not forbidden.**
-
-**No flag is needed.** `name !== null` already means "a human chose this".
-
-For **system-originated** sessions (Wes: *"System originated sessions can have a
-title set"*), the task's title goes to `derivedTitle` too — not to `name` — so
-the invariant stays simple and a human rename still wins.
-
-Note `renameSession` caps a name at 120 chars; a derived title should respect a
-comparable bound for consistency at the same display sites.
-
-### Recommendation: derive from the first user message; do NOT start with a model call
-
-The first user message is **free, deterministic, already in the log** (the
-sessions projection folds `message` on its own stream, so this is a D34-safe
-same-stream fold), and needs no API, no latency, no cost and no new failure mode.
-A haiku call adds all five, plus nondeterminism in a codebase whose core is
-deliberately deterministic.
-
-⚠ Its honest edge cases, which are the reason to *measure before* reaching for a
-model: `/compact`, "continue", a resumed-session summary blob, or a giant pasted
-payload all make poor titles. **Ship the derivation, look at a few dozen real
-titles, and only then decide whether a model call earns its cost** (rule 0.7 —
-observe before declaring).
-
-### System-originated sessions get this nearly free
-
-Step 9 gave **tasks** a title, and `task_session_attached` already links a task
-to its session. So a dispatched session's title can come from its task with no
-new mechanism — and that is also the more useful label ("fix correction
-lifecycle", not the first prompt of a stage run).
-
-### Lift
-Small–medium: one projection fold, one pure derivation in `lib/` with tests, one
-label change in the list. The **decision above is the expensive part**, not the code.
-
----
 
 ## Q4 — The cache badge is unreadable, and it mixes two time bases
 
