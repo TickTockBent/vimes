@@ -8,6 +8,7 @@ import SearchPanel from './views/SearchPanel.vue';
 import TerminalView from './views/TerminalView.vue';
 import GitPanel from './views/GitPanel.vue';
 import CostLedgerView from './views/CostLedgerView.vue';
+import TaskBoardView from './views/TaskBoardView.vue';
 import { useVimesStore } from './stores/vimesStore.js';
 import { decideEditorReturn } from './lib/gitReview.js';
 import { parentDir } from './lib/treeNode.js';
@@ -75,6 +76,13 @@ const showGit = computed(() => route.value.routePath === '/git');
 // `#/cost` — the cost-ledger view (slice 5b step 4b). Statically imported like
 // the other views; it pulls in no heavy dep, so it adds no lazy chunk.
 const showCost = computed(() => route.value.routePath === '/cost');
+// `#/tasks` — the task board (slice 6 step 9). Statically imported like the
+// other views; it pulls in no heavy dep, so it adds no lazy chunk.
+//
+// ⚠ THIS ROUTE RENDERS THE MOBILE BOARD. A desktop layout is a separate unit and
+// will need its own decision about how the two share (or do not share) a route —
+// they are different presentations, not one responsive compromise.
+const showTasks = computed(() => route.value.routePath === '/tasks');
 // `/#/meters` — the deep-link target of the deployed threshold-notification push
 // (slice 5 step 4b). It used to fall through to SessionListView by ACCIDENT,
 // which was correct only because the meters strip happens to live there. Claim
@@ -112,6 +120,9 @@ function navigateToGit(): void {
 }
 function navigateToCost(): void {
   window.location.hash = '#/cost';
+}
+function navigateToTasks(): void {
+  window.location.hash = '#/tasks';
 }
 function navigateToEditor(path: string, line?: number, returnTo?: 'git'): void {
   const params = new URLSearchParams({ path });
@@ -189,6 +200,7 @@ const bannerText = computed(() => {
       @back="navigateHome"
     />
     <CostLedgerView v-else-if="showCost" @back="navigateHome" />
+    <TaskBoardView v-else-if="showTasks" @back="navigateHome" />
     <StreamView v-else-if="activeSessionId" :app-session-id="activeSessionId" @back="navigateHome" />
     <SessionListView
       v-else
@@ -199,6 +211,7 @@ const bannerText = computed(() => {
       @open-terminal="navigateToTerminal"
       @open-git="navigateToGit"
       @open-cost="navigateToCost"
+      @open-tasks="navigateToTasks"
     />
   </div>
 </template>

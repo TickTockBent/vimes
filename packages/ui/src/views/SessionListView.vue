@@ -32,6 +32,8 @@ const emit = defineEmits<{
   openTerminal: [];
   openGit: [];
   openCost: [];
+  // Slice 6 step 9 — the task board (mobile).
+  openTasks: [];
 }>();
 const store = useVimesStore();
 
@@ -320,6 +322,14 @@ onUnmounted(() => {
           @click="emit('openCost')"
         >
           💰 Cost
+        </button>
+        <button
+          type="button"
+          class="min-h-[44px] rounded-md border border-slate-300 px-3 text-sm font-medium active:bg-slate-100 dark:border-slate-700 dark:active:bg-slate-900"
+          aria-label="Task board"
+          @click="emit('openTasks')"
+        >
+          ▤ Tasks
         </button>
         <button
           type="button"

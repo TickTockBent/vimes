@@ -149,6 +149,82 @@ describe('tasks projection — task_created', () => {
     );
   });
 
+  it('folds the TITLE the birth record carries (step 9 widening)', () => {
+    // ASSERTION 1, first half. A task had no human-readable name at all before
+    // step 9, which is why the board could only be labelled by UUID.
+    const state = stateFromLog([
+      [
+        taskCreated({
+          taskId: TASK_B,
+          projectRoot: '/home/user/projects/vimes',
+          title: 'wire the kanban board to the tasks projection',
+          createdBy: 'human',
+          isolation: 'worktree',
+          stage: 'backlog',
+        }),
+      ],
+    ]);
+    const titledTask = state.tasks[TASK_B];
+    expect(titledTask!.title).toBe('wire the kanban board to the tasks projection');
+    // The widened record must still satisfy the record schema unchanged.
+    const validated = taskRecordSchema.safeParse(titledTask);
+    expect(validated.success, JSON.stringify(validated.error?.issues)).toBe(true);
+  });
+
+  it('a birth record with NO title folds to a record with NO title key — never ""', () => {
+    // ASSERTION 1, second half, and the reason the widening is OPTIONAL-only: a
+    // `task_created` written before the field existed must fold to exactly what
+    // it folded to then, or I6 breaks over every log already on disk.
+    //
+    // ⚠ Stated as a BYTE comparison against a hand-built pre-step-9 record and
+    // not merely `toBeUndefined()`, because `title: undefined` written as a KEY
+    // would also satisfy `toBeUndefined()` while changing what
+    // `Object.keys`-based tooling sees — and `''` would satisfy neither but is
+    // the tempting default. Absent stays absent.
+    const untitled = stateFromLog([[createTaskA()]]);
+    const bornTask = untitled.tasks[TASK_A]!;
+    expect('title' in bornTask).toBe(false);
+    expect(taskRecordSchema.safeParse(bornTask).success).toBe(true);
+
+    // A birth record from a titled task, minus the title, serializes to exactly
+    // the same bytes as the untitled one — the widening is invisible when unused.
+    const explicitlyUntitled = stateFromLog([
+      [
+        taskCreated({
+          taskId: TASK_A,
+          projectRoot: '/home/user/projects/vimes',
+          createdBy: 'human',
+          isolation: 'worktree',
+          stage: 'backlog',
+        }),
+      ],
+    ]);
+    expect(tasksProjection.serialize(untitled)).toBe(
+      tasksProjection.serialize(explicitlyUntitled),
+    );
+  });
+
+  it('an EMPTY-STRING title is folded verbatim — it is a title someone chose', () => {
+    // The converse of the rule above, and the reason the fold spreads rather
+    // than coalescing: `''` is not "no title". The projection does not decide
+    // which titles are worth keeping; the board decides what to RENDER, and it
+    // falls back to a short taskId for anything blank (see lib/taskBoard.ts).
+    const state = stateFromLog([
+      [
+        taskCreated({
+          taskId: TASK_A,
+          projectRoot: '/home/user/projects/vimes',
+          title: '',
+          createdBy: 'human',
+          isolation: 'worktree',
+          stage: 'backlog',
+        }),
+      ],
+    ]);
+    expect(state.tasks[TASK_A]!.title).toBe('');
+    expect('title' in state.tasks[TASK_A]!).toBe(true);
+  });
+
   it('a PARTIAL gates object folds exactly what was named, inventing nothing', () => {
     // Both gate fields are independently optional on the record. A task that
     // names only `requireHeadroom` must not acquire a `deferUntilReset` it never

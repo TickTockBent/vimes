@@ -77,6 +77,15 @@ export const tasksProjection: Projection<TasksState> = {
         const bornTask: TaskRecord = {
           taskId: payload.taskId,
           projectRoot: payload.projectRoot,
+          // `title` was widened onto the birth record in step 9, OPTIONAL-only.
+          // ⚠ SPREAD RATHER THAN DEFAULTED, and the difference is the point:
+          // `gates` above folds ABSENT → `{}` because an ungated task and a task
+          // with no gates are the same fact. A title has no such neutral value —
+          // `''` is a title someone chose, and `undefined` written as a key would
+          // change the serialized bytes of every pre-step-9 birth record and
+          // break I6. Absent stays absent; the board falls back to a short
+          // taskId rather than rendering a blank card.
+          ...(payload.title === undefined ? {} : { title: payload.title }),
           stage: payload.stage,
           manualReviewRequired: false,
           isolation: payload.isolation,

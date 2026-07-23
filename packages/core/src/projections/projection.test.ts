@@ -213,10 +213,17 @@ function buildTaskStreamStore(): MemoryEventStore {
   // already folds to a non-init state without any gate). BETA carries the gate
   // that its `dispatch_refused` below names, so the log tells one coherent story:
   // this task was gated on headroom, and the dispatcher refused it.
+  // ⚠ TITLED ON PURPOSE (slice 6 step 9), for exactly the reason the gate above
+  // is here: `task_created` was widened with an optional `title`, and a fold
+  // outside the I6 fixture is a fold outside replay equivalence. BETA is born
+  // EARLY, so the mid cut point carries a TITLED TASK IN THE SNAPSHOT — the case
+  // where the field has to survive a serialize/deserialize boundary rather than
+  // merely being re-folded from the tail.
   store.append([
     taskCreated({
       taskId: TASK_BETA,
       projectRoot: '/home/user/b',
+      title: 'price the D6 cache economics',
       createdBy: 'orchestrator',
       isolation: 'shared-dir',
       stage: 'backlog',
@@ -266,12 +273,16 @@ function buildTaskStreamStore(): MemoryEventStore {
   ]);
   // GAMMA carries the OTHER gate field, so both halves of the widened shape are
   // inside the replayed log rather than only the one the dispatcher happens to
-  // consume first. ALPHA deliberately stays UNGATED — an old-shape birth record,
-  // proving the optional field still folds to `{}` across every cut point.
+  // consume first. It is also born LATE and TITLED, which puts the step-9 field
+  // on the far side of the mid cut point — so `title` is exercised both from a
+  // snapshot (BETA) and from the replayed TAIL (GAMMA). ALPHA deliberately stays
+  // UNGATED AND UNTITLED — an old-shape birth record, proving both optional
+  // widenings still fold to their pre-widening result at every cut point.
   store.append([
     taskCreated({
       taskId: TASK_GAMMA,
       projectRoot: '/home/user/c',
+      title: 'wire the watchdog scenario into the profile suite',
       createdBy: 'human',
       isolation: 'worktree',
       stage: 'planning',
@@ -458,6 +469,40 @@ describe('projection I6 — boot(snapshot+tail) equals replay-from-empty', () =>
       requireHeadroom: { meterId: 'window-5h', pct: 40 },
     });
     expect(state.tasks[TASK_GAMMA]!.gates).toEqual({ deferUntilReset: 'window-5h' });
+  });
+
+  it('the tasks I6 fixture folds the TITLES its birth records carry (step 9)', () => {
+    // ASSERTION 2. The statement of what the I6 case above replays for the
+    // step-9 widening, so "I6 covers the title fold" is asserted rather than
+    // claimed — the non-vacuity guard only proves the fixture moves the
+    // projection AT ALL, and it already cleared that on every pre-step-9 event.
+    const store = buildTaskStreamStore();
+    const state = replayFromEmpty(tasksProjection, readAllStreamsGrouped(store));
+    expect(state.tasks[TASK_BETA]!.title).toBe('price the D6 cache economics');
+    expect(state.tasks[TASK_GAMMA]!.title).toBe(
+      'wire the watchdog scenario into the profile suite',
+    );
+    // ALPHA is the old-shape record: no title KEY at all, not `undefined` and
+    // not `''`. Asserted with `in` because `toBeUndefined()` would also pass for
+    // a record that grew the key with an undefined value.
+    expect('title' in state.tasks[TASK_ALPHA]!).toBe(false);
+  });
+
+  it('the mid CUT POINT of the tasks I6 fixture really carries a titled task', () => {
+    // ASSERTION 2, the half that matters: the previous case proves the title
+    // survives a full replay, which a fold that only ever runs forward would
+    // also satisfy. What I6 actually tests is the SNAPSHOT boundary — so state
+    // this explicitly rather than trusting the cut arithmetic to land usefully.
+    // If a later fixture edit pushes BETA's birth past the mid cut, this reddens
+    // and says so instead of the title case going quietly vacuous.
+    const store = buildTaskStreamStore();
+    const records = readAllStreamsGrouped(store);
+    const midCut = Math.floor(records.length / 2);
+    const snapshotState = replayFromEmpty(tasksProjection, records.slice(0, midCut));
+    expect(snapshotState.tasks[TASK_BETA]?.title).toBe('price the D6 cache economics');
+    // ...and GAMMA's title arrives in the TAIL, on the far side of that cut, so
+    // both routes into the booted state are exercised.
+    expect(snapshotState.tasks[TASK_GAMMA]).toBeUndefined();
   });
 
   it('the tasks I6 fixture also folds task_session_attached into sessionRefs', () => {
