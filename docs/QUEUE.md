@@ -114,16 +114,35 @@ originated sessions can have a title set.")*
 sets it, and the list has a Rename button. What is missing is that a session
 *starts* nameless, so a few dozen of them are indistinguishable.
 
-### ⚠ The design catch: an auto-title and a human name are TWO facts
+### ✅ DECIDED 2026-07-23 (Wes): auto-named, user-renamable, and a user name is never overwritten
 
-If auto-titling writes to `name`, a later auto-title can clobber a rename the
-operator deliberately made — and a rename can be silently undone by a background
-process, which is the worst kind of bug to notice. Either:
-- keep them as **separate fields** with an explicit precedence (`name ?? derivedTitle`), or
-- write the derived title **once, at birth only**, and never touch it again.
+> *"sessions should have a name set, but renamable by the user and if a user name
+> has been set the system never automatically changes it."*
 
-Decide this before any implementation. It is principle 9 in its usual form: one
-source of record per fact, or two facts with a stated winner.
+**Implement it structurally, not as a rule.** Two fields, and the system writes
+only one of them:
+
+- `name` — **human-supplied, and ONLY human-supplied.** Verified: `session_renamed`
+  has exactly one emitter (`sessionHost.renameSession:895`, reachable only from
+  the WS `rename` op), and the only other writer is `session_created` from the
+  spawn op's optional name. Nothing in the system auto-writes it today.
+- `derivedTitle` — **system-owned**, written at birth, never touching `name`.
+- Display is `name ?? derivedTitle`.
+
+⚠ **The point: the auto-titler must never write `name`.** Then "the system never
+automatically changes a user-set name" is not a rule that a future change can
+forget — it is impossible, because the code that would do it does not touch that
+field. Same move as structural escaping over a sanitizer, and the panel shell
+over a fork-discipline rule: **make it impossible, not forbidden.**
+
+**No flag is needed.** `name !== null` already means "a human chose this".
+
+For **system-originated** sessions (Wes: *"System originated sessions can have a
+title set"*), the task's title goes to `derivedTitle` too — not to `name` — so
+the invariant stays simple and a human rename still wins.
+
+Note `renameSession` caps a name at 120 chars; a derived title should respect a
+comparable bound for consistency at the same display sites.
 
 ### Recommendation: derive from the first user message; do NOT start with a model call
 
