@@ -12,7 +12,8 @@ import TaskBoardView from './views/TaskBoardView.vue';
 import { useVimesStore } from './stores/vimesStore.js';
 import { decideEditorReturn } from './lib/gitReview.js';
 import { parentDir } from './lib/treeNode.js';
-import { buildHash, parseRoute, type Route } from './lib/route.js';
+import { buildHash, type Route } from './lib/route.js';
+import { parsePanelStack, type PanelStack } from './lib/panelStack.js';
 
 const store = useVimesStore();
 const hash = ref(window.location.hash);
@@ -38,7 +39,17 @@ onUnmounted(() => {
 //
 // So: do not add a `routePath === '/x'` check here. A new route is a rule in
 // route.ts's ROUTE_RULES, in its right precedence position, with a table row.
-const activeRoute = computed<Route>(() => parseRoute(hash.value));
+//
+// PHASE 2 (D39): navigation state is now a STACK of panels, each a route. The
+// hash is parsed to that stack (lib/panelStack.ts), and this file renders the
+// TRAILING panel — the focused/visible one. With no multi-panel producer yet
+// (no push path; every navigate* still writes a single-panel hash), the stack is
+// ALWAYS length 1, so `activeRoute` is byte-identical to the old
+// `parseRoute(hash)`: the last element of `[parseRoute(hash)]` is exactly
+// `parseRoute(hash)`. Phase 3+4 renders more than the trailing panel; phase 2
+// renders exactly today's single view.
+const panelStack = computed<PanelStack>(() => parsePanelStack(hash.value));
+const activeRoute = computed<Route>(() => panelStack.value[panelStack.value.length - 1]!);
 
 // Narrowing projections of the ONE route — only one can ever be non-null,
 // because `parseRoute` returns a single discriminated value. The template's
