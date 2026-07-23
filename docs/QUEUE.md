@@ -99,3 +99,90 @@ demotion first and re-measure the pain before designing archiving.
 ⚠ Retention is the half with a **destructive** option in it. Anything that
 removes events is rule-0.1 territory and earns a decision record before a work
 order, not during one.
+
+
+---
+
+## Q3 — Sessions need a readable title
+
+*(Wes, 2026-07-23: "User originated sessions should also optionally have some
+kind of title even if we have to *generate* that title with a cheap haiku call
+or something, or we could just use the first user prompt as the title. System
+originated sessions can have a title set.")*
+
+**Half of this is already built.** `SessionRecord.name` exists, `session_renamed`
+sets it, and the list has a Rename button. What is missing is that a session
+*starts* nameless, so a few dozen of them are indistinguishable.
+
+### ⚠ The design catch: an auto-title and a human name are TWO facts
+
+If auto-titling writes to `name`, a later auto-title can clobber a rename the
+operator deliberately made — and a rename can be silently undone by a background
+process, which is the worst kind of bug to notice. Either:
+- keep them as **separate fields** with an explicit precedence (`name ?? derivedTitle`), or
+- write the derived title **once, at birth only**, and never touch it again.
+
+Decide this before any implementation. It is principle 9 in its usual form: one
+source of record per fact, or two facts with a stated winner.
+
+### Recommendation: derive from the first user message; do NOT start with a model call
+
+The first user message is **free, deterministic, already in the log** (the
+sessions projection folds `message` on its own stream, so this is a D34-safe
+same-stream fold), and needs no API, no latency, no cost and no new failure mode.
+A haiku call adds all five, plus nondeterminism in a codebase whose core is
+deliberately deterministic.
+
+⚠ Its honest edge cases, which are the reason to *measure before* reaching for a
+model: `/compact`, "continue", a resumed-session summary blob, or a giant pasted
+payload all make poor titles. **Ship the derivation, look at a few dozen real
+titles, and only then decide whether a model call earns its cost** (rule 0.7 —
+observe before declaring).
+
+### System-originated sessions get this nearly free
+
+Step 9 gave **tasks** a title, and `task_session_attached` already links a task
+to its session. So a dispatched session's title can come from its task with no
+new mechanism — and that is also the more useful label ("fix correction
+lifecycle", not the first prompt of a stage run).
+
+### Lift
+Small–medium: one projection fold, one pure derivation in `lib/` with tests, one
+label change in the list. The **decision above is the expensive part**, not the code.
+
+---
+
+## Q4 — The cache badge is unreadable, and it mixes two time bases
+
+*(Wes, 2026-07-23: "Some sessions have a badge '1h cache - 49%' or whatever.
+This isn't clear what it means. Is it saying this session is still inside its 1h
+cache window, that it only has a 1h cache? What is the percentage?")*
+
+**The maths is correct; the presentation is not.** Both of Wes's guesses at the
+meaning were wrong, and he designed the system — treat that as decisive.
+
+What it actually shows (`lib/cacheBadge.ts`, `cacheClassification.ts`):
+- **`1h cache`** — the TTL tier of the **LATEST observed** cache *write*, from
+  `cache_creation.ephemeral_1h_input_tokens` vs `ephemeral_5m_input_tokens`. Not
+  a window state, not a capability.
+- **`49%`** — the **CUMULATIVE** hit rate,
+  `cacheRead / (cacheRead + cacheCreate + input)`.
+
+⚠ **The real defect: one half is latest-observed and the other is whole-session
+cumulative, presented as a single unit.** That is not terseness, it is two
+measurements on two time bases wearing one label.
+
+It also omits the operator meaning: cache reads bill at **×0.10** of base input,
+1h writes at **×2.00**, 5m at **×1.25** (slice-5b binding rule 6). A high hit
+rate is money saved; the tier says what the writes cost.
+
+### Constraints on any fix
+- **D24 still binds:** `serviceTier` is passed through raw and must never be
+  rendered as a fabricated billing bucket.
+- The badge must stay honest about `none` / `mixed` tiers rather than hiding them.
+- Whatever is shown, **the two time bases must be distinguishable** — either
+  label them, or make both cumulative, or drop one.
+
+### Lift
+Small — a labelling change in `lib/cacheBadge.ts` plus the view, with tests. No
+new data is needed; everything required is already in the projection.
