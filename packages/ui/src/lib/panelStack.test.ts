@@ -10,7 +10,14 @@
 
 import { describe, expect, it } from 'vitest';
 import { buildHash, parseRoute, type Route } from './route.js';
-import { buildPanelStackHash, parsePanelStack, type PanelStack } from './panelStack.js';
+import {
+  buildPanelStackHash,
+  parsePanelStack,
+  popPanel,
+  pushPanel,
+  replaceTopPanel,
+  type PanelStack,
+} from './panelStack.js';
 
 const TEN_KILOBYTE_SESSION_ID = 'a'.repeat(10_000);
 
@@ -236,5 +243,116 @@ describe('no single-panel hash starts with the reserved `#/stack/` marker', () =
       expect(hash.startsWith('#/stack/')).toBe(false);
       expect(hash.startsWith('/stack/')).toBe(false);
     }
+  });
+});
+
+// ── mutation ops (phase 3) ───────────────────────────────────────────────────
+// Two fixed routes to compose stacks with — deliberately distinct views so a
+// wrong-index bug (dropping/replacing the wrong end) shows up as a route-shape
+// mismatch, not a coincidental equality.
+const STREAM_A: Route = { view: 'stream', appSessionId: 'a' };
+const STREAM_B: Route = { view: 'stream', appSessionId: 'b' };
+const GIT: Route = { view: 'git' };
+const TERMINAL: Route = { view: 'terminal' };
+
+// ── ASSERTION 1: pushPanel appends and lengthens by one; original unmutated ──
+
+describe('pushPanel', () => {
+  it('appends the new route as the trailing panel', () => {
+    const original: PanelStack = [STREAM_A];
+    const pushed = pushPanel(original, GIT);
+    expect(pushed).toEqual([STREAM_A, GIT]);
+  });
+
+  it('lengthens the stack by exactly one', () => {
+    const twoPanel: PanelStack = [STREAM_A, GIT];
+    expect(pushPanel(twoPanel, TERMINAL)).toHaveLength(3);
+  });
+
+  it('does not mutate the original stack', () => {
+    const original: PanelStack = [STREAM_A, GIT];
+    const snapshotBeforePush = [...original];
+    pushPanel(original, TERMINAL);
+    expect(original).toEqual(snapshotBeforePush);
+  });
+});
+
+// ── ASSERTION 2: popPanel drops the trailing panel; length-1 pops to itself ──
+
+describe('popPanel', () => {
+  it('drops the trailing panel, leaving the rest intact', () => {
+    const stack: PanelStack = [STREAM_A, GIT, TERMINAL];
+    expect(popPanel(stack)).toEqual([STREAM_A, GIT]);
+  });
+
+  it('a length-1 stack pops to itself — the totality floor, never empty', () => {
+    const single: PanelStack = [STREAM_A];
+    expect(popPanel(single)).toEqual([STREAM_A]);
+    expect(popPanel(single)).toHaveLength(1);
+  });
+
+  it('does not mutate the original stack', () => {
+    const original: PanelStack = [STREAM_A, GIT];
+    const snapshotBeforePop = [...original];
+    popPanel(original);
+    expect(original).toEqual(snapshotBeforePop);
+  });
+});
+
+// ── ASSERTION 3: replaceTopPanel swaps only the last route ───────────────────
+
+describe('replaceTopPanel', () => {
+  it('swaps the trailing route, leaving earlier panels identical', () => {
+    const stack: PanelStack = [STREAM_A, GIT];
+    expect(replaceTopPanel(stack, TERMINAL)).toEqual([STREAM_A, TERMINAL]);
+  });
+
+  it('on a length-1 stack this is "navigate in place" — length unchanged', () => {
+    const single: PanelStack = [STREAM_A];
+    const replaced = replaceTopPanel(single, STREAM_B);
+    expect(replaced).toEqual([STREAM_B]);
+    expect(replaced).toHaveLength(1);
+  });
+
+  it('does not mutate the original stack', () => {
+    const original: PanelStack = [STREAM_A, GIT];
+    const snapshotBeforeReplace = [...original];
+    replaceTopPanel(original, TERMINAL);
+    expect(original).toEqual(snapshotBeforeReplace);
+  });
+});
+
+// ── ASSERTION 4: pushPanel/replaceTopPanel on [] → [route], totality ─────────
+
+describe('pushPanel and replaceTopPanel on an (impossible) empty stack', () => {
+  it('pushPanel([], route) is [route], no throw', () => {
+    expect(() => pushPanel([], STREAM_A)).not.toThrow();
+    expect(pushPanel([], STREAM_A)).toEqual([STREAM_A]);
+  });
+
+  it('replaceTopPanel([], route) is [route], no throw', () => {
+    expect(() => replaceTopPanel([], STREAM_A)).not.toThrow();
+    expect(replaceTopPanel([], STREAM_A)).toEqual([STREAM_A]);
+  });
+});
+
+// ── ASSERTION 5: ops compose and still round-trip the hash ───────────────────
+
+describe('mutation ops compose and survive a buildPanelStackHash/parsePanelStack round trip', () => {
+  it('push twice then build→parse deep-equals the composed stack', () => {
+    const composed = pushPanel(pushPanel([STREAM_A], GIT), TERMINAL);
+    expect(composed).toEqual([STREAM_A, GIT, TERMINAL]);
+    expect(parsePanelStack(buildPanelStackHash(composed))).toEqual(composed);
+  });
+
+  it('push, pop, push, replace composes and round-trips', () => {
+    const composed = replaceTopPanel(
+      pushPanel(popPanel(pushPanel([STREAM_A], GIT)), TERMINAL),
+      STREAM_B,
+    );
+    // pushPanel(GIT) -> [A, GIT]; popPanel -> [A]; pushPanel(TERMINAL) -> [A, TERMINAL];
+    // replaceTopPanel(B) -> [A, B]
+    expect(composed).toEqual([STREAM_A, STREAM_B]);
+    expect(parsePanelStack(buildPanelStackHash(composed))).toEqual(composed);
   });
 });

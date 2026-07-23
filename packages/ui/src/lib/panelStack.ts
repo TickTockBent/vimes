@@ -102,3 +102,47 @@ export function buildPanelStackHash(stack: PanelStack): string {
     STACK_HASH_PREFIX + stack.map((route) => encodeURIComponent(buildHash(route))).join('/')
   );
 }
+
+// ── mutation ops (phase 3) ───────────────────────────────────────────────────
+//
+// Three pure primitives the shell composes into navigation. Each returns a NEW
+// PanelStack — never mutates its argument, same immutable posture as the parse/
+// build pair above — and each preserves the length->=1 invariant PanelStack
+// already promises. What they do NOT decide: how many panels the viewport
+// RENDERS (that is lib/layoutMode.ts, a separate axis) or WHEN the shell should
+// push vs replace (that policy lives in the shell unit, not here). The stack can
+// hold more panels than are ever shown; these ops don't know or care.
+
+// Append a panel. The stack grows by exactly one; the shell renders the
+// trailing N of whatever this returns. An empty stack is structurally
+// impossible (every parse guarantees length >= 1), but totality (I8) means this
+// still has to answer rather than throw — pushing onto nothing is defined as
+// starting a new one-panel stack, the same floor popPanel below rests on.
+export function pushPanel(stack: PanelStack, route: Route): PanelStack {
+  return [...stack, route];
+}
+
+// Drop the trailing panel ("back"). NEVER returns an empty stack: a length-1
+// stack pops TO ITSELF, unchanged. This is the totality floor the whole panel
+// model rests on — "the app is never at no panel" (mirrors parsePanelStack's
+// own invariant) — so the shell can call this unconditionally on any "back"
+// action without a guard for "is there anything left to pop".
+export function popPanel(stack: PanelStack): PanelStack {
+  if (stack.length <= 1) {
+    return stack;
+  }
+  return stack.slice(0, -1);
+}
+
+// Replace the trailing panel's route in place; every earlier panel is
+// untouched and the length does not change. On a length-1 stack this IS
+// today's single-panel navigation (swap the one route) — nothing new, just the
+// N=1 degenerate case of the general op. An empty stack again can't occur, but
+// totality says: starting a fresh one-panel stack is the sane answer, same as
+// pushPanel — there is no "top" to replace, so replace degrades to push.
+export function replaceTopPanel(stack: PanelStack, route: Route): PanelStack {
+  if (stack.length === 0) {
+    return [route];
+  }
+  return [...stack.slice(0, -1), route];
+}
