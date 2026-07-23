@@ -148,6 +148,21 @@ export type ProjectionSnapshot = z.infer<typeof projectionSnapshotSchema>;
 export const taskRecordSchema = z.object({
   taskId: z.string(),
   projectRoot: z.string(),
+  // ⚠ ADDED IN SLICE 6 STEP 9, **OPTIONAL-ONLY** — the same widening discipline
+  // `gates` followed in step 4b and `meterRecordSchema` documents above. A task
+  // had no human-readable name at all until now, which made a board labelled by
+  // UUID the only board that could exist. Every `task_created` already written
+  // omits it, still validates, and still serializes to the same bytes (I6).
+  //
+  // ⚠ **ABSENT STAYS ABSENT, NEVER `''`.** The projection does not default this
+  // the way it defaults `gates` to `{}`: an empty string is a title someone
+  // chose, and an untitled task is a different fact from a task titled with
+  // nothing. The UI falls back to a short taskId rather than rendering a blank.
+  //
+  // Set at creation ONLY. There is deliberately no `task_renamed` event and no
+  // PATCH — renaming would need its own decision (sessions have
+  // `session_renamed` as the precedent if it is ever wanted).
+  title: z.string().optional(),
   stage: z.enum([
     'backlog',
     'planning',

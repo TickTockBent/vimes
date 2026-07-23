@@ -7,6 +7,7 @@ import type { TerminalListItem } from '../lib/terminalList.js';
 import type { CacheObservabilityRecord } from '../lib/cacheBadge.js';
 import type { DerivedUsageBody, UsageRefreshOutcome, UsageSnapshot } from '../lib/meterDisplay.js';
 import type { CostLedgerBody } from '../lib/costDisplay.js';
+import type { TaskApiAnswer } from '../lib/taskBoard.js';
 import type { GitStatus, GitFileDiff, GitRepoEntry, GitDiffContext } from '../lib/gitReview.js';
 import type { EventRecord, SessionRecord } from '../lib/types.js';
 import { derivePushState, type PushUiState } from '../lib/pushState.js';
@@ -28,6 +29,19 @@ import {
 const MIN_BACKOFF_MS = 1000;
 const MAX_BACKOFF_MS = 10_000;
 const SESSIONS_REFRESH_THROTTLE_MS = 1000;
+
+// The task board's live channel (slice 6 step 9). Every task fact is written to
+// this ONE stream, so the board subscribes to it by name exactly as a session
+// view subscribes to a session's stream — there is no polling loop.
+//
+// ⚠ THE TRIGGER IS THE STREAM, NOT A LIST OF EVENT TYPES, and that is deliberate.
+// `SESSIONS_AFFECTING_TYPES` below has to enumerate types because session facts
+// are spread across many streams; task facts are not. Projections are
+// STREAM-LOCAL (architecture.md), so "an event arrived on 'tasks'" is exactly
+// the condition under which the tasks projection can have moved — and a task
+// event type added to core later cannot silently stop refreshing the board the
+// way an out-of-date type list would.
+const TASKS_STREAM = 'tasks';
 
 // The wsHub upgrade handler (packages/daemon/src/app.ts) does not filter by
 // path at all — confirmed by packages/daemon/src/wsHub.test.ts connecting to
@@ -153,6 +167,19 @@ export const useVimesStore = defineStore('vimes', () => {
   // disable itself and the view can show a spinner instead of a stale-vs-fresh
   // ambiguity.
   const costLedgerLoading = ref(false);
+  // ── Task board (slice 6 step 9) — the tasks projection, read over the SAME
+  // endpoint everything else reads (GET /api/projections/tasks). There is
+  // deliberately no `GET /api/tasks`: 4b omitted it on purpose (principle 9, one
+  // source of record per fact) and that decision stands.
+  //
+  // Held as the RAW body rather than a parsed shape, because every derivation
+  // lives in lib/taskBoard.ts and that module is TOTAL over hostile input (I8).
+  // Parsing here would put a second, weaker validator in front of it.
+  const tasksProjectionBody = ref<unknown>(null);
+  // True only while the FIRST fetch is outstanding, so the view can tell "we
+  // have not looked yet" from "we looked and the board is empty". An empty board
+  // is a fact; a blank screen that means "still loading" is not.
+  const tasksLoading = ref(false);
   // ── Git review (slice 4 step 3) — the primary-human-job surface (spec §3.4) ──
   // Plain REST-into-ref, mirroring fetchTerminals: fetch, credentials
   // same-origin, tolerant of transient failure. The daemon's /api/git/* endpoints
@@ -381,6 +408,97 @@ export const useVimesStore = defineStore('vimes', () => {
     }
   }
 
+  // ── Task board (slice 6 step 9) ────────────────────────────────────────────
+  //
+  // GET /api/projections/tasks — the SAME endpoint every other projection is read
+  // through, returning the projection's serialized canonical JSON. Deliberately
+  // NOT a new `GET /api/tasks`: 4b omitted that route on purpose (principle 9),
+  // and a second reader of the same fact is exactly the drift it forbids.
+  //
+  // Called on the board's open, and again whenever an event lands on the 'tasks'
+  // stream (see applyServerEnvelope). NO POLLING LOOP.
+  async function fetchTasks(): Promise<void> {
+    try {
+      const response = await fetch('/api/projections/tasks', { credentials: 'same-origin' });
+      if (!response.ok) {
+        return;
+      }
+      // Parsed as plain JSON and handed on RAW: lib/taskBoard.ts is total over
+      // whatever shape arrives, and validating here would only add a second,
+      // weaker gate in front of it.
+      tasksProjectionBody.value = JSON.parse(await response.text()) as unknown;
+    } catch {
+      // Transient network hiccup — the next task event (or a re-open) retries.
+      // The previous body stays; nothing is fabricated.
+    } finally {
+      tasksLoading.value = false;
+    }
+  }
+
+  // The three task WRITES. All three are plain same-origin POSTs that return the
+  // daemon's STATUS AND BODY VERBATIM to the caller — they classify nothing.
+  //
+  // ⚠ THAT IS THE WHOLE POINT (rule 0.3, principle 10). The daemon's answer is
+  // the answer: a 409 carries an enumerated rejection the state machine made and
+  // the log already records (I7). The store must not turn it into a boolean, and
+  // must not update `tasksProjectionBody` from a response — the PROJECTION is the
+  // record, and the board only moves when the projection says it moved. There is
+  // no optimistic path here to accidentally take.
+  async function postTaskApi(path: string, requestBody: unknown): Promise<TaskApiAnswer> {
+    try {
+      const response = await fetch(path, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(requestBody),
+      });
+      let parsedBody: unknown = null;
+      try {
+        parsedBody = await response.json();
+      } catch {
+        // A body we cannot read is reported as absent; the STATUS still stands
+        // and the describe* helpers render it honestly.
+        parsedBody = null;
+      }
+      return { status: response.status, body: parsedBody };
+    } catch {
+      // Status 0 = "the request never reached the daemon". Deliberately not
+      // dressed up as any HTTP status: nothing was proposed, and nothing was
+      // written, and the board must not imply otherwise.
+      return { status: 0, body: null };
+    }
+  }
+
+  function createTask(input: { projectRoot: string; title?: string }): Promise<TaskApiAnswer> {
+    return postTaskApi('/api/tasks', {
+      projectRoot: input.projectRoot,
+      createdBy: 'human',
+      ...(input.title === undefined ? {} : { title: input.title }),
+    });
+  }
+
+  // PROPOSE a transition. The name is the contract: this does not move anything.
+  function proposeTaskTransition(taskId: string, toStage: string): Promise<TaskApiAnswer> {
+    return postTaskApi(`/api/tasks/${encodeURIComponent(taskId)}/transitions`, {
+      toStage,
+      proposedBy: 'human',
+    });
+  }
+
+  // ONE explicit dispatch attempt — no retry, no loop, mirroring the route.
+  function dispatchTask(taskId: string): Promise<TaskApiAnswer> {
+    return postTaskApi(`/api/tasks/${encodeURIComponent(taskId)}/dispatch`, {});
+  }
+
+  // Subscribe the board to the 'tasks' stream and take a first read. Idempotent:
+  // `subscribe` tracks its own set, and a re-open just re-subscribes from the
+  // lastSeq it already holds (the I2 client behaviour every other view uses).
+  function watchTasks(): void {
+    tasksLoading.value = tasksProjectionBody.value === null;
+    subscribe(TASKS_STREAM);
+    void fetchTasks();
+  }
+
   // ── Git review fetches (mirror fetchTerminals: plain REST, same-origin creds,
   // tolerant). A clean 4xx from the daemon carries { error, detail? }; we surface
   // the classified reason to gitError so the panel can show it inline. A transient
@@ -564,6 +682,14 @@ export const useVimesStore = defineStore('vimes', () => {
         state.lastSeq = envelope.event.seq;
         if (SESSIONS_AFFECTING_TYPES.has(envelope.event.type)) {
           scheduleSessionsRefresh();
+        }
+        // The task board's live channel (step 9). Stream-local rather than
+        // type-listed — see TASKS_STREAM. This is what makes a card move WITHOUT
+        // an optimistic local edit: a transition the machine accepted becomes a
+        // `task_transitioned` on this stream, which re-reads the projection,
+        // which is what the board renders.
+        if (envelope.event.stream === TASKS_STREAM) {
+          void fetchTasks();
         }
         return;
       }
@@ -1174,6 +1300,15 @@ export const useVimesStore = defineStore('vimes', () => {
     costLedger,
     costLedgerLoading,
     fetchCostLedger,
+    // Task board (slice 6 step 9) — read the projection, propose transitions,
+    // dispatch. Nothing here writes task state locally.
+    tasksProjectionBody,
+    tasksLoading,
+    watchTasks,
+    fetchTasks,
+    createTask,
+    proposeTaskTransition,
+    dispatchTask,
     // Git review (slice 4 step 3)
     gitStatus,
     gitDiffFiles,

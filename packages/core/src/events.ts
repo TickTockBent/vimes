@@ -469,9 +469,17 @@ export const meterPushOutcomePayloadSchema = z.object({
 // entire refusal path test-only — a gate nobody could ever ask for. The creator
 // names the gates; this event records what was named (rule 0.5: the data shape
 // lands with its consumer, which is the task API in this same step).
+// ⚠ WIDENED AGAIN IN SLICE 6 STEP 9 with `title`, OPTIONAL-only, exactly as
+// `gates` was widened above and for the same reason: a birth record written
+// before the field existed omits it, still validates, and still serializes to
+// the same bytes. Title is named at creation and never changed — there is no
+// `task_renamed` (see the note on `taskRecordSchema.title`).
 export const taskCreatedPayloadSchema = z.object({
   taskId: z.string(),
   projectRoot: z.string(),
+  // Derived from the record's own field rather than re-typed, so the event and
+  // the record can never drift on the shape (`title` is already optional there).
+  title: taskRecordSchema.shape.title,
   createdBy: taskRecordSchema.shape.createdBy,
   isolation: taskRecordSchema.shape.isolation,
   stage: taskStageSchema,

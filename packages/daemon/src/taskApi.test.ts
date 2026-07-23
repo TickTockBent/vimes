@@ -285,6 +285,93 @@ describe('POST /api/tasks — create', () => {
       deferUntilReset: 'weekly-cap',
     });
   });
+
+  // ── slice 6 step 9: the title, and its boundary cap ───────────────────────
+
+  it('accepts a TITLE, persists it in the birth record, and returns it', async () => {
+    // ASSERTION 3. Before step 9 a task had no human-readable name at all, which
+    // is the whole reason the board could only be labelled by UUID. Asserted at
+    // BOTH ends — the response body AND the event actually written — because a
+    // route that echoed its own input would satisfy the first alone.
+    const harness = buildApiHarness();
+    const task = await createTaskThrough(harness, { title: 'add a card title to the board' });
+    expect(task.title).toBe('add a card title to the board');
+
+    expect(harness.taskEventTypes()).toEqual([EVENT_TYPES.taskCreated]);
+    const birthRecord = harness.taskEvents()[0]!;
+    expect((birthRecord.payload as { title?: unknown }).title).toBe(
+      'add a card title to the board',
+    );
+  });
+
+  it('a title AT the cap is accepted; one character OVER is 400 with NO EVENT', async () => {
+    // ASSERTION 4. A title is free text from an untrusted caller landing in a
+    // durable append-only record and on a rendered card (I8), so it is bounded at
+    // the boundary — and the refusal follows the 4b idiom exactly: a body that
+    // was never a valid proposal WRITES NOTHING.
+    //
+    // ⚠ THE INSTRUMENT IS THE LOG, NOT THE STATUS CODE. A route that emitted the
+    // birth record before validating would still answer 400 here; only the
+    // untouched stream head proves nothing was written.
+    const cap = 200;
+    const harness = buildApiHarness();
+
+    const atTheCap = await createTaskThrough(harness, { title: 'x'.repeat(cap) });
+    expect(atTheCap.title).toHaveLength(cap);
+    const headAfterAcceptedTitle = harness.tasksHead();
+
+    const overTheCap = await harness.request(
+      '/api/tasks',
+      postJson({
+        projectRoot: harness.allowedRoot,
+        createdBy: 'human',
+        title: 'x'.repeat(cap + 1),
+      }),
+    );
+    expect(overTheCap.status).toBe(400);
+    expect(harness.tasksHead()).toBe(headAfterAcceptedTitle);
+    expect(harness.taskEventTypes()).toEqual([EVENT_TYPES.taskCreated]);
+  });
+
+  it('a NON-STRING title is 400 with no event — the cap is not the only guard', async () => {
+    // The neighbouring hostile shape: a caller sending an object/array/number
+    // where a title belongs must be refused by the same boundary, not coerced.
+    const harness = buildApiHarness();
+    for (const hostileTitle of [42, { text: 'nope' }, ['nope'], true]) {
+      const response = await harness.request(
+        '/api/tasks',
+        postJson({ projectRoot: harness.allowedRoot, createdBy: 'human', title: hostileTitle }),
+      );
+      expect(response.status, JSON.stringify(hostileTitle)).toBe(400);
+    }
+    expect(harness.tasksHead()).toBe(0);
+  });
+
+  it('creation with NO title still succeeds and the record carries no title key', async () => {
+    // ASSERTION 5's shape at the route: the widening is OPTIONAL-only, so an
+    // untitled creation is byte-for-byte the pre-step-9 request. Asserted with
+    // `in` rather than `toBeUndefined()` — a record that grew `title: undefined`
+    // would pass the latter while changing what the projection serializes.
+    // (4b's own create cases above are UNEDITED and still pass; that is the rest
+    // of assertion 5.)
+    const harness = buildApiHarness();
+    const task = await createTaskThrough(harness);
+    expect('title' in task).toBe(false);
+
+    const birthRecord = harness.taskEvents()[0]!;
+    expect('title' in (birthRecord.payload as object)).toBe(false);
+  });
+
+  it('an EMPTY-STRING title is accepted verbatim — the route does not editorialise', async () => {
+    // The boundary bounds LENGTH; it does not decide which titles are worth
+    // having. `''` is a title someone chose, it is recorded as one, and the
+    // BOARD is what falls back to a short taskId when there is nothing to show
+    // (lib/taskBoard.ts). Putting that judgement in the route would make two
+    // places responsible for the same decision.
+    const harness = buildApiHarness();
+    const task = await createTaskThrough(harness, { title: '' });
+    expect(task.title).toBe('');
+  });
 });
 
 // ── assertion 9: THE SECURITY BOUNDARY ───────────────────────────────────────

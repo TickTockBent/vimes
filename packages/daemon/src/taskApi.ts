@@ -134,8 +134,30 @@ const _recordGatesMatchTheSchema = {} as TaskRecord['gates'] satisfies z.infer<
 //
 // `stage` defaults to `backlog` — `INITIAL_TASK_STAGE`, stated in the birth record
 // rather than assumed downstream so the projection folds a named stage.
+//
+// ⚠ THE TITLE CAP (step 9, I8). A title is FREE TEXT FROM AN UNTRUSTED CALLER
+// that lands in a durable append-only record and on a rendered card, so it is
+// bounded HERE, at the boundary, and nowhere deeper — `taskRecordSchema.title`
+// stays an unbounded optional string on purpose, so a record written before this
+// cap existed (or under a different one) still parses and still replays (I6). A
+// cap enforced by the record schema would be a migration; a cap enforced by the
+// route is a policy, and policies may change without rewriting history.
+//
+// ⟨200⟩ IS NOT A ⟨tune⟩ — nothing about the system's behaviour changes with it,
+// so Gate-D does not apply. It is a boundary, chosen as the smallest number that
+// cannot plausibly refuse a real title: ~2 lines at phone width, comfortably
+// above a git subject line (72) and in the same class as GitHub's issue-title
+// limit (256). Anything longer is a description, and a task has no description
+// field — inventing one here would widen the record by accident.
+const MAX_TASK_TITLE_LENGTH = 200;
+
 const createTaskBodySchema = z.object({
   projectRoot: z.string(),
+  // Over the cap → the whole body fails to parse → 400 with **NO EVENT**, the
+  // same idiom every other malformed proposal follows (a proposal that was never
+  // a proposal writes nothing). Optional: creation without a title still
+  // succeeds exactly as it did before step 9.
+  title: z.string().max(MAX_TASK_TITLE_LENGTH).optional(),
   createdBy: z.enum(CREATED_BY_VALUES),
   isolation: z.enum(ISOLATION_VALUES).default('worktree'),
   stage: z.enum(TASK_STAGE_VALUES).default('backlog'),
@@ -200,6 +222,8 @@ export function registerTaskApi(app: Hono, deps: TaskApiDeps): void {
         // `..` segment or a symlink that resolves somewhere else later. The
         // allowlist is checked once, here; what gets persisted is what was checked.
         projectRoot: resolvedProjectRoot.absolute,
+        // Absent stays absent all the way down to the birth record — never `''`.
+        ...(parsedBody.value.title === undefined ? {} : { title: parsedBody.value.title }),
         createdBy: parsedBody.value.createdBy,
         isolation: parsedBody.value.isolation,
         stage: parsedBody.value.stage,

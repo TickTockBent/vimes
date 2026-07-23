@@ -56,6 +56,10 @@ export interface TaskWriterDeps {
 // never run.
 export interface CreateTaskInput {
   readonly projectRoot: string;
+  // OPTIONAL, matching the widened `task_created` payload (step 9). Absent → the
+  // record carries no `title` at all (NOT `''`), exactly as every pre-step-9
+  // birth record does. Set at creation only; there is no rename path.
+  readonly title?: string;
   readonly createdBy: TaskRecord['createdBy'];
   readonly isolation: TaskRecord['isolation'];
   readonly stage: TaskRecord['stage'];
@@ -111,6 +115,10 @@ export class TaskWriter {
       taskCreated({
         taskId,
         projectRoot: input.projectRoot,
+        // Omitted rather than sent as `undefined`/`''` when the creator named no
+        // title, so an untitled task's birth record is byte-identical to every
+        // pre-step-9 one (I6). Same rule as `gates` below.
+        ...(input.title === undefined ? {} : { title: input.title }),
         createdBy: input.createdBy,
         isolation: input.isolation,
         stage: input.stage,
