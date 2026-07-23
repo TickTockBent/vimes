@@ -5,9 +5,9 @@ import { useVimesStore } from './stores/vimesStore.js';
 import { type Route } from './lib/route.js';
 import {
   buildPanelStackHash,
+  closePanelAt,
   openPanelFrom,
   parsePanelStack,
-  popPanel,
   type PanelStack,
 } from './lib/panelStack.js';
 import { panelLinkClick } from './lib/panelLinkClick.js';
@@ -239,12 +239,17 @@ function openCostPanel(index: number): void {
 function openTasksPanel(index: number): void {
   applyStack(openPanelFrom(panelStack.value, index, { view: 'tasks' }));
 }
-// Back pops the TAIL (popPanel), not panel `index` — for the POC "back" always
-// means "drop the last panel". A length-1 stack pops to itself (the floor); on a
-// phone that reproduces today's "back from the one view goes home" because the
-// panel below the tail (e.g. the session list) is what the pop reveals.
-function backFrom(_index: number): void {
-  applyStack(popPanel(panelStack.value));
+// Back on panel `index` closes panel `index` AND everything opened after it
+// (truncate forward, mirroring openPanelFrom): the editor opened FROM a file
+// closes with the file, so there's no orphaned child left dangling. On the
+// TAIL this is exactly popPanel (closePanelAt(stack, stack.length-1) ===
+// popPanel(stack), pinned in panelStack.test.ts), so the phone path — where
+// only the tail panel is ever visible — is unchanged: back from the one view
+// still goes home, one panel at a time. A length-1 stack floors to itself, as
+// always. Applies in BOTH layout arms — the sidebar's @back="backFrom" (index
+// 0) and every content panel's, wired identically.
+function backFrom(index: number): void {
+  applyStack(closePanelAt(panelStack.value, index));
 }
 
 // ── §E: a plain left-click on an in-app hash link PUSHES a panel ─────────────

@@ -12,6 +12,7 @@ import { describe, expect, it } from 'vitest';
 import { buildHash, parseRoute, type Route } from './route.js';
 import {
   buildPanelStackHash,
+  closePanelAt,
   openPanelFrom,
   parsePanelStack,
   popPanel,
@@ -411,5 +412,73 @@ describe('openPanelFrom', () => {
     const opened = openPanelFrom([STREAM_A, GIT, TERMINAL], 0, GIT);
     expect(opened).toEqual([STREAM_A, GIT]);
     expect(parsePanelStack(buildPanelStackHash(opened))).toEqual(opened);
+  });
+});
+
+// ── ASSERTION 7: closePanelAt — "back" closes panel `index` AND its downstream
+// children (truncate forward), mirroring openPanelFrom's shape ────────────────
+// The bug this fixes (Wes, 2026-07-23): on [list, files, editor], back on the
+// FILES panel (index 1) must close files AND the editor it opened, landing on
+// [list] — not just drop the tail (editor) and leave [list, files] behind.
+
+describe('closePanelAt', () => {
+  it('closes the panel at index and everything opened after it', () => {
+    const stack: PanelStack = [STREAM_A, GIT, TERMINAL];
+    expect(closePanelAt(stack, 2)).toEqual([STREAM_A, GIT]); // close TERMINAL only
+    expect(closePanelAt(stack, 1)).toEqual([STREAM_A]); // close GIT and its child TERMINAL
+    expect(closePanelAt(stack, 0)).toEqual([STREAM_A]); // can't close the root; keep it, drop children
+  });
+
+  it("Wes's exact scenario: back on the FILES panel (not the tail) closes files AND the editor it opened", () => {
+    const listFilesEditor: PanelStack = [STREAM_A, GIT, TERMINAL]; // stand-ins for [list, files, editor]
+    // Back on "files" (index 1) must NOT just drop the tail — it drops files'
+    // downstream child (the editor) too, landing on [list].
+    expect(closePanelAt(listFilesEditor, 1)).toEqual([STREAM_A]);
+    // Back on "editor" (the tail, index 2) closes only itself -> [list, files].
+    expect(closePanelAt(listFilesEditor, 2)).toEqual([STREAM_A, GIT]);
+  });
+
+  it('floors at the root — never returns an empty stack, for any index including 0', () => {
+    const single: PanelStack = [STREAM_A];
+    expect(closePanelAt(single, 0)).toEqual([STREAM_A]);
+    expect(closePanelAt(single, 0)).toHaveLength(1);
+  });
+
+  it('clamps a negative index to the floor (keep only the root, same as index 0)', () => {
+    const stack: PanelStack = [STREAM_A, GIT, TERMINAL];
+    expect(closePanelAt(stack, -5)).toEqual([STREAM_A]);
+  });
+
+  it('an index at or past the tail is unchanged — nothing to close past the last panel', () => {
+    const stack: PanelStack = [STREAM_A, GIT];
+    expect(closePanelAt(stack, 1)).toEqual([STREAM_A]); // 1 IS the tail: close it
+    expect(closePanelAt(stack, 2)).toEqual([STREAM_A, GIT]); // 2 is past the tail: unchanged
+    expect(closePanelAt(stack, 99)).toEqual([STREAM_A, GIT]);
+  });
+
+  it('does not mutate the original stack', () => {
+    const original: PanelStack = [STREAM_A, GIT, TERMINAL];
+    const snapshotBeforeClose = [...original];
+    closePanelAt(original, 1);
+    expect(original).toEqual(snapshotBeforeClose);
+  });
+
+  // ── the load-bearing equivalence: closing the tail IS popPanel ─────────────
+  // On a phone, only the tail panel is ever visible, so its back button must
+  // behave exactly as popPanel always has. This is what keeps the phone path
+  // "no change" true after this fix.
+  it('closePanelAt(stack, stack.length - 1) equals popPanel(stack), for stacks of length 1, 2, and 3', () => {
+    const lengthOne: PanelStack = [STREAM_A];
+    const lengthTwo: PanelStack = [STREAM_A, GIT];
+    const lengthThree: PanelStack = [STREAM_A, GIT, TERMINAL];
+    for (const stack of [lengthOne, lengthTwo, lengthThree]) {
+      expect(closePanelAt(stack, stack.length - 1)).toEqual(popPanel(stack));
+    }
+  });
+
+  it('the result round-trips through buildPanelStackHash/parsePanelStack', () => {
+    const closed = closePanelAt([STREAM_A, GIT, TERMINAL], 1);
+    expect(closed).toEqual([STREAM_A]);
+    expect(parsePanelStack(buildPanelStackHash(closed))).toEqual(closed);
   });
 });

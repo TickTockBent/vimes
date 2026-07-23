@@ -164,3 +164,30 @@ export function openPanelFrom(stack: PanelStack, index: number, route: Route): P
   const clampedIndex = Math.max(0, Math.min(index, stack.length - 1));
   return pushPanel(stack.slice(0, clampedIndex + 1), route);
 }
+
+// Close the panel at `index` AND everything opened after it (its downstream
+// children) — the "back" op, mirroring openPanelFrom's truncate-forward shape:
+// opening FROM panel i discards everything forward of it, so closing panel i
+// does the same. On [list, files, editor], back on files (index 1) closes both
+// files and editor -> [list]; back on editor (index 2) closes only itself ->
+// [list, files]. Composed from slice, so it inherits the immutable, length>=1
+// posture the rest of this module rests on.
+//
+// NEVER empties: floors at the root (length 1), the same floor popPanel rests
+// on, so the session list (stack[0], D40) can never be closed by any index,
+// including 0 itself — closePanelAt(stack, 0) keeps the root and drops
+// everything after it, it does not remove the root.
+//
+// closePanelAt(stack, stack.length - 1) === popPanel(stack): closing the tail
+// is exactly dropping the tail. This equivalence is load-bearing — on a phone
+// only the tail panel is ever visible, so its back button must behave exactly
+// as popPanel always has (pinned by a test).
+//
+// Index convention for totality (I8): a negative index clamps to the floor
+// (same as index 0 — keep only the root, via Math.max). An index >= length is
+// past the tail — nothing to close — and Array.slice's own end-clamping
+// answers that for free: slice(0, 99) on a 3-panel stack is the whole stack,
+// unchanged (as a new array, same immutable posture every op here has).
+export function closePanelAt(stack: PanelStack, index: number): PanelStack {
+  return stack.slice(0, Math.max(1, index));
+}
