@@ -6,6 +6,8 @@ import type { EventStore } from '../eventStore.js';
 import {
   billingBucketObserved,
   claudeSessionMapped,
+  correctionDelivered,
+  correctionQueued,
   dispatchRefused,
   gateFired,
   hostStarted,
@@ -105,6 +107,35 @@ function buildMultiStreamStore(): MemoryEventStore {
   // APP_2 appends once and is never reported stale — the fixture carries a
   // session with a heartbeat and NO episode count beside one that has both.
   store.append([lineQuarantined({ appSessionId: APP_2, raw: '{bad', reason: 'malformed-json' })]);
+  // ── the course-correction fold (step 6a, D5/D30) ──────────────────────────
+  // ⚠ EXTENDED AGAIN, for the same reason step 5b extended it: a fold the I6
+  // fixture never exercises is a fold I6 does not cover. `pendingCorrectionAt`
+  // is ORDER-DEPENDENT in both directions — it is SET by one event and CLEARED
+  // by another — so a cut point that reconstructs the pair in the wrong order
+  // diverges from replay-from-empty in a way no single-assignment field can.
+  //
+  // Both events are on the SESSION stream (D34 / architecture.md), which is what
+  // makes this fold legal here at all.
+  //
+  // The story: APP_1 is steered and the steer is OBSERVED DELIVERED (cleared to
+  // null). APP_2 first sees a delivery it never queued — a human typing into a
+  // PTY, which must be a NO-OP and must not create the field — and only then is
+  // steered, leaving a correction STILL PENDING at the head of the log. So the
+  // fixture carries all three states of the field across every cut point:
+  // never-set, set-and-cleared, and still-pending.
+  store.append([
+    correctionQueued({ appSessionId: APP_1, text: 'synthetic steer: prefer the smaller change' }),
+  ]);
+  store.append([
+    correctionDelivered({
+      appSessionId: APP_1,
+      commandMode: 'prompt',
+      originKind: 'human',
+      enqueuedAt: '2026-07-13T12:00:09.000Z',
+    }),
+  ]);
+  store.append([correctionDelivered({ appSessionId: APP_2, commandMode: 'prompt' })]);
+  store.append([correctionQueued({ appSessionId: APP_2, text: 'synthetic steer: still queued' })]);
   return store;
 }
 
@@ -316,6 +347,34 @@ describe('projection I6 — boot(snapshot+tail) equals replay-from-empty', () =>
     expect(app2AppendRecords).toHaveLength(1);
     expect(state.sessions[APP_2]!.lastAppendAt).toBe(app2AppendRecords[0]!.ts);
     expect(state.sessions[APP_2]!.staleEpisodes).toBeUndefined();
+  });
+
+  it('the sessions I6 fixture folds BOTH course-correction branches (step 6a)', () => {
+    // ASSERTION 7. The explicit statement of what the I6 case above replays for
+    // the step-6a fold, so "I6 covers the correction folds" is asserted rather
+    // than claimed — the non-vacuity guard only proves the fixture moves the
+    // projection AT ALL, and it already cleared that on the pre-6a events.
+    const store = buildMultiStreamStore();
+    const records = readAllStreamsGrouped(store);
+    const state = replayFromEmpty(sessionsProjection, records);
+
+    // APP_1: queued, then OBSERVED DELIVERED → cleared to null.
+    expect(state.sessions[APP_1]!.pendingCorrectionAt).toBeNull();
+
+    // APP_2: a delivery it never queued (a no-op), then a steer that is STILL
+    // PENDING at the head of the log — so the field holds the queued event's ts.
+    const app2QueuedRecords = records.filter(
+      (record) => record.stream === APP_2 && record.type === 'correction_queued',
+    );
+    expect(app2QueuedRecords).toHaveLength(1);
+    expect(state.sessions[APP_2]!.pendingCorrectionAt).toBe(app2QueuedRecords[0]!.ts);
+
+    // ⚠ Neither event advanced the heartbeat: `lastAppendAt` still points at the
+    // last REAL transcript append, not at the corrections that came after it.
+    const app1LastAppend = records.filter(
+      (record) => record.stream === APP_1 && record.type === 'claude_session_mapped',
+    );
+    expect(state.sessions[APP_1]!.lastAppendAt).toBe(app1LastAppend[0]!.ts);
   });
 
   it('holds for the meters stub projection at every cut point', () => {

@@ -77,6 +77,25 @@ export const sessionRecordSchema = z.object({
   // (slice 6 step 5b). The slice-0 name `staleRetries` described a mechanism
   // that was never built, and D34 is the moment it stops being carried forward.
   staleEpisodes: z.number().optional(),
+  // ── D5/D30: a correction is QUEUED here until it is observed DELIVERED ─────
+  //
+  // OPTIONAL-only, for the same reason the two D34 fields above are: nothing
+  // validates a snapshot's records against this schema on load, so a record
+  // written before this field existed must still load and serialize identically.
+  // The sessions projection leaves it ABSENT until a `correction_queued` folds.
+  //
+  // The `ts` of the last `correction_queued` VIMES accepted, cleared to `null`
+  // when the matching `correction_delivered` is observed in the transcript.
+  //
+  // **The reason this field exists at all is the watchdog.** D5 measured a
+  // correction sitting in the SDK queue for 30.4 s against a 40 s tool, with an
+  // unbounded worst case, because injection does not preempt an in-flight tool.
+  // A run being steered therefore looks EXACTLY like a run going quiet — and
+  // D30 says in as many words that a queued-but-undelivered correction is NOT
+  // staleness. Without this field the watchdog reports a healthy corrected run
+  // as stale, which raises attention, which pushes a notification to a real
+  // person's phone about work that was fine.
+  pendingCorrectionAt: z.string().nullable().optional(),
 });
 export type SessionRecord = z.infer<typeof sessionRecordSchema>;
 

@@ -113,6 +113,29 @@ export const EVENT_TYPES = {
   // session" had no data path. The dispatcher (packages/daemon/taskDispatcher)
   // emits exactly one of these per successful spawn.
   taskSessionAttached: 'task_session_attached',
+  // Slice-6 step 6a: COURSE CORRECTION, on the SESSION stream. D5 settled the
+  // mechanism (steer = inject into the live streaming-input queue; `interrupt()`
+  // is the hard stop, not the fallback), so these two events are the SEMANTICS
+  // and the EVIDENCE, not new plumbing.
+  //
+  // They are deliberately TWO events for two different facts (principle 9), and
+  // the gap between them is the whole point: D5 measured a correction sitting in
+  // the queue for **30.4 s** against a 40 s tool, with an UNBOUNDED worst case (a
+  // long build or test suite), because delivery is bounded by the NEXT MODEL
+  // CALL and injection does not preempt an in-flight tool.
+  //
+  //   • `correction_queued`    — VIMES accepted it and handed it to the queue.
+  //                              WE are the author; emitted at the send boundary.
+  //   • `correction_delivered` — the CLI actually delivered it, OBSERVED in the
+  //                              transcript (rule 0.7: observed truth, never
+  //                              declared). We are not the author of this fact;
+  //                              we are the witness.
+  //
+  // Without the pair, the watchdog reads a healthy steered run as stale (D30
+  // says explicitly that a queued-but-undelivered correction is NOT staleness)
+  // and pushes a notification to a real person's phone about work that is fine.
+  correctionQueued: 'correction_queued',
+  correctionDelivered: 'correction_delivered',
 } as const;
 
 export const SYSTEM_STREAM = 'system';
@@ -491,6 +514,64 @@ export const taskSessionAttachedPayloadSchema = z.object({
   appSessionId: z.string(),
 });
 
+// ——— course-correction payloads (slice-6 step 6a), on the SESSION stream ———
+//
+// correction_queued — VIMES accepted a correction and handed it to the SDK's
+// streaming-input queue. Emitted by the daemon at the send boundary, and ONLY
+// after the host has said the send succeeded: a refused send queued nothing, and
+// a record of a correction that never entered the queue would make the watchdog
+// protect a run that is not being steered.
+//
+// ⚠ **PRIVACY — `text` IS THE OPERATOR'S OWN WORDS, AND THE LOG IS FOREVER.**
+// This is the only payload in the vocabulary that carries free human prose the
+// operator typed, into an APPEND-ONLY store: it cannot later be edited, redacted
+// or scrubbed, and it will be replayed into every projection and every snapshot
+// for the life of the database. It is carried DELIBERATELY, not incidentally,
+// because a correction whose text nobody can read is unauditable — "why did this
+// run change direction?" is exactly the question the log exists to answer, and
+// the sibling `message(role:'user')` echo already carries the same words inline
+// (D12). Note what this event does NOT carry, on the same reasoning the push
+// payloads document: no endpoint, no credential, no path, no environment.
+export const correctionQueuedPayloadSchema = z.object({
+  appSessionId: z.string(),
+  text: z.string(),
+});
+
+// correction_delivered — a `queued_command` attachment was OBSERVED in the
+// transcript (rule 0.7). Every field below is EVIDENCE of what was seen, carried
+// so the log can be re-read against a future CLI rather than re-measured.
+//
+// Shapes and populations MEASURED 2026-07-22 over 30 real transcripts / 134
+// attachments (risk-register.md, "`queued_command` attachment shape"):
+//   • `commandMode`: 'prompt' ×72, 'task-notification' ×62 — i.e. ~46% of these
+//     attachments are AGENT task-notifications, not human steers.
+//   • `origin.kind`: task-notification → absent 62/62; prompt → 'human' ×47,
+//     ABSENT ×25.
+//   • the enqueue `timestamp`: ABSENT in 27/134 (~20%).
+export const correctionDeliveredPayloadSchema = z.object({
+  appSessionId: z.string(),
+  // ⚠ DELIBERATELY `z.string()` AND NOT AN ENUM, for the reason
+  // `taskTransitionRejectedPayloadSchema` gives for its stage fields: this event
+  // records what was OBSERVED. The mapper copies the mode VERBATIM off the
+  // record rather than restating the constant it matched, so if the discriminator
+  // is ever widened after a CLI bump the value already rides in the log and no
+  // schema change is needed to read it back.
+  commandMode: z.string(),
+  // `attachment.origin.kind` when the record carried one. OPTIONAL, and it MUST
+  // stay optional: 25 of the 72 observed `prompt` records have no origin at all,
+  // and that unmarked population is the one VIMES's own SDK injections most
+  // resemble. This is EVIDENCE, never a filter — see the mapper.
+  originKind: z.string().optional(),
+  // `attachment.timestamp` — the ENQUEUE time, not the delivery time. OPTIONAL
+  // because ~20% of real records simply do not have it.
+  //
+  // ⚠ NOT AN ORDERING KEY. The attachment carries the enqueue time but sits at
+  // the DELIVERY file position (30.4 s apart in observed run A5), so this value
+  // is systematically EARLIER than the moment it is being reported. Read it as
+  // "when the operator asked", never as "when this happened".
+  enqueuedAt: z.string().optional(),
+});
+
 export const EVENT_PAYLOAD_SCHEMAS = {
   [EVENT_TYPES.sessionCreated]: sessionCreatedPayloadSchema,
   [EVENT_TYPES.livenessChanged]: livenessChangedPayloadSchema,
@@ -530,6 +611,8 @@ export const EVENT_PAYLOAD_SCHEMAS = {
   [EVENT_TYPES.taskTransitioned]: taskTransitionedPayloadSchema,
   [EVENT_TYPES.taskTransitionRejected]: taskTransitionRejectedPayloadSchema,
   [EVENT_TYPES.taskSessionAttached]: taskSessionAttachedPayloadSchema,
+  [EVENT_TYPES.correctionQueued]: correctionQueuedPayloadSchema,
+  [EVENT_TYPES.correctionDelivered]: correctionDeliveredPayloadSchema,
 } as const;
 
 export type SessionCreatedPayload = z.infer<typeof sessionCreatedPayloadSchema>;
@@ -564,6 +647,8 @@ export type TaskCreatedPayload = z.infer<typeof taskCreatedPayloadSchema>;
 export type TaskTransitionedPayload = z.infer<typeof taskTransitionedPayloadSchema>;
 export type TaskTransitionRejectedPayload = z.infer<typeof taskTransitionRejectedPayloadSchema>;
 export type TaskSessionAttachedPayload = z.infer<typeof taskSessionAttachedPayloadSchema>;
+export type CorrectionQueuedPayload = z.infer<typeof correctionQueuedPayloadSchema>;
+export type CorrectionDeliveredPayload = z.infer<typeof correctionDeliveredPayloadSchema>;
 
 // Discriminated union over the vocabulary — the domain-event value space.
 export type DomainEvent =
@@ -604,7 +689,9 @@ export type DomainEvent =
   | { type: typeof EVENT_TYPES.taskCreated; payload: TaskCreatedPayload }
   | { type: typeof EVENT_TYPES.taskTransitioned; payload: TaskTransitionedPayload }
   | { type: typeof EVENT_TYPES.taskTransitionRejected; payload: TaskTransitionRejectedPayload }
-  | { type: typeof EVENT_TYPES.taskSessionAttached; payload: TaskSessionAttachedPayload };
+  | { type: typeof EVENT_TYPES.taskSessionAttached; payload: TaskSessionAttachedPayload }
+  | { type: typeof EVENT_TYPES.correctionQueued; payload: CorrectionQueuedPayload }
+  | { type: typeof EVENT_TYPES.correctionDelivered; payload: CorrectionDeliveredPayload };
 
 // Maps each attention-setting event type to the needsAttention reason it sets.
 const ATTENTION_SETTER_REASON: Readonly<Record<string, AttentionReason>> = {
@@ -723,6 +810,18 @@ export function taskTransitionRejected(payload: TaskTransitionRejectedPayload): 
 // (`session_created`) already lives on the session stream.
 export function taskSessionAttached(payload: TaskSessionAttachedPayload): EventInput {
   return { stream: 'tasks', type: EVENT_TYPES.taskSessionAttached, payload };
+}
+
+// The course-correction pair (step 6a). BOTH on the SESSION's own stream — which
+// is what makes the sessions projection's fold of them same-stream and therefore
+// legal under D34 / architecture.md ("Projections are STREAM-LOCAL"). A
+// correction is a fact about the SESSION being steered, not about the task that
+// happens to own it; the task↔session link already lives on `sessionRefs`.
+export function correctionQueued(payload: CorrectionQueuedPayload): EventInput {
+  return { stream: payload.appSessionId, type: EVENT_TYPES.correctionQueued, payload };
+}
+export function correctionDelivered(payload: CorrectionDeliveredPayload): EventInput {
+  return { stream: payload.appSessionId, type: EVENT_TYPES.correctionDelivered, payload };
 }
 
 // Hook ingress constructors (B). Each emits on the session's stream; the ingress

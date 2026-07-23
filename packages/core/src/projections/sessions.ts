@@ -7,6 +7,8 @@ import {
   attentionClearedPayloadSchema,
   billingBucketObservedPayloadSchema,
   claudeSessionMappedPayloadSchema,
+  correctionDeliveredPayloadSchema,
+  correctionQueuedPayloadSchema,
   livenessChangedPayloadSchema,
   seenPayloadSchema,
   sessionAdoptedPayloadSchema,
@@ -278,6 +280,59 @@ export const sessionsProjection: Projection<SessionsState> = {
           ...session,
           name: parsed.data.name,
         }));
+      }
+
+      // ── D5/D30: the COURSE-CORRECTION fold (slice 6 step 6a) ──────────────
+      //
+      // ⚠ **THIS IS THE PROJECTION D34 WAS ABOUT, SO SAY IT OUT LOUD: BOTH
+      // EVENTS BELOW ARE SAME-STREAM.** `correctionQueued` and
+      // `correctionDelivered` are constructed with `stream: payload.appSessionId`
+      // (events.ts), exactly like `liveness_changed` and the transcript appends,
+      // so this fold reads only the SESSION stream it belongs to and D34 /
+      // architecture.md ("Projections are STREAM-LOCAL") is satisfied by
+      // construction rather than by luck. The version of this that would be
+      // ILLEGAL is the tempting one: putting `pendingCorrectionAt` on the
+      // TaskRecord and folding these session events into the tasks projection —
+      // which is precisely take 1 of step 5b, and precisely what D34 forbids.
+      //
+      // ⚠ Note what does NOT happen here: `correction_delivered` does not
+      // advance `lastAppendAt`. It is not in `TRANSCRIPT_APPEND_EVENT_TYPES`
+      // (tasks/watchdogDecision.ts owns that set), so the heartbeat fold above
+      // skipped it. That is deliberate and load-bearing — delivery must RELEASE
+      // the protection without also resetting the silence clock, or a run that
+      // wedges immediately after being steered would look freshly alive.
+      case EVENT_TYPES.correctionQueued: {
+        const parsed = correctionQueuedPayloadSchema.safeParse(event.payload);
+        if (!parsed.success) {
+          return state;
+        }
+        // The event's `ts`, never a clock read (rule 0.3) and never the
+        // operator's own wall time.
+        return withSession(state, parsed.data.appSessionId, (session) => ({
+          ...session,
+          pendingCorrectionAt: event.ts,
+        }));
+      }
+
+      case EVENT_TYPES.correctionDelivered: {
+        const parsed = correctionDeliveredPayloadSchema.safeParse(event.payload);
+        if (!parsed.success) {
+          return state;
+        }
+        return withSession(state, parsed.data.appSessionId, (session) => {
+          if (session.pendingCorrectionAt === undefined || session.pendingCorrectionAt === null) {
+            // ⚠ A DELIVERY WITH NOTHING PENDING IS A NO-OP, NOT AN ERROR — and
+            // it is the COMMON case, not a corner one. A human typing directly
+            // into a PTY produces a `commandMode:'prompt'` queued_command that
+            // VIMES never queued and has no `correction_queued` for; so does any
+            // correction that was in flight when the daemon last restarted. The
+            // session record is returned UNTOUCHED (not stamped with a `null`),
+            // so a session that never had a pending correction never acquires
+            // the field at all.
+            return session;
+          }
+          return { ...session, pendingCorrectionAt: null };
+        });
       }
 
       // transition_rejected, notification_trigger, host_started, host_stopped,

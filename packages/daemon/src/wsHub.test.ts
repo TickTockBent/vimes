@@ -428,3 +428,113 @@ describe('WsHub protocol v0.2 session ops', () => {
     }
   });
 });
+
+// ─── slice 6 step 6a — the send boundary evented (D5) ────────────────────────
+//
+// ⚠ NO REAL CLAUDE. The session is a PTY session backed by `fakePtySpawnFactory`,
+// so `sendMessage` reaches a live process that writes nowhere. Nothing here
+// touches the live daemon, its sessions or its terminals.
+describe('WsHub — a successful send is evented as correction_queued (assertion 8)', () => {
+  function correctionQueuedEventsOn(daemon: Daemon, appSessionId: string): EventRecord[] {
+    return daemon.store
+      .read(appSessionId, 1, daemon.store.head(appSessionId))
+      .filter((event) => event.type === 'correction_queued');
+  }
+
+  it('one accepted send emits EXACTLY ONE correction_queued carrying the operator text', async () => {
+    const daemon = await startDaemon({
+      config: buildConfig({ projectRoots: [temporaryDirectory] }),
+      ptySpawnFactory: fakePtySpawnFactory,
+      projectsRoot: temporaryDirectory,
+    });
+    const client = new WsTestClient(daemon.port, ANY_TOKEN);
+    try {
+      await client.opened();
+      client.send({ op: 'spawn', channel: 'pty', cwd: temporaryDirectory, name: 'steered' });
+      await client.waitForMessageCount(1);
+      const appSessionId = client.messages[0]!.appSessionId as string;
+
+      client.send({ op: 'send', appSessionId, text: 'synthetic steer: prefer the smaller change' });
+      await waitUntil(() => correctionQueuedEventsOn(daemon, appSessionId).length > 0);
+
+      const corrections = correctionQueuedEventsOn(daemon, appSessionId);
+      expect(corrections).toHaveLength(1);
+      expect(corrections[0]!.payload).toEqual({
+        appSessionId,
+        text: 'synthetic steer: prefer the smaller change',
+      });
+      // The op was ACCEPTED — no refusal came back.
+      expect(client.messages.filter((m) => m.op === 'refused')).toEqual([]);
+      // ⚠ ORDERING: the event lands AFTER the host's own `message(role:'user')`
+      // echo of the same turn. That order is what makes the watchdog's
+      // protection work — `correctionQueuedAt` must be at or after the last
+      // heartbeat, and the echo IS a heartbeat.
+      const sessionEvents = daemon.store.read(appSessionId, 1, daemon.store.head(appSessionId));
+      const echoIndex = sessionEvents.findIndex((event) => event.type === 'message');
+      const correctionIndex = sessionEvents.findIndex(
+        (event) => event.type === 'correction_queued',
+      );
+      expect(echoIndex).toBeGreaterThanOrEqual(0);
+      expect(correctionIndex).toBeGreaterThan(echoIndex);
+    } finally {
+      client.close();
+      await daemon.stop();
+    }
+  });
+
+  it('three accepted sends emit exactly three, one per send — never coalesced, never doubled', async () => {
+    const daemon = await startDaemon({
+      config: buildConfig({ projectRoots: [temporaryDirectory] }),
+      ptySpawnFactory: fakePtySpawnFactory,
+      projectsRoot: temporaryDirectory,
+    });
+    const client = new WsTestClient(daemon.port, ANY_TOKEN);
+    try {
+      await client.opened();
+      client.send({ op: 'spawn', channel: 'pty', cwd: temporaryDirectory, name: 'steered-thrice' });
+      await client.waitForMessageCount(1);
+      const appSessionId = client.messages[0]!.appSessionId as string;
+
+      for (const text of ['synthetic steer one', 'synthetic steer two', 'synthetic steer three']) {
+        client.send({ op: 'send', appSessionId, text });
+      }
+      await waitUntil(() => correctionQueuedEventsOn(daemon, appSessionId).length >= 3);
+
+      const corrections = correctionQueuedEventsOn(daemon, appSessionId);
+      expect(corrections).toHaveLength(3);
+      expect(corrections.map((event) => (event.payload as { text: string }).text)).toEqual([
+        'synthetic steer one',
+        'synthetic steer two',
+        'synthetic steer three',
+      ]);
+    } finally {
+      client.close();
+      await daemon.stop();
+    }
+  });
+
+  it('a REFUSED send emits NOTHING — nothing was queued', async () => {
+    // ⚠ THE HALF THAT MATTERS MOST. A `correction_queued` for a send the host
+    // rejected would set `pendingCorrectionAt` on a run nobody is steering — and
+    // that switches the staleness guard OFF on a run that can then wedge
+    // silently forever. The refusal path must write nothing at all.
+    const daemon = await startDaemon({ projectsRoot: temporaryDirectory });
+    const client = new WsTestClient(daemon.port, ANY_TOKEN);
+    try {
+      await client.opened();
+      client.send({ op: 'send', appSessionId: 'app-unknown', text: 'synthetic steer at a ghost' });
+      await client.waitForMessageCount(1);
+      expect(client.messages[0]).toEqual({
+        op: 'refused',
+        refusedOp: 'send',
+        reason: 'unknown-session',
+      });
+      // Give the emit path a chance to have fired, then prove it did not.
+      await delay(50);
+      expect(correctionQueuedEventsOn(daemon, 'app-unknown')).toEqual([]);
+    } finally {
+      client.close();
+      await daemon.stop();
+    }
+  });
+});

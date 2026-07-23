@@ -62,6 +62,32 @@ gap blocks trusting the tailer against real PTY output until D15 resolves.
   prove the tail resumes. Exactly 3 quarantines: two `malformed-json`, one
   `oversize`.
 
+- **`corrections.jsonl`** — 14 lines, the `queued_command` attachment shape
+  (slice 6 step 6a, D5). **Shape provenance is a MEASUREMENT, not an
+  inference:** the record layout and the value populations were measured
+  2026-07-22 over **30 real transcripts / 134 `queued_command` attachments** in
+  the live store, and that measurement CORRECTED the earlier S1/D5 prose (see
+  docs/risk-register.md, "`queued_command` attachment shape"). **Only the shape
+  was borrowed — every prompt string, uuid, path and timestamp here is invented,
+  and no test in this repo reads `~/.claude`.** The file pins, in order: a
+  `prompt` correction with `origin.kind:'human'` and an enqueue `timestamp`; a
+  `queue-operation`/remove; a **`task-notification`** (the ~46% population that
+  must produce NOTHING); a `prompt` with **no origin and no timestamp** (the 25
+  unmarked records VIMES's own SDK injections most resemble); an **unknown
+  `commandMode`**; four malformed attachments (`attachment:null`, a
+  `queued_command` with no `commandMode`, one with non-string fields and a
+  non-object `origin`, and an `attachment` record with no attachment at all);
+  and a final `prompt` correction. Through the tail: 1 rotation + 14 records, 0
+  quarantines; through the mapper: 3 `message` + 1 `usage_block` +
+  **3 `correction_delivered`**.
+  ⚠ **The enqueue timestamps are deliberately OUT OF ORDER relative to file
+  position** — the three recognized corrections carry enqueue times
+  `12:00:09`, *(absent)*, `12:00:03` at file positions 4, 7, 13. That is the I6
+  trap made concrete: the attachment carries the ENQUEUE time but sits at the
+  DELIVERY file position (30.4 s apart in observed run A5), so any code that
+  sorted transcript records by `timestamp` would reorder these and redden
+  `transcript.fixtures.test.ts`.
+
 The fixtures are hand-written (no generator); on a Claude Code version bump,
 re-derive the shape from a fresh real transcript and update these by hand,
 keeping all values synthetic.
