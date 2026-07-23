@@ -17,6 +17,15 @@ import type { TerminalHandle } from '../lib/xterm-setup.js';
 // a keeper from the inactivity reaper — plus a New-shell flow. Navigate-away
 // DETACHES (keeps the shell), it never sends term_close.
 
+// D41: this panel's close affordance. onBack is CONDITIONAL, same shape as
+// GitPanel's back button — from an open shell (`started`) it tears down the
+// view and returns to the terminal LIST (in-view navigation, does NOT close
+// the panel: no `emit('back')` on that path), and only from the list does it
+// `emit('back')` and actually close the panel. So only the !started branch
+// respects `backKind`; the started branch keeps its exact current aria-label
+// ("Back to terminals") regardless. The click handler is UNCHANGED — only the
+// label/aria differ.
+const props = defineProps<{ backKind?: 'back' | 'close' }>();
 const emit = defineEmits<{ back: [] }>();
 const store = useVimesStore();
 
@@ -236,10 +245,16 @@ onBeforeUnmount(() => {
       <button
         type="button"
         class="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md text-lg text-slate-200 active:bg-slate-900"
-        :aria-label="started ? 'Back to terminals' : 'Back to sessions'"
+        :aria-label="
+          started
+            ? 'Back to terminals'
+            : props.backKind === 'close'
+              ? 'Close panel'
+              : 'Back to sessions'
+        "
         @click="onBack"
       >
-        ‹
+        {{ !started && props.backKind === 'close' ? '✕' : '‹' }}
       </button>
       <h1 class="flex-1 truncate font-semibold text-slate-100">{{ started ? 'Terminal' : 'Terminals' }}</h1>
       <span class="shrink-0 text-xs text-slate-400">{{ statusLabel }}</span>

@@ -36,6 +36,10 @@ import {
 // dependency, so it adds no lazy chunk and cannot disturb the build-manifest
 // gate.
 
+// D41: this panel's close affordance. 'close' (a desktop panel) renders ✕;
+// 'back' (a phone) keeps the original back affordance. The click handler is
+// UNCHANGED — only the label/aria differ.
+const props = defineProps<{ backKind?: 'back' | 'close' }>();
 const emit = defineEmits<{ back: [] }>();
 const store = useVimesStore();
 
@@ -212,10 +216,10 @@ function livenessClass(liveness: string): string {
         <button
           type="button"
           class="min-h-[44px] rounded-md border border-slate-300 px-3 text-sm font-medium active:bg-slate-100 dark:border-slate-700 dark:active:bg-slate-900"
-          aria-label="Back"
+          :aria-label="props.backKind === 'close' ? 'Close panel' : 'Back'"
           @click="emit('back')"
         >
-          ‹ Back
+          {{ props.backKind === 'close' ? '✕' : '‹ Back' }}
         </button>
         <h1 class="text-lg font-semibold">Tasks</h1>
       </div>

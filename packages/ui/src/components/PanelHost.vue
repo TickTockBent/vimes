@@ -29,7 +29,11 @@ import CostLedgerView from '../views/CostLedgerView.vue';
 import TaskBoardView from '../views/TaskBoardView.vue';
 import type { Route } from '../lib/route.js';
 
-const props = defineProps<{ route: Route; index: number; focused: boolean }>();
+// backKind (D41): required, always passed by App.vue — every PanelHost instance
+// in both layout arms threads it through. 'close' on a desktop content panel,
+// 'back' everywhere else (phone/tablet). Forwarded verbatim to each view that
+// owns a back button; SessionListView has none, so it does not receive it.
+const props = defineProps<{ route: Route; index: number; focused: boolean; backKind: 'back' | 'close' }>();
 
 // Every navigation intent a view can raise, each carrying THIS panel's index so
 // the shell knows which panel to open from. Optional trailing args mirror the
@@ -69,31 +73,36 @@ const sessionListRoute = computed(() =>
       :key="editorRoute.path"
       :path="editorRoute.path"
       :line="editorRoute.line"
+      :back-kind="backKind"
       @back="emit('back', index)"
     />
     <FileTreeView
       v-else-if="fileTreeRoute"
       :initial-dir="fileTreeRoute.initialDir"
+      :back-kind="backKind"
       @open="(path) => emit('openEditor', index, path)"
       @search="emit('openSearch', index)"
       @back="emit('back', index)"
     />
     <SearchPanel
       v-else-if="route.view === 'search'"
+      :back-kind="backKind"
       @open="(payload) => emit('openEditor', index, payload.path, payload.line)"
       @back="emit('back', index)"
     />
-    <TerminalView v-else-if="route.view === 'terminal'" @back="emit('back', index)" />
+    <TerminalView v-else-if="route.view === 'terminal'" :back-kind="backKind" @back="emit('back', index)" />
     <GitPanel
       v-else-if="route.view === 'git'"
+      :back-kind="backKind"
       @open-editor="(path) => emit('openEditor', index, path, undefined, 'git')"
       @back="emit('back', index)"
     />
-    <CostLedgerView v-else-if="route.view === 'cost'" @back="emit('back', index)" />
-    <TaskBoardView v-else-if="route.view === 'tasks'" @back="emit('back', index)" />
+    <CostLedgerView v-else-if="route.view === 'cost'" :back-kind="backKind" @back="emit('back', index)" />
+    <TaskBoardView v-else-if="route.view === 'tasks'" :back-kind="backKind" @back="emit('back', index)" />
     <StreamView
       v-else-if="streamRoute"
       :app-session-id="streamRoute.appSessionId"
+      :back-kind="backKind"
       @back="emit('back', index)"
     />
     <SessionListView

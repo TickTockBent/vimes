@@ -13,7 +13,10 @@ import GateCard from '../components/GateCard.vue';
 import MarkdownMessage from '../components/MarkdownMessage.vue';
 import type { EventRecord } from '../lib/types.js';
 
-const props = defineProps<{ appSessionId: string }>();
+// D41: this panel's close affordance. 'close' (a desktop panel) renders ✕;
+// 'back' (a phone) keeps the original back affordance. The click handler is
+// UNCHANGED — only the label/aria differ.
+const props = defineProps<{ appSessionId: string; backKind?: 'back' | 'close' }>();
 defineEmits<{ back: [] }>();
 
 const store = useVimesStore();
@@ -283,9 +286,10 @@ function resume(): void {
       <button
         type="button"
         class="min-h-[44px] min-w-[44px] rounded-md text-lg active:bg-slate-100 dark:active:bg-slate-900"
+        :aria-label="props.backKind === 'close' ? 'Close panel' : undefined"
         @click="$emit('back')"
       >
-        ←
+        {{ props.backKind === 'close' ? '✕' : '←' }}
       </button>
       <span class="truncate font-medium">{{ session?.name ?? props.appSessionId.slice(0, 8) }}</span>
       <span

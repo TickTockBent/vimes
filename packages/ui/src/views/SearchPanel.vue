@@ -4,6 +4,10 @@ import { useVimesStore } from '../stores/vimesStore.js';
 import { deriveRoots } from '../lib/treeNode.js';
 import { basenameOf, groupResultsByFile } from '../lib/searchGroup.js';
 
+// D41: this panel's close affordance. 'close' (a desktop panel) renders ✕;
+// 'back' (a phone) keeps the original back affordance. The click handler is
+// UNCHANGED — only the label/aria differ.
+const props = defineProps<{ backKind?: 'back' | 'close' }>();
 const emit = defineEmits<{ open: [payload: { path: string; line: number }]; back: [] }>();
 const store = useVimesStore();
 
@@ -67,10 +71,10 @@ function preview(submatches: Array<{ text: string }>): string {
       <button
         type="button"
         class="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md text-lg active:bg-slate-100 dark:active:bg-slate-900"
-        aria-label="Back"
+        :aria-label="props.backKind === 'close' ? 'Close panel' : 'Back'"
         @click="emit('back')"
       >
-        ‹
+        {{ props.backKind === 'close' ? '✕' : '‹' }}
       </button>
       <h1 class="flex-1 truncate font-semibold">Search</h1>
     </header>

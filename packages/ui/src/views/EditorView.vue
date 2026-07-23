@@ -12,7 +12,10 @@ import {
 // which is what makes codemirror-setup its own lazy chunk (build-manifest gate).
 import type { EditorAction, EditorHandle } from '../lib/codemirror-setup.js';
 
-const props = defineProps<{ path: string; line?: number }>();
+// D41: this panel's close affordance. 'close' (a desktop panel) renders ✕;
+// 'back' (a phone) keeps the original back affordance. The click handler is
+// UNCHANGED — only the label/aria differ.
+const props = defineProps<{ path: string; line?: number; backKind?: 'back' | 'close' }>();
 const emit = defineEmits<{ back: [] }>();
 
 type LoadState = 'loading' | 'ready' | 'binary' | 'error';
@@ -175,10 +178,10 @@ const fileName = () => props.path.slice(props.path.lastIndexOf('/') + 1);
       <button
         type="button"
         class="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md text-lg active:bg-slate-100 dark:active:bg-slate-900"
-        aria-label="Back"
+        :aria-label="props.backKind === 'close' ? 'Close panel' : 'Back'"
         @click="emit('back')"
       >
-        ‹
+        {{ props.backKind === 'close' ? '✕' : '‹' }}
       </button>
       <div class="min-w-0 flex-1">
         <div class="flex items-center gap-1 truncate font-medium">
