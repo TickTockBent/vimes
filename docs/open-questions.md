@@ -9,6 +9,28 @@ records directly); no separate `Q#` series is minted. Entries marked ⚠ are
 **verify-before-building** — they are spikes, run at the start of the named
 slice, never answered from documentation alone (rule 0.6).
 
+## D36 — Should the tailer read SDK transcripts for attachment records only? *(trigger: the first time a correction's clear latency is felt in real use, or any second consumer of a JSONL-only record type)*
+
+Raised by D35 (2026-07-23) and deliberately left out of that fix. On the SDK
+channel the tailer skips the transcript entirely (`markSdkJsonl`), so the
+`queued_command` attachment — which exists only in the JSONL, never in the SDK
+stream — is never seen, and `correction_delivered` cannot fire on the default
+channel. D35 makes `run_completed` the clear, which is *correct* but coarser: the
+indicator clears at end-of-turn rather than at the moment of delivery.
+
+The narrow repair is to let the tailer read SDK transcript files while mapping
+**only** attachment-shaped records, never `message` ones — the double-count the
+skip exists to prevent. That means the skip stops being a file-level decision and
+becomes a record-level one.
+
+**Lean (2026-07-23):** don't, until something *needs* it. The skip protects the
+highest-frequency path in the system (S3 counted 80.6k transcript records) and
+the gain today is a few seconds of indicator latency. Two things would change
+the answer: a second JSONL-only record type worth having (the CLI's
+`queue-operation` records are the live candidate — they capture enqueue, edit,
+and delivery separately), or quarantine/retry landing (5c), where the difference
+between "steered" and "wedged" starts costing real work rather than polish.
+
 ## D1 — Working title *(trigger: first external naming need — repo publish or the 0.1 tag)*
 
 Is "Vimes" the name? Proposed and un-objected through one red-pen round.

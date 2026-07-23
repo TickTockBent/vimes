@@ -10,12 +10,14 @@ import {
   correctionDeliveredPayloadSchema,
   correctionQueuedPayloadSchema,
   livenessChangedPayloadSchema,
+  messagePayloadSchema,
   seenPayloadSchema,
   sessionAdoptedPayloadSchema,
   sessionCreatedPayloadSchema,
   sessionRenamedPayloadSchema,
   taskQuarantinedPayloadSchema,
   ttlTierObservedPayloadSchema,
+  type Liveness,
 } from '../events.js';
 import { isTranscriptAppendEventType } from '../tasks/watchdogDecision.js';
 
@@ -92,6 +94,20 @@ function withTranscriptAppendHeartbeat(
   }));
 }
 
+// ─── D35: the two liveness states in which a turn can still be in flight ─────
+//
+// Used ONE WAY ONLY — to decide whether a `liveness_changed` CLEARS
+// `turnInFlight`. Nothing here ever SETS it: `running` says the process is
+// alive, not that a turn is running, and reading it as "a turn started" is
+// precisely the phantom D35 was written about (`138d3ef4` was `running` from
+// `liveness_changed{cause:'spawn'}` before any prompt existed). `spawning` is
+// listed beside `running` because a resume in flight has not ended anything
+// either — a session mid-resume must not have a turn cleared out from under it.
+const LIVENESS_STATES_A_TURN_CAN_SURVIVE: ReadonlySet<Liveness> = new Set<Liveness>([
+  'spawning',
+  'running',
+]);
+
 export const sessionsProjection: Projection<SessionsState> = {
   id: 'sessions',
 
@@ -150,10 +166,21 @@ export const sessionsProjection: Projection<SessionsState> = {
           return state;
         }
         // Applied totally — edge enforcement lives in sessionMachine/emitters.
-        return withSession(state, parsed.data.appSessionId, (session) => ({
-          ...session,
-          liveness: parsed.data.to,
-        }));
+        return withSession(state, parsed.data.appSessionId, (session) => {
+          const movedSession: SessionRecord = { ...session, liveness: parsed.data.to };
+          // ⚠ **D35: CLEAR-ONLY, NEVER SET.** A transition INTO a live state
+          // leaves `turnInFlight` exactly as it was — a
+          // `liveness_changed{to:'running', cause:'spawn'}` says a process
+          // started, and reading that as "a turn started" is defect A itself.
+          // A transition OUT of the live states (dormant / interrupted / dead)
+          // ends whatever turn was running: the process cannot still be
+          // thinking, so an unfinished turn must not stay marked in flight and
+          // make the operator's next opening prompt look like a steer.
+          if (LIVENESS_STATES_A_TURN_CAN_SURVIVE.has(parsed.data.to)) {
+            return movedSession;
+          }
+          return { ...movedSession, turnInFlight: false };
+        });
       }
 
       case EVENT_TYPES.gateFired:
@@ -179,6 +206,43 @@ export const sessionsProjection: Projection<SessionsState> = {
             ...session,
             needsAttention: { reason, since: event.ts },
           };
+          // ── D35: `run_completed` is THE TURN BOUNDARY, and the clear ────────
+          //
+          // ⚠ **THIS BRANCH IS `run_completed` ALONE.** The other four events in
+          // this case group (`gate_fired`, `question_asked`, `watchdog_stale`,
+          // `task_quarantined`) set attention and NOTHING else — none of them
+          // ends a turn (a gate is asked mid-turn, a staleness report is the
+          // watchdog talking about a run, not the run talking), so none of them
+          // may acquire a correction-clearing side effect.
+          //
+          // Two clears, and the second one is LOAD-BEARING, not a backstop:
+          //
+          // 1. `turnInFlight → false`. The turn ended; the next thing the
+          //    operator types is a fresh prompt, not a steer.
+          // 2. `pendingCorrectionAt → null`. D35 measured corrections arriving
+          //    in TWO shapes: mid-turn (a `queued_command` attachment the
+          //    transcript mapper sees — on the PTY channel) and AFTER THE TURN
+          //    ENDED (an ordinary user message with no attachment at all, which
+          //    emits **no signal any tailer could ever see, on any channel**).
+          //    `correction_delivered` covers only the first shape, and only
+          //    where the transcript is read at all — the SDK skip means its
+          //    lifetime count in the production log is 0. So this is the ONLY
+          //    path that covers both shapes, and without it the composer's
+          //    "correction queued" indicator sticks forever, which is exactly
+          //    what a real operator hit.
+          //
+          // Both are written UNCONDITIONALLY, unlike `correction_delivered`
+          // below, which deliberately refuses to create a field that was never
+          // there. The asymmetry is deliberate: a delivery with nothing pending
+          // is a COMMON event for sessions VIMES never steered (a human typing
+          // into a PTY), and stamping those records would be inventing state
+          // from someone else's activity. A `run_completed` is VIMES observing
+          // the end of a turn on a session it is already rewriting (attention,
+          // above) — there is no untouched byte-shape left to preserve, and
+          // "no correction is pending" is a true statement about it.
+          if (event.type === EVENT_TYPES.runCompleted) {
+            return { ...attendedSession, turnInFlight: false, pendingCorrectionAt: null };
+          }
           if (event.type !== EVENT_TYPES.watchdogStale) {
             return attendedSession;
           }
@@ -314,6 +378,37 @@ export const sessionsProjection: Projection<SessionsState> = {
         }));
       }
 
+      // ── D35: a delivered message means a turn is IN FLIGHT ────────────────
+      //
+      // Same-stream by construction, like everything else folded here: `message`
+      // is emitted with `stream: payload.appSessionId` (events.ts), so D34 /
+      // architecture.md ("Projections are STREAM-LOCAL") is satisfied.
+      //
+      // ⚠ **THE SET LIVES HERE AND NOWHERE ELSE.** This is the only event that
+      // may set `turnInFlight`, because it is the only one that observes VIMES
+      // actually handing text to a live process — `sessionHost.deliverMessage`
+      // echoes every operator turn as `message(role:'user')` BEFORE it reaches
+      // the SDK stream / PTY (D12), and the model's own turns append as
+      // `message(role:'assistant')`. Both mean the same thing for this bit: the
+      // run is mid-turn. Liveness must never set it; see the `liveness_changed`
+      // fold above for the trace that proves why.
+      //
+      // Note what this case does NOT do: it does not touch `lastAppendAt`.
+      // `message` is in `TRANSCRIPT_APPEND_EVENT_TYPES`, so
+      // `withTranscriptAppendHeartbeat` above ALREADY advanced the heartbeat
+      // before this switch ran — this case composes with that fold rather than
+      // duplicating it (the same composition the attention setters use).
+      case EVENT_TYPES.message: {
+        const parsed = messagePayloadSchema.safeParse(event.payload);
+        if (!parsed.success) {
+          return state;
+        }
+        return withSession(state, parsed.data.appSessionId, (session) => ({
+          ...session,
+          turnInFlight: true,
+        }));
+      }
+
       case EVENT_TYPES.correctionDelivered: {
         const parsed = correctionDeliveredPayloadSchema.safeParse(event.payload);
         if (!parsed.success) {
@@ -339,10 +434,12 @@ export const sessionsProjection: Projection<SessionsState> = {
       // resync_marker (a client-facing signal only), and any unknown type do not
       // change a SessionRecord here.
       //
-      // message, usage_block and line_quarantined reach no case of their own —
-      // but they are NOT no-ops any more: they are transcript appends, and
+      // usage_block and line_quarantined reach no case of their own — but they
+      // are NOT no-ops: they are transcript appends, and
       // `withTranscriptAppendHeartbeat` above already advanced `lastAppendAt`
-      // for them before this switch ran. They change nothing else.
+      // for them before this switch ran. They change nothing else. (`message`
+      // used to be in this list; D35 gave it a case of its own — it is still a
+      // transcript append, and now also the one event that sets `turnInFlight`.)
       default:
         return state;
     }

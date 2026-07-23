@@ -3,7 +3,18 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { WebSocket, type RawData } from 'ws';
-import { CountingIdSource, SteppingClock, canonicalJson, type EventRecord } from '@vimes/core';
+import {
+  CountingIdSource,
+  SteppingClock,
+  canonicalJson,
+  readAllStreamsGrouped,
+  replayFromEmpty,
+  runCompleted,
+  sessionsProjection,
+  withNotificationTrigger,
+  type EventRecord,
+  type SessionRecord,
+} from '@vimes/core';
 import type { AccessVerifier } from './auth.js';
 import { createDaemon, type Daemon } from './app.js';
 import type { DaemonConfig } from './config.js';
@@ -434,33 +445,134 @@ describe('WsHub protocol v0.2 session ops', () => {
   });
 });
 
-// ─── slice 6 step 6a — the send boundary evented (D5) ────────────────────────
+// ─── slice 6 — the send boundary evented (D5), GATED ON AN IN-FLIGHT TURN (D35)
 //
 // ⚠ NO REAL CLAUDE. The session is a PTY session backed by `fakePtySpawnFactory`,
 // so `sendMessage` reaches a live process that writes nowhere. Nothing here
 // touches the live daemon, its sessions or its terminals.
-describe('WsHub — a successful send is evented as correction_queued (assertion 8)', () => {
+//
+// ⚠ **WHAT CHANGED, AND WHY THESE CASES INVERTED.** Step 6a emitted
+// `correction_queued` on EVERY accepted send, and this block asserted exactly
+// that. A real operator then sent a FIRST prompt to a freshly spawned session
+// and was told "Correction queued" for a correction he had not made — and it
+// never cleared, because on the SDK channel nothing can observe delivery. D35
+// halted the slice over it: **a correction is a steer of an IN-FLIGHT TURN.** So
+// the opening prompt now emits nothing, and the cases below pin the phantom
+// rather than the behaviour that produced it.
+describe('WsHub — correction_queued is emitted only for a steer of an in-flight turn (D35)', () => {
+  function sessionEventTypesOn(daemon: Daemon, appSessionId: string): string[] {
+    return daemon.store
+      .read(appSessionId, 1, daemon.store.head(appSessionId))
+      .map((event) => event.type);
+  }
+
   function correctionQueuedEventsOn(daemon: Daemon, appSessionId: string): EventRecord[] {
     return daemon.store
       .read(appSessionId, 1, daemon.store.head(appSessionId))
       .filter((event) => event.type === 'correction_queued');
   }
 
-  it('one accepted send emits EXACTLY ONE correction_queued carrying the operator text', async () => {
-    const daemon = await startDaemon({
+  // The projection as the daemon itself folds it — never a hand-stubbed record.
+  function sessionRecordOn(daemon: Daemon, appSessionId: string): SessionRecord | undefined {
+    return replayFromEmpty(sessionsProjection, readAllStreamsGrouped(daemon.store)).sessions[
+      appSessionId
+    ];
+  }
+
+  async function spawnPtySession(
+    daemon: Daemon,
+    client: WsTestClient,
+    name: string,
+  ): Promise<string> {
+    client.send({ op: 'spawn', channel: 'pty', cwd: temporaryDirectory, name });
+    await client.waitForMessageCount(1);
+    return client.messages[0]!.appSessionId as string;
+  }
+
+  function startSteerableDaemon(): Promise<Daemon> {
+    return startDaemon({
       config: buildConfig({ projectRoots: [temporaryDirectory] }),
       ptySpawnFactory: fakePtySpawnFactory,
       projectsRoot: temporaryDirectory,
     });
+  }
+
+  // ASSERTION 8 — THE PHANTOM, PINNED.
+  it('a FIRST prompt to an idle session emits the message and NO correction_queued', async () => {
+    const daemon = await startSteerableDaemon();
     const client = new WsTestClient(daemon.port, ANY_TOKEN);
     try {
       await client.opened();
-      client.send({ op: 'spawn', channel: 'pty', cwd: temporaryDirectory, name: 'steered' });
-      await client.waitForMessageCount(1);
-      const appSessionId = client.messages[0]!.appSessionId as string;
+      const appSessionId = await spawnPtySession(daemon, client, 'freshly-spawned');
 
+      client.send({ op: 'send', appSessionId, text: 'synthetic opening prompt' });
+      // Wait on the echo the host writes for the turn, then prove what did NOT
+      // follow it. (Waiting on an absence needs a positive event to wait for.)
+      await waitUntil(() => sessionEventTypesOn(daemon, appSessionId).includes('message'));
+      await delay(50);
+
+      // ⚠ THE EVENT LIST, not a count: a correction hiding anywhere in the
+      // session's stream fails this, and the list also shows the echo DID happen
+      // so the case cannot pass by the send having quietly done nothing.
+      expect(sessionEventTypesOn(daemon, appSessionId)).not.toContain('correction_queued');
+      expect(sessionEventTypesOn(daemon, appSessionId)).toContain('message');
+      expect(client.messages.filter((m) => m.op === 'refused')).toEqual([]);
+    } finally {
+      client.close();
+      await daemon.stop();
+    }
+  });
+
+  // ASSERTION 10 — THE ORDERING HAZARD, PINNED.
+  it('the decision uses the PRE-SEND flag: the turn flips to in-flight DURING the send, and still no correction', async () => {
+    // ⚠ THIS IS THE CASE THAT MUST REDDEN IF SOMEONE MOVES THE READ AFTER
+    // `sendMessage`. The host echoes the operator's turn as
+    // `message(role:'user')` BEFORE the text reaches the process (D12), and
+    // `message` is exactly what sets `turnInFlight` — so by the time
+    // `sendMessage` returns, the flag is TRUE. The two expectations below are
+    // therefore contradictory unless the flag was captured beforehand: the
+    // session IS mid-turn now, and no correction was recorded.
+    const daemon = await startSteerableDaemon();
+    const client = new WsTestClient(daemon.port, ANY_TOKEN);
+    try {
+      await client.opened();
+      const appSessionId = await spawnPtySession(daemon, client, 'ordering-hazard');
+
+      // Before the send: no turn in flight (the process is live — liveness is
+      // NOT the same fact, which is the other half of D35).
+      expect(sessionRecordOn(daemon, appSessionId)!.turnInFlight).toBeUndefined();
+      expect(sessionRecordOn(daemon, appSessionId)!.liveness).toBe('running');
+
+      client.send({ op: 'send', appSessionId, text: 'synthetic opening prompt' });
+      await waitUntil(() => sessionRecordOn(daemon, appSessionId)?.turnInFlight === true);
+      await delay(50);
+
+      // The flag DID flip during the send...
+      expect(sessionRecordOn(daemon, appSessionId)!.turnInFlight).toBe(true);
+      // ...and the decision still used the value from before it.
+      expect(correctionQueuedEventsOn(daemon, appSessionId)).toEqual([]);
+    } finally {
+      client.close();
+      await daemon.stop();
+    }
+  });
+
+  // ASSERTION 9 — the genuine steer still works, exactly as it did.
+  it('a send while a turn IS in flight emits EXACTLY ONE correction_queued carrying the operator text', async () => {
+    const daemon = await startSteerableDaemon();
+    const client = new WsTestClient(daemon.port, ANY_TOKEN);
+    try {
+      await client.opened();
+      const appSessionId = await spawnPtySession(daemon, client, 'steered');
+
+      // The turn that starts the run — no correction for this one.
+      client.send({ op: 'send', appSessionId, text: 'synthetic opening prompt' });
+      await waitUntil(() => sessionRecordOn(daemon, appSessionId)?.turnInFlight === true);
+
+      // The steer, mid-turn.
       client.send({ op: 'send', appSessionId, text: 'synthetic steer: prefer the smaller change' });
       await waitUntil(() => correctionQueuedEventsOn(daemon, appSessionId).length > 0);
+      await delay(50);
 
       const corrections = correctionQueuedEventsOn(daemon, appSessionId);
       expect(corrections).toHaveLength(1);
@@ -468,17 +580,16 @@ describe('WsHub — a successful send is evented as correction_queued (assertion
         appSessionId,
         text: 'synthetic steer: prefer the smaller change',
       });
-      // The op was ACCEPTED — no refusal came back.
       expect(client.messages.filter((m) => m.op === 'refused')).toEqual([]);
       // ⚠ ORDERING: the event lands AFTER the host's own `message(role:'user')`
       // echo of the same turn. That order is what makes the watchdog's
       // protection work — `correctionQueuedAt` must be at or after the last
       // heartbeat, and the echo IS a heartbeat.
       const sessionEvents = daemon.store.read(appSessionId, 1, daemon.store.head(appSessionId));
-      const echoIndex = sessionEvents.findIndex((event) => event.type === 'message');
       const correctionIndex = sessionEvents.findIndex(
         (event) => event.type === 'correction_queued',
       );
+      const echoIndex = sessionEvents.findLastIndex((event) => event.type === 'message');
       expect(echoIndex).toBeGreaterThanOrEqual(0);
       expect(correctionIndex).toBeGreaterThan(echoIndex);
     } finally {
@@ -487,28 +598,23 @@ describe('WsHub — a successful send is evented as correction_queued (assertion
     }
   });
 
-  it('three accepted sends emit exactly three, one per send — never coalesced, never doubled', async () => {
-    const daemon = await startDaemon({
-      config: buildConfig({ projectRoots: [temporaryDirectory] }),
-      ptySpawnFactory: fakePtySpawnFactory,
-      projectsRoot: temporaryDirectory,
-    });
+  it('three sends into a running turn emit exactly two — one per STEER, never one per send', async () => {
+    const daemon = await startSteerableDaemon();
     const client = new WsTestClient(daemon.port, ANY_TOKEN);
     try {
       await client.opened();
-      client.send({ op: 'spawn', channel: 'pty', cwd: temporaryDirectory, name: 'steered-thrice' });
-      await client.waitForMessageCount(1);
-      const appSessionId = client.messages[0]!.appSessionId as string;
+      const appSessionId = await spawnPtySession(daemon, client, 'steered-thrice');
 
-      for (const text of ['synthetic steer one', 'synthetic steer two', 'synthetic steer three']) {
+      // Sends are handled in order on one socket, so the first is the opening
+      // prompt and the other two are steers of the turn it started.
+      for (const text of ['synthetic opening prompt', 'synthetic steer two', 'synthetic steer three']) {
         client.send({ op: 'send', appSessionId, text });
       }
-      await waitUntil(() => correctionQueuedEventsOn(daemon, appSessionId).length >= 3);
+      await waitUntil(() => correctionQueuedEventsOn(daemon, appSessionId).length >= 2);
+      await delay(50);
 
       const corrections = correctionQueuedEventsOn(daemon, appSessionId);
-      expect(corrections).toHaveLength(3);
       expect(corrections.map((event) => (event.payload as { text: string }).text)).toEqual([
-        'synthetic steer one',
         'synthetic steer two',
         'synthetic steer three',
       ]);
@@ -518,6 +624,53 @@ describe('WsHub — a successful send is evented as correction_queued (assertion
     }
   });
 
+  // The D35 TRACE, END TO END — assertions 8–11 composed into the sequence the
+  // operator actually ran: spawn, first prompt, mid-run steer, the turn ends,
+  // and a prompt into the now-idle session.
+  it('replays the D35 trace: spawn → prompt → steer → run_completed → prompt', async () => {
+    const daemon = await startSteerableDaemon();
+    const client = new WsTestClient(daemon.port, ANY_TOKEN);
+    try {
+      await client.opened();
+      const appSessionId = await spawnPtySession(daemon, client, 'the-d35-trace');
+
+      // 1. The opening prompt — NOT a correction.
+      client.send({ op: 'send', appSessionId, text: 'synthetic opening prompt' });
+      await waitUntil(() => sessionRecordOn(daemon, appSessionId)?.turnInFlight === true);
+      expect(correctionQueuedEventsOn(daemon, appSessionId)).toEqual([]);
+
+      // 2. A steer of that in-flight turn — a correction.
+      client.send({ op: 'send', appSessionId, text: 'synthetic steer: mid-run' });
+      await waitUntil(() => correctionQueuedEventsOn(daemon, appSessionId).length === 1);
+      expect(sessionRecordOn(daemon, appSessionId)!.pendingCorrectionAt).not.toBeNull();
+
+      // 3. The turn ends. THE LOAD-BEARING CLEAR: no `correction_delivered` will
+      // ever arrive for this steer (on the SDK channel none can), so if
+      // `run_completed` did not clear it, the indicator would stick forever —
+      // which is the bug as reported.
+      daemon.router.emit(withNotificationTrigger(runCompleted({ appSessionId })));
+      await waitUntil(() => sessionRecordOn(daemon, appSessionId)?.turnInFlight === false);
+      const afterCompletion = sessionRecordOn(daemon, appSessionId)!;
+      expect(afterCompletion.pendingCorrectionAt).toBeNull();
+      expect(afterCompletion.turnInFlight).toBe(false);
+      expect(
+        sessionEventTypesOn(daemon, appSessionId).includes('correction_delivered'),
+        'no delivery was ever observed — run_completed is what cleared it',
+      ).toBe(false);
+
+      // 4. A prompt into the now-idle session — NOT a correction, even though
+      // the session has been steered before and the process is still live.
+      client.send({ op: 'send', appSessionId, text: 'synthetic second opening prompt' });
+      await waitUntil(() => sessionRecordOn(daemon, appSessionId)?.turnInFlight === true);
+      await delay(50);
+      expect(correctionQueuedEventsOn(daemon, appSessionId)).toHaveLength(1);
+    } finally {
+      client.close();
+      await daemon.stop();
+    }
+  });
+
+  // ASSERTION 11.
   it('a REFUSED send emits NOTHING — nothing was queued', async () => {
     // ⚠ THE HALF THAT MATTERS MOST. A `correction_queued` for a send the host
     // rejected would set `pendingCorrectionAt` on a run nobody is steering — and

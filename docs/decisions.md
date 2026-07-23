@@ -871,3 +871,203 @@ and the mechanism is subtle in a projection that is currently easy to read.
 **The constraint is now written down** in `architecture.md`: *no projection may
 fold an event from a stream other than its own.* That entry exists so the next
 person does not lose the same day, and it is why `architecture.md` was created.
+
+## D35 — A correction is a steer of an IN-FLIGHT turn; `run_completed` is the clear
+
+*2026-07-23 (Wes, during the slice-6 live test plan): approved. Rule 0.1
+satisfied — T1/T2 surfaced two independent defects, the slice halted, and this
+record was written before any code changed. Supersedes the delivery assumption
+inside D5/D30; the D5 injection mechanism and the D30 protection conditions
+themselves are unchanged.*
+
+**How it was found.** Wes ran T1, sent a first prompt to a freshly spawned
+session, and the composer immediately showed *"Correction queued"* — for a
+correction he had not made. The indicator never cleared. He then ran a second
+session (`138d3ef4`) deliberately dropping three mid-turn corrections, and
+dropped three more into the orchestrator's own session so the behaviour could be
+observed from both sides at once.
+
+### Finding A — `correction_queued` fires on every send
+
+`wsHub.ts:416` emits `correction_queued` for **every** `send` op the host
+accepts. There is no notion of whether a turn is actually running, so an opening
+prompt to an idle session is recorded as a course-correction. Observed in both
+test sessions (`5c8c382c` seq 7, `138d3ef4` seq 7).
+
+**A liveness gate would NOT have fixed this, and the trace proves it.** Session
+`138d3ef4` was `liveness: running` from `liveness_changed{cause:'spawn'}` at
+11:36:57 — *before any prompt existed*. An SDK session sits in streaming-input
+mode awaiting its first turn and is `running` throughout. **`running` means the
+process is alive, not that a model turn is in flight**, and the two are not the
+same fact.
+
+### Finding B — the SDK channel cannot observe delivery at all
+
+`correction_delivered` has exactly one source: the transcript mapper recognising
+a `queued_command` attachment. On the SDK channel it can never fire:
+
+- `sessionHost.ts:430` — every SDK session calls `markSdkJsonl(jsonlPath)` on
+  `system/init`
+- `tailer.ts:186` — that adds the path to `skipPaths` and drops its file state
+- `tailer.ts:216` — the tailer skips that file permanently
+
+Which is **correct for messages** — SDK sessions get those from the stream at
+`sessionHost.ts:440`, and tailing as well would double-count. But the
+`queued_command` attachment exists **only in the JSONL and never in the SDK
+stream**. So step 6a's recogniser is structurally unreachable on the default
+channel (D4), and the lifetime count of `correction_delivered` in the production
+log is **0** — not bad luck, architecture.
+
+The recogniser itself is **correct and vindicated**: `138d3ef4`'s transcript
+record 20 is a genuine `queued_command`, `commandMode:'prompt'`,
+`entrypoint:'sdk-ts'` — exactly the shape `mapper.ts` matches. This also answers
+the open unknown in the risk register's `queued_command` row: **VIMES's own SDK
+injection produces `prompt` with no `origin` and no `source_uuid`**, confirming
+the decision to carry `origin.kind` as evidence rather than require it.
+
+### The measurement that decided the fix — corrections arrive in TWO shapes
+
+Six live corrections across three sessions (two channels, `sdk-ts` and
+`claude-vscode`):
+
+| delivery timing | transcript shape | observable? |
+|---|---|---|
+| **mid-turn** (the turn made another tool call while queued) | `queued_command` attachment, `commandMode:'prompt'` | yes — on PTY; **not on SDK** (finding B) |
+| **after the turn ended** | an ordinary user message, **no attachment at all** | **no — on any channel** |
+
+`138d3ef4`'s third correction is the second shape: enqueued 11:37:49, `Stop` at
+11:38:06.669, delivered 11:38:06.681 as plain record 33. The orchestrator's own
+third note behaved identically on the interactive client. **That shape emits no
+signal any tailer could ever see**, so no amount of transcript work covers it.
+
+Delivery is also **mid-turn at the next tool call**, not at the next turn
+boundary — which kills the "clear on the second `run_completed`" refinement the
+orchestrator initially proposed. By the first `run_completed`, both shapes have
+already been consumed.
+
+### Decision
+
+1. **A `turnInFlight` bit on the session record**, folded single-stream (D34):
+   set when VIMES delivers a message, cleared on `run_completed`.
+2. **`correction_queued` is emitted only when a turn was in flight *before* the
+   send.** Kills the phantom; keeps genuine mid-run steers.
+3. **`pendingCorrectionAt` clears on `run_completed`** as well as on
+   `correction_delivered`. This is the **load-bearing** rule, not a backstop: it
+   is the only path that covers both delivery shapes.
+4. `correction_delivered` remains the earlier, more precise clear wherever it is
+   observable — today, the PTY channel.
+
+**Why this matters beyond the indicator.** `pendingCorrectionAt` feeds
+`watchdogDecision`'s `correction-in-flight` protection. A phantom protection
+normally lifts on the next transcript append, but a session that wedges
+*immediately* after a phantom stays protected forever — the staleness guard
+silently switched off on a run nobody is steering, which is exactly the failure
+mode the D5 comment at `wsHub.ts:398` was written to prevent for refused sends.
+Pillar 4 applies directly: a meter that lies is worse than no meter.
+
+**Rejected, with reasons.** (a) *Gate emission on `liveness === 'running'`* —
+disproved by the trace above; it would have emitted the phantom anyway. (b)
+*Clear on the second `run_completed`* — rests on a wrong model of when the CLI
+picks up queued text; measurement showed mid-turn delivery. (c) *Let the tailer
+read SDK transcripts for attachment records only* — would restore delivery
+observation on the default channel, but the SDK skip exists to prevent duplicate
+message events and reaching into it risks a regression in the highest-frequency
+path in the system, for a gain of "clears a few seconds sooner." **Deferred to
+open-questions with its own trigger**, not folded into this fix. (d) *Treat the
+CLI's `queue-operation` records as the signal* — they are richer (enqueue /
+popAll / remove / dequeue, and they capture a human editing a queued note before
+delivery) but they are a client-transcript artifact behind the same tailer skip,
+and building on them would deepen the coupling this decision is narrowing.
+
+## D37 — The cost ledger groups by DIRECTORY ROLLUP, not by an inferred project boundary
+
+*2026-07-23 (Wes, reviewing the live cost ledger): approved. Raised as "those
+'projects' are really just categories of projects" and settled in the same
+exchange — a project boundary is not a thing VIMES can detect, so it stops trying.*
+
+**The finding.** `costTree.ts:392` returns `rootWithBoundary + firstSegment` —
+the **immediate child** of the longest matched `VIMES_PROJECT_ROOTS` entry. With
+`VIMES_PROJECT_ROOTS=/home/ticktockbent/projects` and a
+`projects/<category>/<project>` layout, every rollup keys on
+`/home/ticktockbent/projects/infrastructure` — the **category**. Every repo under
+it is summed into one line, and drilling in reaches session UUIDs with no
+directory in between.
+
+**Why not just go one level deeper.** It would fix this layout and break a flat
+one. The depth of a project below its root is not a constant, and picking any
+number is a guess dressed as a rule.
+
+**Why not detect a boundary marker.** Considered and rejected on Wes's objection,
+which is decisive: *"we cannot rely on every project being a git repo. I may want
+to work locally without a repo for a while, or I may want to use another source
+control system."* `.git` fails for un-versioned work and for jj/hg; `package.json`
+fails for polyglot repos and reverses inside monorepos; any dotfile convention
+fails for anyone not using it. **A cwd is a fact; a project boundary is an
+inference**, and rule 0.8's posture — do not infer meaning from a signal we do
+not control — applies to directory layout exactly as it does to the screen.
+
+**Decision: group by the directory tree itself, with rollups at every node.**
+Anything launched in `…/vimes/packages/daemon` counts under `…/vimes`, which
+counts under `…/projects/infrastructure`, up to `…/projects` as the full rollup of
+all spend. Each node reports `own` and `subtree`, and the operator chooses
+granularity by expanding rather than by trusting a boundary someone guessed.
+
+Three reasons this is better than a fixed grouping and not merely more flexible:
+1. **Nothing is inferred.** Every node is a real directory a session really ran
+   in — the honest-full-cwd fallback `costTree.ts:360` already reaches for when no
+   root matches, applied uniformly instead of only in the fallback case.
+2. **It is the codebase's existing shape.** The agent tree already computes
+   `own` + `subtree` at every node; this is that pattern one level up, not a new
+   concept to learn.
+3. **It retires the question permanently.** Flat layouts, nested layouts,
+   monorepos, scratch dirs and future tools all work without another decision.
+
+A flat group-by-exact-cwd was the cheaper repair and is **rejected**: it is honest
+but fragments one repo into several unrelated line items whenever sessions are
+launched at different depths, hiding the number the operator asked for. The tree
+costs more and removes the failure instead of relocating it.
+
+**Unchanged:** `VIMES_PROJECT_ROOTS` keeps its job as the *filter*, and the single
+outside-roots bucket survives (binding data rule 9 — "slugs are not projects").
+`insideProjectRoots` is untouched.
+
+**No money moves.** This re-buckets presentation only: same rows, same prices,
+same totals. C2 reconciliation is unaffected — a fact worth stating because a
+regrouping of every historical figure sounds larger than it is.
+
+**Session leaves get a readable identity too.** Cost rows already carry
+`projectCwd`, so showing a directory instead of a UUID needs no join. The
+human-given session `name` lives on the sessions projection and does. The ladder
+is `name` → cwd basename → short id, so it degrades to something readable rather
+than to a hash.
+
+## D38 — Money renders at 2 dp, and a real sub-cent amount renders `<$0.01`, never `$0.00`
+
+*2026-07-23 (Wes, same review): approved. "6 decimal places is not meaningful in
+cost reporting."*
+
+**The decision has two halves and the second is the load-bearing one.**
+
+**Two decimal places, at the DISPLAY layer only.** `formatUsd`
+(`priceTable.ts:198`) keeps its 6 dp: micro-dollars are "the Money boundary"
+(`priceTable.ts:191-193`) and **the figure C2 reconciles against OTel's USD**.
+Rounding at the source would trade a validation the ledger exists to pass for a
+formatting preference. The transform belongs in `packages/ui/src/lib/costDisplay.ts`.
+
+This does **not** breach that module's integrity rule ("a money figure is NEVER
+re-computed here"). That rule forbids *deriving* money — summing, converting,
+apportioning — because a second computation can disagree with the source. Reducing
+precision for display is presentation, and presentation is the view's job. The
+orchestrator's first instinct was to fix it at the source; Wes's redirect to the
+display layer was correct and is recorded because the reasoning is not obvious
+from either file alone.
+
+**Round, never truncate.** String-slicing `"$0.999999"` yields `"$0.99"` — a
+systematic *understatement* of money across every figure in the ledger. Round
+half-up, matching `nanoDollarsToMicroDollars`'s existing rule.
+
+**A non-zero amount below one cent renders `<$0.01`.** This is the same pillar-4
+line the ledger already holds when it refuses to render an unpriced row as `$0`:
+real spend collapsing to `$0.00` is the identical lie in different clothing, and a
+per-agent breakdown is full of genuinely sub-cent rows. A true zero still renders
+`$0.00`, so the two remain distinguishable.

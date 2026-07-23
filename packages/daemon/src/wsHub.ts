@@ -3,7 +3,7 @@ import type { Duplex } from 'node:stream';
 import { resolve, sep } from 'node:path';
 import { WebSocketServer, WebSocket, type RawData } from 'ws';
 import { z } from 'zod';
-import type { EventRecord, EventStore } from '@vimes/core';
+import type { EventRecord, EventStore, SessionsState } from '@vimes/core';
 import { EventRouter, correctionQueued } from '@vimes/core';
 import type { SessionHost } from './sessionHost.js';
 import { isValidPushSubscription, type PushSubscriptionRecord } from './pushService.js';
@@ -259,6 +259,20 @@ export interface WsHubDeps {
   // Raw terminal host (slice 3 step 3). Absent → term_* ops refuse as
   // not-implemented and binary frames are dropped.
   terminalHost?: TerminalHost;
+  // ── D35: the sessions projection, read FRESH per send ─────────────────────
+  //
+  // The SAME seam `TaskWatchdog` uses (`readSessions`, wired in app.ts to
+  // `bootFromSnapshot(sessionsProjection, …)`), deliberately reused rather than
+  // duplicated: the hub needs one fact off the session record — is a turn in
+  // flight? — and a second accessor, or a copy of session state kept in this
+  // class, would be a second authority for a fact the projection already owns
+  // (principle 9). Called per `send` op only, never on the event hot path.
+  //
+  // Absent → the hub cannot tell a steer from an opening prompt, so it emits NO
+  // `correction_queued` at all. That is the safe direction and it is the one
+  // D35 argues for: a phantom correction switches the staleness guard off on a
+  // run nobody is steering, and a meter that lies is worse than no meter.
+  readSessions?: () => SessionsState;
 }
 
 export class WsHub {
@@ -271,6 +285,7 @@ export class WsHub {
   private readonly pushSubscriptions: PushSubscriptionSink | undefined;
   private readonly searchService: SearchService | undefined;
   private readonly terminalHost: TerminalHost | undefined;
+  private readonly readSessions: (() => SessionsState) | undefined;
   private readonly webSocketServer: WebSocketServer;
   private readonly connections = new Set<HubConnection>();
   private connectionCounter = 0;
@@ -285,6 +300,7 @@ export class WsHub {
     this.pushSubscriptions = deps.pushSubscriptions;
     this.searchService = deps.searchService;
     this.terminalHost = deps.terminalHost;
+    this.readSessions = deps.readSessions;
     this.webSocketServer = new WebSocketServer({ noServer: true });
   }
 
@@ -393,6 +409,16 @@ export class WsHub {
           this.refuse(connection, 'send', 'not-implemented');
           return;
         }
+        // ⚠ ⚠ **CAPTURED BEFORE `sendMessage`, AND THE ORDER IS THE WHOLE POINT
+        // (D35).** `host.sendMessage` echoes the operator's turn into the log as
+        // `message(role:'user')` before the text reaches the process (D12,
+        // sessionHost.deliverMessage) — and `message` is precisely the event
+        // that SETS `turnInFlight`. Read this flag AFTER the call and it is
+        // ALWAYS true, which is defect A rebuilt exactly: every send, including
+        // the first prompt to an idle session, would be recorded as a
+        // course-correction. The `const` below is the decision; nothing after
+        // this line may re-read the projection to make it.
+        const turnWasInFlightBeforeThisSend = this.isTurnInFlight(control.appSessionId);
         const result = host.sendMessage(control.appSessionId, control.text);
         if ('refused' in result) {
           // ⚠ A REFUSED SEND EMITS NOTHING. Nothing was queued, so there is no
@@ -413,6 +439,19 @@ export class WsHub {
         // D5: this is the correction's ONLY entry point. The WS `send` op is the
         // existing path and the mechanism already ships; a second route (an HTTP
         // correction endpoint) would be a second writer of the same fact.
+        //
+        // ⚠ **AND ONLY WHEN A TURN WAS ALREADY RUNNING (D35).** A CORRECTION IS
+        // A STEER OF AN IN-FLIGHT TURN. Before this gate existed, every accepted
+        // send emitted one, so an opening prompt to an idle session showed the
+        // operator "Correction queued" for a correction he had not made — and
+        // because the clear had no observable source on the SDK channel, it
+        // never went away. Note what this gate is NOT: a liveness check. Liveness
+        // `running` means the PROCESS is alive; an SDK session is `running` from
+        // spawn, before any prompt exists, so gating on it would emit the exact
+        // same phantom (D35 measured this on session `138d3ef4`).
+        if (!turnWasInFlightBeforeThisSend) {
+          return;
+        }
         this.router.emit([
           correctionQueued({ appSessionId: control.appSessionId, text: control.text }),
         ]);
@@ -765,6 +804,31 @@ export class WsHub {
 
   private refuse(connection: HubConnection, refusedOp: string, reason: string): void {
     this.sendControl(connection, { op: 'refused', refusedOp, reason });
+  }
+
+  // ── D35: is a model turn in flight on this session RIGHT NOW? ──────────────
+  //
+  // A pure READ of the sessions projection — the hub owns no copy of session
+  // state and derives no second notion of "mid-turn" (principle 9). The
+  // projection sets `turnInFlight` on `message` and clears it on `run_completed`
+  // / a liveness transition out of the live states; this method adds no policy
+  // to that, it just asks.
+  //
+  // ⚠ **CALL IT BEFORE THE HOST DOES ANYTHING.** The answer changes the instant
+  // `sendMessage` echoes the turn into the log. The one caller captures the
+  // result into a local first, and the comment at that call site says why.
+  //
+  // An unknown session, an absent `readSessions` dep, or a record predating the
+  // field all read as "no turn in flight" — i.e. no `correction_queued`. That is
+  // the safe direction: a missing correction record costs the watchdog a
+  // protection it did not need, while a phantom one switches the staleness guard
+  // off on a run nobody is steering.
+  private isTurnInFlight(appSessionId: string): boolean {
+    const readSessions = this.readSessions;
+    if (readSessions === undefined) {
+      return false;
+    }
+    return readSessions().sessions[appSessionId]?.turnInFlight === true;
   }
 
   private handleSubscribe(connection: HubConnection, stream: string, lastSeq: number): void {

@@ -197,3 +197,45 @@ third option finding C never weighed — it keeps replay self-contained (rule
 small. Not a reopening of D12; it is the pre-filed first candidate for the
 horizon item, recorded so the eventual revisit starts from a design, not a
 blank page.
+
+## Markdown rendering in the message stream — parse to a structure, never `v-html`
+
+**Raised by Wes 2026-07-23, during the slice-6 live test plan: "the raw
+unformatted markdown is hard to parse."** Not scheduled; sized and shaped here so
+it can be slotted without re-deciding anything.
+
+`StreamView.vue:336` renders `{{ block.text }}` inside `whitespace-pre-wrap`. Vue
+escapes it, so a heavy assistant message (headings, bold, fenced code, lists)
+arrives as literal `##` and `**`. Reading agent output is the single most common
+thing a VIMES user does, so this is a daily-friction item, not a cosmetic one.
+
+**The shape, decided in advance:** parse to a structured AST in
+`packages/ui/src/lib/markdown.ts` and render it with Vue components. **No
+`v-html` anywhere.** Two reasons, and the second is the load-bearing one:
+
+- It lands in the existing pattern — pure logic in `src/lib/*.ts` with tests,
+  `.vue` untested — exactly like `messageContent.ts`, whose `ContentBlockView`
+  union this extends beneath `kind:'text'`.
+- **`v-html` on model output is an HTML-injection surface on a publicly
+  tunnelled daemon.** A library route (`marked` + `DOMPurify`, ~55 KB into the
+  entry chunk) makes correctness depend on a sanitizer staying correct forever
+  and earns a risk-register entry under 0.6. Parsing to a structure makes XSS
+  impossible by construction, because Vue escapes text nodes — the guarantee is
+  structural rather than maintained. Two supply-chain dependencies are not worth
+  trading for that.
+
+**v1 scope:** headings, bold/italic/inline code, fenced code blocks (plain `<pre>`
+monospace — **not** CodeMirror; CM6 is lazily chunked and gated by
+`check-build-manifest.mjs`, and pulling it in here would be a regression), bullet
+and numbered lists with one nesting level, links (`rel="noopener noreferrer"`),
+horizontal rules. **Out of v1:** tables, nested blockquotes, footnotes, images,
+and HTML passthrough (never).
+
+**Estimated one agent, one unit:** ~250–350 lines of parser plus 40–60 tests and
+a small render component. Blast radius is UI-only — no core, no daemon, no
+invariants; deploy is a static rebuild with **no daemon restart**, so it cannot
+interrupt a live session. Messages arrive as complete blocks in the event log, so
+there is no partial-parse-while-streaming problem to solve.
+
+Natural slot: alongside or just before step 9 (the kanban board), which is the
+next UI work either way.
