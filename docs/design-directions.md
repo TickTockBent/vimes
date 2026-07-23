@@ -497,3 +497,130 @@ than during one. Compared with the superseded two-shell sketch, phase 3's design
 risk is **lower** (one shell to get right, not two) and its mechanical share is
 **higher** (the view audit), which is the better trade: mechanical work is
 verifiable, design risk is not.
+
+## Android home-screen surfaces — a meter, a gate, a status light
+
+*(Wes, 2026-07-23: "Vimes widgets for android. A usage meter with whatever the
+binding constraint is and estimated burn down/reset. A gate/permission popup or a
+status indicator (working, waiting for input, completed)." **Captured, not
+scheduled.**)*
+
+The instinct is right and fits pillar 5 — attention is the scarce resource, and a
+glanceable surface is the cheapest possible way to spend it. But the three asks
+have **very different costs**, and the split is not where it looks.
+
+### The finding: most of this is already built, and the split is DELIVERY
+
+Every number these surfaces want is already derived, tested and shipping:
+`formatBurnRate`, `formatProjectedExhaustion`, `formatResetCountdown`,
+`meterFreshness`, `formatObservationAge` (`lib/meterDisplay.ts`), plus liveness
+and `needsAttention` for the status light. **Nothing here needs new maths.**
+
+The real question is *how the surface is delivered*, and that splits hard:
+
+| Tier | Surface | Native code? | Cost |
+|---|---|---|---|
+| **0** | **Gate approve/deny from the push notification** | **No** | small |
+| **1** | Persistent status notification (working / waiting / completed) | **No** | small–medium |
+| **2** | Actual home-screen **widgets** (meter, status) | **YES** | large |
+
+### Tier 0 — the one to build first, and it needs no widget at all
+
+`sw.ts` already receives pushes and calls `showNotification(title, {body, tag,
+data})`, with `notificationclick` deep-linking to the session. It does **not**
+pass `actions`.
+
+Adding `actions: [approve, deny]` and branching on `event.action` in
+`notificationclick` gives a **gate you can answer from the lock screen** — the
+literal thing Wes described as "a gate/permission popup" — with no native app, no
+new credential, and no new transport. The service worker is same-origin, so a
+`fetch` from it **already carries the Cloudflare Access session**; I14's choke
+point is unchanged and no second auth path is invented.
+
+This is the highest value-per-cost item in the whole entry: it closes the
+attention loop (notified → decided) without ever opening the app, and D18's gate
+contract already exists to answer against.
+
+⚠ **It needs one careful decision:** a gate answered from a notification is a
+**real permission grant made from a lock screen**, possibly with the phone
+unlocked in a pocket. Whether *deny* is offered without confirmation but *approve*
+requires opening the app is a product/safety call, not an implementation detail.
+
+### Tier 1 — a status light without a widget
+
+Android web push cannot create a truly "ongoing" notification, but a notification
+with a **stable `tag`** is replaced rather than stacked, so a single VIMES
+notification can be kept updated in the shade: *working → waiting for input →
+completed*. Not a home-screen widget, but it delivers most of the glanceable
+value and stays inside the existing push path.
+
+### Tier 2 — real widgets, and the wall they hit
+
+**A PWA cannot provide an Android home-screen widget.** The Web App Widgets spec
+targets the Windows widgets board, not Android home screens. A real widget is an
+`AppWidgetProvider` — native Kotlin — which means shipping a **native wrapper**
+(a TWA hosting the existing PWA, plus native widget code beside it). That is a
+new build target, a new toolchain, a Play Store identity, and a release process,
+for a project that has none of those today.
+
+⚠ **And the blocker is not the widget, it is AUTH.** A native widget has no
+browser cookie jar, so it cannot ride the Cloudflare Access session that every
+other VIMES client uses. It would need its own credential — an Access **service
+token** — which is a materially different trust model: a long-lived secret on a
+device, bypassing SSO and device posture. **A lost phone becomes daemon access.**
+I14 says auth is a choke point; this would be a second door beside it, and that
+is a decision for Wes, not a detail to solve in a work order.
+
+### ⚠ Pillar 4 applies harder here than anywhere else
+
+A widget is **a meter you glance at with no context**, on a screen you look at
+fifty times a day. Every failure mode of a lying meter is amplified:
+
+- It must show **freshness and observation age on its face**, not just the number.
+  `meterFreshness` and `formatObservationAge` already exist; a widget that drops
+  them for aesthetics is exactly the meter this project refuses to ship.
+- A **stale** widget must SAY it is stale rather than confidently showing an old
+  number. Android throttles widget refresh (≈30 min minimum via
+  `updatePeriodMillis`), so *stale is the normal case*, not the exception.
+- Never a fabricated projection. `formatProjectedExhaustion` already declines to
+  guess when it cannot; the widget must render that decline, not hide it.
+
+### The one piece of maths that IS missing — and is worth building anyway
+
+Wes asked for "**whatever the binding constraint is**". `usageStripModel` returns
+*all* meter rows; **nothing picks the one that will exhaust first.** That
+derivation does not exist.
+
+It is a small pure function in `lib/meterDisplay.ts` — and it is **useful in the
+app today**, independent of any widget: the usage strip could lead with the
+binding meter instead of making the operator compare rows. Like the routing
+extraction in the panel entry, it is a piece of parked work that pays for itself
+immediately, and it should be built when it is wanted in-app rather than waiting
+on a widget decision.
+
+⚠ Its honest edge: when no meter has a projection (unknown burn rate, or a meter
+too fresh to project), there **is** no binding constraint, and the function must
+say so rather than defaulting to "the highest percentage". A meter at 90% that is
+not moving is not the constraint; one at 40% burning fast is.
+
+### ⟨Wes⟩ — decisions, when this is revisited
+
+1. **Tier 0 alone, or commit to the native wrapper?** *(Lean: tier 0 now, and
+   treat tier 2 as a separate product decision. Tier 0 is days; tier 2 is a new
+   build target and a new credential model.)*
+2. **May a gate be APPROVED from a notification, or only denied/deferred?**
+   *(Lean: deny and defer from the notification, approve requires opening the
+   app. Asymmetric on purpose — the safe direction should be the cheap one.)*
+3. **Is a long-lived Access service token on a phone acceptable at all?** This
+   gates tier 2 entirely, and the answer may simply be no.
+
+### Lift
+
+- **Tier 0:** ~1 unit. `sw.ts` actions + a gate-answer path from the service
+  worker + tests on the pure notification-view mapping.
+- **Binding-constraint derivation:** ~half a unit, pure `lib/` with tests, and
+  independently useful.
+- **Tier 1:** ~1 unit, mostly push-payload and tag discipline.
+- **Tier 2:** a **new project**, not a unit — native toolchain, release channel,
+  and the credential decision above. Do not scope it further until ⟨Wes⟩ 3 is
+  answered.
