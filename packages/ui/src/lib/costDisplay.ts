@@ -5,10 +5,13 @@
 //
 // THE INTEGRITY RULE (pillar 4 — the whole reason this slice exists): a money
 // figure is NEVER re-computed here. Every amount arrives as { nanoDollars, usd }
-// and the `usd` string is displayed verbatim. An un-known (unpriced /
-// unpriceable / flagged row) contributes NOTHING to a dollar total and is
-// surfaced beside it as a token count — never rendered, and never allowed to be
-// rendered, as $0.
+// and nothing in this module ever sums, converts, or apportions a dollar figure
+// — `formatMoney` (D38) is the one deliberate exception, and it is presentation,
+// not computation: it REFORMATS the exact `nanoDollars` integer to 2 dp for
+// display, the same number, never a different one (docs/decisions.md D38 records
+// why this doesn't breach the rule). An un-known (unpriced / unpriceable /
+// flagged row) contributes NOTHING to a dollar total and is surfaced beside it as
+// a token count — never rendered, and never allowed to be rendered, as $0.
 //
 // SCOPE, not a bill. The body carries a fixed `scopeLabel` ("VIMES-hosted work
 // on this host"); this module passes it through verbatim and never rephrases it
@@ -174,6 +177,10 @@ export function hasUnknownTokens(rollup: RollupView | null | undefined): boolean
  * The "(incl. $X unvalidated)" note for a rollup, or null when nothing was priced
  * by analogy. Priced-by-analogy money is real and counted — it is simply less
  * certain, so the view says so beside the total rather than hiding it.
+ *
+ * D38: the note renders at DISPLAY precision (formatMoney), not the 6-dp `usd`
+ * string the wire carries — every price site in this view speaks the same
+ * precision, or the ledger shows two different truths for the same money.
  */
 export function unvalidatedNote(rollup: RollupView | null | undefined): string | null {
   if (rollup === null || rollup === undefined) {
@@ -183,14 +190,62 @@ export function unvalidatedNote(rollup: RollupView | null | undefined): string |
   if (unvalidated === undefined || finiteNonNegative(unvalidated.nanoDollars) <= 0) {
     return null;
   }
-  return `incl. ${unvalidated.usd} unvalidated`;
+  return `incl. ${formatMoney(unvalidated.nanoDollars)} unvalidated`;
+}
+
+// ── D38: money at DISPLAY precision (2 dp) ──────────────────────────────────
+// `formatUsd` (packages/core/src/pricing/priceTable.ts) stays at 6 dp forever —
+// micro-dollars are the Money boundary the figure spike C2 reconciles against
+// OTel's USD, and rounding at the source would trade that validation for a
+// formatting preference (docs/decisions.md D38). Two decimal places is a VIEW
+// concern, so it lives here, downstream of the boundary, touching nothing core
+// computed.
+//
+// 1 cent = 1e7 nanoDollars (NANO_DOLLARS_PER_DOLLAR / 100 in priceTable.ts).
+// Restated rather than imported: @vimes/core is deliberately NOT a dependency
+// of packages/ui (see this file's header and lib/types.ts).
+const NANO_DOLLARS_PER_CENT = 10_000_000;
+
+/**
+ * Money at DISPLAY precision: two decimal places, ROUND HALF-UP — never
+ * truncate. String-slicing `"$0.999999"` to `"$0.99"` understates every figure
+ * in the ledger by up to a cent; `Math.round` on whole cents matches
+ * `nanoDollarsToMicroDollars`'s existing round-half-up rule instead (D38).
+ *
+ * A non-zero amount under one cent renders `<$0.01`, never `$0.00` — the same
+ * pillar-4 line this module already holds when it refuses to render an
+ * unpriced row as `$0` (see `unknownTokenBadges`): a real sub-cent spend
+ * collapsing to `$0.00` is the identical lie in different clothing. A true
+ * zero still renders `$0.00`, so the two stay distinguishable.
+ *
+ * Takes `nanoDollars` — the exact integer every `MoneyAmount` carries —
+ * rather than reparsing the `usd` string this module (or the daemon) already
+ * formatted once; parsing a self-formatted string just to reformat it is a
+ * lossy round trip (module header, "prefer the exact field"). Locale-free: no
+ * `Intl`, no `toLocaleString` — same determinism posture as `formatTokenCount`.
+ *
+ * Total and safe (I8): non-finite, negative, null, undefined, or an absent
+ * field all render `$0.00` — never a throw, never `NaN`.
+ */
+export function formatMoney(nanoDollars: number | null | undefined): string {
+  if (typeof nanoDollars !== 'number' || !Number.isFinite(nanoDollars) || nanoDollars <= 0) {
+    return '$0.00';
+  }
+  if (nanoDollars < NANO_DOLLARS_PER_CENT) {
+    return '<$0.01';
+  }
+  const totalCents = Math.round(nanoDollars / NANO_DOLLARS_PER_CENT);
+  const wholeDollars = Math.trunc(totalCents / 100);
+  const centsRemainder = totalCents % 100;
+  return `$${wholeDollars}.${String(centsRemainder).padStart(2, '0')}`;
 }
 
 // ── Spend history bars ──────────────────────────────────────────────────────
 
 export interface SpendBar {
   readonly day: string;
-  // The day's priced dollars, displayed verbatim — never recomputed.
+  // The day's priced dollars at DISPLAY precision (formatMoney) — the exact
+  // nanoDollars below is never recomputed, only reformatted (D38).
   readonly usd: string;
   readonly nanoDollars: number;
   // Bar height as a 0..100 percentage of the tallest day in the SAME series. A
@@ -227,11 +282,42 @@ export function spendBars(points: readonly SpendHistoryPoint[] | null | undefine
     }
     return {
       day: point.day,
-      usd: point.priced?.usd ?? '$0.00',
+      usd: formatMoney(nanoDollars),
       nanoDollars,
       heightPercent,
     };
   });
+}
+
+// The chart's y-axis top tick: the series max, at DISPLAY precision, or `null`
+// when there is nothing honest to put there (empty series, or every bar flat
+// at 0 — the empty-series case already has its own "No priced spend recorded"
+// state, and an all-zero series showing a `$0.00` ceiling next to a `$0.00`
+// floor would be an axis that says nothing, not a fabricated one, but the view
+// skips it rather than render two identical labels).
+//
+// Deliberately reads `bar.nanoDollars`, the SAME field `heightPercent` was
+// derived from in `spendBars` above — so the axis label and the bar heights
+// can never disagree about which day is tallest.
+export interface SpendAxisTick {
+  readonly usd: string;
+  readonly nanoDollars: number;
+}
+
+export function spendAxisMax(bars: readonly SpendBar[] | null | undefined): SpendAxisTick | null {
+  if (!Array.isArray(bars) || bars.length === 0) {
+    return null;
+  }
+  let maxNanoDollars = 0;
+  for (const bar of bars) {
+    if (bar.nanoDollars > maxNanoDollars) {
+      maxNanoDollars = bar.nanoDollars;
+    }
+  }
+  if (maxNanoDollars <= 0) {
+    return null;
+  }
+  return { usd: formatMoney(maxNanoDollars), nanoDollars: maxNanoDollars };
 }
 
 /**
@@ -282,6 +368,8 @@ export interface AttributionRow {
   readonly key: string;
   // A blank/absent bucket key is shown with this placeholder, never dropped.
   readonly label: string;
+  // Priced dollars at DISPLAY precision (formatMoney), not the wire's 6-dp
+  // string — every price site in the ledger speaks the same precision (D38).
   readonly usd: string;
   readonly nanoDollars: number;
   readonly unknownBadges: readonly UnknownTokenBadge[];
@@ -294,7 +382,8 @@ export const ABSENT_ATTRIBUTION_LABEL = '(none attributed)';
 /**
  * Attribution groups into display rows, sorted by priced dollars descending
  * (stable by key for ties), the absent bucket kept and labelled. The dollar
- * strings are verbatim; only ordering is derived here.
+ * strings are `formatMoney`'d from the exact `nanoDollars` (D38, 2 dp); only
+ * ordering and precision are derived here — the underlying figure is untouched.
  */
 export function attributionRows(groups: readonly AttributionView[] | null | undefined): AttributionRow[] {
   if (!Array.isArray(groups)) {
@@ -304,7 +393,7 @@ export function attributionRows(groups: readonly AttributionView[] | null | unde
     .map((group) => ({
       key: group.key,
       label: group.key.trim().length > 0 ? group.key : ABSENT_ATTRIBUTION_LABEL,
-      usd: group.totals?.priced?.usd ?? '$0.00',
+      usd: formatMoney(group.totals?.priced?.nanoDollars),
       nanoDollars: finiteNonNegative(group.totals?.priced?.nanoDollars),
       unknownBadges: unknownTokenBadges(group.totals),
     }))

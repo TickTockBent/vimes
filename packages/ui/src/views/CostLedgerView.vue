@@ -3,9 +3,11 @@ import { computed, onMounted, ref } from 'vue';
 import { useVimesStore } from '../stores/vimesStore.js';
 import {
   attributionRows,
+  formatMoney,
   hasUnknownTokens,
   ledgerState,
   seriesForSelection,
+  spendAxisMax,
   spendBars,
   unknownTokenBadges,
   unvalidatedNote,
@@ -101,6 +103,10 @@ const treeIsFlat = computed(() => {
 const selectedProjectKey = ref<string | null>(null);
 const projectKeysForSelect = computed(() => (ledger.value?.projects ?? []).map((project) => project.projectKey));
 const bars = computed(() => spendBars(seriesForSelection(ledger.value?.spendHistory, selectedProjectKey.value)));
+// The y-axis top tick: same series, same `nanoDollars` field `heightPercent`
+// was derived from — so the axis label and the bar heights cannot disagree.
+// null for an empty/all-zero series (spendAxisMax refuses to fabricate one).
+const axisMax = computed(() => spendAxisMax(bars.value));
 const tallestBarUsd = computed(() => {
   let tallest = bars.value[0] ?? null;
   for (const bar of bars.value) {
@@ -180,7 +186,7 @@ function hasUnknownFor(rollup: RollupView) {
       <section class="flex flex-col gap-2 rounded-lg border border-slate-200 p-4 dark:border-slate-800">
         <p class="text-sm font-medium text-slate-600 dark:text-slate-300">{{ ledger.scopeLabel }}</p>
         <div class="flex items-baseline gap-2">
-          <span class="text-3xl font-bold tabular-nums">{{ ledger.grandTotal.priced.usd }}</span>
+          <span class="text-3xl font-bold tabular-nums">{{ formatMoney(ledger.grandTotal.priced.nanoDollars) }}</span>
           <span class="text-xs text-slate-500 dark:text-slate-400">priced at {{ ledger.priceTableDate }}</span>
         </div>
         <p v-if="unvalidatedFor(ledger.grandTotal) !== null" class="text-xs text-amber-700 dark:text-amber-300">
@@ -218,14 +224,29 @@ function hasUnknownFor(rollup: RollupView) {
           No priced spend recorded for this selection yet.
         </p>
         <template v-else>
-          <div class="flex h-28 items-end gap-0.5">
+          <!-- Cost axis (D38): two ticks — series max at the top, zero at the
+               bottom — sharing the exact h-28 box the bars grow in, so a tick's
+               position and a bar's `heightPercent` are reading the same 0–100%
+               space and can never disagree. Omitted (axisMax null) rather than
+               fabricated when every bar in the series is flat at 0. -->
+          <div class="flex items-stretch gap-2">
             <div
-              v-for="bar in bars"
-              :key="bar.day"
-              class="flex-1 rounded-t bg-sky-500/80 dark:bg-sky-500/70"
-              :style="{ height: `${bar.heightPercent}%` }"
-              :title="`${bar.day}: ${bar.usd}`"
-            ></div>
+              v-if="axisMax !== null"
+              class="flex h-28 shrink-0 flex-col justify-between text-right text-[10px] leading-none text-slate-500 dark:text-slate-400"
+              aria-hidden="true"
+            >
+              <span>{{ axisMax.usd }}</span>
+              <span>$0.00</span>
+            </div>
+            <div class="flex h-28 flex-1 items-end gap-0.5">
+              <div
+                v-for="bar in bars"
+                :key="bar.day"
+                class="flex-1 rounded-t bg-sky-500/80 dark:bg-sky-500/70"
+                :style="{ height: `${bar.heightPercent}%` }"
+                :title="`${bar.day}: ${bar.usd}`"
+              ></div>
+            </div>
           </div>
           <div class="flex justify-between text-[11px] text-slate-500 dark:text-slate-400">
             <span>{{ bars[0]?.day }}</span>
@@ -264,7 +285,7 @@ function hasUnknownFor(rollup: RollupView) {
                   outside roots
                 </span>
               </span>
-              <span class="shrink-0 text-sm font-semibold tabular-nums">{{ project.subtree.priced.usd }}</span>
+              <span class="shrink-0 text-sm font-semibold tabular-nums">{{ formatMoney(project.subtree.priced.nanoDollars) }}</span>
             </button>
             <div v-if="hasUnknownFor(project.subtree)" class="flex flex-wrap gap-1 px-3 pb-1.5">
               <span
@@ -290,7 +311,7 @@ function hasUnknownFor(rollup: RollupView) {
                     <span class="shrink-0 text-slate-400" aria-hidden="true">{{ isExpanded(sessionKeyOf(project, session)) ? '▾' : '▸' }}</span>
                     <span class="truncate font-mono text-xs text-slate-600 dark:text-slate-300">{{ session.sessionId }}</span>
                   </span>
-                  <span class="shrink-0 text-xs font-semibold tabular-nums">{{ session.subtree.priced.usd }}</span>
+                  <span class="shrink-0 text-xs font-semibold tabular-nums">{{ formatMoney(session.subtree.priced.nanoDollars) }}</span>
                 </button>
                 <div v-if="hasUnknownFor(session.subtree)" class="flex flex-wrap gap-1 px-2 pb-1 pl-6">
                   <span
@@ -324,7 +345,7 @@ function hasUnknownFor(rollup: RollupView) {
                         {{ row.agent.parentResolved ? 'attributed' : 'session-root' }}
                       </span>
                     </span>
-                    <span class="shrink-0 tabular-nums">{{ row.agent.subtree.priced.usd }}</span>
+                    <span class="shrink-0 tabular-nums">{{ formatMoney(row.agent.subtree.priced.nanoDollars) }}</span>
                   </li>
                 </ul>
               </li>
