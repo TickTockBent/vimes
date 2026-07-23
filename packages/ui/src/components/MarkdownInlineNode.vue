@@ -61,13 +61,18 @@ const pathHref = computed<string | null>(() => {
     <MarkdownInlineNode v-for="(child, childIndex) in node.children" :key="childIndex" :node="child" :cwd="cwd" />
   </a>
 
-  <!-- Scope F: a code span shaped like a file path opens the VIMES editor in
-       a new tab, at the right line if one was parsed. -->
+  <!-- Scope F: a code span shaped like a file path opens the VIMES editor.
+       §E (desktop phase 3+4): NO target="_blank"/rel here — under the panel
+       shell a plain left-click on this in-app `#/files?path=…` href is
+       intercepted by the shell (App.vue's delegated handler → panelLinkClick →
+       openPanelFrom) and PUSHES an editor panel beside the stream instead of
+       opening a new tab. The href stays for accessibility, right-click, and
+       modifier/middle-click (which fall through to the browser's new-tab). The
+       external `link` node above KEEPS target="_blank" — only the path anchor
+       becomes an in-app push. -->
   <a
     v-else-if="node.kind === 'path' && pathHref !== null"
     :href="pathHref"
-    target="_blank"
-    rel="noopener noreferrer"
     class="rounded bg-slate-200 px-1 py-0.5 font-mono text-[0.85em] break-all underline decoration-dotted dark:bg-slate-700"
   >{{ node.raw }}</a>
 </template>

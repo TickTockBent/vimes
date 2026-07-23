@@ -146,3 +146,21 @@ export function replaceTopPanel(stack: PanelStack, route: Route): PanelStack {
   }
   return [...stack.slice(0, -1), route];
 }
+
+// Open `route` as if navigating FROM the panel at `index`: everything AFTER
+// that panel is discarded, then `route` is pushed. This is the shell's core
+// navigation policy (phase 3+4) — clicking a session in the list (index 0) when
+// the stack is [list, stream, editor] gives [list, stream], exactly like acting
+// from a browser back-state replaces what was "forward" of it. Composed from the
+// existing primitives, so it inherits their immutable, length->=1 posture.
+//
+// The index is CLAMPED for totality (I8): a negative index behaves as index 0
+// (keep only the first panel, then push), an over-large index (>= length)
+// behaves as the last panel (a plain pushPanel — nothing truncated). On the
+// (structurally impossible) empty stack, `length - 1` is -1, so the clamp floors
+// to 0, slice(0, 1) of [] is [], and pushPanel starts a fresh one-panel stack —
+// the same floor pushPanel/popPanel rest on.
+export function openPanelFrom(stack: PanelStack, index: number, route: Route): PanelStack {
+  const clampedIndex = Math.max(0, Math.min(index, stack.length - 1));
+  return pushPanel(stack.slice(0, clampedIndex + 1), route);
+}
