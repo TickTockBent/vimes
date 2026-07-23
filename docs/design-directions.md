@@ -697,3 +697,55 @@ schema is validated against a non-VIMES project.
 2. **Does import ever write outside a worktree/branch?** *(Lean: no, ever. The
    reorg lands via reviewed diff + sign-off, never in place.)*
 3. **Schema versioning + migration story** — mint it with the artifact, not after.
+
+---
+
+## Panel "back" / close semantics — what should a per-panel back button DO? (open, POC surfaced it)
+
+*(Wes, 2026-07-23, testing the shell: clicked back on the FILES panel of
+`[list, files, editor]` and the EDITOR closed, not files. His framing: "this is
+more a question of how we want panels to operate, not the specific workflow."
+So this is a MODEL decision, not a patch — captured, not yet decided.)*
+
+**Why it's ambiguous.** Each view carries a `@back` from the single-view era,
+where back meant "go up / home". In a stack of side-by-side panels that button's
+meaning is no longer obvious: the shipped POC wires every panel's back to
+`popPanel` (drop the TAIL), so back on a middle panel drops the wrong one — the
+bug Wes hit. The real question is what the affordance means when panels coexist.
+
+**The options:**
+1. **Truncate-forward** — back on panel *i* closes *i* and everything after it
+   (`closePanelAt(stack,i) = stack.slice(0, max(1,i))`). Consistent with how
+   OPENING already works (`openPanelFrom` discards everything forward of *i*), so
+   the stack stays a linear drill-path. The editor opened FROM a file closes WITH
+   the file (no orphaned child). On a phone (only the tail is visible) this is
+   identical to today — back on the tail == `popPanel`, so the phone path doesn't
+   move. **Lean.**
+2. **Splice / close-one** — close ONLY panel *i*; panels to its right slide left
+   and re-parent. Matches "I closed the files panel, keep my editor," but breaks
+   the linear drill model (the editor's parent silently changes) and disagrees
+   with `openPanelFrom`'s forward-truncation.
+3. **Re-label the affordance by layout (on top of #1)** — the ACTION is
+   `closePanelAt` either way, but on a phone (N=1) the button reads/behaves as
+   "back" (pop the one visible panel = go up), while on desktop a non-tail panel's
+   button reads as "close this panel" (×). Same op, honest label per context.
+4. **Global back** — one app-level "undo last navigation" (= pop tail), not a
+   per-panel button. Rejected by the bug: users read the button as belonging to
+   the panel it's on.
+
+**Recommendation:** #1 (truncate-forward), optionally with #3's affordance
+polish (call it "close ×" on a desktop non-tail panel, keep "back" on the phone).
+It's the only option consistent with `openPanelFrom`, it fixes the reported
+surprise, and it leaves the phone path byte-identical. #2 is the one to pick only
+if "keep the downstream panel when I close an upstream one" turns out to be what
+the interaction should feel like — a call only lived use can make.
+
+**Ready to build the moment it's decided:** the fix is one pure op
+(`closePanelAt`, tested) + a one-line `backFrom` change; work order drafted at
+`scratchpad/unit-back-button-fix.md`. Held pending this decision — it is a
+behaviour-shaping change, and the model is Wes's call.
+
+### ⟨Wes⟩ — decide
+- Which semantics (#1 truncate-forward / #2 splice)?
+- Affordance: keep a single "back" everywhere, or "back" on phone + "close ×" on
+  desktop panels (#3)?
