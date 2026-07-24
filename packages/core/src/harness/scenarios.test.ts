@@ -6,8 +6,8 @@ import { orphanScan, recoveryRoutine, type ProcessHandle } from './registry.js';
 import { runScenario } from './scenario.js';
 import { ALL_PROFILES } from './profiles/index.js';
 
-describe('scenario harness — six profiles, deterministic double-run', () => {
-  it('ships exactly the six spec §7 profiles', () => {
+describe('scenario harness — seven profiles, deterministic double-run', () => {
+  it('ships exactly the seven spec §7 profiles', () => {
     expect(ALL_PROFILES.map((profile) => profile.name)).toEqual([
       'happy-path-desktop',
       'flaky-mobile',
@@ -15,6 +15,7 @@ describe('scenario harness — six profiles, deterministic double-run', () => {
       'cold-restart',
       'hostile-input',
       'budget-wall',
+      'watchdog-stale',
     ]);
   });
 
