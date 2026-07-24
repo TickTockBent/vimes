@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { parseMarkdown, resolvePathAgainstCwd, type MarkdownBlock, type MarkdownInline } from './markdown.js';
+import {
+  parseMarkdown,
+  resolvePathAgainstCwd,
+  type MarkdownBlock,
+  type MarkdownInline,
+  type MarkdownTableRow as MarkdownTableRowForTest,
+} from './markdown.js';
 
 // Small helpers so assertions read close to the grammar they're pinning,
 // rather than reaching into the tree shape by hand every time.
@@ -374,6 +380,155 @@ describe('parseMarkdown — scope F: file:line parsing (assertion 12)', () => {
     expect(blocks).toEqual([
       { kind: 'paragraph', inlines: [{ kind: 'path', raw: 'a.ts:-3', path: 'a.ts', line: null }] },
     ]);
+  });
+});
+
+describe('parseMarkdown — GFM pipe tables (scope §A)', () => {
+  it('parses a basic 2x2 table with correct header/rows/align', () => {
+    const blocks = parseMarkdown('| A | B |\n| --- | --- |\n| a1 | b1 |\n| a2 | b2 |');
+    expect(blocks).toEqual([
+      {
+        kind: 'table',
+        align: ['none', 'none'],
+        header: [{ inlines: [{ kind: 'text', text: 'A' }] }, { inlines: [{ kind: 'text', text: 'B' }] }],
+        rows: [
+          [{ inlines: [{ kind: 'text', text: 'a1' }] }, { inlines: [{ kind: 'text', text: 'b1' }] }],
+          [{ inlines: [{ kind: 'text', text: 'a2' }] }, { inlines: [{ kind: 'text', text: 'b2' }] }],
+        ],
+      },
+    ]);
+  });
+
+  it('reads per-column alignment from the delimiter row colons', () => {
+    const blocks = parseMarkdown('| L | C | R | N |\n| :-- | :-: | --: | --- |\n| a | b | c | d |');
+    expect(blocks).toEqual([
+      {
+        kind: 'table',
+        align: ['left', 'center', 'right', 'none'],
+        header: [
+          { inlines: [{ kind: 'text', text: 'L' }] },
+          { inlines: [{ kind: 'text', text: 'C' }] },
+          { inlines: [{ kind: 'text', text: 'R' }] },
+          { inlines: [{ kind: 'text', text: 'N' }] },
+        ],
+        rows: [
+          [
+            { inlines: [{ kind: 'text', text: 'a' }] },
+            { inlines: [{ kind: 'text', text: 'b' }] },
+            { inlines: [{ kind: 'text', text: 'c' }] },
+            { inlines: [{ kind: 'text', text: 'd' }] },
+          ],
+        ],
+      },
+    ]);
+  });
+
+  it('the false-positive guard: no delimiter row means the "header" line stays a paragraph, not a table', () => {
+    const blocks = parseMarkdown('| A | B |\nnot a delimiter row');
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]!.kind).toBe('paragraph');
+    expect(blocks.some((block) => block.kind === 'table')).toBe(false);
+  });
+
+  it('a bare "---" with no pipe stays a rule, never a table delimiter', () => {
+    expect(parseMarkdown('---')).toEqual([{ kind: 'rule' }]);
+    // Nor does it turn a preceding pipe-bearing line into a table header,
+    // since the delimiter check requires the NEXT line to have a pipe too.
+    const blocks = parseMarkdown('a | b\n---');
+    expect(blocks.some((block) => block.kind === 'table')).toBe(false);
+  });
+
+  it('a short ragged body row pads with empty cells rather than throwing', () => {
+    const blocks = parseMarkdown('| A | B | C |\n| --- | --- | --- |\n| only-one |');
+    expect(blocks).toHaveLength(1);
+    const table = blocks[0] as { kind: 'table'; rows: unknown[] };
+    expect(table.kind).toBe('table');
+    expect(table.rows).toEqual([
+      [{ inlines: [{ kind: 'text', text: 'only-one' }] }, { inlines: [] }, { inlines: [] }],
+    ]);
+  });
+
+  it('a long ragged body row truncates extras rather than throwing', () => {
+    const blocks = parseMarkdown('| A | B |\n| --- | --- |\n| a | b | extra | more |');
+    const table = blocks[0] as { kind: 'table'; rows: unknown[] };
+    expect(table.rows).toEqual([[{ inlines: [{ kind: 'text', text: 'a' }] }, { inlines: [{ kind: 'text', text: 'b' }] }]]);
+  });
+
+  it('inline marks survive inside cells: bold, code, and a link', () => {
+    const blocks = parseMarkdown('| A | B | C |\n| --- | --- | --- |\n| **bold** | `code` | [link](https://example.com) |');
+    const table = blocks[0] as { kind: 'table'; rows: MarkdownTableRowForTest[] };
+    expect(table.rows[0]![0]!.inlines).toEqual([{ kind: 'strong', children: [{ kind: 'text', text: 'bold' }] }]);
+    expect(table.rows[0]![1]!.inlines).toEqual([{ kind: 'code', text: 'code' }]);
+    expect(table.rows[0]![2]!.inlines).toEqual([
+      { kind: 'link', href: 'https://example.com', children: [{ kind: 'text', text: 'link' }] },
+    ]);
+  });
+
+  it('an escaped pipe stays a literal pipe in the cell and does not split it', () => {
+    const blocks = parseMarkdown('| A | B |\n| --- | --- |\n| a\\|b | c |');
+    const table = blocks[0] as { kind: 'table'; rows: MarkdownTableRowForTest[] };
+    expect(table.rows[0]![0]!.inlines).toEqual([{ kind: 'text', text: 'a|b' }]);
+    expect(table.rows[0]!).toHaveLength(2);
+  });
+
+  it('parses a table with no outer pipes', () => {
+    const blocks = parseMarkdown('a | b\n--- | ---\n1 | 2');
+    expect(blocks).toEqual([
+      {
+        kind: 'table',
+        align: ['none', 'none'],
+        header: [{ inlines: [{ kind: 'text', text: 'a' }] }, { inlines: [{ kind: 'text', text: 'b' }] }],
+        rows: [[{ inlines: [{ kind: 'text', text: '1' }] }, { inlines: [{ kind: 'text', text: '2' }] }]],
+      },
+    ]);
+  });
+
+  it('a table at end of document (no trailing blank line) still parses', () => {
+    const blocks = parseMarkdown('| A |\n| --- |\n| a |');
+    expect(blocks).toEqual([
+      {
+        kind: 'table',
+        align: ['none'],
+        header: [{ inlines: [{ kind: 'text', text: 'A' }] }],
+        rows: [[{ inlines: [{ kind: 'text', text: 'a' }] }]],
+      },
+    ]);
+  });
+
+  it('a table followed by a paragraph after a blank line: both blocks parse separately', () => {
+    const blocks = parseMarkdown('| A |\n| --- |\n| a |\n\nafter the table');
+    expect(blocks).toHaveLength(2);
+    expect(blocks[0]!.kind).toBe('table');
+    expect(blocks[1]).toEqual({ kind: 'paragraph', inlines: [{ kind: 'text', text: 'after the table' }] });
+  });
+
+  it('a table immediately followed by a heading: the table ends there and the heading parses', () => {
+    const blocks = parseMarkdown('| A |\n| --- |\n| a |\n## Next');
+    expect(blocks).toHaveLength(2);
+    expect(blocks[0]!.kind).toBe('table');
+    expect(blocks[1]).toEqual({ kind: 'heading', level: 2, inlines: [{ kind: 'text', text: 'Next' }] });
+  });
+
+  it('totality: a malformed/half-table never throws', () => {
+    const malformedInputs = [
+      '|||||',
+      '| a |\n| -a- |',
+      '| a | b\n| - |',
+      '\\|\\|\\|',
+      '| a | b |\n|::-::|',
+    ];
+    for (const input of malformedInputs) {
+      expect(() => parseMarkdown(input)).not.toThrow();
+      expect(parseMarkdown(input)).toBeDefined();
+    }
+  });
+
+  it('a pathological all-pipes line does not hang (linear splitter, no ReDoS)', () => {
+    const pathological = `${'|'.repeat(50_000)}\n${'|'.repeat(50_000)}`;
+    const startedAtMs = Date.now();
+    expect(() => parseMarkdown(pathological)).not.toThrow();
+    const elapsedMs = Date.now() - startedAtMs;
+    expect(elapsedMs).toBeLessThan(2000);
   });
 });
 

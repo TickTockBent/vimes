@@ -33,6 +33,19 @@ function headingSizeClass(level: 1 | 2 | 3 | 4 | 5 | 6): string {
   }
   return 'text-sm italic';
 }
+
+// Maps a column's parsed alignment to a Tailwind text-align class. 'left'
+// and 'none' both fall through to the browser default (left-to-right text
+// alignment) rather than needing their own class.
+function alignClass(align: 'left' | 'center' | 'right' | 'none'): string {
+  if (align === 'center') {
+    return 'text-center';
+  }
+  if (align === 'right') {
+    return 'text-right';
+  }
+  return '';
+}
 </script>
 
 <template>
@@ -68,6 +81,50 @@ function headingSizeClass(level: 1 | 2 | 3 | 4 | 5 | 6): string {
       </ol>
 
       <hr v-else-if="block.kind === 'rule'" class="border-slate-300 dark:border-slate-400/50" />
+
+      <!-- Wide tables scroll INSIDE their own block, same pattern as the
+           fenced-code block above — never widen the page on a phone. Cells
+           render through MarkdownInlineNode, exactly like every other block:
+           no raw-HTML-binding directive is used here or anywhere else in this
+           file. -->
+      <div v-else-if="block.kind === 'table'" class="overflow-x-auto">
+        <table class="w-full border-collapse text-sm">
+          <thead>
+            <tr>
+              <th
+                v-for="(cell, cellIndex) in block.header"
+                :key="cellIndex"
+                :class="alignClass(block.align[cellIndex] ?? 'none')"
+                class="border-b border-slate-300 px-2 py-1 text-left font-semibold dark:border-slate-600"
+              >
+                <MarkdownInlineNode
+                  v-for="(node, nodeIndex) in cell.inlines"
+                  :key="nodeIndex"
+                  :node="node"
+                  :cwd="cwd"
+                />
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="(row, rowIndex) in block.rows" :key="rowIndex">
+              <td
+                v-for="(cell, cellIndex) in row"
+                :key="cellIndex"
+                :class="alignClass(block.align[cellIndex] ?? 'none')"
+                class="border-b border-slate-200 px-2 py-1 dark:border-slate-700"
+              >
+                <MarkdownInlineNode
+                  v-for="(node, nodeIndex) in cell.inlines"
+                  :key="nodeIndex"
+                  :node="node"
+                  :cwd="cwd"
+                />
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
 
       <p v-else-if="block.kind === 'paragraph'" class="whitespace-pre-wrap">
         <MarkdownInlineNode v-for="(node, nodeIndex) in block.inlines" :key="nodeIndex" :node="node" :cwd="cwd" />
