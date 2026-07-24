@@ -24,6 +24,17 @@ const spikeCUsage = {
   service_tier: 'standard',
 };
 
+// A DIFFERENT, larger block — used to prove latestContextTokens is latest-wins
+// (a fresh block REPLACES it), never accumulated across blocks.
+const largerContextUsage = {
+  cache_creation: { ephemeral_1h_input_tokens: 5000, ephemeral_5m_input_tokens: 0 },
+  cache_creation_input_tokens: 5000,
+  cache_read_input_tokens: 118000,
+  input_tokens: 40,
+  output_tokens: 900,
+  service_tier: 'standard',
+};
+
 function makeStore(): MemoryEventStore {
   return new MemoryEventStore({
     clock: new SteppingClock('2026-01-01T00:00:00.000Z', 1000),
@@ -100,6 +111,76 @@ describe('cacheObservabilityProjection', () => {
     expect(second.perSession[APP_SESSION_ID]!.latestBlockAt).toBe(
       first.perSession[APP_SESSION_ID]!.latestBlockAt,
     );
+  });
+
+  // ——— §A: latestContextTokens — the input-side counts of the latest block ———
+  it('§A: latestContextTokens is set on the count path from the observed block (input-side only)', () => {
+    const state = stateFromLog([
+      [usageBlock({ appSessionId: APP_SESSION_ID, usage: spikeCUsage, messageId: 'msg-1' })],
+    ]);
+    const record = state.perSession[APP_SESSION_ID]!;
+    expect(record.latestContextTokens).toEqual({
+      inputTokens: 2,
+      cacheReadTokens: 39044,
+      cacheCreationTokens: 2909,
+    });
+    // OUTPUT is excluded — it is generated, not resident context.
+    expect(record.latestContextTokens).not.toHaveProperty('outputTokens');
+  });
+
+  it('§A: latestContextTokens and latestBlockAt are BOTH-present (one block sets both)', () => {
+    const state = stateFromLog([
+      [usageBlock({ appSessionId: APP_SESSION_ID, usage: spikeCUsage, messageId: 'msg-1' })],
+    ]);
+    const record = state.perSession[APP_SESSION_ID]!;
+    expect(record.latestBlockAt).not.toBeNull();
+    expect(record.latestContextTokens).not.toBeNull();
+  });
+
+  it('§A: a counted-repeat REFRESHES latestContextTokens on the repeat path', () => {
+    const state = stateFromLog([
+      [
+        usageBlock({ appSessionId: APP_SESSION_ID, usage: spikeCUsage, messageId: 'turn-a' }),
+        usageBlock({ appSessionId: APP_SESSION_ID, usage: spikeCUsage, messageId: 'turn-a' }),
+      ],
+    ]);
+    const record = state.perSession[APP_SESSION_ID]!;
+    // Identical usage, so the value is unchanged — but it IS set from the repeat
+    // block (both fold paths populate the field).
+    expect(record.latestContextTokens).toEqual({
+      inputTokens: 2,
+      cacheReadTokens: 39044,
+      cacheCreationTokens: 2909,
+    });
+  });
+
+  it('§A: a fresh block REPLACES latestContextTokens (latest-wins, NOT accumulated — sabotage guard)', () => {
+    const state = stateFromLog([
+      [
+        usageBlock({ appSessionId: APP_SESSION_ID, usage: spikeCUsage, messageId: 'turn-a' }),
+        usageBlock({ appSessionId: APP_SESSION_ID, usage: largerContextUsage, messageId: 'turn-b' }),
+      ],
+    ]);
+    const record = state.perSession[APP_SESSION_ID]!;
+    // latestContextTokens is the SECOND block alone — if it accumulated it would
+    // read 39044+118000 read etc. The accumulated TOTALS (below) DO sum; these
+    // two facts are deliberately distinct.
+    expect(record.latestContextTokens).toEqual({
+      inputTokens: 40,
+      cacheReadTokens: 118000,
+      cacheCreationTokens: 5000,
+    });
+    // The accumulated totals, by contrast, DO sum across both blocks.
+    expect(record.cacheReadTokens).toBe(39044 + 118000);
+  });
+
+  it('§A: a session with no usage_block has no record → latestContextTokens is null via emptyRecord', () => {
+    const state = stateFromLog([
+      [sessionRenamed({ appSessionId: APP_SESSION_ID, name: 'renamed' })],
+    ]);
+    // No usage_block observed → no record at all (degrades to "unknown" in the
+    // UI, never a fabricated 0).
+    expect(state.perSession[APP_SESSION_ID]).toBeUndefined();
   });
 
   // ——— D17 HEADLINE: identical snapshots repeating under one message.id count ONCE ———

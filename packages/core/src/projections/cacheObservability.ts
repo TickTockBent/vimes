@@ -42,6 +42,18 @@ export interface CacheObservabilityRecord {
   // ttlTier/serviceTier: a counted-repeat is a later observation of the same
   // turn, and for "last activity" it IS activity, so it advances this too.
   latestBlockAt: string | null;
+  // The input-side token counts of the MOST RECENTLY OBSERVED usage_block for
+  // this session — an observed fact from event.payload.usage, never cumulative,
+  // never a clock read (rule 0.3, I6). The "context size" proxy: how many tokens
+  // the last turn fed the model. OUTPUT is excluded (generated, not resident
+  // context). Set together with `latestBlockAt` from the SAME block, so
+  // `latestBlockAt` is this reading's timestamp. Null for pre-field records / no
+  // usage_block yet — degrade to "unknown", never a fabricated 0 (pillar 4).
+  latestContextTokens: {
+    inputTokens: number;
+    cacheReadTokens: number;
+    cacheCreationTokens: number;
+  } | null;
   // The messageIds already folded into the totals, in append order — the D17
   // dedupe key set. Blocks with no messageId are counted but leave no entry
   // here (they cannot be deduped).
@@ -64,6 +76,7 @@ function emptyRecord(appSessionId: string): CacheObservabilityRecord {
     ttlTier: 'none',
     serviceTier: null,
     latestBlockAt: null,
+    latestContextTokens: null,
     countedMessageIds: [],
   };
 }
@@ -104,6 +117,18 @@ export const cacheObservabilityProjection: Projection<CacheObservabilityState> =
     const latestTtlTier = classifyTtlTier(usage);
     const latestServiceTier = readServiceTier(usage);
 
+    // The input-side token counts of THIS (most-recently-observed) block — the
+    // context-size proxy. Read once here so BOTH fold paths set the same field
+    // from the SAME block as `latestBlockAt`. This is a LATEST-OBSERVED reading,
+    // never summed across blocks (the accumulated totals above are a different
+    // fact); output is excluded because it is generated, not resident context.
+    const latestBlockTokens = readCacheTokens(usage);
+    const latestContextTokens = {
+      inputTokens: latestBlockTokens.inputTokens,
+      cacheReadTokens: latestBlockTokens.cacheReadTokens,
+      cacheCreationTokens: latestBlockTokens.cacheCreateTokens,
+    };
+
     if (isCountedRepeat) {
       const refreshedRecord: CacheObservabilityRecord = {
         ...priorRecord,
@@ -112,19 +137,23 @@ export const cacheObservabilityProjection: Projection<CacheObservabilityState> =
         // A repeat is a later observation of the same turn — still activity, so
         // it advances "last observed block" like ttlTier/serviceTier above.
         latestBlockAt: event.ts,
+        // Latest-observed context, same block as latestBlockAt (identical usage
+        // for a genuine D17 repeat, so a no-op in value but kept in lockstep).
+        latestContextTokens,
       };
       return {
         perSession: { ...state.perSession, [payload.appSessionId]: refreshedRecord },
       };
     }
 
-    // New messageId (or none): fold this block's tokens into the totals.
-    const blockTokens = readCacheTokens(usage);
-    const accumulatedCacheReadTokens = priorRecord.cacheReadTokens + blockTokens.cacheReadTokens;
+    // New messageId (or none): fold this block's tokens into the totals. Reuses
+    // the same `latestBlockTokens` read above — one read, two uses (accumulate
+    // AND latest-observed).
+    const accumulatedCacheReadTokens = priorRecord.cacheReadTokens + latestBlockTokens.cacheReadTokens;
     const accumulatedCacheCreateTokens =
-      priorRecord.cacheCreateTokens + blockTokens.cacheCreateTokens;
-    const accumulatedInputTokens = priorRecord.inputTokens + blockTokens.inputTokens;
-    const accumulatedOutputTokens = priorRecord.outputTokens + blockTokens.outputTokens;
+      priorRecord.cacheCreateTokens + latestBlockTokens.cacheCreateTokens;
+    const accumulatedInputTokens = priorRecord.inputTokens + latestBlockTokens.inputTokens;
+    const accumulatedOutputTokens = priorRecord.outputTokens + latestBlockTokens.outputTokens;
 
     const nextCountedMessageIds =
       messageId === undefined
@@ -148,6 +177,9 @@ export const cacheObservabilityProjection: Projection<CacheObservabilityState> =
       serviceTier: latestServiceTier,
       // The event's OWN ts (I6 deterministic under replay), never a clock read.
       latestBlockAt: event.ts,
+      // Latest-observed input-side counts from THIS block (not the accumulated
+      // totals above) — the context-size proxy, replaced each block.
+      latestContextTokens,
       countedMessageIds: nextCountedMessageIds,
     };
 
