@@ -9,16 +9,24 @@
 //
 // Grammar is deliberately small (v1, per the design-directions entry): ATX
 // headings, fenced code (opaque contents), one-level bullet/ordered lists,
-// horizontal rules, and inline `code`/`**strong**`/`*em*`/`[label](href)`.
-// Everything else — tables, blockquotes, nested lists, footnotes, images,
-// autolinking, syntax highlighting, raw HTML — is explicitly out. Anything
-// the grammar does not recognize degrades to literal text (rule C): losing a
-// sentence is a worse failure than showing a stray asterisk.
+// horizontal rules, GFM pipe tables, and inline
+// `code`/`**strong**`/`*em*`/`[label](href)`. Everything else — blockquotes,
+// nested lists, footnotes, images, autolinking, syntax highlighting, raw
+// HTML — is explicitly out. Anything the grammar does not recognize degrades
+// to literal text (rule C): losing a sentence is a worse failure than
+// showing a stray asterisk.
 //
 // Folded into this same unit (2026-07-23, Wes): a code span shaped like a
 // file path becomes a `path` node so the view can turn it into a link that
 // opens the VIMES editor. Detection is CODE-SPAN ONLY (never free prose) —
 // see classifyCodeSpan below.
+//
+// Folded into this same unit (2026-07-24, Wes): GFM pipe tables. A table is
+// recognized only when a delimiter row (`| --- | :-: |`) follows the header
+// line — see matchTableDelimiterRow below; that requirement is the
+// load-bearing guard against misreading an ordinary line with a stray `|` (or
+// a bare `---` rule) as a table. v1 limitation: a `|` inside a cell's code
+// span is not specially protected — escape it as `\|` if it must survive.
 
 import { extensionOf } from './languageByExtension.js';
 
@@ -37,12 +45,25 @@ export interface MarkdownListItem {
   inlines: MarkdownInline[];
 }
 
+// Per-column alignment, read off the delimiter row's colon placement
+// (`:--`=left, `:-:`=center, `--:`=right, `--`=none). 'left' and 'none' both
+// render as the browser's default text alignment — the distinction is kept
+// anyway so the parsed tree is a faithful record of what the source said.
+export type ColumnAlign = 'left' | 'center' | 'right' | 'none';
+
+export interface MarkdownTableCell {
+  inlines: MarkdownInline[];
+}
+
+export type MarkdownTableRow = MarkdownTableCell[];
+
 export type MarkdownBlock =
   | { kind: 'paragraph'; inlines: MarkdownInline[] }
   | { kind: 'heading'; level: 1 | 2 | 3 | 4 | 5 | 6; inlines: MarkdownInline[] }
   | { kind: 'codeBlock'; language: string | null; code: string }
   | { kind: 'list'; ordered: boolean; items: MarkdownListItem[] }
-  | { kind: 'rule' };
+  | { kind: 'rule' }
+  | { kind: 'table'; align: ColumnAlign[]; header: MarkdownTableRow; rows: MarkdownTableRow[] };
 
 // ---------------------------------------------------------------------------
 // Block-level parsing
@@ -108,6 +129,136 @@ function matchListItem(line: string): { ordered: boolean; text: string } | null 
     return { ordered: true, text: orderedMatch[1]! };
   }
   return null;
+}
+
+// Linear, escaped-pipe-aware cell splitter — a single forward scan, never a
+// regex. A `\|` is an escaped literal pipe (kept as `|` in the cell text, not
+// treated as a separator); every other `|` splits. Leading/trailing empty
+// cells produced by optional outer pipes (`| a | b |` vs `a | b`) are
+// dropped so both spellings of the same row produce the same cell count.
+function splitTableCells(line: string): string[] {
+  const cells: string[] = [];
+  let current = '';
+  for (let idx = 0; idx < line.length; idx += 1) {
+    const ch = line[idx]!;
+    if (ch === '\\' && line[idx + 1] === '|') {
+      current += '|';
+      idx += 1;
+      continue;
+    }
+    if (ch === '|') {
+      cells.push(current);
+      current = '';
+      continue;
+    }
+    current += ch;
+  }
+  cells.push(current);
+
+  const trimmed = cells.map((cell) => cell.trim());
+  if (trimmed.length > 0 && trimmed[0] === '') {
+    trimmed.shift();
+  }
+  if (trimmed.length > 0 && trimmed[trimmed.length - 1] === '') {
+    trimmed.pop();
+  }
+  return trimmed;
+}
+
+// A GFM delimiter row: every cell (after dropping optional outer pipes) is
+// dashes with optional leading/trailing colon for alignment, and there is at
+// least one cell. This is the load-bearing false-positive guard (see the
+// module header) — a line with NO `|` at all (a bare `---` rule) never
+// reaches this function because the caller only calls it on the line
+// FOLLOWING one that already contains a `|`; a line that has cells but any
+// cell shaped wrong (e.g. an empty cell, or letters) returns null and the
+// header line above it stays an ordinary paragraph line.
+function matchTableDelimiterRow(line: string): ColumnAlign[] | null {
+  if (!line.includes('|')) {
+    return null;
+  }
+  const cells = splitTableCells(line);
+  if (cells.length === 0) {
+    return null;
+  }
+  const align: ColumnAlign[] = [];
+  for (const cell of cells) {
+    const match = /^(:?)-+(:?)$/.exec(cell);
+    if (match === null) {
+      return null;
+    }
+    const leftColon = match[1] === ':';
+    const rightColon = match[2] === ':';
+    if (leftColon && rightColon) {
+      align.push('center');
+    } else if (leftColon) {
+      align.push('left');
+    } else if (rightColon) {
+      align.push('right');
+    } else {
+      align.push('none');
+    }
+  }
+  return align;
+}
+
+// A body row candidate: any non-blank line containing a `|` that is not
+// already claimed by another block kind (heading/rule/list/fence opener).
+// The table-consumption loop stops at the first line that fails this check,
+// re-processing it through the normal per-line classification.
+function isTableBodyRowLine(line: string): boolean {
+  if (line.trim().length === 0 || !line.includes('|')) {
+    return false;
+  }
+  if (matchHeading(line) !== null || isRuleLine(line) || matchListItem(line) !== null) {
+    return false;
+  }
+  if (matchFenceOpen(line) !== null) {
+    return false;
+  }
+  return true;
+}
+
+// Pads a ragged row with empty cells, or truncates extras, to exactly
+// `columnCount` — never throws (I8 totality: a malformed/ragged table still
+// renders, just with blank/dropped cells rather than an error).
+function normalizeRowLength(cells: MarkdownTableCell[], columnCount: number): MarkdownTableCell[] {
+  if (cells.length === columnCount) {
+    return cells;
+  }
+  if (cells.length > columnCount) {
+    return cells.slice(0, columnCount);
+  }
+  const padded = cells.slice();
+  while (padded.length < columnCount) {
+    padded.push({ inlines: [] });
+  }
+  return padded;
+}
+
+function parseTableRow(line: string, columnCount: number): MarkdownTableRow {
+  const cellTexts = splitTableCells(line);
+  const cells = cellTexts.map((cellText) => ({ inlines: parseInline(cellText.trim(), 0) }));
+  return normalizeRowLength(cells, columnCount);
+}
+
+// Column count is pinned to the HEADER's cell count (the grammar's own
+// wording) — the delimiter row only supplies per-column alignment, and a
+// delimiter with a different cell count than the header (a malformed but
+// not-uncommon-to-see-from-a-model table) pads/truncates ALIGN to match
+// rather than letting the two rows disagree about how many columns exist.
+function normalizeAlignLength(align: ColumnAlign[], columnCount: number): ColumnAlign[] {
+  if (align.length === columnCount) {
+    return align;
+  }
+  if (align.length > columnCount) {
+    return align.slice(0, columnCount);
+  }
+  const padded = align.slice();
+  while (padded.length < columnCount) {
+    padded.push('none');
+  }
+  return padded;
 }
 
 export function parseMarkdown(source: string): MarkdownBlock[] {
@@ -224,6 +375,34 @@ export function parseMarkdown(source: string): MarkdownBlock[] {
       listState.items.push({ inlines: parseInline(listItem.text, 0) });
       i += 1;
       continue;
+    }
+
+    // A table is recognized when THIS line could be a header (contains a
+    // `|`) AND the NEXT line is a valid delimiter row — the delimiter
+    // requirement is what distinguishes a real table from an ordinary line
+    // that happens to contain a pipe, and from a bare `---` rule (which has
+    // no pipe at all and so never reaches matchTableDelimiterRow). No
+    // delimiter ⇒ this line is NOT consumed here; it falls through to the
+    // paragraph fallback below, unchanged.
+    if (line.includes('|') && i + 1 < lineCount) {
+      const delimiterAlign = matchTableDelimiterRow(lines[i + 1]!);
+      if (delimiterAlign !== null) {
+        flushOpenBlocks();
+        // Column count is the HEADER's cell count (per the grammar); the
+        // delimiter only supplies alignment and is normalized to match.
+        const columnCount = splitTableCells(line).length;
+        const align = normalizeAlignLength(delimiterAlign, columnCount);
+        const header = parseTableRow(line, columnCount);
+        const rows: MarkdownTableRow[] = [];
+        let j = i + 2;
+        while (j < lineCount && isTableBodyRowLine(lines[j]!)) {
+          rows.push(parseTableRow(lines[j]!, columnCount));
+          j += 1;
+        }
+        blocks.push({ kind: 'table', align, header, rows });
+        i = j;
+        continue;
+      }
     }
 
     // Plain content line joins whatever paragraph is in progress. Lists in
