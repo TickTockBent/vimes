@@ -63,6 +63,19 @@ then **send a message mid-run** from the composer.
 4. The worker's behaviour actually changes — it is a *steer*, not a queued
    no-op.
 
+> ⚠ **CORRECTED 2026-07-24 (re-reading D35 — this criterion above was stale and
+> cost the orchestrator a wrong "T2 is broken" alarm).** On the **SDK** channel
+> (D4 default) `correction_delivered` **does NOT fire** — the tailer skips SDK
+> JSONLs, so the attachment recogniser never runs (risk-register row 18 / D35).
+> That is BY DESIGN, not a failure. The **load-bearing clear is `run_completed`**
+> (`sessions.ts` sets `pendingCorrectionAt → null` on it, unconditionally), which
+> is what clears the indicator on SDK. So the real pass check on SDK is: indicator
+> shows on queue → clears when the run/turn completes. `correction_delivered` in
+> the log is a **PTY-only, precise-but-partial** bonus signal; its ABSENCE on SDK
+> is expected. Do NOT read "0 `correction_delivered`" as a broken correction path.
+> Verified live: session `510dea21` (2026-07-24) queued a correction at 12:27:25,
+> got `run_completed` at 12:29:57, indicator cleared — working as designed.
+
 **Fail modes and what each means:**
 - Indicator never appears → the two event types are missing from
   `SESSIONS_AFFECTING_TYPES` (a **known-unguarded** line, see the 6b commit), or

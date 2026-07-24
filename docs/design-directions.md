@@ -634,6 +634,12 @@ initialization workflow where we import a project into vimes and it runs a
 workflow to reorganize the project files using agent calls. We're not near that
 yet but it should be thought about." Captured, not scheduled.)*
 
+**Now has a home (2026-07-24).** D42 declares an event-sourced project registry
+with a **reserved `project_initialized` event** — that is exactly this workflow's
+trigger. Importing/creating a project (D42's +New Project) is the entry point;
+this init workflow is the skippable step that runs after it. See D42 and
+"Project-centric VIMES" below.
+
 **The idea.** Two coupled pieces:
 1. **A standardized project-documentation schema** — a canonical shape for how a
    project records its own design and state.
@@ -809,3 +815,142 @@ close-× affordance all carry over unchanged; only WHAT fills the slots changes.
 surface has a design. Do not swap the sidebar to the board until the board's
 role as home is deliberately decided — it is the "sessions should not be the
 landing page" call, finally actionable, and it is Wes's to make.
+
+## Project-centric VIMES — the project as root scope, and the history it unlocks
+
+*(Wes, 2026-07-24. The MODEL is decided in D42 — declared-boundary registry, no
+inference, derived attribution. This entry is the SYSTEM around it: what the
+reframe changes surface by surface, and the payoff Wes surfaced. Pairs with "The
+end-state of the panel shell" above — sidebar=board/tasks — and "Project
+onboarding" below, the init hook D42 reserves.)*
+
+**The reframe.** VIMES stops being session-centric and becomes project-centric.
+Landing = the project picker (D42). A selected project scopes every surface, so
+the per-surface pickers dissolve:
+- **Git** no longer asks which repo — it opens the project you are in.
+- **Cost** scopes to the project, with a toggle/nav to the all-projects total —
+  nearly free, the ledger is already directory-keyed; the all-projects view is the
+  deliberate exception to scoping.
+- **Terminals** open in the project, no path prompt.
+- **Files / search** root at the project boundary.
+- **Sessions demote to a panel** (answering Q2's demotion half and the 2026-07-20
+  landing-page note), opened from within a project. The **session sidebar moves
+  into a panel; tasks become the sidebar** with a **+New Task** rolldown, and
+  tasks is ALSO available as a panel (mobile / wide-desktop typing room). This is
+  the end-state entry's shape, now with the project axis beneath it.
+
+Everything built for the panel shell carries over unchanged (D39/D40/D41): host,
+layout-aware hash, focus model, close-✕. The project axis sits ABOVE the stack —
+each project owns its panel stack; switching projects swaps the stack; the hash
+gains a project segment (a D40 evolution, recorded in D42).
+
+**⭐ The payoff Wes surfaced: point VIMES at an existing project and browse — or
+RESUME — its entire history.** Because attribution is a cwd derivation (D42) and
+the cost ledger already scans the whole `~/.claude/projects` corpus, declaring a
+project retroactively lights up everything that ever ran under it — INCLUDING
+sessions that never touched VIMES. Three tiers, increasing lift:
+
+1. **Cost/usage history — already there, today. Zero build.** Declaring the
+   boundary scopes the historical rows by cwd. The `<outside-project-roots>`
+   bucket already proves the ledger holds non-VIMES sessions.
+2. **A read-only "project history" of past sessions — a `costCorpus`-shaped
+   build.** The transcripts are all on disk (full history), but D10 mirrors
+   external sessions from **EOF, not replay** — so they are not live session
+   objects. A NEW derived read-model over the corpus (same architecture as the
+   cost ledger — recursive reader, injectable fake fs so tests never touch real
+   `~/.claude`) can present "everything that ever ran in this project" scoped by
+   boundary, WITHOUT replaying into the live log. **Additive to D10, never a
+   reversal.** `costCorpus.ts` is the proven template.
+3. **Resuming an old session — the differentiator.** Making one historical session
+   live again is the existing adopt/resume path (`session_adopted` /
+   resume-through-VIMES / `claude --resume`), one at a time. **This is a genuine
+   edge over the bare harness: even Claude Code can't always resume an older
+   session — VIMES, holding the corpus + the adoption path, can offer resume as a
+   first-class action** from the history view. That is a real reason the project
+   entity earns its keep: it is not cosmetic, it is the key to data you already
+   have on disk.
+
+**Discipline / boundaries.**
+- Tier 1 is free; tiers 2–3 are post-MVP follow-ons. **Slice-7 MVP is picker +
+  registry + derived scoping only** — do not swell the first cut into the history
+  read-model.
+- The history read-model MUST stay ADDITIVE to D10 (read the corpus into a scoped
+  view; never replay history into the live event log) and respect corpus safety
+  (injectable fs; tests never touch real `~/.claude`; live DBs READONLY).
+- Resume is one-at-a-time adoption, not bulk hydration.
+- Carries the worktree gap and the allow-list security sub-decision from D42.
+
+**⟨Wes⟩ — decisions, when this is revisited.**
+- The allow-list sub-decision (D42): declare-within-roots vs declare-anywhere
+  (security). Gates the slice.
+- All-projects cost view: toggle vs separate nav.
+- Whether the history read-model ships in slice 7 or a later slice.
+- **Trigger:** after slice 6 closes.
+
+## Mined from the AgenC-core decomp — admission-kernel forward design, `vimes doctor`, pagination discipline
+
+*(2026-07-24, `docs/decomposition/agenc-core-decompose.md` reviewed. AgenC is a
+mature coding-agent harness that independently converged on VIMES's bones —
+persist-before-publish = I13, rollout-authority = D12, per-spawner budgets. Worth
+banking, with the orchestrator's caveats. The immediate cheap wins were folded into
+their homes — pointers at the bottom.)*
+
+**The load-bearing insight — observed-vs-owned budgets.** VIMES cannot reserve
+against Anthropic's 5h/weekly counter (rule 0.7 — observational only), but the
+**orchestration layer's internal allocations** — the software-orchestration spawn
+budget the orchestrator hands each worker (the VIMES-builds-VIMES north star) — ARE
+owned, and can take reserve→constrain→settle instead of I10's check-then-spawn.
+That split is what makes the admission-kernel idea tractable rather than a rule-0.7
+category error.
+
+**Bank these fail-closed accounting RULES for the internal-allocation layer**
+(slice-7 machinery; the rules are bankable now, rule 0.5):
+- **`held_unknown`** — a missing/malformed usage block charges WORST CASE against
+  the internal allocation, never zero (composes with the D17 `message.id`
+  MAX-dedupe).
+- **subtree cancellation** — a worker that blows its allocation takes its delegated
+  children with it; the overrun is evented.
+- **fail-closed spawn** — if the allocation can't propagate to a child process, the
+  child does not run.
+- **no mutation/reset RPC** for accounting — I12's spirit extended to allocations.
+
+**⚠ Caveats (the gate's, not the decomp's):**
+1. **Do NOT import AgenC's decision vocabulary wholesale.** VIMES already has a
+   dispatch vocabulary (`DispatchRefuseReason`,
+   `spawned/deferred/refused/spawn-failed/resumed/resume-failed`,
+   `dispatch_refused`, the two-vocabularies-kept-apart discipline in
+   `taskDispatcher.ts`). Adopt only the CONCEPTS VIMES lacks (`held_unknown`,
+   `provider_overrun`, `reconciled/settled`) WHEN the machinery lands — not the
+   enum, which would collide.
+2. **Internal allocations do not exist yet** — I10 is check-then-spawn against
+   OBSERVED headroom. This is reserved design, not backlog.
+3. **Gate/budget unification (AgenC's open Q2) — lean SEPARATE.** AgenC folds
+   `approval_required` and budget denial into one decision set. A gate is a
+   human-approval decision; a budget refusal is a resource constraint — convergent
+   *surface* (both set `needsAttention`), not shared essence. Worth ONE design pass
+   at T7-time; prior is they stay separate decisions with a shared surface.
+
+**`vimes doctor` / self-audit — a real operator command (later, not now).**
+Composes the series' scattered preflight items into one artifact: localhost-only
+binding, Access JWT middleware self-probe (I14 against itself), secret-file perms,
+hook-relay wiring, CLI version vs lockfile, authenticated-not-just-installed.
+Dovetails with the deploy-preflight discipline in CLAUDE.md. AgenC's `security
+audit --fix` / `doctor` is the reference.
+
+**Immediate cheap wins — FOLDED 2026-07-24:**
+- **Snapshot-verify-before-migrate → D11** (open-questions): snapshot → VERIFY the
+  snapshot → migrate → keep the named `<db>.pre-<schema>.sqlite`. Hardens VIMES's
+  `VACUUM INTO` gesture with "verified" + "named-by-schema-version."
+- **Bounded/cursored control-plane reads → Q2** (QUEUE): pagination-by-design on
+  list/replay/search is the STRUCTURAL fix for Q2's scroll cost — a phone over a
+  tunnel needs it regardless of the retention call.
+- **Self-enforcing toolchain pins** — add `packageManager` + `devEngines` to root
+  `package.json` so the Node-24 pin is toolchain-enforced, not just `.nvmrc`/
+  `engines` + the ci-gate check. Trivial config, next repo-config pass. (AgenC
+  rides Node 25.9; VIMES keeps its LTS discipline — the self-enforcing *practice*
+  is the lift, not the version.)
+
+**Skip, confirmed:** the harness itself (VIMES drives Claude Code, doesn't replace
+it), the relay/ticket infra (tunnel + Access already solves single-operator reach),
+channel gateway, browser/SSRF, OS sandbox — all horizon-only. The decomp's skip
+list is well-reasoned.

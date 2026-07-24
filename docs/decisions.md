@@ -1260,3 +1260,98 @@ handled this way.
 
 No behaviour changed here — this addendum records the corrected fact and the rule,
 because the next view with an in-view back will hit exactly this.
+
+## D42 — "Project" is a DECLARED boundary (a user-picked directory in an event-sourced registry), never an inferred one; scoping is a derivation over cwd
+
+*2026-07-24. Settles the derivation-vs-entity question opened by the
+project-centric redesign (see `design-directions.md` → "Project-centric VIMES").
+A read-only spike established the crux; Wes's call resolves it. The relationship
+to D37 is load-bearing and stated below. BUILD is deferred to after slice 6.*
+
+**The question.** The redesign makes VIMES project-centric: a landing
+project-picker scopes every surface (sessions, cost, terminals, git, files,
+search). Is "project" derivable from data VIMES already emits, or a new entity? A
+spike found cwd is carried nearly everywhere — `session_created.cwd`
+(`events.ts` → `sessions.ts`), cost rows keep `projectCwd` verbatim
+(`costCorpus.ts`, `costLedgerReadModel.ts:157`), terminals (`terminalHost.ts`),
+files (`app.ts` `projectRoots ∪ liveSessionCwds`) — BUT `VIMES_PROJECT_ROOTS` is a
+SINGLE root (`~/projects`, D21), so `cwd → root` collapses every project to one
+node. Reaching a NAMED project needs a boundary, and **D37 is a signed decision
+that VIMES does not infer one** (fixed-depth, `.git`, `package.json`, and dotfile
+conventions each rejected on Wes's own objection).
+
+**Decision — don't infer, DECLARE.**
+- First launch shows a blank project picker with **+New Project**. The user
+  selects a directory; **that directory IS the project boundary.** Optional name +
+  description; absent a name, the directory basename is the name.
+- The selection persists to an **event-sourced project registry**
+  (`project_created` + lifecycle events, NOT static config) — projects are created
+  at runtime, carry mutable user metadata, and have a lifecycle
+  (created → optionally initialized → optionally archived); that is event-log state
+  (rule 0.3, I12), not config. This UPDATES the orchestrator's earlier "config
+  registry" lean, which predated the runtime-creation + metadata + init-hook shape.
+- `VIMES_PROJECT_ROOTS` (D21) does NOT become the project set — it stays the
+  **allow-list within which projects may be declared** (see the security
+  sub-decision).
+- Opening a project makes its boundary the root; every surface **scopes by cwd
+  prefix-match against declared boundaries — a pure derivation, computed at read
+  time.**
+
+**Why this is NOT a reversal of D37.** D37 refused to *infer* a boundary
+heuristically. Declaring one explicitly, per project, by user selection is exactly
+the sanctioned alternative D37 pointed at — the machine still never guesses. D37
+stays intact; D42 supplies the boundary D37 withheld, from the user instead of a
+heuristic. Building an inference to auto-populate the picker WOULD silently reverse
+D37 (rule 0.8 territory) and is out.
+
+**The payoff — declared entity, DERIVED (retroactive) attribution.** Because
+attribution is a prefix-match over cwd, and historical data already carries cwd,
+declaring a project **retroactively scopes all its historical data for free — no
+backfill, no migration.** The cost ledger already scans the WHOLE
+`~/.claude/projects` corpus recursively (`costIngest.ts` → `~/.claude/projects`),
+so this includes sessions that never touched VIMES; the `<outside-project-roots>`
+bucket (`costTree.ts:241`) is the standing proof the ledger already holds
+non-project cwds. This is the best-of-both the spike's NEEDS-ENTITY verdict
+allowed: a small declared entity + zero-migration derivation. (History
+browse/resume is elaborated in `design-directions.md`.)
+
+**Consequential decisions this record makes:**
+- **Overlap → longest-prefix-wins.** A user may declare both `~/projects` and
+  `~/projects/vimes`; a cwd under vimes matches both. The most specific (deepest)
+  boundary wins. Nesting is a feature, not an error.
+- **Attribution is READ-TIME derivation, never stamped on events at creation** —
+  cwd is already native on both session records and cost rows, so project reads
+  from each row's own field and NEVER through the fragile
+  `appSessionId ↔ claudeSessionId` title-map bridge that halted Q4's relocation.
+  The spike confirmed the n:1 ambiguity does not resurface here.
+- **Landing = the picker**, settling two parked items: the 2026-07-20 "sessions
+  should not be the landing page" and Q2's "demote the session list" half. The
+  picker becomes the panel-stack ROOT — a D40 evolution: the stack roots at the
+  selected project (not the session list, D40's current root), and each project
+  owns its stack; switching projects swaps the stack, and the hash gains a project
+  segment.
+- **A `project_initialized` event is RESERVED** (rule 0.5 reserve-schema) for the
+  onboarding hook (`design-directions.md` → "Project onboarding") — the shape is
+  reserved now; the workflow is built when it has a consumer, not before.
+
+**⚠ The one sub-decision needing Wes's explicit sign-off BEFORE the slice
+(security-shaped).** May declaring a project **extend** the file/git allow-list
+beyond `VIMES_PROJECT_ROOTS`, or must projects be declared **within** it? Files and
+git already allow-list paths against the roots (`gitApi.ts:138-151`, `app.ts`); a
+picker that can select anywhere would silently widen that access surface (rule
+0.6 / security posture). **Lean: constrained within the roots** — D21 stays the
+safety fence, projects are declared inside it, and widening the fence stays a
+separate deliberate act. This is the only piece not settled here, and it gates the
+work order.
+
+**Known gap carried forward (NOT solved by this).** A worktree-isolated session's
+cwd is deliberately OUTSIDE every root (`worktreeRoot`, `config.ts`), so
+prefix-match dumps it (and its cost rows) to `<outside-project-roots>`, not the
+parent project. Correct attribution needs the `session.taskRef.taskId →
+task.projectRoot` join, and cost rows carry no `taskRef`. Only bites when
+`VIMES_WORKTREE_ISOLATION` flips (already a ⟨Wes⟩ item) — named here so the build
+does not rediscover it.
+
+**Sequencing.** Build AFTER slice 6 closes (its exit gate is one test away; do not
+destabilize it). Slice-7 MVP = picker + registry + derived scoping. The history
+read-model and the onboarding init-workflow are follow-ons, not the first cut.

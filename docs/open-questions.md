@@ -73,6 +73,14 @@ sanctioned I12 exception). What stays open is the machinery. **Lean
 exists to run through it, not before (rule 0.5: machinery waits for its first
 consumer). Moves to decisions.md when that first migration lands.
 
+**Contract addition (mined from the AgenC-core decomp, 2026-07-24):** when the
+harness is built, its contract is **snapshot → VERIFY the snapshot → migrate →
+keep the named pre-migration file** (`<db>.pre-<schemaVersion>.sqlite`). AgenC does
+exactly this before a schema-v15 upgrade (writes + verifies `…pre-v15.sqlite`).
+This hardens VIMES's existing `VACUUM INTO`-before-migration gesture with the two
+parts it lacks: the snapshot is *verified*, and it is *named by schema version* so
+a failed migration has an obvious, addressable rollback artifact.
+
 <!-- D12 (event log body storage) moved to decisions.md 2026-07-13 — signed off
      at slice 0 kickoff: inline bodies. -->
 
@@ -213,3 +221,38 @@ rollup. This is designed from zero, on raw material none of them had.
      session/task split. The standing constraint — no projection may fold another
      stream's events, because the log has no global ordering column — is recorded
      in architecture.md. Wes approved the recommendation. -->
+
+## D43 — A task's spec source: title-only, or a durable `description` field? *(trigger: slice 7 — the first time a worker needs a brief beyond a title, esp. the independent reviewer)*
+
+Surfaced 2026-07-24 while drafting the stage-instruction seam-fill (parked here so
+slice 6 can close on a *minimal* instruction — see the seam-fill draft). Today
+`TaskRecord` carries only an **optional `title`** — there is no description/spec
+field. The minimal slice-6 instruction gets by on title + the human's mid-run
+steering. But the richer pipeline needs a real brief: the **independent reviewer**
+(`review` always spawns fresh — the independence rule) has *only a title* to
+review against, and a cold-spawn implementer likewise.
+
+**Lean (2026-07-24):** add an **optional `description` field**, same widening
+discipline `title`/`gates` already followed (absent stays absent, I6-safe, set at
+creation). It is the cheapest thing that gives the reviewer and the cold
+implementer something concrete. Interacts with D44 (the plan may BE the
+implementer's spec, in which case the description is the *planner's* brief, not the
+implementer's). Decide the two together.
+
+## D44 — The plan→implement hand-off for a cold-spawned implementer *(trigger: slice 7 — when planning and implementing run as separate auto-dispatched stages)*
+
+Surfaced 2026-07-24, same investigation. `resolveStageRunner` rule 3 spawns the
+**first implementer FRESH and deliberately does NOT resume the planning session**
+("a planning session is NOT the author" — resuming it would carry the wrong
+artifact). So a first-pass implementer has the **title but not the plan the
+planning stage produced** — the plan lives in a session context it is explicitly
+not resumed into. Nothing currently conveys the plan across that boundary.
+
+**Lean (2026-07-24):** the plan must become a **durable artifact** the instruction
+can reference — captured from the planning session and attached to the task
+(candidate homes: a `plan` field, or the `description` from D43 repurposed) — so
+`composeStageInstruction` for `implementing` can hand the fresh worker the actual
+plan. The alternative (read the planner's transcript to extract the plan) is
+fragile and edges toward screen-parsing (rule 0.8). Decide with D43. **Not a
+slice-6 blocker** — slice 6 closes on a single-stage dispatch that never crosses
+this boundary.
