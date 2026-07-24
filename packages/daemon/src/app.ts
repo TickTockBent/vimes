@@ -11,6 +11,7 @@ import {
   runtimeDriftObserved,
   snapshotAfter,
   cacheObservabilityProjection,
+  composeStageInstruction,
   evaluateMeterAlerts,
   meterAlert,
   meterSample,
@@ -455,10 +456,12 @@ export function createDaemon(deps: DaemonDeps): Daemon {
       resumeSession: (appSessionId) => sessionHost.resumeSession(appSessionId),
       sendMessage: (appSessionId, text) => sessionHost.sendMessage(appSessionId, text),
     },
-    // ⚠ `composeStageInstruction` is deliberately NOT passed. Its default is
-    // `() => null` — a stage run is told nothing, exactly as before step 7. The
-    // words a review or a fix prompt should carry are Wes's decision and are not
-    // written anywhere in this step.
+    // The minimal, stage-generic instruction Wes signed off 2026-07-24 (see
+    // packages/core/src/tasks/stageInstruction.ts) — a dispatched worker is now
+    // told what task/stage/directory it's in and how to behave mid-run, instead
+    // of nothing. Per-stage specialisation (planning/implementing/review wording)
+    // is deliberately deferred — D43/D44, slice 7.
+    composeStageInstruction,
     emit: (events) => router.emit(events),
     readTasks: () => bootFromSnapshot(tasksProjection, snapshotStore, store),
     readMeters: () => currentMetersState(),

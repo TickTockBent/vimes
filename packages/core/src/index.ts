@@ -110,6 +110,11 @@ export {
 // Step 7 — WHO runs a stage, kept a separate export (and a separate module) from
 // WHETHER it runs. See stageRunner.ts for why the two questions never merge.
 export { resolveStageRunner, type StageRunnerPlan } from './tasks/stageRunner.js';
+// The dispatcher's instruction seam — WHAT a dispatched worker is told. Kept a
+// separate export (and a separate module) from stageRunner.ts for the same
+// reason WHO and WHETHER stay apart: this only composes words from a
+// (task, plan) pair and never decides who runs the stage or whether it runs.
+export { composeStageInstruction } from './tasks/stageInstruction.js';
 // Step 8 — WHERE a stage runs, derived from the taskId alone. Pure and total, and
 // in core (not beside the daemon's manager) because a worktree's identity must be
 // re-derivable by the board, a future GC and any replay without a daemon running.
