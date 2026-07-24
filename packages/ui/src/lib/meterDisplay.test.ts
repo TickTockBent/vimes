@@ -8,6 +8,7 @@ import {
   freshnessFromAge,
   meterFreshness,
   meterLabel,
+  meterValueLabel,
   refreshNotice,
   usageStripModel,
   ELEVATED_PERCENT_PREVIEW,
@@ -348,6 +349,27 @@ describe('tone', () => {
     expect(deriveMeterRow(record({ severity: 'iguana_necktie' }), context()).severity).toBe('iguana_necktie');
     expect(deriveMeterRow(record({ severity: null }), context()).severity).toBeNull();
     expect(deriveMeterRow(record({ severity: undefined }), context()).severity).toBeNull();
+  });
+});
+
+describe('meterValueLabel — a null percent is words, never a number', () => {
+  it('renders a fresh percent as "N%"', () => {
+    // Observed one minute ago, band is 10m → fresh, so the real percent shows.
+    expect(meterValueLabel(deriveMeterRow(record({ percent: 29 }), context()))).toBe('29%');
+  });
+
+  it('renders a stale reading as the word "stale", never its last figure', () => {
+    // Aged well past the band: displayPercent collapses to null even though a
+    // real percent exists, and the honest word for that is "stale".
+    const staleRow = deriveMeterRow(record({ percent: 29, ageMs: 20 * 60 * 1000 }), context());
+    expect(staleRow.displayPercent).toBeNull();
+    expect(meterValueLabel(staleRow)).toBe('stale');
+  });
+
+  it('renders an unknown reading (no band) as "usage unknown"', () => {
+    const unknownRow = deriveMeterRow(record({ percent: 29 }), context({ staleAfterMs: null }));
+    expect(unknownRow.freshness).toBe('unknown');
+    expect(meterValueLabel(unknownRow)).toBe('usage unknown');
   });
 });
 

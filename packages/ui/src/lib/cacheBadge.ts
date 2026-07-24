@@ -48,6 +48,17 @@ export interface CacheObservabilityRecord {
   // until one is observed / from an older daemon that predates the field. The
   // UI ages this against its own `now` to infer warmth (mirrors core).
   latestBlockAt: string | null;
+  // Input-side token counts of the MOST RECENTLY OBSERVED usage_block — the
+  // "context size" proxy (mirrors core's CacheObservabilityRecord). Latest-
+  // observed, never cumulative; output excluded. Null until one block is
+  // observed / from an older daemon predating the field — the UI shows "unknown"
+  // (pillar 4), never a fabricated 0. The store fills the record whole, so no
+  // other data-path change is needed.
+  latestContextTokens: {
+    inputTokens: number;
+    cacheReadTokens: number;
+    cacheCreationTokens: number;
+  } | null;
   countedMessageIds: string[];
 }
 
