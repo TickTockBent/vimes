@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 import { useVimesStore } from '../stores/vimesStore.js';
 import { deriveGateCards } from '../lib/gateCard.js';
 import { extractContentBlocks, type ContentBlockView } from '../lib/messageContent.js';
@@ -8,7 +8,12 @@ import { clampTextareaHeight, type TextareaMetrics } from '../lib/textareaGrow.j
 import { initialKeyboardOffsetState, reduceKeyboardOffset, type KeyboardOffsetState } from '../lib/keyboardOffset.js';
 import { shouldSendSeenOnMount, shouldSendSeenOnVisibility } from '../lib/seenOnView.js';
 import { cacheWarmth, deriveCacheBadge, ttlTierLabel } from '../lib/cacheBadge.js';
+import { contextTokens } from '../lib/contextFill.js';
+import { formatTokenCount } from '../lib/costDisplay.js';
+import { meterValueLabel, usageStripModel, type MeterRow } from '../lib/meterDisplay.js';
 import { deriveCorrectionStatus, formatQueuedFor } from '../lib/correctionStatus.js';
+import { shouldStick } from '../lib/stickToBottom.js';
+import { decideComposerEnter } from '../lib/composerKey.js';
 import GateCard from '../components/GateCard.vue';
 import MarkdownMessage from '../components/MarkdownMessage.vue';
 import type { EventRecord } from '../lib/types.js';
@@ -22,6 +27,14 @@ defineEmits<{ back: [] }>();
 const store = useVimesStore();
 const draft = ref('');
 const composerRef = ref<HTMLTextAreaElement | null>(null);
+
+// Enter-to-send (desktop) vs Enter-stays-newline (mobile/touch) — see
+// decideComposerEnter in lib/composerKey.ts for the pure decision. The
+// PRIMARY pointer being fine (a real mouse/trackpad) is the "has a real
+// keyboard, enter-to-send is safe" signal; a phone/tablet's primary pointer is
+// coarse. Pointer type is stable per session, so a one-shot read on mount is
+// enough — no resize/change listener needed.
+const isDesktopComposer = ref(false);
 
 // Defect 2: auto-growing composer. 1 row min, ~5 rows max before internal
 // scrolling — see packages/ui/src/lib/textareaGrow.ts for the pure clamp math.
@@ -95,11 +108,63 @@ const CORRECTION_CLOCK_TICK_MS = 1_000;
 const correctionNowMs = ref(Date.now());
 let correctionClockHandle: ReturnType<typeof setInterval> | null = null;
 
+// ── Stick-to-bottom auto-scroll ──────────────────────────────────────────────
+// The page scrolls the DOCUMENT, not an inner element: the root is
+// `min-h-screen flex-col` with a sticky header/footer and a `flex-1` <main> that
+// has no overflow of its own — the ONLY overflow in this view is the composer
+// textarea. This is the same scroller the keyboard-offset handler already drives
+// via `window.scrollTo(document.documentElement.scrollHeight)` above. So we read
+// and scroll window + document.documentElement, never a child element.
+//
+// The whole trick — and the reason a naive "scroll on every new event" is wrong:
+// `stuckToBottom` is captured from the USER'S OWN scrolling, NOT from content
+// arriving. New / streaming content follows the reader to the bottom only while
+// this flag is true. Once they scroll up to read history the flag flips false and
+// we leave them exactly where they are. Deriving intent from the user's scroll is
+// precisely what makes the "don't yank a reader back down" guarantee hold.
+const NEAR_BOTTOM_THRESHOLD_PX = 64; // near-bottom UX tolerance: within 64px of the bottom still counts as "at the bottom"
+const stuckToBottom = ref(true);
+const streamContentRef = ref<HTMLElement | null>(null);
+let streamResizeObserver: ResizeObserver | null = null;
+let scrollIntentFrameHandle: number | null = null;
+
+// Passive scroll listener → refresh the intent flag off live document geometry.
+// Throttled to a single pending rAF so a fast flick doesn't recompute on every
+// scroll event.
+function handleWindowScroll(): void {
+  if (scrollIntentFrameHandle !== null) {
+    return;
+  }
+  scrollIntentFrameHandle = window.requestAnimationFrame(() => {
+    scrollIntentFrameHandle = null;
+    stuckToBottom.value = shouldStick(
+      window.scrollY,
+      window.innerHeight,
+      document.documentElement.scrollHeight,
+      NEAR_BOTTOM_THRESHOLD_PX,
+    );
+  });
+}
+
+// Content-changed signal (a new event, OR an existing message GROWING as it
+// streams). Follow to the bottom ONLY when the reader is currently stuck there;
+// otherwise do nothing (they scrolled up — leave them put). Instant scroll: no
+// smooth animation, which is cheaper and never fights ongoing streaming growth.
+function followBottomIfStuck(): void {
+  if (!stuckToBottom.value) {
+    return;
+  }
+  void nextTick(() => {
+    window.scrollTo({ top: document.documentElement.scrollHeight });
+  });
+}
+
 onMounted(() => {
   store.subscribe(props.appSessionId);
   if (shouldSendSeenOnMount()) {
     store.markSeen(props.appSessionId);
   }
+  isDesktopComposer.value = window.matchMedia('(pointer: fine)').matches;
   document.addEventListener('visibilitychange', handleVisibilityChange);
   void nextTick(autoGrowComposer);
   if (window.visualViewport) {
@@ -109,6 +174,22 @@ onMounted(() => {
   correctionClockHandle = setInterval(() => {
     correctionNowMs.value = Date.now();
   }, CORRECTION_CLOCK_TICK_MS);
+
+  // Intent flag comes from the user's own scrolling (passive — we never
+  // preventDefault the scroll).
+  window.addEventListener('scroll', handleWindowScroll, { passive: true });
+  // A ResizeObserver on the stream content is the PRIMARY follow signal: it fires
+  // on ANY height change, so it catches a message growing mid-stream — something a
+  // `watch(events.length)` (below) would miss because the array length doesn't
+  // change while an existing message's text streams in. It also fires once on
+  // observe, which — since `stuckToBottom` starts true — scrolls a freshly opened
+  // session to its tail with no separate one-shot needed.
+  if (streamContentRef.value !== null) {
+    streamResizeObserver = new ResizeObserver(() => {
+      followBottomIfStuck();
+    });
+    streamResizeObserver.observe(streamContentRef.value);
+  }
 });
 
 onUnmounted(() => {
@@ -121,11 +202,29 @@ onUnmounted(() => {
     clearInterval(correctionClockHandle);
     correctionClockHandle = null;
   }
+  // No leaked observers/listeners across the many sessions a long-lived PWA opens
+  // and closes — same cleanup discipline as correctionClockHandle above.
+  window.removeEventListener('scroll', handleWindowScroll);
+  if (streamResizeObserver !== null) {
+    streamResizeObserver.disconnect();
+    streamResizeObserver = null;
+  }
+  if (scrollIntentFrameHandle !== null) {
+    window.cancelAnimationFrame(scrollIntentFrameHandle);
+    scrollIntentFrameHandle = null;
+  }
 });
 
 const events = computed<EventRecord[]>(() =>
   store.eventsFor(props.appSessionId).slice().sort((a, b) => a.seq - b.seq),
 );
+// Belt-and-suspenders for an appended event: a length change is the unambiguous
+// "new event" signal. The ResizeObserver above already covers this case (a new
+// event grows the content), but the watch is cheap and makes the append path
+// explicit and independent of layout timing.
+watch(() => events.value.length, () => {
+  followBottomIfStuck();
+});
 const session = computed(() => store.sessions[props.appSessionId]);
 const gateCards = computed(() => deriveGateCards(events.value, store.answeringRequestIds));
 const canResume = computed(
@@ -189,6 +288,32 @@ const cacheDetailLabel = computed(() => {
   const serviceTierLabel = badge.serviceTier ?? 'unknown tier';
   return `${warmthHeadline} · ${serviceTierLabel} · ${badge.tokensLabel}`;
 });
+
+// ── Vitals strip: context + usage (siblings of the cache line above) ─────────
+// The cache line above is readout 1 (warmth); these are readouts 2 and 3. Each
+// degrades INDEPENDENTLY — an unobserved context never blanks the usage cell and
+// vice-versa (pillar 4). Both age against the SAME `correctionNowMs` this view
+// already ticks (rule 0.3 — no second now-source).
+
+// Readout 2 — CONTEXT: the input-side tokens of the latest observed turn
+// (input + cacheRead + cacheCreation), an ABSOLUTE observed count. No percent:
+// VIMES has no model→context-limit table (declared truth, a ⟨Wes⟩ call with no
+// consumer yet — rule 0.5). Null when no usage_block observed / a pre-field
+// daemon → the cell renders "ctx —", never a fabricated 0.
+const contextTokenCount = computed(() => contextTokens(store.cacheObservability[props.appSessionId]));
+const contextCellLabel = computed(() =>
+  contextTokenCount.value === null ? null : formatTokenCount(contextTokenCount.value),
+);
+
+// Readout 3 — USAGE: the ACCOUNT-WIDE binding meter. events.ts:78-86 — "a meter
+// belongs to no session": this is the SAME meter on every open session, and the
+// template labels it 'account' so it never reads as session-scoped. Built the
+// SAME way SessionListView does (store snapshot → usageStripModel → binding row,
+// daemon-ordered binding-first). Consumes `store.usageSnapshot` as-is (no new
+// fetch — the board already polls it); aged against `correctionNowMs`. Null when
+// no meter has been observed → the cell says "usage unknown", never a 0.
+const usageStrip = computed(() => usageStripModel(store.usageSnapshot, correctionNowMs.value));
+const bindingMeter = computed<MeterRow | null>(() => usageStrip.value.rows[0] ?? null);
 
 function dismissAttention(): void {
   store.clearAttention(props.appSessionId);
@@ -271,6 +396,22 @@ function submitMessage(): void {
   void nextTick(autoGrowComposer); // collapse back to minRows now that draft is empty
 }
 
+// Vue's `.enter` modifier fires for Enter regardless of modifiers — the
+// branching (send vs newline) lives in the pure decideComposerEnter, this
+// just reads the live event/environment state and acts on its verdict.
+function onComposerEnter(event: KeyboardEvent): void {
+  const action = decideComposerEnter({
+    shiftKey: event.shiftKey,
+    isComposing: event.isComposing,
+    isDesktop: isDesktopComposer.value,
+  });
+  if (action === 'send') {
+    event.preventDefault(); // stop the textarea from also inserting a newline
+    submitMessage(); // already empty-guards — an empty-composer Enter is a no-op, not a blank send
+  }
+  // 'newline': do nothing — let the textarea insert the newline naturally.
+}
+
 function respond(card: { appSessionId: string; requestId: string }, response: 'allow' | 'deny'): void {
   store.answerGate(card.appSessionId, card.requestId, response);
 }
@@ -315,7 +456,53 @@ function resume(): void {
       {{ cacheDetailLabel }}
     </p>
 
-    <main class="flex-1 space-y-2 p-3">
+    <!-- Vitals strip (sibling of the cache line above): context + account-wide
+         usage. Semi-live — the numbers update per turn and the ages tick between;
+         no real-time claim. Each cell degrades independently to "unknown". -->
+    <div
+      class="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 border-b border-slate-100 px-3 py-1 text-xs text-slate-500 dark:border-slate-900 dark:text-slate-400"
+    >
+      <!-- Context: absolute observed input-side tokens of the latest turn. -->
+      <span
+        :title="contextCellLabel === null ? 'context size not yet observed' : 'input-side tokens fed to the model on the latest observed turn'"
+      >
+        <span class="uppercase tracking-wide text-[10px] text-slate-400 dark:text-slate-500">ctx</span>
+        {{ contextCellLabel ?? '—' }}
+      </span>
+
+      <span aria-hidden="true">·</span>
+
+      <!-- Usage: the ACCOUNT-WIDE binding meter (NOT this session's) — labelled
+           'account' so it never implies session scope; it reads identically on
+           every open session, which is correct. Its resetsAt countdown IS
+           observed (honest), unlike the inferred cache warmth above. Burn
+           rate / exhaustion render the lib's states verbatim, including its
+           "cannot see / not enough data" abstain (null = unknown, never 0). -->
+      <span
+        class="inline-flex flex-wrap items-baseline gap-x-1.5 gap-y-0"
+        :title="bindingMeter === null
+          ? 'account-wide usage not observed yet'
+          : `account-wide binding limit (${bindingMeter.label}) — the same across every session`"
+      >
+        <span class="rounded bg-slate-100 px-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:bg-slate-800 dark:text-slate-400">
+          account
+        </span>
+        <template v-if="bindingMeter !== null">
+          <span class="font-semibold">{{ meterValueLabel(bindingMeter) }}</span>
+          <span aria-hidden="true">·</span>
+          <span>{{ bindingMeter.resetLabel ?? 'no reset pending' }}</span>
+          <span aria-hidden="true">·</span>
+          <span>{{ bindingMeter.burnRateLabel }}</span>
+          <span aria-hidden="true">·</span>
+          <span>{{ bindingMeter.exhaustionLabel }}</span>
+        </template>
+        <template v-else>
+          <span>usage unknown</span>
+        </template>
+      </span>
+    </div>
+
+    <main ref="streamContentRef" class="flex-1 space-y-2 p-3">
       <template v-for="event in events" :key="event.eventId">
         <template v-if="event.type === 'message'">
           <template v-for="(block, blockIndex) in contentBlocksOf(event)" :key="`${event.eventId}-${blockIndex}`">
@@ -439,6 +626,7 @@ function resume(): void {
           placeholder="Message…"
           class="max-h-40 min-h-[44px] min-w-0 flex-1 resize-none overflow-y-hidden rounded-md border border-slate-300 px-3 py-2.5 text-sm leading-5 dark:border-slate-700 dark:bg-slate-900"
           @input="autoGrowComposer"
+          @keydown.enter="onComposerEnter"
         />
         <button
           type="submit"

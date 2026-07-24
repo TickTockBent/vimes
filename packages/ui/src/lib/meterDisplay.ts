@@ -510,6 +510,19 @@ function clampPercent(percent: number): number {
   return Math.min(100, Math.max(0, Math.round(percent)));
 }
 
+// The ONLY place a meter's figure becomes text (shared by the session-list strip
+// and the StreamView vitals strip — principle 9, one authority for the honest
+// rendering). A null displayPercent never yields a number: it yields the honest
+// word for WHY we have none ("stale" — we hold a real percent but it aged out;
+// "usage unknown" — never observed / no band), so a stale reading can never
+// masquerade as a current figure.
+export function meterValueLabel(row: MeterRow): string {
+  if (row.displayPercent !== null) {
+    return `${row.displayPercent}%`;
+  }
+  return row.freshness === 'stale' ? 'stale' : 'usage unknown';
+}
+
 /**
  * The whole strip, from a fetched snapshot and the CURRENT local clock reading.
  *

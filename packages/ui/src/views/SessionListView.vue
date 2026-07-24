@@ -20,6 +20,7 @@ import {
   type CacheTtlTone,
 } from '../lib/cacheBadge.js';
 import {
+  meterValueLabel,
   refreshNotice,
   usageStripModel,
   type MeterRow,
@@ -360,15 +361,6 @@ const METER_TONE_TEXT_CLASS: Readonly<Record<MeterTone, string>> = {
   high: 'text-rose-700 dark:text-rose-300',
   unknown: 'text-slate-500 dark:text-slate-400',
 };
-
-// The ONLY place a meter's figure becomes text. A null displayPercent never
-// yields a number — it yields the honest word for why we have none.
-function meterValueLabel(row: MeterRow): string {
-  if (row.displayPercent !== null) {
-    return `${row.displayPercent}%`;
-  }
-  return row.freshness === 'stale' ? 'stale' : 'usage unknown';
-}
 
 // Bar fill width. Unknown/stale rows get no fill at all — an empty bar plus the
 // word "stale" cannot be misread as 0% the way a zero-width *numeric* bar could.
