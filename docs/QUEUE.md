@@ -30,12 +30,15 @@ plan-as-artifact handoff, and the orchestrator role** — *not* "add a descripti
 3. **Board Dispatch caption** still says "told NOTHING" — false since the seam-fill deploy.
    One-line UI fix.
 
-**Slice-7 opener queue — the human-operable board controls (principle 8, stay first-class):**
-**S8** (move-modal shows all, allow few → filter, daemon-sourced), **S9** (dispatch→session:
-no live list update + no click-to-open), **S10** (Resume bypasses stage independence),
-**S11** (no task delete → soft-delete `task_cancelled`; + edit/attach-image). Plus D42
-(project-centric reframe + security sub-decision), the project history read-model, AgenC
-admission-kernel. These are the "dive to any level" controls the orchestrator layer sits on.
+**Human-operable board controls (principle 8) — the runnable ones SHIPPED 2026-07-24:**
+**S9** ✅ (dispatch→session: live list + click-to-open, `ddf2e8a`), **S8** ✅ (move-modal
+filters to daemon-served valid moves, `fb5b3d3`), **S11** ✅ (`cancelled` recoverable stage,
+`c618803`) — all deployed. **STILL OPEN: S10** (Resume bypasses stage independence — HELD for
+the task-model pass, it's a model call), **S2** (permission footing — see its ✅ SPIKED note;
+the `gated`/`plan` half is buildable, `autonomous` reframed → the **classifier-guardrail
+spike** is running: automated gating in the `canUseTool` seat, the scalable middle for the
+fleet). Plus D42 (project-centric reframe), the project history read-model, AgenC. These are
+the "dive to any level" controls the orchestrator layer sits on.
 
 **Fable can take solo:** the advisory pin (on Wes's go); the board Dispatch-caption cleanup.
 
@@ -123,6 +126,78 @@ raw mode pass-through) — `gated`→default (safe default), `plan`→plan, `aut
 acceptEdits/bypass (gate-blinding, opt-in, loud). `gated`/`plan` ship free; **⟨Wes⟩:
 offer `autonomous` at all? PTY footing (lean: no)? how is an un-gated session made
 visible?**
+
+### ✅ SPIKED #2 2026-07-24 — the CLASSIFIER GUARDRAIL (`scratchpad/spike-classifier-guardrail-FINDINGS.md`)
+
+Reframes S2: at fleet scale (dozens of dispatched sessions, nobody watching each)
+human-per-tool gating doesn't scale and the SDK's blind auto modes give up
+observability. The scalable middle: a **classifier in the `canUseTool` seat** under
+`permissionMode:'default'`. **Mechanism confirmed** (sdk.d.ts): `CanUseTool` returns
+`Promise<PermissionResult|null>` — a resolved promise decides programmatically
+(`{behavior:'allow'|'deny'}`), a pending one escalates (today's `handleGate`). So
+allow/deny/escalate all work under `'default'`. **Observation SURVIVES** an auto-allow
+(the dissolved tension): tool uses still flow via the SDK message stream + the
+PreToolUse hook relay, both independent of `canUseTool` — the whole win over
+`acceptEdits`. Seam = first statement inside `handleGate` (`sessionHost.ts:481`).
+**Measured (real corpus):** 28.5k tool_uses/702 sessions; mix Bash 40% / Edit-Write
+31% / Read 24%. A deterministic RULES floor clears ~85% at $0/0ms (reads; writes via
+`resolveWithinRoots`; Bash allow/deny lists); a cheap LLM (Haiku ~$0.0004/call) sees
+the ambiguous ~15% (~$1.70 for the whole historical corpus). **FAIL-CLOSED invariant:**
+classifier error → escalate, never auto-allow. Rejected the SDK's built-in
+`permissionMode:'auto'` (opaque, gives up our rules floor + escalate seam +
+observability). **LEAN: smallest first step = a deterministic RULES-ONLY floor,
+escalate-everything-else, NO LLM** — reuses `resolveWithinRoots`, harness-testable,
+strictly better than today (auto-clears the obvious-safe majority, escalates the rest),
+zero billable dependency; add the LLM for the escalate-residual later behind Gate-D.
+⚠ Behavior-shaping SECURITY change → needs evidence + a policy calibration + ⟨Wes⟩
+sign-off (rule 0). Foundational to the fleet/orchestrator north star, not just a toggle.
+
+### ✅ CLARIFIED 2026-07-24 — Claude Code's OWN `auto` mode (claude-code-guide, per docs)
+
+Wes meant Claude Code's built-in `auto` permission mode (Anthropic's **server-side
+classifier**), not a custom one. Decisive facts (verify the load-bearing ones
+empirically — rule 0.7): `auto`'s classifier **only approves/denies — NO ask/escalate
+path**, and `canUseTool` **never fires** for its decisions (classifier runs before the
+callback step). Under `default` you get `canUseTool` (escalation) but no classifier —
+so **classifier XOR escalation, mutually exclusive**. In headless, a retried `auto`
+denial **aborts the session** (no human fallback). BUT **PreToolUse hooks fire under
+every mode (incl. auto) and can `deny` (hard veto, even under bypass) or `allow`** — so
+`auto` + VIMES's PreToolUse hook = Anthropic classifier + VIMES hard-deny floor + full
+observation, minus approve-and-unblock. **Two-footing model:** `gated` = `default`+
+`canUseTool` (supervised, human-in-loop); `auto-guarded` = `auto`+PreToolUse-hard-deny
+(the FLEET — escalation doesn't scale anyway, so "classifier denies dangerous, human
+reviews failed tasks" is the scalable model, and it's LESS work — no custom LLM); `plan`
+= read-only. ⚠ **UNVERIFIED lever worth an empirical spike:** a PreToolUse `defer` in a
+HEADLESS `auto` session is undocumented — if it pauses+resumes cleanly it recovers a
+VIMES-controlled escalate-to-phone path ON TOP of the classifier (the whole enchilada).
+Lean: `auto`+hard-deny-hook for the fleet, `default`+canUseTool for `gated`, spike `defer`.
+
+### ⟨Wes⟩ SETTLED DIRECTION 2026-07-24 — the two-tier footing model
+
+**Human-created sessions:** a permission dropdown **Default / Allow Edits / Auto**
+(= `default`+canUseTool / `acceptEdits` / `auto`-classifier), **starting in Default**.
+**Dispatched sessions** (when that system is built): **start in `Auto`** so the
+classifier keeps them from going off-rails — **PLUS a VIMES PreToolUse hard-deny hook**
+(`resolveWithinRoots` on the task's roots), because Anthropic's classifier catches
+GENERAL danger but NOT VIMES's boundaries (a worker wandering outside its task's
+root/worktree). Auto alone has a hole exactly where a fleet drifts.
+
+- **Plan for the planning stage — PENDING A SPIKE (⟨Wes⟩): `plan` permission mode has
+  ADDITIONAL behaviours we want to characterise first.** Easy A/B test: dispatch two
+  identical sessions, one in `plan` mode, one not, and diff the behaviour. Queue it.
+- **The abort tradeoff → handled by INSTRUCTION, not mechanism (⟨Wes⟩).** Auto has no
+  ask-path, so a denied+retried tool aborts a headless session. Rather than fight that,
+  the task-type's **initial instruction** (composeStageInstruction, D43/D44) tells the
+  worker: *"if you hit a classifier failure/denial, abort and RAISE A FLAG (a tool
+  call)."* The **orchestration layer** picks the flagged task up, sees what happened,
+  and routes it for human review OR re-dispatches with more specific guidance. So a
+  blocked task becomes an orchestrator-handled event, not a silent death. (This is a
+  concrete first job for the orchestrator role + the work-order instruction model.)
+- Still worth the `defer`-in-headless spike as the *alternative* escalation path, but
+  the instruction+flag pattern is the primary plan and needs no undocumented behaviour.
+
+**Folds into the task-model/dispatch design pass** (D43/D44 + S10) — footing is a
+dispatcher concern and the abort-flag pattern is an orchestrator + instruction concern.
 
 ## S3 — Markdown TABLES in the message stream (a v1 scope gap, not a regression)
 
