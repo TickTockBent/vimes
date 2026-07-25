@@ -255,7 +255,21 @@ first bites at S7·5). One shape refinement from the work-order: `report_review`
   **store injected** (rule 0.3 — tests use in-memory fake). **Exit:** store tests green.
 - **Kill:** content-addressing collides with the log's identity model → halt.
 
-### S7·5 — `submit_plan` MCP surface + scoped tokens + hostile-input — `opus` *(security-shaped, new rule-0.6 boundary)*
+### S7·5 — native plan-capture path — `opus` *(RE-SCOPED by D48, 2026-07-25)*
+> **⚠ Gate-D re-scope (D48).** Native plan mode is ADOPTED, so the plan crosses by
+> VIMES intercepting `ExitPlanMode` — there is **no VIMES-exposed tool** in the plan
+> path. S7·5 therefore becomes the **native plan-capture path**: SDK-adapter
+> `ExitPlanMode` interception (capture `input.plan` only, deny-to-stop) + artifact
+> store wiring (S7·4's first consumer) + a **plan-submitted event** carrying the
+> reserved `submitPlanPayloadSchema` shape + a task-record **plan reference**
+> (widen + fold) + the dispatcher spawning planning in `permissionMode:'plan'` and
+> transitioning planning→plan-ready. **The scoped-tokens + hostile-input + "first
+> exposed tool" floor pieces RELOCATE to S7·6** (report_review/report_completion —
+> the first genuinely session-called exposed tools). Gate 1 crosses the plan
+> boundary with ZERO exposed tools. R-a accepted, R-b = consume `input.plan` only.
+> The strikethrough-worthy original text below is retained for provenance.
+
+<del>### S7·5 — `submit_plan` MCP surface + scoped tokens + hostile-input — `opus` *(security-shaped, new rule-0.6 boundary)*</del>
 - **Scope:** expose `submit_plan` to a dispatched session; per-role token binding a
   credential to `(taskId,stage,attempt)`; **validate payload in-run** (retry locality);
   persist plan artifact (S7·4) + attach hash + plannerSessionRef to the task.

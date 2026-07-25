@@ -1561,3 +1561,50 @@ an edit). The repo already has the interstitial-slice precedent (`slice-5b-cost-
 ledger.md`), so the UI work is **slice 6b**: the task model keeps slice 7, every
 existing reference stays true, and the `S7·N` unit labels stay valid. Integer
 tidiness is not worth rewriting history.
+
+## D48 — Native plan mode is ADOPTED for the plan→implement crossing (Gate-D, settling D44); the plan is captured by VIMES intercepting `ExitPlanMode`, not by a session-called tool
+
+**Date:** 2026-07-25. **Status:** signed off by Wes (Gate-D pause before S7·5).
+**Settles:** the [[D44]] open half ("native plan mode lives below the adapter
+line" — which side wins). **Evidence:** spike S7·0, all four behaviors green,
+live (SDK 0.3.207 / CLI 2.1.220) — `docs/evidence-spike-s7-0-planmode.md`,
+fixture `fixtures/plan-mode/exitplanmode.jsonl`.
+
+**The decision.** The planning stage is spawned with `permissionMode:'plan'`.
+VIMES intercepts `ExitPlanMode` at the `canUseTool` boundary, captures
+`input.plan`, hashes it into the artifact store (S7·4), records the plan against
+the task, and **denies `ExitPlanMode` to stop the session cleanly** at the plan
+boundary (the spike proved this yields `result:success`, no hang). Plain-prompt +
+an explicit `submit_plan` tool remains the **declared but unforced** fallback
+(D44) if native plan mode ever regresses.
+
+**Why (spike):** (a) plan mode blocks the work-write *by mode* — free read-only
+hardening for planning, not `canUseTool` trust; (b) `ExitPlanMode` fires reliably
+headless, payload fixtured; (c) deny-to-stop is clean; (d) `input.plan` (one UTF-8
+markdown string) maps losslessly into the plan artifact by hashing its bytes.
+
+**Risks priced at Gate-D:**
+- **R-a — ACCEPTED.** Plan mode performs an *ungated* write to the operator's
+  global `~/.claude/plans/` (outside the D21 project root). Accepted as harmless
+  (operator's own dir, self-cleaning); NOT redirected. Recorded in
+  `risk-register.md` R-a.
+- **R-b — mitigated by construction.** `ExitPlanMode` input grew a `planFilePath`
+  field (drift). The adapter consumes **`input.plan` ONLY**; every other key is
+  optional and never propagated (a machine-local path leak). Fixture pins the
+  observed shape; re-fixture per CLI bump. `risk-register.md` R-b.
+
+**CONSEQUENCE — S7·5 is re-scoped, and Gate 1 gains NO exposed tool surface.**
+Because the plan crosses by VIMES *intercepting* a native tool (`ExitPlanMode`),
+**no VIMES-authored MCP tool is exposed to the session for the plan path.** So the
+floor-piece-2 machinery D44/`slice-7.md` attached to `submit_plan` — "the first
+tool VIMES exposes to a session," per-role **scoped tokens** binding a credential
+to `(taskId,stage,attempt)`, and the **hostile-input** profile for a
+VIMES-owned tool surface — **relocates to S7·6** (`report_review` /
+`report_completion`, which ARE genuinely session-called exposed tools). Net: **S7·5
+becomes the native plan-capture path** (SDK-adapter `ExitPlanMode` interception +
+artifact-store wiring, its first consumer + a plan-submitted event carrying the
+reserved `submitPlanPayloadSchema` shape + a task-record plan reference + the
+dispatcher spawning planning in plan mode and transitioning planning→plan-ready),
+and Gate 1's minimal loop crosses the plan boundary with **zero VIMES-exposed
+tools** — a simplification. The reserved `submitPlanPayloadSchema` (S7·1) is reused
+as the **event** payload VIMES emits, not as a session tool input.
