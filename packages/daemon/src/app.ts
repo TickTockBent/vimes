@@ -641,6 +641,11 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     preflightProbe: deps.preflightProbe,
     // Register each new session's stream with the push pipeline (per-stream fanout).
     onSessionCreated: (appSessionId) => pushPipeline.watch(appSessionId),
+    // D48 native plan capture (S7·5b-ii): the SDK adapter intercepts a plan-mode
+    // planner's ExitPlanMode and hands the plan here; the dispatcher owns task
+    // state and records it (S7·5b-i's `recordPlan`). `taskDispatcher` is
+    // constructed above; this thunk only runs per interception, long after.
+    onPlanCaptured: (appSessionId, planText) => taskDispatcher.recordPlan(appSessionId, planText),
   });
   const tailer = new JsonlTailer({
     router,

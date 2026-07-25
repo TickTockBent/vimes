@@ -474,9 +474,18 @@ export class TaskDispatcher {
         // `taskRef: null` into `session_created`, and sessionHost.ts is frozen for
         // this step, so the session→task backlink does not exist yet. The link
         // lives ONLY on the task side, in the `task_session_attached` below.
+        // D48: the PLANNING stage runs write-blocked in permissionMode 'plan' so
+        // the planner produces a plan rather than doing the work; the SDK adapter
+        // intercepts its ExitPlanMode and hands the plan to `recordPlan` (S7·5b-ii).
+        // Every other stage spawns in the default mode — the key is added ONLY for
+        // planning, keeping the non-planning spawn options byte-identical.
+        const spawnOptions =
+          decision.stage === 'planning'
+            ? { channel: 'sdk' as const, cwd, permissionMode: 'plan' as const }
+            : { channel: 'sdk' as const, cwd };
         let spawnResult;
         try {
-          spawnResult = this.deps.sessionHost.spawnSession({ channel: 'sdk', cwd });
+          spawnResult = this.deps.sessionHost.spawnSession(spawnOptions);
         } catch (spawnError) {
           // The host's contract is to refuse rather than throw, but a dispatcher
           // must survive its adapters regardless.
