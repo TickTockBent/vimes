@@ -1,5 +1,10 @@
 # Slice 7 — Task-as-work-order + the spec-and-verify loop
 
+> **Sequencing (D47, 2026-07-25):** builds AFTER **slice 6b** (UI foundation —
+> panel-frames + design system + re-skin), so slice 7's new surfaces are built on the
+> pinned look once, not twice. Slice 7 keeps its number; the `S7·N` unit labels below
+> are unchanged. See `slice-6b-ui-foundation.md`.
+
 **Status: DESIGNED (2026-07-25), signed off by Wes. Not yet skeletoned into build
 units.** The settled calls live in `decisions.md` **D43 / D44 / D46**; this doc is
 the operational compilation (scope, the two internal gates, floor pieces, phase

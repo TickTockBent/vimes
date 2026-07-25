@@ -1523,3 +1523,41 @@ door — it was that the doors **weren't labeled**. The board must make **choosi
 door a visible act**: steer (same rev, new attempt) vs. amend (new rev, fresh
 dispatch). This is the correction model made legible, and it is where the
 chat-and-steer instinct gets a legitimate, bounded home.
+
+## D47 — A UI-foundation slice (panel-frames + design system + full re-skin) is inserted as slice 6b, BEFORE the task model (slice 7); the task model is NOT renumbered
+
+*(2026-07-25. Wes: "rip the band-aid off, pause backend, style up the front end."
+The build-order call + why the numbering is done this way.)*
+
+**The work.** Slice 7's task-model UI (authoring form, two-door choice, orchestrator
+conversation) will reuse shared components — buttons, inputs, modals, the usage gauge.
+Building those against the *current* look and restyling later is building the UI
+twice (the standing rule). The panel-frame spike (2026-07-25) also showed the scroll
+fix is a small, contained change (height not overflow — see slice-6b doc). So the
+UI foundation lands **before** the task model:
+- **panel-frames** — every openable panel becomes an independent scroll frame
+  (verified small: `App.vue` root `min-h-screen`→`h-[100dvh] overflow-hidden`, the 9
+  view roots `min-h-screen`→`h-full`, StreamView's `window.scrollTo` re-pointed to the
+  frame scroller). S6 (pinned vitals) folds in as top-of-frame.
+- **design system** — an *elevated* identity pinned as tokens (cockpit/instrument
+  thesis, IBM Plex Mono + Plex Sans, cool neutrals + one instrument-cyan accent,
+  distinct green/amber/red gauge tones), signed off via a styleguide artifact.
+- **full re-skin** — all 9 views migrated to the tokens, incrementally, one unit each.
+- **the active usage gauge** — persistent top-bar instrument showing the **binding
+  constraint** with a **pulldown** for all constraints + **burn rate** (Wes's spec);
+  account usage always-visible in the bar, this-session context stays in the stream
+  strip (the two-tier split).
+UI-only — no daemon/core changes, so it ships via the gate with no restart; its exit
+gate is **human** (Wes clicks every view × 2 themes × 3 viewports). Operational plan:
+`slice-6b-ui-foundation.md`.
+
+**Why "slice 6b" and not "renumber the task model to 8"** (the mechanical decision,
+recorded so it isn't re-litigated). Renumbering the task model would rewrite the
+meaning of ~15 files' worth of correct "slice 7" references — including load-bearing
+ones in `risk-register.md` (the MCP-advisory reasoning), `architecture.md`,
+`calibration.md`, and the **append-only** `D43`/`D44`/`D46` — and would force edits to
+committed decision bodies, which append-only forbids (a change is a new entry, never
+an edit). The repo already has the interstitial-slice precedent (`slice-5b-cost-
+ledger.md`), so the UI work is **slice 6b**: the task model keeps slice 7, every
+existing reference stays true, and the `S7·N` unit labels stay valid. Integer
+tidiness is not worth rewriting history.

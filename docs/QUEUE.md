@@ -277,6 +277,10 @@ Pure decision helper `lib/composerKey.ts` — `(eventProps, isDesktop) →
 
 ## S6 — Session vitals strip stays pinned while scrolling (always-visible context)
 
+*(→ ABSORBED into **slice 6b** (UI foundation, D47): folds in as the frame's fixed
+head. Also see the top-bar usage gauge, which makes ACCOUNT usage first-class; this
+strip becomes the session-context tier. Build there, not standalone.)*
+
 *(Wes, 2026-07-24: "for sessions can we have the statusbar remain floating at the
 top even as we scroll down? Always visible as context if they're in a session.")*
 
@@ -291,6 +295,10 @@ content scrolls *under* it cleanly in light+dark. No new deps. Reuses the strip
 built today — no logic change, just where it's pinned.
 
 ## S7 — Each panel is its own scroll FRAME (independent scroll regions)
+
+*(→ PROMOTED to **slice 6b** (UI foundation, D47) as the structural root of the whole
+slice. Spike (2026-07-25, `scratchpad/spike-panel-frames-FINDINGS.md`) found the fix
+is small — height not overflow. S4/S6 fold in here as noted below.)*
 
 *(Wes, 2026-07-24: "each panel should be a frame. If I scroll down on a file I'm
 editing it shouldn't scroll every other panel. Sometimes I want a file up for
