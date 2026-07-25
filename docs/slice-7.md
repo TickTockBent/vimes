@@ -138,8 +138,148 @@ interactive-session nicety — which D44's contract decision already made surviv
 - **D42 (project-centric):** the orchestrator is per-project; board controls stay
   first-class (principle 8, dive to any level).
 
-## Not yet done (orchestrator's next skeleton step)
+## Build-unit skeleton (DRAFT 2026-07-25 — awaiting Wes on the two scope questions below)
 
-Build-unit decomposition, assertion list (which I# each unit brings under test), and
-the kill criterion per unit. That is the orchestrator's skeleton work when the slice
-opens — this doc is the signed-off design it compiles from.
+Sequenced behind **Gate 1**. Each unit: scope / out / assertions (I# brought under
+test) / exit / kill / model. Per-unit *precise work-orders* (the exact seam, file
+anchors, assertion lines) are written by the orchestrator just before dispatch —
+this is the plan they compile from. Invariant shorthand: **I6** replay-equivalence,
+**I7** transitions only via dispatcher + rejections evented, **I8** totality, **I10**
+dispatcher owns state / others propose, **I12** append-only.
+
+### Gate-1 membership — settled 2026-07-25 (the two scope answers)
+- **Q1 → human-verify first.** Wes checks the implementer's output against the
+  rendered acceptance-list on the board. So `report_review` and the auto **review
+  stage move BEHIND Gate 1.**
+- **Q2 → keep the machine handoff in.** Artifact store + `submit_plan` stay inside
+  Gate 1 — proving the loop without the machine crossing would prove the wrong thing.
+- **Consequence — Gate 1 is the FORWARD path only.** A clean pass has **zero steers**,
+  so the fix-loop is never exercised at the gate. Therefore **D46's resume-removal and
+  the worklog fix-seed also move behind Gate 1** (the resume machinery simply isn't
+  hit by a clean loop; removing it belongs with the fix-loop unit it simplifies).
+- **Two units split along the gate:**
+  - **S7·2** → **2a** work-order fields on `create_task` *(Gate 1)* + **2b** amendment
+    events / `workOrderRev` bump *(post-gate, backs the amend door)*.
+  - **S7·7** → **7a** the plan→implement handoff, fresh seed = work-order + plan
+    *(Gate 1)* + **7b** D46 resume-dies + worklog fix-seed *(post-gate)*.
+
+**Gate 1 = S7·1, S7·2a, S7·3, S7·4, S7·5, S7·7a** (+ spike S7·0).
+**Behind Gate 1, same slice = S7·2b, S7·6, S7·7b, S7·8, then phase two S7·9+.**
+*(Caveat while D46 (S7·7b) is unbuilt: if a review bounces during Gate-1 testing,
+the OLD resume path still fires — acceptable because the gate criterion is a clean
+pass, but don't mistake a steered run for the gate.)*
+
+### Spike S7·0 — plan-mode A/B *(front-loaded, before S7·5/S7·7)*
+Characterize the four D44 behaviors ((a) write-block in a spawned SDK session,
+(b) `ExitPlanMode` headless reliability + JSONL payload stability → **fixture it**,
+(c) can the adapter stop at plan emission without fighting the continuation,
+(d) lossless map into `submit_plan`). Deliverable: findings + an `ExitPlanMode`
+fixture. Isolated test sessions only — **never touches prod `vimes.service`**.
+
+### S7·1 — Reserve the schemas *(rule 0.5)* — `sonnet`
+- **Scope:** all reserved shapes as zod in `packages/core` with **no live consumer**:
+  work-order fields (scope, explicitlyOut, `acceptanceCriteria[]` individually-keyed,
+  killCriterion) widening `taskRecordSchema`; amendment event + `workOrderRev`;
+  stage-run identity `(taskId,stage,attempt,workOrderRev)`; artifact envelope;
+  `submit_plan` / `report_review` / `report_completion` payloads; scoped-token shape.
+- **Out:** any machinery, the artifact store, the MCP server, UI.
+- **Assertions:** schema parse/round-trip; **I8** (`proposeTransition` still total over
+  the widened record); **I6** (absent new fields → byte-identical replay — the
+  widening-discipline test, verify-by-breaking).
+- **Exit:** schema tests + typecheck green; scenario double-run byte-identical.
+- **Kill:** a shape can't land without reshaping the append-only log (**I12**) or
+  perturbing replay → halt + decision record.
+
+### S7·2 — Work-order on the task + amendments — `opus` *(I6/I12-sensitive)*
+- **Scope:** `create_task` accepts the full work-order; amendments are **appended
+  events** bumping `workOrderRev`; projection reflects current rev; a stage run records
+  the rev it dispatched against.
+- **Out:** the UI form (S7·3); plan/artifact; report tools.
+- **Assertions:** **I7** (work-order set/amended only via dispatcher-proposed writes,
+  rejections evented); **I12** (amend appends, never mutates); **I6** (replay
+  reconstructs current rev deterministically); stage-run identity carries rev.
+- **Exit:** core+daemon green, double-run identical.
+- **Kill:** revisioning needs a global-order column the log lacks (see architecture.md
+  ordering caveat) → halt.
+
+### S7·3 — Schema-driven board authoring form — `sonnet` *(UI-only, no restart)*
+- **Scope:** create/amend form as a **renderer of the zod schema** (one definition,
+  shared with `create_task` + validation); acceptance-as-list editor.
+- **Assertions:** `lib/*.ts` pure logic tested (schema→form-model, validation); `.vue`
+  manual (house rule). **This is the schema's first ergonomic test** (D43 feedback).
+- **Exit:** lib tests green; manual authoring works. **Kill:** the schema can't drive
+  the form without duplicating field defs → the shape is wrong, reconsider D43.
+
+### S7·4 — Artifact store — `sonnet`
+- **Scope:** content-addressed `hash→blob` + envelope persist; put/get; attach-by-ref
+  to task. **Out:** dedup, GC (deferred); the tool surface (S7·5).
+- **Assertions:** put→get round-trip; content-addressing stable; envelope validates;
+  **store injected** (rule 0.3 — tests use in-memory fake). **Exit:** store tests green.
+- **Kill:** content-addressing collides with the log's identity model → halt.
+
+### S7·5 — `submit_plan` MCP surface + scoped tokens + hostile-input — `opus` *(security-shaped, new rule-0.6 boundary)*
+- **Scope:** expose `submit_plan` to a dispatched session; per-role token binding a
+  credential to `(taskId,stage,attempt)`; **validate payload in-run** (retry locality);
+  persist plan artifact (S7·4) + attach hash + plannerSessionRef to the task.
+- **Out:** report tools (S7·6); native-plan-mode adapter path (spike-informed, optional
+  later); the orchestrator's `create_task` tool (S7·9).
+- **Assertions:** **I7** (`submit_plan` proposes; task write via dispatcher; rejection
+  evented); scoped token **rejects cross-task submit** (verify-by-breaking); the
+  harness **hostile-input** profile extended for malformed payloads; **I6** replay of a
+  fixture submit.
+- **Exit:** tests green incl. hostile-input; double-run identical.
+- **Kill:** the MCP boundary can't be made deterministic-testable behind an adapter
+  (rule 0.3/0.6) → halt/spike.
+
+### S7·6 — `report_review` (per-criterion) + `report_completion` (worklog) — `opus`
+- **Scope:** both tools on the S7·5 machinery; `report_review` carries **per-criterion
+  pass/fail keyed to the acceptance list**; `report_completion` carries the **worklog**
+  (decisions-made, paths-rejected) — D46's fix-seed.
+- **Out:** grader/Outcomes automation (future).
+- **Assertions:** review keys validate against the task's acceptance-list ids; **I7/I12**;
+  **I6** replay. **Exit:** tests green.
+- **Kill:** per-criterion keys can't bind stably to acceptance ids across revs →
+  reconsider acceptance-list identity (D43 feedback).
+
+### S7·7 — Plan→implement handoff + D46 fix-loop (resume DIES) — `opus` *(dispatcher behavior change + a decided reversal)*
+- **Scope:** (a) `composeStageInstruction` for `implementing` seeds the **fresh**
+  implementer with work-order(rev) + plan artifact (D44); (b) **D46**: `stageRunner.ts`
+  rule 2 flips `resume`→`spawn`; `taskDispatcher` **removes** `resumeSession` + the
+  `resumed`/`resume-failed` outcomes; fix-seed = work-order + prior diff + review
+  feedback + worklog, composed in `composeStageInstruction`.
+- **Out:** the two-door board UI (S7·8); orchestrator.
+- **Assertions:** `resolveStageRunner` **NEVER returns resume** (the S10 resolution —
+  assert it AND verify-by-breaking: force a resume path, confirm the test reddens);
+  full minimal-loop **I6** replay; **I7**; steer = `attempt++` same rev. **Green-stays-
+  green:** step-7's resume tests are deliberately **inverted/removed** — this is a
+  recorded reversal (D46), not a regression; call it out in the diff.
+- **Exit:** full-loop scenario green, double-run identical.
+- **Kill:** a fresh fix-seed can't carry enough (worklog insufficient) to converge in
+  the harness → finding; revisit D46's cost stance.
+
+### S7·8 — The two-door board UX — `sonnet` *(UI-only)*
+- **Scope:** steer (same rev, new attempt) vs amend (new rev) as a **labeled, visible**
+  choice (T7's lesson: the doors weren't labeled).
+- **Assertions:** lib logic tested (door → dispatch shape); `.vue` manual.
+
+### ══ GATE 1 ══  (the exit gate for phase one)
+The minimal loop **work-order → planner → structured plan → fresh implementer →
+verify**, human-driven from the board, **passes once cleanly with ZERO mid-turn
+steers.** *Machine half:* full-loop scenario green + double-run byte-identical.
+*Human half:* Wes runs one real work-order end-to-end and it converges with no steer.
+Only then does phase two begin.
+
+### Phase two (post-Gate-1) — the orchestrator, author first
+- **S7·9 — Orchestrator session (author) — `opus`.** `create_task` + comment as
+  **proposals** (principle 10 / **I7**, never a transition). Wes promotes from the board.
+  **Pivot:** after ~10 real tasks, if authored work-orders need substantial human
+  rewrite *more often than not*, **stop** — fix schema/doctrine before adding verbs.
+- **S7·10+ — drive verbs (promote / move / dispatch)** added **one at a time**, each an
+  individually-revertible grant, only after authorship proves the schema.
+
+## Scope resolved (2026-07-25)
+
+Both scope forks decided — see "Gate-1 membership" above. Q1: human-verify for the
+first clean loop (`report_review` + review stage behind the gate). Q2: keep the
+machine handoff (artifact store + `submit_plan`) inside Gate 1. Net Gate-1 set:
+**S7·1, S7·2a, S7·3, S7·4, S7·5, S7·7a**, plus the front-loaded plan-mode spike.
