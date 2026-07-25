@@ -7,7 +7,19 @@ reason `slice-6-test-plan.md` lives here. Delete an entry when it ships.
 
 ---
 
-## ▶ NEXT SESSION STARTS HERE (2026-07-24)
+## ▶ NEXT SESSION STARTS HERE (updated 2026-07-25 — read `scratchpad/HANDOFF.md` first)
+
+**SLICE 6b (UI foundation + full re-skin) is CODE-COMPLETE** pending unit 4f (terminal/
+editor themes) + Wes's human exit-gate review — see `slice-6b-ui-foundation.md` (full
+build log) and D47. The whole app is on the instrument-token palette; terminal always
+dark; picker Auto/Light/Dark; active usage gauge in the top bar.
+
+**After 6b closes → SLICE 7 (the task model)** — the thing 6b cleared the runway for.
+Designed in `slice-7.md`; decisions **D43/D44/D46**. Gate-1 first unit: **S7·1 reserve
+schemas**. Parked odds: **T6** CLI pin bump (batch into next deploy), **D45** slug fix,
+liveness-table dedup (new tech-debt), the plan-mode A/B spike.
+
+--- (historical, slice 6 close, 2026-07-24) ---
 
 **SLICE 6 IS CLOSED (2026-07-24).** All machine gates green + committed (HEAD
 `7df415d`), deployed; **T7 accepted by Wes** — core dispatch loop validated end-to-end

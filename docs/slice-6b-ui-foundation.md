@@ -1,10 +1,46 @@
 # Slice 6b — UI foundation: panel-frames + design system + full re-skin
 
-**Status: DESIGN SYSTEM APPROVED by Wes 2026-07-25** (styleguide artifact
-`ddb2f26f`, "looks great"). **BUILDING** — unit sequence below; structural-before-
-cosmetic, one unit per dispatch, human gate. Decision: `decisions.md` **D47**. Interstitial slice (precedent: `slice-5b-cost-ledger.md`), sequenced
-between slice 6 and slice 7 (the task model). **UI-only — no daemon/core change**, so
-it ships via the gate with no restart; its exit gate is **human**.
+**Status (2026-07-25): CODE-COMPLETE pending the last unit (4f) + the human exit
+gate.** Design system approved (styleguide `ddb2f26f`). All build units done and
+deployed except 4f (terminal/editor themes, in flight). What remains to CLOSE the slice
+is **Wes's full-pass review** (every view × light/dark × desktop/tablet/mobile, esp. the
+on-device mobile checks from the panel-frame spike). Decision: `decisions.md` **D47**.
+Interstitial slice (precedent: `slice-5b-cost-ledger.md`), between slice 6 and slice 7.
+UI-only — ships via the gate, no restart; exit gate is **human**.
+
+## Build log (2026-07-25) — units, commits, decisions
+
+Every unit UI-only, verified (vue-tsc + tests + grep-clean) + deployed via ci-gate:
+- **6b·1** frame mechanics (`9b030fc`) — bounded `#app` height so panels scroll
+  independently; StreamView head/body/foot + S4 scroller re-point; S6 vitals pinned.
+- **6b·2** token foundation + Auto/Light/Dark picker (`530dcae`) + picker-placement fix
+  (`4496415`, was below the fold in the scrolling sidebar). Tailwind-v4 `@theme inline`
+  tokens; self-hosted IBM Plex; `@custom-variant` fixed to mirror the token four-way
+  pattern (caught an auto-mode-OS-dark regression in review).
+- **6b·3a** persistent top bar + picker relocated there + sidebar collapse (`451e00a`).
+- **6b·3b** active usage gauge — binding constraint + pulldown, wired to
+  `/api/usage/derived`, pillar-4 honest-unknown (`d334c46`); pulldown flat-list per Wes
+  (`0150b39`).
+- **Re-skin sweep** (conventions: `scratchpad/reskin-conventions.md`): SessionList +
+  liveness lib (`03da402`, `7209d5f`) · TaskBoard (`7c91036`) · Cost+Git (`1783693`) ·
+  light views + App.vue (`d1904e4`) · StreamView + markdown (`057e8e5`).
+- **6b·4f** (in flight) terminal always-dark + editor follows-picker.
+
+**Decisions made during the build (cosmetic — Wes: functionality-first, not fussing
+colour):**
+- **Terminal is ALWAYS DARK** (Wes, 2026-07-25) — pane + chrome, a cohesive dark island;
+  the editor (CodeMirror) follows the picker. Implemented via a local `data-theme="dark"`
+  scope on TerminalView, which required **broadening the token blocks from
+  `:root[data-theme=…]` to `[data-theme=…]`** so tokens can scope BELOW `:root` — a
+  reusable capability (any always-dark/light region now gets it free).
+- **violet → accent** accepted (the "external/adoptable session" badge/Adopt button lost
+  its dedicated colour; Wes: leave it).
+- Primary CTAs (inverted-neutral) → `accent`; solid-button pressed → `active:bg-<tone>/80`;
+  `text-accent-fg` is the on-fill foreground for all solid tone fills.
+
+**Deferred (tech-debt, non-blocking):** the liveness-colour table is DUPLICATED
+(TaskBoardView has its own copy vs `lib/sessionRow.ts`) — a future dedup unit, touches
+tested lib. Both were tokenized to match.
 
 ## Why this exists (D47)
 
