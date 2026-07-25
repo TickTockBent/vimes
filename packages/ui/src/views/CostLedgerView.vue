@@ -140,17 +140,17 @@ function sessionLabel(session: SessionView) {
       <div class="flex items-center gap-2">
         <button
           type="button"
-          class="min-h-[44px] rounded-md border border-slate-300 px-3 text-sm font-medium active:bg-slate-100 dark:border-slate-700 dark:active:bg-slate-900"
+          class="min-h-[44px] rounded-md border border-line px-3 text-sm font-medium active:bg-panel-sunken"
           :aria-label="props.backKind === 'close' ? 'Close panel' : 'Back'"
           @click="emit('back')"
         >
           {{ props.backKind === 'close' ? '✕' : '‹ Back' }}
         </button>
-        <h1 class="text-lg font-semibold">Cost ledger</h1>
+        <h1 class="text-lg font-semibold uppercase tracking-[0.08em] text-ink">Cost ledger</h1>
       </div>
       <button
         type="button"
-        class="min-h-[44px] min-w-[44px] rounded-md border border-slate-300 px-3 text-sm font-medium active:bg-slate-100 disabled:opacity-50 dark:border-slate-700 dark:active:bg-slate-900"
+        class="min-h-[44px] min-w-[44px] rounded-md border border-line px-3 text-sm font-medium active:bg-panel-sunken disabled:opacity-50"
         :disabled="store.costLedgerLoading"
         aria-label="Refresh cost ledger"
         @click="refresh"
@@ -162,20 +162,20 @@ function sessionLabel(session: SessionView) {
     <!-- Nothing observed yet: honest states, never a fabricated $0 tree. -->
     <p
       v-if="body === null && store.costLedgerLoading"
-      class="rounded-lg border border-slate-200 p-4 text-sm text-slate-500 dark:border-slate-800 dark:text-slate-400"
+      class="rounded-lg border border-line p-4 text-sm text-ink-dim"
     >
       Loading the cost ledger…
     </p>
     <p
       v-else-if="state === 'disabled'"
-      class="rounded-lg border border-slate-200 p-4 text-sm text-slate-500 dark:border-slate-800 dark:text-slate-400"
+      class="rounded-lg border border-line p-4 text-sm text-ink-dim"
     >
       Cost ledger is not enabled on this host — nothing is being ingested, so there is nothing to price. This is
       the feature being off, not a spend of $0.
     </p>
     <p
       v-else-if="state === 'empty'"
-      class="rounded-lg border border-slate-200 p-4 text-sm text-slate-500 dark:border-slate-800 dark:text-slate-400"
+      class="rounded-lg border border-line p-4 text-sm text-ink-dim"
     >
       Cost ingestion is on, but nothing has been ingested yet — no VIMES-hosted work has been recorded to price.
     </p>
@@ -183,22 +183,22 @@ function sessionLabel(session: SessionView) {
     <template v-else-if="ledger !== null">
       <!-- Scope + grand total. The scope label is verbatim and prominent; this is
            VIMES-hosted work, never "your spend". -->
-      <section class="flex flex-col gap-2 rounded-lg border border-slate-200 p-4 dark:border-slate-800">
-        <p class="text-sm font-medium text-slate-600 dark:text-slate-300">{{ ledger.scopeLabel }}</p>
+      <section class="flex flex-col gap-2 rounded-lg border border-line p-4">
+        <p class="text-sm font-medium text-ink-dim">{{ ledger.scopeLabel }}</p>
         <div class="flex items-baseline gap-2">
-          <span class="text-3xl font-bold tabular-nums">{{ formatMoney(ledger.grandTotal.priced.nanoDollars) }}</span>
-          <span class="text-xs text-slate-500 dark:text-slate-400">priced at {{ ledger.priceTableDate }}</span>
+          <span class="text-3xl font-bold font-mono tabular-nums text-ink">{{ formatMoney(ledger.grandTotal.priced.nanoDollars) }}</span>
+          <span class="text-xs text-ink-dim">priced at {{ ledger.priceTableDate }}</span>
         </div>
-        <p v-if="unvalidatedFor(ledger.grandTotal) !== null" class="text-xs text-amber-700 dark:text-amber-300">
+        <p v-if="unvalidatedFor(ledger.grandTotal) !== null" class="text-xs text-warn">
           {{ unvalidatedFor(ledger.grandTotal) }} — some models are priced by analogy.
         </p>
         <!-- Un-knowns beside the grand total: token counts, never a $0 row. -->
         <div v-if="hasUnknownFor(ledger.grandTotal)" class="flex flex-wrap items-center gap-1.5">
-          <span class="text-xs text-slate-500 dark:text-slate-400">not in the total:</span>
+          <span class="text-xs text-ink-dim">not in the total:</span>
           <span
             v-for="badge in badgesFor(ledger.grandTotal)"
             :key="badge.status"
-            class="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-700 dark:bg-slate-800 dark:text-slate-300"
+            class="rounded-full bg-panel-sunken px-2 py-0.5 text-xs font-semibold font-mono tabular-nums text-ink-dim"
           >
             {{ badge.tokensLabel }} tokens {{ badge.label }}
           </span>
@@ -206,13 +206,13 @@ function sessionLabel(session: SessionView) {
       </section>
 
       <!-- Spend over time — CSS bars, no charting dependency. -->
-      <section class="flex flex-col gap-3 rounded-lg border border-slate-200 p-4 dark:border-slate-800">
+      <section class="flex flex-col gap-3 rounded-lg border border-line p-4">
         <div class="flex items-center justify-between gap-2">
-          <h2 class="text-sm font-semibold">Spend over time</h2>
+          <h2 class="text-sm font-semibold font-mono uppercase tracking-[0.08em] text-ink">Spend over time</h2>
           <!-- The SAME nodes the tree shows, so any rollup level can be charted. -->
           <select
             v-model="selectedDirectoryPath"
-            class="min-h-[36px] max-w-[55%] truncate rounded-md border border-slate-300 px-2 text-xs dark:border-slate-700 dark:bg-slate-900"
+            class="min-h-[36px] max-w-[55%] truncate rounded-md border border-line bg-panel px-2 text-xs text-ink"
             aria-label="Spend history directory"
           >
             <option :value="null">Everything</option>
@@ -221,7 +221,7 @@ function sessionLabel(session: SessionView) {
             </option>
           </select>
         </div>
-        <p v-if="bars.length === 0" class="text-xs text-slate-500 dark:text-slate-400">
+        <p v-if="bars.length === 0" class="text-xs text-ink-dim">
           No priced spend recorded for this selection yet.
         </p>
         <template v-else>
@@ -233,7 +233,7 @@ function sessionLabel(session: SessionView) {
           <div class="flex items-stretch gap-2">
             <div
               v-if="axisMax !== null"
-              class="flex h-28 shrink-0 flex-col justify-between text-right text-[10px] leading-none text-slate-500 dark:text-slate-400"
+              class="flex h-28 shrink-0 flex-col justify-between text-right text-[10px] font-mono tabular-nums leading-none text-ink-dim"
               aria-hidden="true"
             >
               <span>{{ axisMax.usd }}</span>
@@ -243,13 +243,13 @@ function sessionLabel(session: SessionView) {
               <div
                 v-for="bar in bars"
                 :key="bar.day"
-                class="flex-1 rounded-t bg-sky-500/80 dark:bg-sky-500/70"
+                class="flex-1 rounded-t bg-accent/70"
                 :style="{ height: `${bar.heightPercent}%` }"
                 :title="`${bar.day}: ${bar.usd}`"
               ></div>
             </div>
           </div>
-          <div class="flex justify-between text-[11px] text-slate-500 dark:text-slate-400">
+          <div class="flex justify-between text-[11px] font-mono tabular-nums text-ink-dim">
             <span>{{ bars[0]?.day }}</span>
             <span v-if="tallestBarUsd !== null">peak day {{ tallestBarUsd }}</span>
             <span>{{ bars[bars.length - 1]?.day }}</span>
@@ -260,12 +260,12 @@ function sessionLabel(session: SessionView) {
       <!-- D37: directory rollup → session → agent tree. Every row is a real
            directory a session ran in (or an ancestor of one) — no project
            boundary is inferred anywhere. -->
-      <section class="flex flex-col gap-2 rounded-lg border border-slate-200 p-4 dark:border-slate-800">
-        <h2 class="text-sm font-semibold">Where it went</h2>
+      <section class="flex flex-col gap-2 rounded-lg border border-line p-4">
+        <h2 class="text-sm font-semibold font-mono uppercase tracking-[0.08em] text-ink">Where it went</h2>
         <!-- The honest flat-tree note: agents currently all sit at the session
              root because the parent edge is not persisted yet. It disappears on
              its own once agents start resolving parents. -->
-        <p v-if="treeIsFlat" class="text-[11px] text-slate-500 dark:text-slate-400">
+        <p v-if="treeIsFlat" class="text-[11px] text-ink-dim">
           Agents are shown flat at the session root — the parent-of relationship is not persisted yet, so nesting
           will fill in automatically once that lands.
         </p>
@@ -273,8 +273,8 @@ function sessionLabel(session: SessionView) {
         <!-- One flat list, indented by row depth. The nesting decisions live in
              costDisplay.ts (ledgerTreeRows), where they are unit-tested. -->
         <ul class="flex flex-col">
-          <li v-if="treeRows.length === 0" class="px-2 py-1 text-xs text-slate-400">No directories recorded.</li>
-          <li v-for="row in treeRows" :key="row.key" class="border-b border-slate-100 last:border-b-0 dark:border-slate-800/70">
+          <li v-if="treeRows.length === 0" class="px-2 py-1 text-xs text-ink-dim">No directories recorded.</li>
+          <li v-for="row in treeRows" :key="row.key" class="border-b border-line last:border-b-0">
             <!-- A directory node: its subtree total, and the un-knowns beneath it. -->
             <template v-if="row.kind === 'directory'">
               <button
@@ -286,18 +286,18 @@ function sessionLabel(session: SessionView) {
                 @click="toggle(row.key)"
               >
                 <span class="flex min-w-0 items-center gap-1.5">
-                  <span class="w-3 shrink-0 text-slate-400" aria-hidden="true">
+                  <span class="w-3 shrink-0 text-ink-dim" aria-hidden="true">
                     {{ row.expandable ? (row.expanded ? '▾' : '▸') : '' }}
                   </span>
-                  <span class="truncate text-sm font-medium">{{ row.directory.label }}</span>
+                  <span class="truncate text-sm font-medium text-ink">{{ row.directory.label }}</span>
                   <span
                     v-if="!row.directory.insideProjectRoots"
-                    class="shrink-0 rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-600 dark:bg-slate-800 dark:text-slate-300"
+                    class="shrink-0 rounded-full bg-panel-sunken px-1.5 py-0.5 text-[10px] font-semibold font-mono uppercase tracking-[0.08em] text-ink-dim"
                   >
                     outside roots
                   </span>
                 </span>
-                <span class="shrink-0 text-sm font-semibold tabular-nums">
+                <span class="shrink-0 text-sm font-semibold font-mono tabular-nums text-ink">
                   {{ formatMoney(row.directory.subtree.priced.nanoDollars) }}
                 </span>
               </button>
@@ -309,7 +309,7 @@ function sessionLabel(session: SessionView) {
                 <span
                   v-for="badge in badgesFor(row.directory.subtree)"
                   :key="badge.status"
-                  class="rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-600 dark:bg-slate-800 dark:text-slate-300"
+                  class="rounded-full bg-panel-sunken px-1.5 py-0.5 text-[10px] font-semibold font-mono tabular-nums text-ink-dim"
                 >
                   +{{ badge.tokensLabel }} {{ badge.label }}
                 </span>
@@ -331,19 +331,19 @@ function sessionLabel(session: SessionView) {
                 @click="toggle(row.key)"
               >
                 <span class="flex min-w-0 items-center gap-1.5">
-                  <span class="w-3 shrink-0 text-slate-400" aria-hidden="true">
+                  <span class="w-3 shrink-0 text-ink-dim" aria-hidden="true">
                     {{ row.expandable ? (row.expanded ? '▾' : '▸') : '' }}
                   </span>
-                  <span class="truncate text-xs text-slate-600 dark:text-slate-300">{{ sessionLabel(row.session) }}</span>
+                  <span class="truncate text-xs text-ink-dim">{{ sessionLabel(row.session) }}</span>
                   <span
                     v-if="row.session.title === null"
-                    class="shrink-0 font-mono text-[10px] text-slate-400 dark:text-slate-500"
+                    class="shrink-0 font-mono text-[10px] text-ink-dim"
                     :title="row.session.sessionId"
                   >
                     session
                   </span>
                 </span>
-                <span class="shrink-0 text-xs font-semibold tabular-nums">
+                <span class="shrink-0 text-xs font-semibold font-mono tabular-nums text-ink">
                   {{ formatMoney(row.session.subtree.priced.nanoDollars) }}
                 </span>
               </button>
@@ -355,7 +355,7 @@ function sessionLabel(session: SessionView) {
                 <span
                   v-for="badge in badgesFor(row.session.subtree)"
                   :key="badge.status"
-                  class="rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-600 dark:bg-slate-800 dark:text-slate-300"
+                  class="rounded-full bg-panel-sunken px-1.5 py-0.5 text-[10px] font-semibold font-mono tabular-nums text-ink-dim"
                 >
                   +{{ badge.tokensLabel }} {{ badge.label }}
                 </span>
@@ -369,60 +369,60 @@ function sessionLabel(session: SessionView) {
               :style="{ paddingLeft: `${1 + row.depth * 0.85}rem` }"
             >
               <span class="flex min-w-0 items-center gap-1.5">
-                <span class="truncate font-mono text-slate-500 dark:text-slate-400">{{ row.agent.agentId }}</span>
+                <span class="truncate font-mono tabular-nums text-ink-dim">{{ row.agent.agentId }}</span>
                 <span
-                  class="shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-semibold"
+                  class="shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-semibold font-mono uppercase tracking-[0.08em]"
                   :class="
                     row.agent.parentResolved
-                      ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/50 dark:text-emerald-200'
-                      : 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400'
+                      ? 'bg-ok/10 text-ok'
+                      : 'bg-panel-sunken text-ink-dim'
                   "
                 >
                   {{ row.agent.parentResolved ? 'attributed' : 'session-root' }}
                 </span>
               </span>
-              <span class="shrink-0 tabular-nums">{{ formatMoney(row.agent.subtree.priced.nanoDollars) }}</span>
+              <span class="shrink-0 font-mono tabular-nums text-ink">{{ formatMoney(row.agent.subtree.priced.nanoDollars) }}</span>
             </div>
           </li>
         </ul>
       </section>
 
       <!-- Attribution groupings. -->
-      <section class="flex flex-col gap-3 rounded-lg border border-slate-200 p-4 dark:border-slate-800">
+      <section class="flex flex-col gap-3 rounded-lg border border-line p-4">
         <div>
-          <h2 class="mb-1 text-sm font-semibold">By skill</h2>
-          <p v-if="skillRows.length === 0" class="text-xs text-slate-400">No skill attribution recorded.</p>
+          <h2 class="mb-1 text-sm font-semibold font-mono uppercase tracking-[0.08em] text-ink">By skill</h2>
+          <p v-if="skillRows.length === 0" class="text-xs text-ink-dim">No skill attribution recorded.</p>
           <ul v-else class="flex flex-col gap-0.5">
             <li v-for="row in skillRows" :key="`skill:${row.key}`" class="flex items-center justify-between gap-2 text-xs">
-              <span class="truncate text-slate-600 dark:text-slate-300">{{ row.label }}</span>
+              <span class="truncate text-ink-dim">{{ row.label }}</span>
               <span class="flex shrink-0 items-center gap-1.5">
                 <span
                   v-for="badge in row.unknownBadges"
                   :key="badge.status"
-                  class="rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-500 dark:bg-slate-800 dark:text-slate-400"
+                  class="rounded-full bg-panel-sunken px-1.5 py-0.5 text-[10px] font-semibold font-mono tabular-nums text-ink-dim"
                 >
                   +{{ badge.tokensLabel }} {{ badge.label }}
                 </span>
-                <span class="font-semibold tabular-nums">{{ row.usd }}</span>
+                <span class="font-semibold font-mono tabular-nums text-ink">{{ row.usd }}</span>
               </span>
             </li>
           </ul>
         </div>
         <div>
-          <h2 class="mb-1 text-sm font-semibold">By agent</h2>
-          <p v-if="agentRows.length === 0" class="text-xs text-slate-400">No agent attribution recorded.</p>
+          <h2 class="mb-1 text-sm font-semibold font-mono uppercase tracking-[0.08em] text-ink">By agent</h2>
+          <p v-if="agentRows.length === 0" class="text-xs text-ink-dim">No agent attribution recorded.</p>
           <ul v-else class="flex flex-col gap-0.5">
             <li v-for="row in agentRows" :key="`agent:${row.key}`" class="flex items-center justify-between gap-2 text-xs">
-              <span class="truncate text-slate-600 dark:text-slate-300">{{ row.label }}</span>
+              <span class="truncate text-ink-dim">{{ row.label }}</span>
               <span class="flex shrink-0 items-center gap-1.5">
                 <span
                   v-for="badge in row.unknownBadges"
                   :key="badge.status"
-                  class="rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-500 dark:bg-slate-800 dark:text-slate-400"
+                  class="rounded-full bg-panel-sunken px-1.5 py-0.5 text-[10px] font-semibold font-mono tabular-nums text-ink-dim"
                 >
                   +{{ badge.tokensLabel }} {{ badge.label }}
                 </span>
-                <span class="font-semibold tabular-nums">{{ row.usd }}</span>
+                <span class="font-semibold font-mono tabular-nums text-ink">{{ row.usd }}</span>
               </span>
             </li>
           </ul>

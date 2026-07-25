@@ -281,13 +281,13 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="flex h-full flex-col overflow-hidden bg-white text-slate-900 dark:bg-slate-950 dark:text-slate-100">
+  <div class="flex h-full flex-col overflow-hidden bg-panel text-ink">
     <header
-      class="sticky top-0 z-20 flex items-center gap-2 border-b border-slate-200 bg-white px-3 py-2 dark:border-slate-800 dark:bg-slate-950"
+      class="sticky top-0 z-20 flex items-center gap-2 border-b border-line bg-panel px-3 py-2"
     >
       <button
         type="button"
-        class="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md text-lg text-slate-600 active:bg-slate-100 dark:text-slate-200 dark:active:bg-slate-900"
+        class="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md text-lg text-ink-dim active:bg-panel-sunken"
         :aria-label="
           activeFilePath
             ? 'Back to changed files'
@@ -299,17 +299,17 @@ onMounted(async () => {
       >
         {{ !activeFilePath && props.backKind === 'close' ? '✕' : '‹' }}
       </button>
-      <h1 class="flex-1 truncate font-semibold">
+      <h1 class="flex-1 truncate font-semibold uppercase tracking-[0.08em] text-ink">
         {{ activeFilePath ? 'Diff' : 'Git' }}
       </h1>
-      <span v-if="branchLabel" class="shrink-0 truncate text-xs text-slate-500 dark:text-slate-400">
+      <span v-if="branchLabel" class="shrink-0 truncate text-xs font-mono tabular-nums text-ink-dim">
         {{ branchLabel }}<span v-if="aheadBehindLabel"> · {{ aheadBehindLabel }}</span>
       </span>
     </header>
 
     <p
       v-if="store.gitError"
-      class="border-b border-rose-300 bg-rose-50 px-3 py-2 text-xs text-rose-700 dark:border-rose-800 dark:bg-rose-950/40 dark:text-rose-200"
+      class="border-b border-crit/30 bg-crit/10 px-3 py-2 text-xs text-crit"
     >
       {{ store.gitError }}
     </p>
@@ -318,23 +318,23 @@ onMounted(async () => {
     <div v-if="!activeFilePath" class="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4">
       <div class="mx-auto flex max-w-2xl flex-col gap-4">
         <section class="flex flex-col gap-2">
-          <label for="git-repo-picker" class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+          <label for="git-repo-picker" class="text-xs font-semibold font-mono uppercase tracking-[0.08em] text-ink-dim">
             Repository
           </label>
           <select
             v-if="repos.length > 0"
             id="git-repo-picker"
             v-model="selectedRepoPath"
-            class="min-h-[44px] w-full rounded-md border border-slate-300 bg-white px-2 text-sm dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+            class="min-h-[44px] w-full rounded-md border border-line bg-panel px-2 text-sm text-ink"
           >
             <option v-for="repo in repos" :key="repo.path" :value="repo.path">{{ repo.name }}</option>
           </select>
-          <p v-else class="text-sm text-slate-500 dark:text-slate-400">
+          <p v-else class="text-sm text-ink-dim">
             No git repos found under your project roots — type a path below.
           </p>
           <!-- The escape hatch beside the abstraction: any path the daemon's
                allowlist accepts, including a repo discovery didn't reach. -->
-          <label class="flex flex-col gap-1 text-xs text-slate-500 dark:text-slate-400">
+          <label class="flex flex-col gap-1 text-xs text-ink-dim">
             Repository path (edit to reach a repo not listed above)
             <input
               v-model="rootPathField"
@@ -344,35 +344,35 @@ onMounted(async () => {
               autocorrect="off"
               spellcheck="false"
               placeholder="/home/you/projects/some/repo"
-              class="min-h-[44px] w-full rounded-md border border-slate-300 px-2 font-mono text-sm dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+              class="min-h-[44px] w-full rounded-md border border-line bg-panel px-2 font-mono text-sm text-ink"
               @keyup.enter="applyRoot"
             />
           </label>
           <div class="flex items-center gap-3">
             <button
               type="button"
-              class="min-h-[44px] rounded-md border border-slate-300 px-4 text-sm font-semibold text-slate-700 active:bg-slate-100 dark:border-slate-700 dark:text-slate-200 dark:active:bg-slate-800"
+              class="min-h-[44px] rounded-md border border-line px-4 text-sm font-semibold text-ink-dim active:bg-panel-sunken"
               @click="applyRoot"
             >
               Load repo
             </button>
-            <span v-if="activeRoot" class="truncate font-mono text-xs text-slate-500 dark:text-slate-400">{{ activeRoot }}</span>
+            <span v-if="activeRoot" class="truncate font-mono text-xs text-ink-dim">{{ activeRoot }}</span>
           </div>
-          <p v-if="rootNotice" class="text-sm text-amber-700 dark:text-amber-300">{{ rootNotice }}</p>
-          <p v-if="activeRoot" class="text-xs text-slate-500 dark:text-slate-400">
-            <span class="font-medium text-slate-700 dark:text-slate-300">{{ branchLabel || '—' }}</span>
+          <p v-if="rootNotice" class="text-sm text-warn">{{ rootNotice }}</p>
+          <p v-if="activeRoot" class="text-xs text-ink-dim">
+            <span class="font-medium text-ink">{{ branchLabel || '—' }}</span>
             · {{ changedFileCount }} changed {{ changedFileCount === 1 ? 'file' : 'files' }}
           </p>
         </section>
 
         <p
           v-if="restoreNotice"
-          class="rounded-lg border border-sky-300 bg-sky-50 px-3 py-2 text-sm text-sky-800 dark:border-sky-800 dark:bg-sky-950/40 dark:text-sky-200"
+          class="rounded-lg border border-accent/30 bg-accent/10 px-3 py-2 text-sm text-accent"
         >
           {{ restoreNotice }}
         </p>
 
-        <p v-if="changedFileCount === 0 && store.gitStatus" class="rounded-lg border border-slate-200 p-4 text-center text-sm text-slate-500 dark:border-slate-800 dark:text-slate-400">
+        <p v-if="changedFileCount === 0 && store.gitStatus" class="rounded-lg border border-line p-4 text-center text-sm text-ink-dim">
           Working tree clean — nothing to review.
         </p>
 
@@ -383,42 +383,42 @@ onMounted(async () => {
           { key: 'untracked', label: 'Untracked', rows: grouped.untracked },
         ] as const)" :key="bucket.key">
           <section v-if="bucket.rows.length > 0" class="flex flex-col gap-2">
-            <h2 class="px-1 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+            <h2 class="px-1 text-xs font-semibold font-mono uppercase tracking-[0.08em] text-ink-dim">
               {{ bucket.label }} ({{ bucket.rows.length }})
             </h2>
             <ul class="flex flex-col gap-2">
               <li
                 v-for="row in bucket.rows"
                 :key="row.path"
-                class="flex items-center gap-2 rounded-lg border border-slate-200 bg-white p-2 dark:border-slate-800 dark:bg-slate-900"
+                class="flex items-center gap-2 rounded-lg border border-line bg-panel p-2"
               >
                 <button
                   type="button"
-                  class="flex min-h-[44px] flex-1 flex-col items-start justify-center gap-0.5 rounded-md px-2 text-left active:bg-slate-100 dark:active:bg-slate-800"
+                  class="flex min-h-[44px] flex-1 flex-col items-start justify-center gap-0.5 rounded-md px-2 text-left active:bg-panel-sunken"
                   @click="openFileDiff(row)"
                 >
                   <span class="flex flex-wrap items-center gap-2">
-                    <span class="font-medium">{{ row.pathTail }}</span>
+                    <span class="font-medium text-ink">{{ row.pathTail }}</span>
                     <span
-                      class="rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide"
+                      class="rounded px-1.5 py-0.5 text-[10px] font-semibold font-mono uppercase tracking-[0.08em]"
                       :class="row.group === 'staged'
-                        ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/50 dark:text-emerald-200'
+                        ? 'bg-ok/10 text-ok'
                         : row.group === 'untracked'
-                          ? 'bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300'
-                          : 'bg-amber-100 text-amber-800 dark:bg-amber-900/50 dark:text-amber-200'"
+                          ? 'bg-panel-sunken text-ink-dim'
+                          : 'bg-warn/10 text-warn'"
                     >{{ row.statusLabel }}</span>
                     <span
                       v-if="row.hasStaged && row.hasUnstaged"
-                      class="rounded bg-sky-100 px-1.5 py-0.5 text-[10px] font-semibold text-sky-800 dark:bg-sky-900/50 dark:text-sky-200"
+                      class="rounded bg-accent/10 px-1.5 py-0.5 text-[10px] font-semibold font-mono uppercase tracking-[0.08em] text-accent"
                     >partly staged</span>
                   </span>
-                  <span class="truncate text-xs text-slate-500 dark:text-slate-500">{{ row.path }}</span>
-                  <span v-if="row.origPath" class="truncate text-[11px] text-slate-400 dark:text-slate-500">was {{ row.origPath }}</span>
+                  <span class="truncate text-xs text-ink-dim">{{ row.path }}</span>
+                  <span v-if="row.origPath" class="truncate text-[11px] text-ink-dim">was {{ row.origPath }}</span>
                 </button>
                 <button
                   v-if="row.hasUnstaged"
                   type="button"
-                  class="min-h-[44px] shrink-0 rounded-md border border-emerald-300 px-3 text-xs font-semibold text-emerald-700 active:bg-emerald-50 dark:border-emerald-800 dark:text-emerald-300 dark:active:bg-emerald-950/40"
+                  class="min-h-[44px] shrink-0 rounded-md border border-ok/40 px-3 text-xs font-semibold text-ok active:bg-ok/10"
                   @click="stageRow(row)"
                 >
                   Stage
@@ -426,7 +426,7 @@ onMounted(async () => {
                 <button
                   v-if="row.hasStaged"
                   type="button"
-                  class="min-h-[44px] shrink-0 rounded-md border border-slate-300 px-3 text-xs font-semibold text-slate-600 active:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:active:bg-slate-800"
+                  class="min-h-[44px] shrink-0 rounded-md border border-line px-3 text-xs font-semibold text-ink-dim active:bg-panel-sunken"
                   @click="unstageRow(row)"
                 >
                   Unstage
@@ -437,27 +437,27 @@ onMounted(async () => {
         </template>
 
         <!-- Commit composer -->
-        <section v-if="activeRoot" class="flex flex-col gap-2 rounded-lg border border-slate-200 p-3 dark:border-slate-800">
-          <label for="git-commit-message" class="text-sm font-medium">Commit staged changes</label>
+        <section v-if="activeRoot" class="flex flex-col gap-2 rounded-lg border border-line p-3">
+          <label for="git-commit-message" class="text-sm font-medium text-ink">Commit staged changes</label>
           <textarea
             id="git-commit-message"
             v-model="commitMessage"
             rows="3"
             placeholder="Commit message"
-            class="min-h-[72px] w-full rounded-md border border-slate-300 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+            class="min-h-[72px] w-full rounded-md border border-line bg-panel px-3 py-2 text-sm text-ink"
           ></textarea>
           <div class="flex items-center gap-3">
             <button
               type="button"
-              class="min-h-[44px] rounded-md bg-sky-600 px-6 text-sm font-semibold text-white active:bg-sky-700 disabled:opacity-50"
+              class="min-h-[44px] rounded-md bg-accent px-6 text-sm font-semibold text-accent-fg active:bg-accent/90 disabled:opacity-50"
               :disabled="committing || commitMessage.trim().length === 0"
               @click="commit"
             >
               {{ committing ? 'Committing…' : 'Commit' }}
             </button>
-            <span v-if="commitNotice" class="text-sm font-medium text-emerald-600 dark:text-emerald-400">{{ commitNotice }}</span>
+            <span v-if="commitNotice" class="text-sm font-medium text-ok">{{ commitNotice }}</span>
           </div>
-          <p class="text-xs text-slate-500 dark:text-slate-400">
+          <p class="text-xs text-ink-dim">
             Commits the staged index with the box's configured git identity. Push/pull/merge live at the raw terminal.
           </p>
         </section>
@@ -468,28 +468,28 @@ onMounted(async () => {
     <div v-else class="min-h-0 flex-1 overflow-y-auto overscroll-contain">
       <div class="mx-auto flex max-w-3xl flex-col gap-3 p-3">
         <div class="flex flex-col gap-2">
-          <p class="break-all font-mono text-sm font-medium">{{ activeFilePath }}</p>
-          <p class="text-xs text-slate-500 dark:text-slate-400">
-            {{ activeDiffStat.filesChanged }} file · <span class="text-emerald-600 dark:text-emerald-400">+{{ activeDiffStat.additions }}</span>
-            <span class="text-rose-600 dark:text-rose-400">−{{ activeDiffStat.deletions }}</span>
+          <p class="break-all font-mono text-sm font-medium text-ink">{{ activeFilePath }}</p>
+          <p class="text-xs font-mono tabular-nums text-ink-dim">
+            {{ activeDiffStat.filesChanged }} file · <span class="text-ok">+{{ activeDiffStat.additions }}</span>
+            <span class="text-crit">−{{ activeDiffStat.deletions }}</span>
           </p>
           <!-- Worktree vs staged toggle for this file, and Edit beside it: the
                review → fix → re-review loop without leaving the surface. Coming
                back re-fetches both this diff and the repo status. -->
           <div class="flex flex-wrap items-center gap-2">
-            <div class="inline-flex overflow-hidden rounded-md border border-slate-300 text-xs dark:border-slate-700">
+            <div class="inline-flex overflow-hidden rounded-md border border-line text-xs">
               <button
                 type="button"
                 class="min-h-[36px] px-3 font-semibold"
-                :class="!diffShowsStaged ? 'bg-sky-600 text-white' : 'text-slate-600 active:bg-slate-100 dark:text-slate-300 dark:active:bg-slate-800'"
+                :class="!diffShowsStaged ? 'bg-accent text-accent-fg' : 'text-ink-dim active:bg-panel-sunken'"
                 @click="diffShowsStaged = false"
               >
                 Working tree
               </button>
               <button
                 type="button"
-                class="min-h-[36px] border-l border-slate-300 px-3 font-semibold dark:border-slate-700"
-                :class="diffShowsStaged ? 'bg-sky-600 text-white' : 'text-slate-600 active:bg-slate-100 dark:text-slate-300 dark:active:bg-slate-800'"
+                class="min-h-[36px] border-l border-line px-3 font-semibold"
+                :class="diffShowsStaged ? 'bg-accent text-accent-fg' : 'text-ink-dim active:bg-panel-sunken'"
                 @click="diffShowsStaged = true"
               >
                 Staged
@@ -497,7 +497,7 @@ onMounted(async () => {
             </div>
             <button
               type="button"
-              class="min-h-[36px] rounded-md border border-sky-600 px-4 text-xs font-semibold text-sky-700 active:bg-sky-50 dark:border-sky-500 dark:text-sky-300 dark:active:bg-sky-950/40"
+              class="min-h-[36px] rounded-md border border-accent px-4 text-xs font-semibold text-accent active:bg-accent/10"
               :aria-label="`Edit ${activeFilePath}`"
               @click="editActiveFile"
             >
@@ -506,12 +506,12 @@ onMounted(async () => {
           </div>
         </div>
 
-        <p v-if="store.gitDiffFiles.length === 0" class="rounded-lg border border-slate-200 p-4 text-center text-sm text-slate-500 dark:border-slate-800 dark:text-slate-400">
+        <p v-if="store.gitDiffFiles.length === 0" class="rounded-lg border border-line p-4 text-center text-sm text-ink-dim">
           No {{ diffShowsStaged ? 'staged' : 'unstaged' }} changes for this file.
         </p>
 
         <template v-for="file in store.gitDiffFiles" :key="file.path">
-          <p v-if="file.binary" class="rounded-lg border border-slate-200 p-3 text-sm text-slate-500 dark:border-slate-800 dark:text-slate-400">
+          <p v-if="file.binary" class="rounded-lg border border-line p-3 text-sm text-ink-dim">
             Binary file — no textual diff.
           </p>
           <!-- Each hunk owns an overflow-x-auto container: a long line scrolls
@@ -519,7 +519,7 @@ onMounted(async () => {
           <div
             v-for="(hunk, hunkIndex) in file.hunks"
             :key="hunkIndex"
-            class="overflow-hidden rounded-lg border border-slate-200 dark:border-slate-800"
+            class="overflow-hidden rounded-lg border border-line"
           >
             <div class="diff-hunk-header">{{ hunk.header }}</div>
             <div class="overflow-x-auto">
@@ -541,7 +541,7 @@ onMounted(async () => {
           </div>
         </template>
 
-        <p class="px-1 text-[11px] text-slate-400 dark:text-slate-500">
+        <p class="px-1 text-[11px] text-ink-dim">
           Hunks are read-only for review. Staging is file-level (Stage / Unstage on the list); per-hunk staging is not yet available.
         </p>
       </div>
@@ -550,19 +550,21 @@ onMounted(async () => {
 </template>
 
 <style scoped>
-/* The mobile hunk diff. Colors are set for BOTH light and dark (prefers-color-
-   scheme, the app's dark strategy) so add/del/context stay legible in either.
-   The tint + the left-gutter sign carry the semantics; the code text stays high-
+/* The mobile hunk diff. Colors come from the token custom properties
+   (packages/ui/src/style.css) via var(--token) — those tokens already self-
+   theme (light/dark/auto, runtime-swappable), so a single declaration block
+   replaces the old light-CSS + `@media (prefers-color-scheme: dark)` pair. The
+   tint + the left-gutter sign carry the semantics; the code text stays high-
    contrast on top of the tint. The class names come from lib/gitReview.ts
    (diffLineStyle) — the mapping is unit-tested there. */
 
 .diff-hunk-header {
   padding: 0.25rem 0.75rem;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
   font-size: 0.72rem;
-  color: #475569; /* slate-600 */
-  background: #f1f5f9; /* slate-100 */
-  border-bottom: 1px solid #e2e8f0; /* slate-200 */
+  color: var(--ink-dim);
+  background: var(--panel-sunken);
+  border-bottom: 1px solid var(--line);
   white-space: pre;
   overflow-x: auto;
 }
@@ -573,7 +575,7 @@ onMounted(async () => {
      spans the full table width, so the row tint covers the whole scrolled line. */
   border-collapse: collapse;
   width: auto;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
   font-size: 0.78rem;
   line-height: 1.45;
 }
@@ -581,7 +583,7 @@ onMounted(async () => {
 .diff-gutter {
   padding: 0 0.4rem;
   text-align: right;
-  color: #94a3b8; /* slate-400 */
+  color: var(--ink-dim);
   user-select: none;
   white-space: nowrap;
   vertical-align: top;
@@ -600,53 +602,24 @@ onMounted(async () => {
 .diff-content {
   padding: 0 0.6rem 0 0.25rem;
   white-space: pre; /* never wrap — long lines scroll the hunk container */
-  color: #0f172a; /* slate-900 */
+  color: var(--ink);
   width: 100%;
 }
 
-/* Add / del / context tints (light). */
+/* Add / del / context tints — tone tokens, self-theming. */
 .diff-line-add {
-  background: #dcfce7; /* green-100 */
+  background: color-mix(in srgb, var(--ok) 16%, transparent);
 }
 .diff-line-add .diff-sign {
-  color: #15803d; /* green-700 */
+  color: var(--ok);
 }
 .diff-line-del {
-  background: #fee2e2; /* red-100 */
+  background: color-mix(in srgb, var(--crit) 16%, transparent);
 }
 .diff-line-del .diff-sign {
-  color: #b91c1c; /* red-700 */
+  color: var(--crit);
 }
 .diff-line-context .diff-content {
-  color: #334155; /* slate-700 */
-}
-
-@media (prefers-color-scheme: dark) {
-  .diff-hunk-header {
-    color: #94a3b8; /* slate-400 */
-    background: #1e293b; /* slate-800 */
-    border-bottom-color: #334155; /* slate-700 */
-  }
-  .diff-gutter {
-    color: #64748b; /* slate-500 */
-  }
-  .diff-content {
-    color: #e2e8f0; /* slate-200 */
-  }
-  .diff-line-add {
-    background: rgba(34, 197, 94, 0.16); /* green tint over dark */
-  }
-  .diff-line-add .diff-sign {
-    color: #4ade80; /* green-400 */
-  }
-  .diff-line-del {
-    background: rgba(248, 113, 113, 0.16); /* red tint over dark */
-  }
-  .diff-line-del .diff-sign {
-    color: #f87171; /* red-400 */
-  }
-  .diff-line-context .diff-content {
-    color: #cbd5e1; /* slate-300 */
-  }
+  color: var(--ink-dim);
 }
 </style>
