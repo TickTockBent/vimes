@@ -142,7 +142,17 @@ function openCreate(): void {
   createOpen.value = true;
   createNotice.value = null;
   if (createProjectRoot.value === '' && rootOptions.value.length > 0) {
-    createProjectRoot.value = rootOptions.value[0]!;
+    // Prefill with the projects container (the shortest known root — a container
+    // is shorter than any project path inside it) plus a trailing slash, so the
+    // operator just types the rest of the path. Text entry is deliberate and
+    // TEMPORARY: project selection moves to the start of the app soon (the
+    // project-centric reframe), after which New Task defaults to the opened
+    // project. The daemon walls projectRoot to the allowlist, so a mistyped path
+    // gets a clean 403, never a bad spawn.
+    const projectsBase = [...rootOptions.value].sort(
+      (first, second) => first.length - second.length,
+    )[0]!;
+    createProjectRoot.value = projectsBase.endsWith('/') ? projectsBase : `${projectsBase}/`;
   }
 }
 
@@ -591,15 +601,18 @@ function livenessClass(liveness: string): string {
         <label class="mt-3 block text-xs font-medium text-slate-600 dark:text-slate-300" for="new-task-root">
           Project root
         </label>
-        <select
+        <input
           id="new-task-root"
           v-model="createProjectRoot"
-          class="mt-1 min-h-[44px] w-full rounded-md border border-slate-300 px-2 text-sm dark:border-slate-700 dark:bg-slate-900"
-        >
-          <option v-for="root in rootOptions" :key="root" :value="root">{{ root }}</option>
-        </select>
-        <p v-if="rootOptions.length === 0" class="mt-1 text-[11px] text-rose-600 dark:text-rose-400">
-          No project roots are known yet, so there is nowhere to create a task. Nothing has been written.
+          type="text"
+          class="mt-1 min-h-[44px] w-full rounded-md border border-slate-300 px-3 font-mono text-sm dark:border-slate-700 dark:bg-slate-900"
+          placeholder="path to the project directory"
+          autocapitalize="off"
+          autocorrect="off"
+          spellcheck="false"
+        />
+        <p class="mt-1 text-[11px] text-slate-500 dark:text-slate-400">
+          Full path to the project directory. Must be within an allowed project root — the daemon refuses anything outside it.
         </p>
 
         <p class="mt-3 text-[11px] text-slate-500 dark:text-slate-400">
