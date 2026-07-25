@@ -575,3 +575,48 @@ describe('the slice-0 reserved task events are unchanged', () => {
     ).toBe(true);
   });
 });
+
+// ── I8 — the S7·1 widening must not perturb the machine ──────────────────────
+describe('I8 — proposeTransition stays TOTAL over the S7·1-widened record', () => {
+  // Every new work-order field populated at once — the widest possible record
+  // the machine can now be handed. If any of scope/explicitlyOut/
+  // acceptanceCriteria/killCriterion/workOrderRev perturbed the decision logic,
+  // this is where it would show: `proposeTransition` reads only `task.stage`
+  // and the proposal, so a legal edge accepting AND every one of these fields
+  // riding through the spread unchanged is the proof it does not.
+  const widenedTask = taskAtStage('implementing', {
+    scope: 'add the S7·1 reserved schemas',
+    explicitlyOut: ['wiring any consumer'],
+    acceptanceCriteria: [
+      { id: 'crit-1', text: 'typecheck is green' },
+      { id: 'crit-2', text: 'the core test suite is green' },
+    ],
+    killCriterion: 'a reserved shape forces a projection default',
+    workOrderRev: 3,
+  });
+
+  it('a legal edge still ACCEPTS, carrying every work-order field through UNCHANGED', () => {
+    const outcome = proposeTransition(widenedTask, proposal('review'));
+
+    expect(outcome.accepted).toBe(true);
+    if (outcome.accepted) {
+      expect(outcome.nextTask).toEqual({ ...widenedTask, stage: 'review' });
+      expect(outcome.nextTask.scope).toBe(widenedTask.scope);
+      expect(outcome.nextTask.explicitlyOut).toEqual(widenedTask.explicitlyOut);
+      expect(outcome.nextTask.acceptanceCriteria).toEqual(widenedTask.acceptanceCriteria);
+      expect(outcome.nextTask.killCriterion).toBe(widenedTask.killCriterion);
+      expect(outcome.nextTask.workOrderRev).toBe(widenedTask.workOrderRev);
+      expect(taskRecordSchema.safeParse(outcome.nextTask).success).toBe(true);
+    }
+  });
+
+  it('an illegal edge still REJECTS over the widened record', () => {
+    // implementing -> backlog is not in the table (only via blocked-external /
+    // quarantined / cancelled) — an ordinary illegal-edge refusal.
+    const outcome = proposeTransition(widenedTask, proposal('backlog'));
+    expect(outcome.accepted).toBe(false);
+    if (!outcome.accepted) {
+      expect(outcome.reason).toBe('illegal-edge');
+    }
+  });
+});

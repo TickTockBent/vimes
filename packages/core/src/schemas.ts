@@ -171,6 +171,16 @@ export const projectionSnapshotSchema = z.object({
 });
 export type ProjectionSnapshot = z.infer<typeof projectionSnapshotSchema>;
 
+// One acceptance criterion — INDIVIDUALLY ADDRESSABLE (D43: acceptance-as-a-list,
+// not prose). `id` is STABLE across amendments so `report_review` (S7·6) can key
+// per-criterion pass/fail to it; `text` is the human-readable criterion. Reserved
+// in S7·1; the authoring form (S7·3) and report_review (S7·6) are the consumers.
+export const acceptanceCriterionSchema = z.object({
+  id: z.string(),
+  text: z.string(),
+});
+export type AcceptanceCriterion = z.infer<typeof acceptanceCriterionSchema>;
+
 export const taskRecordSchema = z.object({
   taskId: z.string(),
   projectRoot: z.string(),
@@ -189,6 +199,34 @@ export const taskRecordSchema = z.object({
   // PATCH — renaming would need its own decision (sessions have
   // `session_renamed` as the precedent if it is ever wanted).
   title: z.string().optional(),
+  // ── S7·1 (rule 0.5): the work-order fields, reserved with NO consumer yet ──
+  //
+  // All five below are OPTIONAL-only widenings, for the exact reason `title`
+  // above documents: nothing validates a snapshot's records against this schema
+  // on load, so a `task_created` written before slice 7 omits every one of
+  // these, still validates, and still serializes to the SAME BYTES (I6). This
+  // unit adds no new required field to an existing record — that is the whole
+  // discipline that keeps I6 assertable.
+  //
+  // ⚠ **ABSENT STAYS ABSENT.** Unlike `gates`, which the projection defaults to
+  // `{}` because an ungated task and a task with no gates are the same fact,
+  // this unit deliberately does NOT touch `projections/tasks.ts` at all — there
+  // is no fold, no default, nothing that could turn an absent field present on
+  // replay. A pre-slice-7 `task_created` folds to a record with NONE of these
+  // keys, exactly as it did before this widening landed.
+  //
+  // The consumer for all five is S7·2a (`create_task`), not this unit — this is
+  // a schema reservation, not a working feature. `workOrderRev` additionally
+  // waits on S7·2b (`work_order_amended`, reserved below in events.ts) as its
+  // writer.
+  scope: z.string().optional(),
+  explicitlyOut: z.array(z.string()).optional(),
+  acceptanceCriteria: z.array(acceptanceCriterionSchema).optional(),
+  killCriterion: z.string().optional(),
+  // The work-order revision this record currently reflects (D43: revisioned,
+  // not mutated). Absent until the first amendment; S7·2b bumps it via the
+  // reserved `work_order_amended` event. Reserved here, no writer yet.
+  workOrderRev: z.number().int().nonnegative().optional(),
   stage: z.enum([
     'backlog',
     'planning',

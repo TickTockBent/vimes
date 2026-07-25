@@ -268,6 +268,51 @@ describe('tasks projection — task_created', () => {
   });
 });
 
+// ── I6 — absent stays absent over the S7·1 work-order widening ───────────────
+//
+// The load-bearing test for this unit. `taskRecordSchema` grew five new
+// OPTIONAL fields (scope, explicitlyOut, acceptanceCriteria, killCriterion,
+// workOrderRev) in schemas.ts, but THIS PROJECTION WAS DELIBERATELY NOT
+// TOUCHED — no fold reads them, no default supplies them. A `task_created`
+// that omits all five (every `task_created` written before slice 7, and every
+// one this unit's own work-order API does not yet exist to write) must fold to
+// a record with NONE of the new keys present, byte-identical to what it folded
+// to before this widening landed.
+describe('tasks projection — I6, the S7·1 work-order widening is invisible when unused', () => {
+  it('a birth record omitting all work-order fields folds with NONE of the new keys present', () => {
+    const state = stateFromLog([[createTaskA()]]);
+    const bornTask = state.tasks[TASK_A]!;
+    expect('scope' in bornTask).toBe(false);
+    expect('explicitlyOut' in bornTask).toBe(false);
+    expect('acceptanceCriteria' in bornTask).toBe(false);
+    expect('killCriterion' in bornTask).toBe(false);
+    expect('workOrderRev' in bornTask).toBe(false);
+    expect(taskRecordSchema.safeParse(bornTask).success).toBe(true);
+  });
+
+  it('serializes byte-identically to the pre-S7·1 record shape (exactly the pre-existing keys)', () => {
+    const state = stateFromLog([[createTaskA()]]);
+    const bornTask = state.tasks[TASK_A]!;
+    // The full pre-S7·1 key set, hand-enumerated so a silent extra key (a
+    // default sneaking in) fails this comparison even if every individual
+    // `in` check above were somehow satisfied.
+    expect(Object.keys(bornTask).sort()).toEqual(
+      [
+        'taskId',
+        'projectRoot',
+        'stage',
+        'manualReviewRequired',
+        'isolation',
+        'gates',
+        'sessionRefs',
+        'createdBy',
+        'lastHeartbeatAt',
+        'staleRetries',
+      ].sort(),
+    );
+  });
+});
+
 describe('tasks projection — task_transitioned', () => {
   it('updates the stage of the named task', () => {
     // Assertion 3a.

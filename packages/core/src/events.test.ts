@@ -22,6 +22,8 @@ import {
   sessionAdoptedPayloadSchema,
   sessionRenamed,
   sessionRenamedPayloadSchema,
+  workOrderAmended,
+  workOrderAmendedPayloadSchema,
 } from './events.js';
 import { sessionRecordSchema } from './schemas.js';
 
@@ -263,5 +265,48 @@ describe('meter_alert (slice-5 step 4a — account-wide, not session-shaped)', (
       disposition: 'notify' as const,
     };
     expect(meterAlertPayloadSchema.safeParse(minimalPayload).success).toBe(true);
+  });
+});
+
+describe('work_order_amended (S7·1 — RESERVED, no emitter)', () => {
+  // Precedent: `dispatch_refused` was reserved with its type+schema+constructor
+  // ahead of any emitter (slice 0 -> emitted slice 6); the meter_alert
+  // `disposition: 'hold'` reservation is the same posture. This event follows
+  // it — the vocabulary lands now, S7·2b is the writer, and nothing in this
+  // slice emits it.
+  const amendmentPayload = {
+    taskId: 'task-aaaa-0001',
+    workOrderRev: 1,
+    scope: 'add the S7·1 reserved schemas',
+    explicitlyOut: ['wiring any consumer'],
+    acceptanceCriteria: [{ id: 'crit-1', text: 'typecheck is green' }],
+    killCriterion: 'a reserved shape forces a projection default',
+  };
+
+  it('constructs on the tasks stream and validates', () => {
+    expect(workOrderAmended(amendmentPayload)).toEqual({
+      stream: 'tasks',
+      type: 'work_order_amended',
+      payload: amendmentPayload,
+    });
+    expect(workOrderAmendedPayloadSchema.safeParse(amendmentPayload).success).toBe(true);
+    expect(EVENT_PAYLOAD_SCHEMAS[EVENT_TYPES.workOrderAmended]).toBe(
+      workOrderAmendedPayloadSchema,
+    );
+  });
+
+  it('is registered under the work_order_amended type string', () => {
+    expect(EVENT_TYPES.workOrderAmended).toBe('work_order_amended');
+  });
+
+  it('tolerates a patch that touches only scope — every other field is optional', () => {
+    const minimalPayload = { taskId: 'task-aaaa-0001', workOrderRev: 2, scope: 'narrowed scope' };
+    expect(workOrderAmendedPayloadSchema.safeParse(minimalPayload).success).toBe(true);
+  });
+
+  it('rejects a negative workOrderRev', () => {
+    expect(
+      workOrderAmendedPayloadSchema.safeParse({ ...amendmentPayload, workOrderRev: -1 }).success,
+    ).toBe(false);
   });
 });

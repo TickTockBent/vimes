@@ -154,6 +154,15 @@ export const EVENT_TYPES = {
   // and pushes a notification to a real person's phone about work that is fine.
   correctionQueued: 'correction_queued',
   correctionDelivered: 'correction_delivered',
+  // Slice-7 D43: a work order was AMENDED — a scope/acceptance/kill-criterion
+  // change, recorded as an APPENDED event (I12) that bumps `workOrderRev`,
+  // never a mutation of the existing record. RULE-0.5 RESERVATION, following
+  // the same precedent `dispatch_refused` set (type + schema + constructor
+  // landed slice 0, emitted slice 6) and the `meterAlert` `disposition: 'hold'`
+  // reservation: the vocabulary lands NOW so S7·2b needs no migration, but
+  // **NOTHING IN THIS UNIT EMITS IT.** If you are grepping for the code path
+  // that emits an amendment, there isn't one yet, and that is deliberate.
+  workOrderAmended: 'work_order_amended',
 } as const;
 
 export const SYSTEM_STREAM = 'system';
@@ -618,6 +627,28 @@ export const correctionDeliveredPayloadSchema = z.object({
   enqueuedAt: z.string().optional(),
 });
 
+// work_order_amended (S7·1, RESERVED — see the note on EVENT_TYPES.workOrderAmended
+// above; S7·2b is the writer). A PATCH of the amendable work-order fields plus the
+// rev the record reflects AFTER this amendment — never the whole record, and
+// never a mutation of it (D43: revisioned, not mutated; I12: append-only).
+//
+// Each patch field is DERIVED from `taskRecordSchema.shape.*` rather than
+// re-typed, so the event and the record can never drift on the shape (the same
+// discipline `taskCreatedPayloadSchema.title` follows). All four are already
+// `.optional()` on the record, so they ride through optional here too — an
+// amendment that touches only `scope` simply omits the rest; it is not required
+// to restate fields it left alone.
+export const workOrderAmendedPayloadSchema = z.object({
+  taskId: z.string(),
+  // The rev AFTER this amendment is applied.
+  workOrderRev: z.number().int().nonnegative(),
+  scope: taskRecordSchema.shape.scope,
+  explicitlyOut: taskRecordSchema.shape.explicitlyOut,
+  acceptanceCriteria: taskRecordSchema.shape.acceptanceCriteria,
+  killCriterion: taskRecordSchema.shape.killCriterion,
+});
+export type WorkOrderAmendedPayload = z.infer<typeof workOrderAmendedPayloadSchema>;
+
 export const EVENT_PAYLOAD_SCHEMAS = {
   [EVENT_TYPES.sessionCreated]: sessionCreatedPayloadSchema,
   [EVENT_TYPES.livenessChanged]: livenessChangedPayloadSchema,
@@ -660,6 +691,7 @@ export const EVENT_PAYLOAD_SCHEMAS = {
   [EVENT_TYPES.taskWorktreeCreated]: taskWorktreeCreatedPayloadSchema,
   [EVENT_TYPES.correctionQueued]: correctionQueuedPayloadSchema,
   [EVENT_TYPES.correctionDelivered]: correctionDeliveredPayloadSchema,
+  [EVENT_TYPES.workOrderAmended]: workOrderAmendedPayloadSchema,
 } as const;
 
 export type SessionCreatedPayload = z.infer<typeof sessionCreatedPayloadSchema>;
@@ -697,6 +729,9 @@ export type TaskSessionAttachedPayload = z.infer<typeof taskSessionAttachedPaylo
 export type TaskWorktreeCreatedPayload = z.infer<typeof taskWorktreeCreatedPayloadSchema>;
 export type CorrectionQueuedPayload = z.infer<typeof correctionQueuedPayloadSchema>;
 export type CorrectionDeliveredPayload = z.infer<typeof correctionDeliveredPayloadSchema>;
+// WorkOrderAmendedPayload is exported alongside `workOrderAmendedPayloadSchema`
+// above, adjacent to its schema rather than grouped down here with the rest —
+// no functional difference, kept next to the RESERVATION note it belongs with.
 
 // Discriminated union over the vocabulary — the domain-event value space.
 export type DomainEvent =
@@ -740,7 +775,8 @@ export type DomainEvent =
   | { type: typeof EVENT_TYPES.taskSessionAttached; payload: TaskSessionAttachedPayload }
   | { type: typeof EVENT_TYPES.taskWorktreeCreated; payload: TaskWorktreeCreatedPayload }
   | { type: typeof EVENT_TYPES.correctionQueued; payload: CorrectionQueuedPayload }
-  | { type: typeof EVENT_TYPES.correctionDelivered; payload: CorrectionDeliveredPayload };
+  | { type: typeof EVENT_TYPES.correctionDelivered; payload: CorrectionDeliveredPayload }
+  | { type: typeof EVENT_TYPES.workOrderAmended; payload: WorkOrderAmendedPayload };
 
 // Maps each attention-setting event type to the needsAttention reason it sets.
 const ATTENTION_SETTER_REASON: Readonly<Record<string, AttentionReason>> = {
@@ -853,6 +889,15 @@ export function taskTransitioned(payload: TaskTransitionedPayload): EventInput {
 export function taskTransitionRejected(payload: TaskTransitionRejectedPayload): EventInput {
   return { stream: 'tasks', type: EVENT_TYPES.taskTransitionRejected, payload };
 }
+// work_order_amended (S7·1, RESERVED — see EVENT_TYPES.workOrderAmended and
+// workOrderAmendedPayloadSchema above). Same 'tasks' stream as its siblings,
+// literal `'tasks'` for the same reason the other task constructors use one:
+// the vocabulary module stays free-standing. NO CALLER INVOKES THIS YET — it
+// exists so S7·2b needs no migration when it lands the writer.
+export function workOrderAmended(payload: WorkOrderAmendedPayload): EventInput {
+  return { stream: 'tasks', type: EVENT_TYPES.workOrderAmended, payload };
+}
+
 // The task↔session link (step 4a). On the 'tasks' stream and NOT the session's
 // stream: it is a fact about the TASK's record (`sessionRefs`), and the tasks
 // projection folds only its own stream. The session's own birth record

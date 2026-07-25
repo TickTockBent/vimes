@@ -125,6 +125,25 @@ export {
   taskWorktreeBranch,
   taskWorktreeDirName,
 } from './tasks/worktreePaths.js';
+// S7·1 (rule 0.5) — the task-as-work-order shapes, reserved with NO consumer.
+// `acceptanceCriterionSchema`/`AcceptanceCriterion` already flow through the
+// `export * from './schemas.js'` above, and `workOrderAmended`/
+// `WorkOrderAmendedPayload` already flow through `export * from './events.js'`
+// below; nothing redundant is re-exported here.
+export {
+  stageRunIdentitySchema,
+  artifactEnvelopeSchema,
+  submitPlanPayloadSchema,
+  reportReviewPayloadSchema,
+  reportCompletionPayloadSchema,
+  scopedTokenBindingSchema,
+  type StageRunIdentity,
+  type ArtifactEnvelope,
+  type SubmitPlanPayload,
+  type ReportReviewPayload,
+  type ReportCompletionPayload,
+  type ScopedTokenBinding,
+} from './tasks/workOrder.js';
 export {
   WATCHDOG_GOVERNED_LIVENESS,
   ALL_SESSION_LIVENESS,
