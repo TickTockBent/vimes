@@ -9,42 +9,44 @@ reason `slice-6-test-plan.md` lives here. Delete an entry when it ships.
 
 ## ▶ NEXT SESSION STARTS HERE (2026-07-24)
 
-Slice 6 is **at the exit gate.** T1 ✅, board ✅, **T2 works** (confirmed live —
-see Finding 1), and the **stage-instruction seam is now filled** (verified, NOT yet
-deployed). Critical path, in order:
+**SLICE 6 IS CLOSED (2026-07-24).** All machine gates green + committed (HEAD
+`7df415d`), deployed; **T7 accepted by Wes** — core dispatch loop validated end-to-end
+at the planning stage (see `slice-6-test-plan.md` T7 outcome). Gate reframes to
+"validated in real use + continuous daily use going forward" (D20/D22/D25).
 
-1. **DEPLOY THE DAEMON** (a restart is owed — the ONE gating step). It activates
-   `composeStageInstruction` (workers finally told the Wes-approved minimal
-   instruction) AND `latestContextTokens` (session `ctx —` → real number). Uncommitted
-   core/daemon changes not yet live. Pre-flight: sessions AND pty children AND
-   in-flight stage runs + the `/proc` ancestry check; **don't restart from inside a
-   vimes terminal** (recursion hazard). ⚠ Consider **committing first** — 5 verified
-   units + docs are uncommitted (one commit per unit).
-2. **T7 — the slice-6 human exit gate.** "One real feature, backlog → done through
-   the board, corrected mid-run." Reachable right after the deploy — it's what
-   everything has been rehearsal for.
-3. **T6** — the 2.1.218 fixture check; now ALSO carries the **Finding 2** slug fix
-   (`encodeCwdForProjects` no longer matches the CLI's `_`→`-` slugging; latent, PTY+
-   underscore only).
+**The big finding T7 produced (drives slice 7):** the task model encodes **chat-and-steer**
+where the workflow is **spec-and-verify** — see **open-questions D43** (evidence note) +
+**D44** (Wes's plan-handoff mechanism). Slice 7's real opener is **task-as-work-order,
+plan-as-artifact handoff, and the orchestrator role** — *not* "add a description field."
 
-**Findings this session:** F1 (correction tracking) was **RETRACTED** — it works via
-the `run_completed` clear on SDK; F2 (CLI slug drift `_`→`-`) is **recorded**
-(risk-register, folds into T6). Full context in `scratchpad/HANDOFF.md`.
+**Loose ends (not slice-6 blockers):**
+1. **T6** — the 2.1.218 fixture check; carries the **Finding 2** slug fix
+   (`encodeCwdForProjects` vs the CLI's `_`→`-`; latent, PTY+underscore only). Clears the
+   every-boot drift warning.
+2. **Advisory-gate pin (PARKED, no urgency)** — `brace-expansion@5.0.8` override; single-root
+   cascade, **0/12 runtime-reachable** (all build/dev/test). Needs a lock regen (+56 in-range,
+   incl. SDK 0.3.207→0.3.219) + deliberate restart. Full analysis:
+   `scratchpad/spike-advisory-gate-FINDINGS.md`. ⟨Wes⟩ approves the regen.
+3. **Board Dispatch caption** still says "told NOTHING" — false since the seam-fill deploy.
+   One-line UI fix.
 
-**Slice-7 openers (parked, do NOT build in slice 6):** D42 (project-centric reframe +
-its open security sub-decision), D43/D44 (task spec source + plan hand-off), the
-project history read-model, the AgenC admission-kernel internal-allocation rules.
+**Slice-7 opener queue — the human-operable board controls (principle 8, stay first-class):**
+**S8** (move-modal shows all, allow few → filter, daemon-sourced), **S9** (dispatch→session:
+no live list update + no click-to-open), **S10** (Resume bypasses stage independence),
+**S11** (no task delete → soft-delete `task_cancelled`; + edit/attach-image). Plus D42
+(project-centric reframe + security sub-decision), the project history read-model, AgenC
+admission-kernel. These are the "dive to any level" controls the orchestrator layer sits on.
 
-**Fable can take solo:** slice-6 **step 10** (watchdog scenario profile + six→seven
-assertion); the `@hono/node-server` bump (Windows-only, we run Linux); D40 panel
-follow-ups.
+**Fable can take solo:** the advisory pin (on Wes's go); the board Dispatch-caption cleanup.
 
 **Other ⟨Wes⟩ items:** flip `VIMES_WORKTREE_ISOLATION` (still `off`) · `removeWorktree`
-wired to NOTHING pending policy · Gate-D ⟨tune⟩s blocking step 5c · Q2 retention half ·
-Q4 relocation · the board-as-sidebar end-state trigger.
+wired to NOTHING pending policy · Gate-D ⟨tune⟩s blocking step 5c (quarantine
+enforcement) · Q2 retention half · Q4 relocation · the board-as-sidebar end-state
+trigger.
 
-**Deploy state:** UI units LIVE via the gate; **daemon restart owed** for
-`latestContextTokens` + `composeStageInstruction` (both uncommitted, not deployed).
+**Deploy state:** current — daemon (PID as of 2026-07-24 restart) serves
+`latestContextTokens` + `composeStageInstruction`; UI current via the gate. Clean tree
+at `7df415d`.
 
 
 ## S — Cost graph hover tooltip — ✅ ALREADY EXISTS (native title); optional polish only
@@ -107,6 +109,20 @@ Code **permission mode per spawned session / per task**, and what are the option
 ⚠ Security-shaped: any "let the agent run commands unprompted" mode is real
 authority handed to a model. That framing belongs in the spike's output, and the
 eventual control is a ⟨Wes⟩ decision, not a default.
+
+### ✅ SPIKED 2026-07-24 — `scratchpad/spike-permission-footing-FINDINGS.md`
+
+VIMES hardcodes `permissionMode:'default'` (`sessionHost.ts:1228`) because **the
+VIMES gate (`canUseTool`→`gateFired`→attention) fires ONLY under `'default'`.** The
+crux finding: **autonomy and observability are mutually exclusive** on this mechanism
+— any auto-approving mode stops `canUseTool` → no gate → no attention → inspect-and-
+steer is lost. `plan` is the safe read-only outlier; PTY has no gate at all. No
+`TaskRecord` permission field reserved; adding one is a daemon change (restart),
+additive. **Lean:** a coarse `permissionFooting` enum mapped in ONE place (never a
+raw mode pass-through) — `gated`→default (safe default), `plan`→plan, `autonomous`→
+acceptEdits/bypass (gate-blinding, opt-in, loud). `gated`/`plan` ship free; **⟨Wes⟩:
+offer `autonomous` at all? PTY footing (lean: no)? how is an un-gated session made
+visible?**
 
 ## S3 — Markdown TABLES in the message stream (a v1 scope gap, not a regression)
 
@@ -190,6 +206,151 @@ stream scrolls. Watch: the header/strip stack must not eat too much vertical
 space on a phone (keep the strip terse); ensure `z-index`/background so stream
 content scrolls *under* it cleanly in light+dark. No new deps. Reuses the strip
 built today — no logic change, just where it's pinned.
+
+## S7 — Each panel is its own scroll FRAME (independent scroll regions)
+
+*(Wes, 2026-07-24: "each panel should be a frame. If I scroll down on a file I'm
+editing it shouldn't scroll every other panel. Sometimes I want a file up for
+editing while also having the file directory up so I can click into other files —
+right now if I scroll down while editing it scrolls off the bottom of the file
+directory.")*
+
+**This is the STRUCTURAL ROOT that S4 and S6 patch around.** S4's own note says it:
+the app scrolls the **DOCUMENT** (`window` / `documentElement`), not inner
+containers — so every panel shares one scroll, and scrolling a file editor scrolls
+the file directory (and everything else) with it. The fix is a layout change, not a
+per-component one: **each panel becomes a fixed-height scroll frame** — a
+viewport-height flex/grid shell whose cells each `overflow-y-auto` independently, so
+editor-scroll and directory-scroll never touch each other.
+
+**Aligns with the project-centric PANEL model** (design-directions, "everything a
+panel"): panels-as-frames is the layout foundation that model needs anyway — do this
+and the panel restructure inherits independent scrolling for free.
+
+⚠ **Bigger than the small S-items — it touches the app shell's scroll model, so it
+wants its own design pass**, not a drive-by. Open questions for that pass: which
+views become frames; how the viewport-height layout composes on **mobile**, where
+vertical space is scarce and there is only one panel; how it interacts with
+StreamView's mobile-keyboard offset (the one `window.scrollTo`, S4). **When this
+lands, revisit S4 and S6 together** — stick-to-bottom becomes a *container* scroll
+and the sticky vitals strip becomes "top of the frame," so both may simplify or
+partly dissolve rather than stay as written.
+
+## S8 — The move modal shows ALL stages but the machine refuses most (legibility)
+
+*(Wes, 2026-07-24, running T7: "the move-to modal is really confusing because it's
+not clear which states can be moved to from which, or why… I see all of the options
+but cannot select some of them. It says it's not valid. So the modal is showing ALL
+states but only a few are valid.")*
+
+**Deliberate design, over-applied.** `taskBoard.ts:395` refuses to filter the move
+options on purpose — filtering would make the UI "a SECOND AUTHORITY on transition
+legality, which rule 0.3 and principle 10 forbid — UIs propose, the machine
+decides." So the modal offers every stage, you propose one, the daemon returns 200
+or **409 "not valid."** Correct, but illegible: the operator sees options that will
+be rejected and learns the pipeline only by hitting the wall.
+
+**⟨Wes ruling, 2026-07-24⟩: show ONLY valid moves — filter, don't grey.** *"Showing
+options that will never be valid from the current state is deceptive and unhelpful…
+the UI should only show valid state moves."* This reverses `taskBoard.ts:395`'s
+stance: that comment conflated "the UI must not be the AUTHORITY on legality" with
+"the UI must not REFLECT legality" — only the first is what rule 0.3 / principle 10
+require. There is no UX value in offering a move the daemon will 409.
+
+**The one implementation constraint that keeps principle 10 (and 9) intact: the
+legal-edge set must be DAEMON-SOURCED, never a UI copy of `TASK_STAGE_EDGES`.** Serve
+the edge table from the daemon, or add a per-task `legalMoves` to the tasks read
+model, so the UI **reflects** the authoritative table rather than **duplicating** it
+(a hand-maintained UI copy drifts from the machine — the real hazard, and how you'd
+end up showing a "valid" option that still gets rejected). The daemon **still
+enforces on submit** (defense in depth). Filtering is a convenience layer over the
+authority, not a second authority. Also separate in the sheet: **Move** (transition)
+vs **Dispatch** (spawn a worker) — two different actions that currently blur.
+
+⚠ **Part of a larger finding (see open-questions D43).** This is one symptom of the
+board being *correct but illegible* — the task-model design pass (task-as-work-order,
+flow-as-loop) that T7 surfaced. If that redesign lands, revisit this item inside it
+rather than patching the modal alone.
+
+## S9 — Dispatch→session handoff is unwired (no live list update, no click-to-open)
+
+*(Wes, 2026-07-24, running T7: clicked Dispatch, a session was created, but (1) "I
+had to refresh the UI to see the newly created session — it didn't show in the
+list" and (2) "I could not click the notification in the task that a session was
+created in order to open a panel with the session in it.")*
+
+**Part 1 — the new session isn't live in the list. ROOT CAUSE CONFIRMED.** The
+client only receives live events for streams it is **subscribed** to; a brand-new
+session's stream isn't subscribed yet, so its `session_created` **is not delivered
+live** and the list stays stale until a manual refresh re-fetches. The store already
+knows this and already solves it for one path: the WS `'discovered'` case
+(`vimesStore.ts:726-733`) calls `scheduleSessionsRefresh()` precisely because *"the
+resulting session_created events on unsubscribed streams would not otherwise trigger
+a refresh."* The **task-dispatch path never got the same treatment** — `dispatchTask`
+(`vimesStore.ts:489`) is a plain HTTP POST that neither subscribes to the returned
+`appSessionId`'s stream nor schedules a refresh. **Fix:** on a `spawned` dispatch
+response (the body carries the `appSessionId` — the board already shows it), subscribe
+to that session's stream AND `scheduleSessionsRefresh()`, mirroring the `'discovered'`
+handler. UI-only, no restart.
+
+**Part 2 — the dispatch result should open the session.** `TaskBoardView`'s
+`dispatchNotice` renders the new `appSessionId` as inert text. Make it a navigable
+affordance: click → route to that session's stream view (the panel). Under the
+eventual panel model (design-directions) this is "open the session panel"; today it
+is a route to the stream view. UI-only, no restart.
+
+⚠ Both are the same theme as S8 / open-questions D43: the board dispatches correctly
+but the **dispatch→session handoff isn't finished for real use.** If the task-model
+design pass happens, fold these into it rather than patching in isolation.
+
+## S10 — The session Resume button bypasses stage independence (session vs stage models collide)
+
+*(Wes, 2026-07-24, running T7: after accepting a planning worker's plan — "you say I
+can't accidentally continue in this session but I have a Resume button right here on
+the session window.")*
+
+**Two affordances, two models, contradicting.** The task-stage machine says the first
+implementer is a FRESH session (`resolveStageRunner` rule 3 — never resume the planner,
+"a planning session is NOT the author"; independence is a correctness rule). But the
+session window's **Resume** is a *session-level* action that knows nothing about task
+stages: it reopens THAT `appSessionId`, so resuming a planning stage-session hands back
+the planner — wrong role, wrong artifact — the exact misbehavior the fresh-spawn rule
+exists to prevent. The board's implementing-Dispatch does the right thing; raw Resume
+undoes it.
+
+**This is the session-model ↔ task-stage-model reconciliation, and it resolves UP into
+the orchestrator north star (design-directions).** In the target shape the human isn't
+driving stage continuation with a raw Resume at all — the **orchestrator** manages
+session/stage lifecycle via the API, and Resume-on-a-stage-session is an *override*
+surface, not the daily path. So the fix isn't just "hide Resume on stage sessions":
+it's deciding what Resume MEANS for a task-attached session (advance-the-stage via the
+dispatcher vs. reopen-this-exact-session as an override), which is a task-model design
+call. Fold into the D43/D44 task-model pass, not a standalone patch.
+
+## S11 — No way to delete a task (and the broader "human-operable at every level" gap)
+
+*(Wes, 2026-07-24, closing T7: "Delete that test task — I have no way to delete
+tasks.")*
+
+**Confirmed: there is no delete.** No `task_deleted`/`cancelled`/`archived` event, no
+such stage, no DELETE route (grep clean 2026-07-24). And it can't be a naive delete —
+task state is **event-sourced, append-only (I12)**, and the 'tasks' stream's records
+carry sequence identity that replay/I6 depend on, so **removing records from the log is
+off the table** (it breaks from-empty === snapshot+tail). The correct shape is a
+**soft-delete**: a new `task_cancelled` (or `archived`) event the tasks projection folds
+to **hide** the task from the board while the log stays intact. Small unit — reserve the
+event (rule 0.5), fold it, an API route, a delete/cancel control in the card sheet.
+⚠ Destructive-verb naming + whether a cancelled task is recoverable is a ⟨Wes⟩ call.
+
+**The bigger principle behind it (Wes, 2026-07-24):** *"we're building bottom-up because
+the human can dive to any level they're comfortable with, so every level must have
+human-operable controls — inspect a task directly, make an edit, attach a screenshot."*
+Principle 8. The orchestrator north star (design-directions) sits **on top of** these
+controls, it does not excuse their absence. So this is one instance of a class:
+**direct human-operable task controls** — delete/cancel, edit fields, attach an image
+(which also feeds D43's spec-artifact: a task brief may include screenshots). These stay
+first-class; the orchestrator layer is additive. Design them as part of the D43/D44
+task-model pass.
 
 ## Q2 — Session list scale: retention, and demoting it from a first-class surface
 

@@ -209,6 +209,36 @@ Not a demo task. This is the gate, and it is the thing everything above is
 rehearsal for. **Blocked on T1 and T2 passing**, and on there being a board to
 move it through (step 9) — so realistically this is after the kanban UI.
 
+### ✅ ACCEPTED 2026-07-24 (Wes) — the core loop is validated; slice 6 CLOSES.
+
+Run: a real feature in `games/1e9999` (task `5b52caa0`), dispatched at **planning**
+(session `3a81825a`, SDK). Observed end-to-end: the worker read the code (18 tool
+uses), produced a precise, code-anchored plan that respected that project's OWN gate
+discipline (reasoned 0.3/0.4/Gate-D, flagged a semantic nuance for sign-off unprompted
+— rule-0.1 behaviour), Wes sent a **mid-run correction** (a full code-anchored spec)
+that **landed in-run without killing the run**, and `run_completed` cleared it. **T1
+on the SDK path confirmed live** for the first time (`hook_session_start` → 18×
+`pre_tool_use` → `stop` → `session_end` — the channel Spike 0a never separately
+verified).
+
+**Scope of the acceptance (honest):** the loop is validated **through the planning
+stage** — dispatch → real work → mid-run steer → acceptable result, hooks live. Wes
+accepted the plan and **deliberately did not implement**: the plan→implement handoff
+(lift the plan → attach to task → ingest into a FRESH implementer) is the un-built
+**D44** machinery, and forcing it by hand would only re-demonstrate the finding below.
+Per D20/D22/D25 precedent the gate now reframes to **"validated in real use +
+continuous daily use going forward."**
+
+**The load-bearing finding this run produced (open-questions D43):** T7 in real use
+showed the task model encodes **chat-and-steer** (thin title → dispatch → correct
+live) where the software-orchestration workflow VIMES exists to run is
+**spec-and-verify** (a work-order → one agent → verify → fix-to-new-agent). Wes's
+"correction" *was* a full work-order delivered through the wrong door — the capability
+works, the interaction shape is wrong. This reframes D43/D44 into the real slice-7
+opener (task-as-work-order, plan-as-artifact handoff, the orchestrator role), with the
+board's human-operable controls (S8–S11) staying **first-class** per principle 8 (dive
+to any level), not deprecated by the orchestrator layer that sits on top of them.
+
 ---
 
 ## Known-quiet failure modes (worth a scan even if everything looks fine)
