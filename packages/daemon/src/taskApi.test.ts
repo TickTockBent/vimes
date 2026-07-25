@@ -11,6 +11,7 @@ import {
   SteppingClock,
   readAllStreamsGrouped,
   replayFromEmpty,
+  taskStageEdgesRecord,
   tasksProjection,
   type EventRecord,
   type IdSource,
@@ -21,7 +22,13 @@ import {
 import { createAccessAuthMiddleware, type AccessVerifier } from './auth.js';
 import { createDaemon, NO_OBSERVATION_IS_FRESH_STALE_BAND_MS, type Daemon, type DaemonDeps } from './app.js';
 import type { DaemonConfig } from './config.js';
-import { registerTaskApi, type CreateTaskResponse, type DispatchResponse, type ProposeTransitionResponse } from './taskApi.js';
+import {
+  registerTaskApi,
+  type CreateTaskResponse,
+  type DispatchResponse,
+  type ProposeTransitionResponse,
+  type StageEdgesResponse,
+} from './taskApi.js';
 import { TaskWriter } from './taskWriter.js';
 import { TaskDispatcher } from './taskDispatcher.js';
 import type {
@@ -758,6 +765,44 @@ describe('I14 — every task route is behind the auth wall', () => {
       expect(harness.dispatchCallCount()).toBe(0);
     });
   }
+});
+
+// ── S8: the served legal-edge table ──────────────────────────────────────────
+
+describe('GET /api/tasks/stage-edges — the legal-edge table the move sheet filters against', () => {
+  it('serves taskStageEdgesRecord() verbatim behind the same auth wall', async () => {
+    const harness = buildApiHarness();
+    const response = await harness.request('/api/tasks/stage-edges', {
+      headers: authHeaders(),
+    });
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as StageEdgesResponse;
+    expect(body).toEqual({ edges: taskStageEdgesRecord() });
+  });
+
+  it('NO token → 401 (I14), and a genuinely empty token is refused the same way', async () => {
+    const harness = buildApiHarness();
+
+    const noToken = await harness.request('/api/tasks/stage-edges', {
+      headers: authHeaders(null),
+    });
+    expect(noToken.status).toBe(401);
+
+    const emptyToken = await harness.request('/api/tasks/stage-edges', {
+      headers: authHeaders(''),
+    });
+    expect(emptyToken.status).toBe(401);
+  });
+
+  it('is read-only: fetching it writes nothing to the tasks stream', async () => {
+    const harness = buildApiHarness();
+    const headBefore = harness.tasksHead();
+
+    await harness.request('/api/tasks/stage-edges', { headers: authHeaders() });
+
+    expect(harness.tasksHead()).toBe(headBefore);
+  });
 });
 
 // ── assertion 13: dispatch ───────────────────────────────────────────────────

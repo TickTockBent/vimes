@@ -86,6 +86,17 @@ export function isLegalTaskEdge(fromStage: TaskStage, toStage: TaskStage): boole
   return TASK_STAGE_EDGES.get(fromStage)?.has(toStage) ?? false;
 }
 
+// The legal-edge table as a plain record — the wire form the daemon serves so
+// the UI can reflect legality without COPYING the vocabulary (the drift hazard
+// moveOptionsFor's comment named). Derived from TASK_STAGE_EDGES, never re-typed.
+export function taskStageEdgesRecord(): Record<TaskStage, TaskStage[]> {
+  const record = {} as Record<TaskStage, TaskStage[]>;
+  for (const stage of TASK_STAGES) {
+    record[stage] = [...(TASK_STAGE_EDGES.get(stage) ?? [])];
+  }
+  return record;
+}
+
 // ── the proposal, the refusals, the outcome ──────────────────────────────────
 
 // Who is proposing. `dispatcher` is the deterministic mover; `orchestrator` is

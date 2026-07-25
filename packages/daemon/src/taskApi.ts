@@ -1,7 +1,9 @@
 import type { Context, Hono } from 'hono';
 import { z } from 'zod';
 import {
+  taskStageEdgesRecord,
   type TaskRecord,
+  type TaskStage,
   type TransitionProposal,
   type TransitionProposedBy,
   type TransitionRejectionReason,
@@ -64,6 +66,13 @@ export type ProposeTransitionResponse =
   | { accepted: false; reason: TransitionRejectionReason };
 export interface DispatchResponse {
   result: DispatchAttemptResult;
+}
+// S8: the legal-edge table, served so the move sheet can filter to legal next
+// stages without the UI copying `TASK_STAGE_EDGES` (the drift `taskBoard.ts`'s
+// comment used to warn against). Static and read-only — `taskStageEdgesRecord()`
+// is pure, so this route touches neither the writer nor the log.
+export interface StageEdgesResponse {
+  edges: Record<TaskStage, TaskStage[]>;
 }
 
 // ── the boundary vocabularies ────────────────────────────────────────────────
@@ -317,6 +326,23 @@ export function registerTaskApi(app: Hono, deps: TaskApiDeps): void {
     }
     const response: DispatchResponse = { result };
     return context.json(response, 200);
+  });
+
+  // ── GET /api/tasks/stage-edges — the legal-edge table (S8) ──────────────────
+  //
+  // Wes ruled 2026-07-24: the move sheet must offer only LEGAL next stages, not
+  // every stage — but the UI must not gain a second copy of `TASK_STAGE_EDGES` to
+  // do it (principle 9: one source of record per fact). So the table is SERVED
+  // from here, behind the same auth wall as every other route on this app, and
+  // the board fetches it instead of re-declaring it. Static, read-only, events
+  // nothing — `taskStageEdgesRecord()` is a pure derivation of core's own table.
+  //
+  // This does NOT reopen the "no `GET /api/tasks`" decision below: that route
+  // would be a second reader of TASK STATE (the projection already serves it).
+  // This route serves the TRANSITION RULES, a fact nothing else exposes.
+  app.get('/api/tasks/stage-edges', (context) => {
+    const response: StageEdgesResponse = { edges: taskStageEdgesRecord() };
+    return context.json(response);
   });
 
   // ── NO `GET /api/tasks` — deliberately ─────────────────────────────────────
