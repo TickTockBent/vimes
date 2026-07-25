@@ -195,6 +195,80 @@ describe('TaskWriter — createTask', () => {
       ['createdBy', 'isolation', 'projectRoot', 'stage', 'taskId'],
     );
   });
+
+  // ── S7·2a — the four AUTHORED work-order fields ─────────────────────────────
+
+  it('MINTS one id per acceptance criterion from the injected source (deterministic)', () => {
+    // THE PINNED DESIGN, exercised. The input criterion is `{ text }` only; the
+    // writer mints the id server-side from the SAME CountingIdSource that mints
+    // `taskId`, so under the counting source the ids are byte-deterministic. The
+    // taskId is minted FIRST (counter #1), then each criterion in order (#2, #3),
+    // so the exact strings are pinnable — which is what proves nothing re-mints
+    // and nothing reaches for randomUUID.
+    const harness = buildHarness();
+    const created = harness.writer.createTask({
+      projectRoot: PROJECT_ROOT,
+      createdBy: 'human',
+      isolation: 'worktree',
+      stage: 'backlog',
+      scope: 'carry the work order onto the born record',
+      explicitlyOut: ['the amend path (S7·2b)'],
+      acceptanceCriteria: [
+        { text: 'first criterion' },
+        { text: 'second criterion' },
+      ],
+      killCriterion: 'a criterion id cannot be made deterministic',
+    });
+
+    // taskId is counter #1; criterion ids are #2 and #3, in order.
+    expect(created.taskId).toBe('00000000-0000-4000-8000-000000000001');
+    expect(created.acceptanceCriteria).toEqual([
+      { id: '00000000-0000-4000-8000-000000000002', text: 'first criterion' },
+      { id: '00000000-0000-4000-8000-000000000003', text: 'second criterion' },
+    ]);
+
+    // Exactly ONE event, and it is the birth record on the tasks stream.
+    expect(eventTypes(harness.emitted)).toEqual([EVENT_TYPES.taskCreated]);
+
+    // The FULL {id,text} criteria (not the {text} input) are what got written into
+    // the event, so replay reads the stored ids back.
+    expect(harness.emitted[0]!.payload).toMatchObject({
+      scope: 'carry the work order onto the born record',
+      explicitlyOut: ['the amend path (S7·2b)'],
+      acceptanceCriteria: [
+        { id: '00000000-0000-4000-8000-000000000002', text: 'first criterion' },
+        { id: '00000000-0000-4000-8000-000000000003', text: 'second criterion' },
+      ],
+      killCriterion: 'a criterion id cannot be made deterministic',
+    });
+
+    // I12: the returned record IS the projection's fold of the log, not an echo.
+    expect(created).toEqual(harness.currentTasks().tasks[created.taskId]);
+    expect(created.scope).toBe('carry the work order onto the born record');
+    expect(created.explicitlyOut).toEqual(['the amend path (S7·2b)']);
+    expect(created.killCriterion).toBe('a criterion id cannot be made deterministic');
+  });
+
+  it('omits ALL work-order fields from the birth record when none were named', () => {
+    // Absent stays absent (I6): a task created with no work order must produce a
+    // `task_created` byte-identical to every pre-slice-7 one — exactly the five
+    // pre-existing keys, none of the new ones.
+    const harness = buildHarness();
+    const created = harness.writer.createTask({
+      projectRoot: PROJECT_ROOT,
+      createdBy: 'human',
+      isolation: 'worktree',
+      stage: 'backlog',
+    });
+    expect(Object.keys(harness.emitted[0]!.payload as object).sort()).toEqual(
+      ['createdBy', 'isolation', 'projectRoot', 'stage', 'taskId'],
+    );
+    // And the folded record carries none of them either.
+    expect('scope' in created).toBe(false);
+    expect('explicitlyOut' in created).toBe(false);
+    expect('acceptanceCriteria' in created).toBe(false);
+    expect('killCriterion' in created).toBe(false);
+  });
 });
 
 describe('TaskWriter — an ACCEPTED transition', () => {

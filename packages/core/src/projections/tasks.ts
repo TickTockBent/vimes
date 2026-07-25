@@ -96,6 +96,24 @@ export const tasksProjection: Projection<TasksState> = {
           // the ONLY way `requireHeadroom` / `deferUntilReset` reach a record, and
           // therefore the only way I10's refusal is reachable outside a test.
           gates: payload.gates ?? {},
+          // The four AUTHORED work-order fields (S7·2a). SPREAD rather than
+          // defaulted, mirroring `title` above EXACTLY — and the difference from
+          // `gates` is the point: `gates` folds ABSENT → `{}` because an ungated
+          // task and a task with no gates are the same fact, but these prose/list
+          // fields have NO neutral value the way `{}` is neutral for gates. An
+          // empty scope, an empty explicitly-out list or an empty acceptance list
+          // is a work order someone chose, not "no work order", so absent stays
+          // absent: a pre-S7·2a `task_created` folds to a record with NONE of
+          // these keys present, byte-identical to what it folded to before the
+          // widening landed (I6). `acceptanceCriteria` carries its `{id,text}`
+          // entries VERBATIM — the ids were minted by the writer and written into
+          // the event, so nothing re-mints here and replay is deterministic.
+          ...(payload.scope === undefined ? {} : { scope: payload.scope }),
+          ...(payload.explicitlyOut === undefined ? {} : { explicitlyOut: payload.explicitlyOut }),
+          ...(payload.acceptanceCriteria === undefined
+            ? {}
+            : { acceptanceCriteria: payload.acceptanceCriteria }),
+          ...(payload.killCriterion === undefined ? {} : { killCriterion: payload.killCriterion }),
           sessionRefs: [],
           createdBy: payload.createdBy,
           lastHeartbeatAt: null,

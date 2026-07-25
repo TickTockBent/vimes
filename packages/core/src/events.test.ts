@@ -22,6 +22,7 @@ import {
   sessionAdoptedPayloadSchema,
   sessionRenamed,
   sessionRenamedPayloadSchema,
+  taskCreatedPayloadSchema,
   workOrderAmended,
   workOrderAmendedPayloadSchema,
 } from './events.js';
@@ -308,5 +309,53 @@ describe('work_order_amended (S7·1 — RESERVED, no emitter)', () => {
     expect(
       workOrderAmendedPayloadSchema.safeParse({ ...amendmentPayload, workOrderRev: -1 }).success,
     ).toBe(false);
+  });
+});
+
+describe('taskCreatedPayloadSchema — the S7·2a work-order widening (OPTIONAL-only, I6)', () => {
+  // The base birth payload every case starts from — the pre-slice-7 shape that
+  // must keep validating unchanged.
+  const baseBirthPayload = {
+    taskId: 'task-aaaa-0001',
+    projectRoot: '/home/user/projects/vimes',
+    createdBy: 'human' as const,
+    isolation: 'worktree' as const,
+    stage: 'backlog' as const,
+  };
+
+  it('accepts a payload carrying all four authored work-order fields', () => {
+    // ⚠ `acceptanceCriteria` is the FULL record shape `{id,text}[]` on the EVENT
+    // (the writer has already minted the ids and written them in), NOT the
+    // `{text}` input shape the API accepts — the two are deliberately different.
+    const fullPayload = {
+      ...baseBirthPayload,
+      scope: 'fold the work-order fields onto the birth record',
+      explicitlyOut: ['the amend path (S7·2b)', 'the authoring UI (S7·3)'],
+      acceptanceCriteria: [
+        { id: 'crit-id-1', text: 'typecheck is green' },
+        { id: 'crit-id-2', text: 'both suites pass' },
+      ],
+      killCriterion: 'a reserved shape forces a projection default',
+    };
+    const parsed = taskCreatedPayloadSchema.safeParse(fullPayload);
+    expect(parsed.success, JSON.stringify(parsed.error?.issues)).toBe(true);
+  });
+
+  it('still accepts a payload that omits all four (the pre-slice-7 shape is unchanged)', () => {
+    // The load-bearing I6 half at the event layer: an unauthored birth record
+    // omits every work-order field and must validate exactly as it did before the
+    // widening landed, so old logs replay untouched.
+    expect(taskCreatedPayloadSchema.safeParse(baseBirthPayload).success).toBe(true);
+  });
+
+  it('rejects an acceptance criterion missing its minted id (the event shape is {id,text})', () => {
+    // The event/record criterion shape REQUIRES an id: it is minted server-side
+    // and written in, so a payload carrying a bare `{text}` here is malformed at
+    // the event layer — the input `{text}` shape lives only at the API boundary.
+    const missingId = {
+      ...baseBirthPayload,
+      acceptanceCriteria: [{ text: 'no id was minted for this one' }],
+    };
+    expect(taskCreatedPayloadSchema.safeParse(missingId).success).toBe(false);
   });
 });

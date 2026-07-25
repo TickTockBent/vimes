@@ -168,6 +168,31 @@ const _recordGatesMatchTheSchema = {} as TaskRecord['gates'] satisfies z.infer<
 // field — inventing one here would widen the record by accident.
 const MAX_TASK_TITLE_LENGTH = 200;
 
+// ── S7·2a: the work-order input caps (I8, boundary-only) ──────────────────────
+//
+// The four authored work-order fields are FREE TEXT FROM AN UNTRUSTED CALLER that
+// land in a durable append-only record, so they are bounded HERE, at the boundary,
+// and nowhere deeper — `taskRecordSchema`'s work-order fields stay unbounded
+// optional strings/arrays on purpose, so a record written before (or under a
+// different) cap still parses and still replays (I6). A cap enforced by the record
+// schema would be a migration; a cap enforced by the route is a policy.
+//
+// These are the SAME CLASS of input guard as `MAX_TASK_TITLE_LENGTH` — bounds,
+// not behaviour-shaping ⟨tune⟩s (nothing about the system's behaviour changes with
+// the exact number), so Gate-D does not apply and they are pinned directly. Over
+// any cap → the WHOLE body fails to parse → 400 with **NO EVENT**, the established
+// idiom (a body that was never a valid proposal writes nothing).
+//
+//   • MAX_WORK_ORDER_TEXT — the prose fields (`scope`, `killCriterion`): generous
+//     paragraphs, comfortably above any real work-order section.
+//   • MAX_WORK_ORDER_LINE — one list ENTRY (an `explicitlyOut` line, one
+//     criterion's text): a sentence or two, not a paragraph.
+//   • MAX_LIST_ITEMS — how many entries a list may hold, so a hostile caller
+//     cannot send a hundred-thousand-element array and force a huge birth record.
+const MAX_WORK_ORDER_TEXT = 8000;
+const MAX_WORK_ORDER_LINE = 2000;
+const MAX_LIST_ITEMS = 100;
+
 const createTaskBodySchema = z.object({
   projectRoot: z.string(),
   // Over the cap → the whole body fails to parse → 400 with **NO EVENT**, the
@@ -179,6 +204,21 @@ const createTaskBodySchema = z.object({
   isolation: z.enum(ISOLATION_VALUES).default('worktree'),
   stage: z.enum(TASK_STAGE_VALUES).default('backlog'),
   gates: taskGatesSchema.optional(),
+  // ── S7·2a: the four AUTHORED work-order fields, bounded (see caps above) ─────
+  //
+  // ⚠ THE ACCEPTANCE-CRITERION INPUT SHAPE IS `{ text }` — TEXT ONLY, NO id. The
+  // id is MINTED SERVER-SIDE in `TaskWriter.createTask` from the injected id
+  // source; the client/form never supplies it (see the CreateTaskInput note in
+  // taskWriter.ts). The record/event shape is `{ id, text }`; these are
+  // deliberately different and must not be unified. Each field is optional, so an
+  // unauthored creation still succeeds exactly as it did before slice 7.
+  scope: z.string().min(1).max(MAX_WORK_ORDER_TEXT).optional(),
+  explicitlyOut: z.array(z.string().min(1).max(MAX_WORK_ORDER_LINE)).max(MAX_LIST_ITEMS).optional(),
+  acceptanceCriteria: z
+    .array(z.object({ text: z.string().min(1).max(MAX_WORK_ORDER_LINE) }))
+    .max(MAX_LIST_ITEMS)
+    .optional(),
+  killCriterion: z.string().min(1).max(MAX_WORK_ORDER_TEXT).optional(),
 });
 
 // POST /api/tasks/:taskId/transitions body.
@@ -245,6 +285,20 @@ export function registerTaskApi(app: Hono, deps: TaskApiDeps): void {
         isolation: parsedBody.value.isolation,
         stage: parsedBody.value.stage,
         ...(parsedBody.value.gates === undefined ? {} : { gates: parsedBody.value.gates }),
+        // The four AUTHORED work-order fields (S7·2a), passed straight through —
+        // absent stays absent all the way down to the birth record, the same idiom
+        // as `title`/`gates`. `acceptanceCriteria` is the `{ text }[]` INPUT shape
+        // here; the writer mints each `{ id, text }` before it reaches the event.
+        ...(parsedBody.value.scope === undefined ? {} : { scope: parsedBody.value.scope }),
+        ...(parsedBody.value.explicitlyOut === undefined
+          ? {}
+          : { explicitlyOut: parsedBody.value.explicitlyOut }),
+        ...(parsedBody.value.acceptanceCriteria === undefined
+          ? {}
+          : { acceptanceCriteria: parsedBody.value.acceptanceCriteria }),
+        ...(parsedBody.value.killCriterion === undefined
+          ? {}
+          : { killCriterion: parsedBody.value.killCriterion }),
       });
       const response: CreateTaskResponse = { task };
       return context.json(response, 201);
