@@ -24,8 +24,10 @@ import {
   type MetersState,
   type Projection,
 } from '@vimes/core';
+import Database from 'better-sqlite3';
 import { SqliteEventStore } from './sqliteEventStore.js';
 import { SqliteSnapshotStore } from './sqliteSnapshotStore.js';
+import { SqliteArtifactStore } from './sqliteArtifactStore.js';
 import {
   AUTH_REJECTED_EVENT_TYPE,
   createAccessAuthMiddleware,
@@ -339,6 +341,14 @@ export function createDaemon(deps: DaemonDeps): Daemon {
   const { config, clock, ids } = deps;
   const store = new SqliteEventStore({ path: config.dbPath, clock, ids });
   const snapshotStore = new SqliteSnapshotStore({ path: config.dbPath });
+  // S7·5b-i: the artifact store the dispatcher writes captured plans into (D48).
+  // Unlike the stores above it takes an ALREADY-OPEN Database rather than a `{ path }`
+  // (see sqliteArtifactStore.ts's constructor-style note); we resolve that here by
+  // opening a DEDICATED connection to the same `config.dbPath` — better-sqlite3 opens
+  // several connections to one file routinely, and this keeps the artifact tables in
+  // the daemon's single database without refactoring the other stores' ownership of
+  // their own connections. No live caller yet (recordPlan's trigger is 5b-ii).
+  const artifactStore = new SqliteArtifactStore(new Database(config.dbPath));
   const router = new EventRouter(store);
   const { verifier, configured: authConfigured } = resolveVerifier(config, deps.verifier);
 
@@ -477,6 +487,13 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     // disk, which is Wes's call to make deliberately (rule 0).
     worktreeIsolationEnabled: config.worktreeIsolation === 'on',
     worktreeManager,
+    // S7·5b-i: the state-owning half of native plan capture (D48). The dispatcher
+    // writes captured plans into `artifactStore` and proposes planning→plan-ready
+    // through `taskWriter` (I7's choke point — the SAME one-writer instance the task
+    // API uses, never a second one). Nothing calls `recordPlan` yet; the trigger is
+    // 5b-ii, so wiring these two changes no live behaviour.
+    artifactStore,
+    taskWriter,
   });
 
   registerTaskApi(app, {
