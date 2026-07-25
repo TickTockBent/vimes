@@ -330,30 +330,35 @@ const bannerText = computed(() => {
            plus onPanelClick so an in-app hash link inside it pushes a panel rather
            than hard-navigating the browser. -->
       <div
-        class="flex w-80 shrink-0 flex-col overflow-y-auto border-r border-slate-200 dark:border-slate-800"
+        class="flex w-80 shrink-0 flex-col overflow-hidden border-r border-slate-200 dark:border-slate-800"
         @click="onPanelClick($event, 0)"
       >
-        <PanelHost
-          :route="sidebarRoute"
-          :index="0"
-          :focused="false"
-          :back-kind="backKind"
-          @open="openSessionPanel"
-          @open-files="openFilesPanel"
-          @open-search="openSearchPanel"
-          @open-terminal="openTerminalPanel"
-          @open-git="openGitPanel"
-          @open-cost="openCostPanel"
-          @open-tasks="openTasksPanel"
-          @open-editor="openEditorPanel"
-          @back="backFrom"
-        />
-        <!-- Theme picker (unit 6b·2) rides at the foot of the desktop sidebar —
-             the shell chrome where nav/meters already live. The persistent top
-             bar (and the mobile home for this control) is a LATER unit; @click
-             above is on the sidebar wrapper, so mousedown/onPanelClick don't
-             fire a navigation for taps on the picker. -->
-        <div class="mt-auto shrink-0 border-t border-line px-3 py-2" @click.stop>
+        <!-- The session list scrolls on its OWN (SessionListView is h-full +
+             overflow-y-auto); this wrapper just gives it the bounded height so
+             the picker below stays a FIXED foot, not part of the scroll. -->
+        <div class="min-h-0 flex-1">
+          <PanelHost
+            :route="sidebarRoute"
+            :index="0"
+            :focused="false"
+            :back-kind="backKind"
+            @open="openSessionPanel"
+            @open-files="openFilesPanel"
+            @open-search="openSearchPanel"
+            @open-terminal="openTerminalPanel"
+            @open-git="openGitPanel"
+            @open-cost="openCostPanel"
+            @open-tasks="openTasksPanel"
+            @open-editor="openEditorPanel"
+            @back="backFrom"
+          />
+        </div>
+        <!-- Theme picker (unit 6b·2): a FIXED foot of the sidebar, OUTSIDE the
+             scroll region so it is ALWAYS visible. The earlier version rode inside
+             the scrolling column with mt-auto, so under a long session list it sat
+             below the fold (the bug Wes hit). Persistent top bar + mobile home is
+             a later unit; @click.stop so a tap on the picker doesn't navigate. -->
+        <div class="shrink-0 border-t border-line px-3 py-2" @click.stop>
           <ThemePicker />
         </div>
       </div>
