@@ -1,9 +1,11 @@
 import {
   decideDispatch,
   dispatchRefused,
+  planSubmitted,
   resolveStageRunner,
   taskSessionAttached,
   taskWorktreeCreated,
+  type ArtifactStore,
   type DispatchDeferReason,
   type DispatchRefuseReason,
   type EventInput,
@@ -13,6 +15,7 @@ import {
   type TasksState,
 } from '@vimes/core';
 import type { SessionHost } from './sessionHost.js';
+import type { TaskWriter } from './taskWriter.js';
 import type { WorktreeManager } from './worktreeManager.js';
 
 // ─── slice 6 step 4a — the dispatcher EXECUTOR (daemon I/O) ──────────────────
@@ -166,6 +169,31 @@ export interface TaskDispatcherDeps {
   // Returning `null` or an empty string sends nothing. A non-empty string is sent
   // ONCE, through `sessionHost.sendMessage`, after the session exists.
   composeStageInstruction?: (task: TaskRecord, plan: StageRunnerPlan) => string | null;
+
+  // ── S7·5b-i: the native plan-capture seam (D48, I10) ─────────────────────────
+  //
+  // `recordPlan` is the STATE-OWNING half of native plan capture. When a plan-mode
+  // planner emits a plan, the fragile SDK adapter (5b-ii, later) will only OBSERVE
+  // it and PROPOSE it back through a callback; the dispatcher — which owns task
+  // state (principle 10 / I10) — is what actually records it. Two deps make that
+  // possible, and both are REQUIRED with no default because a recorded plan without
+  // either is a half-written fact:
+  //
+  //   • `artifactStore` — the content-addressed blob store (S7·4). The plan CONTENT
+  //     lives here; the task record and the `plan_submitted` event carry only the
+  //     hash. The dispatcher is the writer, never the adapter.
+  //   • `taskWriter` — narrowed to `proposeTaskTransition` alone (the same `Pick`
+  //     idiom the session-host seam uses), so the planning→plan-ready move goes
+  //     through I7's SINGLE choke point (which emits `task_transitioned` or an
+  //     evented rejection), NOT a `task_transitioned` this module hand-rolls. A
+  //     dispatcher that emitted the transition itself would be a second writer of
+  //     task state, and I7 would stop being assertable the moment it did.
+  //
+  // ⚠ NO CALLER YET. `recordPlan` is invoked by nothing in this unit — the trigger
+  // (the `ExitPlanMode` interception + the `onPlanCaptured` callback) is 5b-ii. So
+  // wiring these deps changes NO live behaviour and needs no restart.
+  artifactStore: ArtifactStore;
+  taskWriter: Pick<TaskWriter, 'proposeTaskTransition'>;
 }
 
 // What happened to a composed stage instruction. Present on a result ONLY when an
@@ -492,6 +520,101 @@ export class TaskDispatcher {
         };
       }
     }
+  }
+
+  /**
+   * Record a captured plan — the DETERMINISTIC I10 core of native plan capture
+   * (D48, S7·5b-i). Called with the planner's app-session id and the plan text a
+   * plan-mode run produced; NOTHING calls it yet (the SDK-adapter trigger is
+   * 5b-ii), so this method changes no live behaviour on its own.
+   *
+   * The dispatcher owns three writes here, IN THIS ORDER, and the order is the
+   * contract: store the blob → emit `plan_submitted` → propose the transition. The
+   * hash the event carries must name a blob that already exists, and the transition
+   * must follow the fact it depends on.
+   *
+   * TOTAL and NEVER THROWS on its own paths — like `dispatchTask`, it is called from
+   * an adapter (5b-ii) and a method that throws is a capture that silently stopped.
+   * Two paths are deliberate NO-OPS:
+   *
+   *   • EMPTY PLAN → nothing. A plan-mode run that emitted only whitespace captured
+   *     nothing; storing an empty-hash artifact and evening a `plan_submitted` for
+   *     it would be a false fact in an append-only log — the plan that never was.
+   *
+   *   • UNKNOWN / NON-PLANNING SESSION → nothing. If no task carries a
+   *     `{ stage: 'planning', appSessionId }` ref for this planner, there is no task
+   *     to record against, and fabricating one would put a plan on a task the log
+   *     never tied to this session — the same "unknown → nothing" discipline
+   *     `dispatchTask` and `TaskWriter` already keep.
+   *
+   * ⚠ THE TRANSITION GOES THROUGH `taskWriter.proposeTaskTransition` (I7's choke
+   * point), NEVER a `task_transitioned` this module emits. The writer adjudicates
+   * planning→plan-ready and records EITHER a `task_transitioned` or an evented
+   * rejection (e.g. the task already left `planning`) — both of which are correct
+   * and both of which are the writer's to make, not the dispatcher's. Emitting the
+   * transition here would make this a second writer of task state and break I10/I7.
+   */
+  recordPlan(plannerAppSessionId: string, planText: string): void {
+    // 1. EMPTY GUARD — a whitespace-only plan captured nothing; see the no-op note.
+    if (planText.trim() === '') {
+      return;
+    }
+
+    // 2. REVERSE-LOOKUP the owning task from its OWN planning refs. Fresh read, like
+    // every other read in this module — a stale board is a board that no longer
+    // reflects which session is planning what. No task claims this planner → NO-OP.
+    const owningTask = Object.values(this.deps.readTasks().tasks).find((task) =>
+      task.sessionRefs.some(
+        (sessionRef) =>
+          sessionRef.stage === 'planning' && sessionRef.appSessionId === plannerAppSessionId,
+      ),
+    );
+    if (owningTask === undefined) {
+      return;
+    }
+
+    // 3. THE FORWARD-PATH IDENTITY (full attempt tracking is S7·7b). `attempt` is
+    // the count of planning refs on this task — the Nth planning run, ≥1 because we
+    // just matched one, which satisfies `submitPlanPayloadSchema`'s positive-int
+    // rule. `workOrderRev` defaults to 0 until the first amendment (S7·2b), matching
+    // the record's absent-until-amended field.
+    const planningAttempt = owningTask.sessionRefs.filter(
+      (sessionRef) => sessionRef.stage === 'planning',
+    ).length;
+    const workOrderRev = owningTask.workOrderRev ?? 0;
+
+    // 4. STORE THE BLOB first — the plan CONTENT lives in the artifact store, the
+    // event carries only its hash. The dispatcher is the writer (I10); the injected
+    // `nowIso` is the only clock (rule 0.3).
+    const planEnvelope = this.deps.artifactStore.put(planText, {
+      kind: 'plan',
+      taskRef: { taskId: owningTask.taskId, stage: 'planning' },
+      rev: workOrderRev,
+      createdBy: { appSessionId: plannerAppSessionId },
+      createdAt: this.deps.nowIso(),
+    });
+
+    // 5. EMIT `plan_submitted` (S7·5a) — AFTER the blob exists, so the hash it
+    // carries always names stored content. The fold augments the record with
+    // `planArtifactHash`; the rest of the payload stays on the event for audit.
+    this.deps.emit([
+      planSubmitted({
+        taskId: owningTask.taskId,
+        stage: 'planning',
+        attempt: planningAttempt,
+        workOrderRev,
+        planArtifactHash: planEnvelope.hash,
+        plannerSessionRef: { appSessionId: plannerAppSessionId },
+      }),
+    ]);
+
+    // 6. PROPOSE planning→plan-ready through I7's choke point — LAST, and never a
+    // hand-rolled emit. The writer emits `task_transitioned` (or an evented
+    // rejection if the task is not in `planning`, which is correct and recorded).
+    this.deps.taskWriter.proposeTaskTransition(owningTask.taskId, {
+      toStage: 'plan-ready',
+      proposedBy: 'dispatcher',
+    });
   }
 
   /**

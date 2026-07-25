@@ -7,6 +7,7 @@ import { Hono } from 'hono';
 import {
   CountingIdSource,
   EVENT_TYPES,
+  MemoryArtifactStore,
   MemoryEventStore,
   SteppingClock,
   readAllStreamsGrouped,
@@ -190,6 +191,11 @@ function buildApiHarness(
     readMeters: () => metersState,
     nowIso: () => FIXED_NOW,
     staleAfterMs: options.staleAfterMs ?? FRESH_STALE_BAND_MS,
+    // S7·5b-i deps — inert here (no test in this file calls recordPlan), but
+    // required now that the dispatcher owns the plan-capture seam. The SAME
+    // taskWriter instance, so the transition would go through I7's one writer.
+    artifactStore: new MemoryArtifactStore(),
+    taskWriter,
   });
 
   const app = new Hono();
