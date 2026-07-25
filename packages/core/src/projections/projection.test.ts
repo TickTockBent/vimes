@@ -178,6 +178,11 @@ function buildMultiStreamStore(): MemoryEventStore {
 const TASK_ALPHA = 'task-alpha-0001';
 const TASK_BETA = 'task-beta-0002';
 const TASK_GAMMA = 'task-gamma-0003';
+// S11 (2026-07-24): a fold the I6 fixture never exercises is a fold I6 does
+// not cover — DELTA walks the new `cancelled` stage AND its recovery edge
+// (`cancelled -> backlog`), so replay-equivalence covers both the reachability
+// half and the recovery half of the design in one journey.
+const TASK_DELTA = 'task-delta-0004';
 // The stage runs. APP_1 is the session created at the top of the fixture whose
 // `taskRef` already names TASK_ALPHA/implementing, so the attach record and the
 // session's own birth record agree about the same run.
@@ -302,6 +307,23 @@ function buildTaskStreamStore(): MemoryEventStore {
   // The convergence exit: done + manualReviewRequired.
   store.append([
     taskTransitioned({ taskId: TASK_ALPHA, fromStage: 'review', toStage: 'done', manualReviewRequired: true, proposedBy: 'dispatcher' }),
+  ]);
+  // S11: DELTA is born, moves into work, is cancelled, and RECOVERS back to
+  // backlog — the whole `cancelled` journey inside one I6 fixture. Appended
+  // at the TAIL of the 'tasks' stream (after every other task's events) on
+  // purpose: it must not move the mid cut point that the BETA/GAMMA title
+  // assertions below depend on.
+  store.append([
+    taskCreated({ taskId: TASK_DELTA, projectRoot: '/home/user/d', createdBy: 'human', isolation: 'worktree', stage: 'backlog' }),
+  ]);
+  store.append([
+    taskTransitioned({ taskId: TASK_DELTA, fromStage: 'backlog', toStage: 'planning', manualReviewRequired: false, proposedBy: 'dispatcher' }),
+  ]);
+  store.append([
+    taskTransitioned({ taskId: TASK_DELTA, fromStage: 'planning', toStage: 'cancelled', manualReviewRequired: false, proposedBy: 'human' }),
+  ]);
+  store.append([
+    taskTransitioned({ taskId: TASK_DELTA, fromStage: 'cancelled', toStage: 'backlog', manualReviewRequired: false, proposedBy: 'human' }),
   ]);
   store.append([hostStarted()]);
   return store;
@@ -449,11 +471,39 @@ describe('projection I6 — boot(snapshot+tail) equals replay-from-empty', () =>
     // the non-vacuity guard inside assertBootEqualsReplayAtCuts.
     const store = buildTaskStreamStore();
     const state = replayFromEmpty(tasksProjection, readAllStreamsGrouped(store));
-    expect(Object.keys(state.tasks).sort()).toEqual([TASK_ALPHA, TASK_BETA, TASK_GAMMA].sort());
+    expect(Object.keys(state.tasks).sort()).toEqual(
+      [TASK_ALPHA, TASK_BETA, TASK_GAMMA, TASK_DELTA].sort(),
+    );
     expect(state.tasks[TASK_ALPHA]!.stage).toBe('done');
     expect(state.tasks[TASK_ALPHA]!.manualReviewRequired).toBe(true);
     expect(state.tasks[TASK_BETA]!.stage).toBe('quarantined');
     expect(state.tasks[TASK_GAMMA]!.stage).toBe('blocked-external');
+    // S11: DELTA cancelled then recovered — it lands back in backlog, not
+    // stuck in cancelled.
+    expect(state.tasks[TASK_DELTA]!.stage).toBe('backlog');
+  });
+
+  it('the tasks I6 fixture folds the S11 cancel-then-recover journey (DELTA)', () => {
+    // The explicit statement of what the DELTA case above replays: it must
+    // actually PASS THROUGH `cancelled` mid-journey, not just land back at
+    // backlog by some other route. Checked via the mid-journey state directly
+    // (replaying only up to the cancellation) rather than trusting the final
+    // stage alone to prove the edge was walked.
+    const store = buildTaskStreamStore();
+    const records = readAllStreamsGrouped(store);
+    const cancelledIndex = records.findIndex(
+      (record) =>
+        record.stream === 'tasks' &&
+        record.type === 'task_transitioned' &&
+        (record.payload as { taskId?: unknown }).taskId === TASK_DELTA &&
+        (record.payload as { toStage?: unknown }).toStage === 'cancelled',
+    );
+    expect(cancelledIndex).toBeGreaterThanOrEqual(0);
+    const midCancelState = replayFromEmpty(tasksProjection, records.slice(0, cancelledIndex + 1));
+    expect(midCancelState.tasks[TASK_DELTA]!.stage).toBe('cancelled');
+
+    const finalState = replayFromEmpty(tasksProjection, records);
+    expect(finalState.tasks[TASK_DELTA]!.stage).toBe('backlog');
   });
 
   it('the tasks I6 fixture folds the GATES its birth records carry (step 4b)', () => {
@@ -521,6 +571,7 @@ describe('projection I6 — boot(snapshot+tail) equals replay-from-empty', () =>
       { stage: 'planning', appSessionId: BETA_PLANNING_SESSION },
     ]);
     expect(state.tasks[TASK_GAMMA]!.sessionRefs).toEqual([]);
+    expect(state.tasks[TASK_DELTA]!.sessionRefs).toEqual([]);
     expect(state.tasks['task-never-created-9999']).toBeUndefined();
   });
 

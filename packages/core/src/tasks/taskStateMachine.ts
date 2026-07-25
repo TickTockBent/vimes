@@ -63,21 +63,52 @@ export const INITIAL_TASK_STAGE: TaskStage = 'backlog';
 //     into. It is permissive by design because the blocking cause lives outside
 //     our model, so we cannot know which stage the task should re-enter. It does
 //     NOT reach `done`: leaving a park still goes through the work stages.
+//
+//   • `cancelled` (S11, 2026-07-24, Wes's Option A) is reachable from every
+//     non-`done` stage — `backlog`, `planning`, `plan-ready`, `implementing`,
+//     `review`, `blocked-external`, `quarantined` — and recovers ONLY to
+//     `backlog`. Non-terminal (it has an out-edge, unlike `done`) and
+//     non-dispatchable (`DISPATCHABLE_TASK_STAGES` in dispatchDecision.ts is
+//     `{planning, implementing, review}`, and the complement is derived, so
+//     `cancelled` never spawns a worker by construction — no dispatcher logic
+//     changed). `done` deliberately does NOT gain `cancelled` as a target:
+//     completed work is not "cancelled", and `done` stays terminal. A give-up
+//     that can be undone, unlike `done`.
 export const TASK_STAGE_EDGES: ReadonlyMap<TaskStage, ReadonlySet<TaskStage>> = new Map<
   TaskStage,
   ReadonlySet<TaskStage>
 >([
-  ['backlog', new Set<TaskStage>(['planning', 'blocked-external'])],
-  ['planning', new Set<TaskStage>(['plan-ready', 'blocked-external', 'quarantined', 'backlog'])],
-  ['plan-ready', new Set<TaskStage>(['implementing', 'planning', 'blocked-external', 'backlog'])],
-  ['implementing', new Set<TaskStage>(['review', 'blocked-external', 'quarantined'])],
-  ['review', new Set<TaskStage>(['done', 'implementing', 'blocked-external', 'quarantined'])],
+  ['backlog', new Set<TaskStage>(['planning', 'blocked-external', 'cancelled'])],
+  [
+    'planning',
+    new Set<TaskStage>(['plan-ready', 'blocked-external', 'quarantined', 'backlog', 'cancelled']),
+  ],
+  [
+    'plan-ready',
+    new Set<TaskStage>(['implementing', 'planning', 'blocked-external', 'backlog', 'cancelled']),
+  ],
+  ['implementing', new Set<TaskStage>(['review', 'blocked-external', 'quarantined', 'cancelled'])],
+  [
+    'review',
+    new Set<TaskStage>(['done', 'implementing', 'blocked-external', 'quarantined', 'cancelled']),
+  ],
   [
     'blocked-external',
-    new Set<TaskStage>(['backlog', 'planning', 'plan-ready', 'implementing', 'review']),
+    new Set<TaskStage>([
+      'backlog',
+      'planning',
+      'plan-ready',
+      'implementing',
+      'review',
+      'cancelled',
+    ]),
   ],
-  ['quarantined', new Set<TaskStage>(['backlog', 'planning', 'implementing', 'blocked-external'])],
+  [
+    'quarantined',
+    new Set<TaskStage>(['backlog', 'planning', 'implementing', 'blocked-external', 'cancelled']),
+  ],
   ['done', new Set<TaskStage>()],
+  ['cancelled', new Set<TaskStage>(['backlog'])],
 ]);
 
 // Is `toStage` a listed edge out of `fromStage`? Pure table lookup — this is the
