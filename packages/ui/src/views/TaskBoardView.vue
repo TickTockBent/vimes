@@ -208,36 +208,36 @@ const DISPATCH_TONE_CLASS: Readonly<Record<DispatchReport['tone'], string>> = {
   // `waiting` is deliberately NOT the failure palette: a deferred dispatch is
   // the gate doing its job, and dressing it in red would train an operator to
   // fear a healthy state.
-  ok: 'border-emerald-300 bg-emerald-50 text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-200',
-  waiting:
-    'border-sky-300 bg-sky-50 text-sky-900 dark:border-sky-800 dark:bg-sky-950/50 dark:text-sky-200',
-  refused:
-    'border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-800 dark:bg-amber-950/50 dark:text-amber-200',
-  failed:
-    'border-rose-300 bg-rose-50 text-rose-900 dark:border-rose-800 dark:bg-rose-950/50 dark:text-rose-200',
-  unknown:
-    'border-slate-300 bg-slate-50 text-slate-900 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200',
+  ok: 'border-ok/30 bg-ok/10 text-ok',
+  waiting: 'border-accent/30 bg-accent/10 text-accent',
+  refused: 'border-warn/30 bg-warn/10 text-warn',
+  failed: 'border-crit/30 bg-crit/10 text-crit',
+  unknown: 'border-line bg-panel-sunken text-ink',
 };
 
 const MOVE_TONE_CLASS: Readonly<Record<'accepted' | 'rejected' | 'error', string>> = {
-  accepted:
-    'border-emerald-300 bg-emerald-50 text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-200',
-  // A rejection is the machine working, not the board breaking — amber, not red.
-  rejected:
-    'border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-800 dark:bg-amber-950/50 dark:text-amber-200',
-  error:
-    'border-rose-300 bg-rose-50 text-rose-900 dark:border-rose-800 dark:bg-rose-950/50 dark:text-rose-200',
+  accepted: 'border-ok/30 bg-ok/10 text-ok',
+  // A rejection is the machine working, not the board breaking — warn, not crit.
+  rejected: 'border-warn/30 bg-warn/10 text-warn',
+  error: 'border-crit/30 bg-crit/10 text-crit',
 };
 
+// ⚠ DUPLICATE OF lib/sessionRow.ts's LIVENESS_STYLE — this board keeps its own
+// hardcoded liveness colour table. Tokenized IN PLACE to MATCH sessionRow.ts's
+// 4a·2 mapping exactly (text-accent-fg is the on-fill foreground for every solid
+// tone/accent fill; dormant is the quiet neutral bg-ink-dim). A future unit may
+// dedup this against the lib — out of scope for the styling sweep.
 const LIVENESS_CLASS: Readonly<Record<string, string>> = {
-  spawning: 'bg-sky-500 text-white',
-  running: 'bg-emerald-500 text-white',
-  dormant: 'bg-slate-400 text-white',
-  interrupted: 'bg-amber-500 text-white',
-  dead: 'bg-rose-600 text-white',
+  spawning: 'bg-accent text-accent-fg',
+  running: 'bg-ok text-accent-fg',
+  dormant: 'bg-ink-dim text-ground',
+  interrupted: 'bg-warn text-accent-fg',
+  dead: 'bg-crit text-accent-fg',
 };
 function livenessClass(liveness: string): string {
-  return LIVENESS_CLASS[liveness] ?? 'bg-slate-300 text-slate-800';
+  // Fallback for an unrecognised liveness string: a muted neutral badge,
+  // distinct from the tone fills above (no bare-palette default).
+  return LIVENESS_CLASS[liveness] ?? 'bg-panel-sunken text-ink-dim';
 }
 </script>
 
@@ -247,25 +247,25 @@ function livenessClass(liveness: string): string {
       <div class="flex items-center gap-2">
         <button
           type="button"
-          class="min-h-[44px] rounded-md border border-slate-300 px-3 text-sm font-medium active:bg-slate-100 dark:border-slate-700 dark:active:bg-slate-900"
+          class="min-h-[44px] rounded-md border border-line px-3 text-sm font-medium active:bg-panel-sunken"
           :aria-label="props.backKind === 'close' ? 'Close panel' : 'Back'"
           @click="emit('back')"
         >
           {{ props.backKind === 'close' ? '✕' : '‹ Back' }}
         </button>
-        <h1 class="text-lg font-semibold">Tasks</h1>
+        <h1 class="text-lg font-semibold uppercase tracking-[0.08em] text-ink">Tasks</h1>
       </div>
       <div class="flex items-center gap-2">
         <button
           type="button"
-          class="min-h-[44px] rounded-md border border-slate-300 px-3 text-sm font-medium active:bg-slate-100 dark:border-slate-700 dark:active:bg-slate-900"
+          class="min-h-[44px] rounded-md border border-line px-3 text-sm font-medium active:bg-panel-sunken"
           @click="openCreate"
         >
           + New
         </button>
         <button
           type="button"
-          class="min-h-[44px] min-w-[44px] rounded-md border border-slate-300 px-3 text-sm font-medium active:bg-slate-100 dark:border-slate-700 dark:active:bg-slate-900"
+          class="min-h-[44px] min-w-[44px] rounded-md border border-line px-3 text-sm font-medium active:bg-panel-sunken"
           aria-label="Refresh the task board"
           @click="store.fetchTasks()"
         >
@@ -281,7 +281,7 @@ function livenessClass(liveness: string): string {
          count still renders: "no blocked work" is a fact worth showing, and a
          tray that vanishes teaches you not to look for it. -->
     <section
-      class="sticky top-0 z-20 flex gap-2 rounded-lg border border-slate-200 bg-white/95 p-2 backdrop-blur dark:border-slate-800 dark:bg-slate-950/95"
+      class="sticky top-0 z-20 flex gap-2 rounded-lg border border-line bg-panel/95 p-2 backdrop-blur"
       aria-label="Exception tray"
     >
       <button
@@ -291,34 +291,34 @@ function livenessClass(liveness: string): string {
         class="flex min-h-[44px] flex-1 flex-col items-start justify-center rounded-md border px-3 py-1 text-left"
         :class="
           focusedStage === group.stage
-            ? 'border-slate-900 bg-slate-100 dark:border-slate-300 dark:bg-slate-800'
-            : 'border-slate-200 dark:border-slate-700'
+            ? 'border-ink bg-panel-sunken'
+            : 'border-line'
         "
         :aria-pressed="focusedStage === group.stage"
         @click="toggleFocus(group.stage)"
       >
-        <span class="text-[11px] uppercase tracking-wide text-slate-500 dark:text-slate-400">{{ group.label }}</span>
+        <span class="font-mono text-[11px] uppercase tracking-[0.08em] text-ink-dim">{{ group.label }}</span>
         <span
-          class="text-lg font-bold tabular-nums"
-          :class="group.count === 0 ? 'text-slate-400 dark:text-slate-500' : ''"
+          class="text-lg font-bold font-mono tabular-nums"
+          :class="group.count === 0 ? 'text-ink-dim' : ''"
         >
           {{ group.count }}
         </span>
       </button>
     </section>
 
-    <p v-if="store.tasksLoading" class="rounded-lg border border-slate-200 p-4 text-sm text-slate-500 dark:border-slate-800 dark:text-slate-400">
+    <p v-if="store.tasksLoading" class="rounded-lg border border-line p-4 text-sm text-ink-dim">
       Reading the tasks projection…
     </p>
     <p
       v-else-if="board.totalTasks === 0"
-      class="rounded-lg border border-slate-200 p-4 text-sm text-slate-500 dark:border-slate-800 dark:text-slate-400"
+      class="rounded-lg border border-line p-4 text-sm text-ink-dim"
     >
       No tasks have been created yet. This is an empty board, not a failed read — every stage below is real and
       waiting.
     </p>
 
-    <p v-if="focusedStage !== null" class="text-xs text-slate-500 dark:text-slate-400">
+    <p v-if="focusedStage !== null" class="text-xs text-ink-dim">
       Focused on <span class="font-semibold">{{ stageLabel(focusedStage) }}</span
       >. Tap its header again to show the whole board.
     </p>
@@ -329,7 +329,7 @@ function livenessClass(liveness: string): string {
     <section
       v-for="group in visibleExceptions"
       :key="`section:${group.stage}`"
-      class="flex flex-col gap-2 rounded-lg border border-amber-200 p-3 dark:border-amber-900/60"
+      class="flex flex-col gap-2 rounded-lg border border-warn/30 p-3"
     >
       <button
         type="button"
@@ -337,37 +337,37 @@ function livenessClass(liveness: string): string {
         :aria-pressed="focusedStage === group.stage"
         @click="toggleFocus(group.stage)"
       >
-        <h2 class="text-sm font-semibold">{{ group.label }}</h2>
-        <span class="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold tabular-nums text-amber-900 dark:bg-amber-900/60 dark:text-amber-100">
+        <h2 class="text-sm font-semibold font-mono uppercase tracking-[0.08em]">{{ group.label }}</h2>
+        <span class="rounded-full bg-warn/10 px-2 py-0.5 text-xs font-semibold font-mono tabular-nums text-warn">
           {{ group.count }}
         </span>
       </button>
-      <p v-if="group.count === 0" class="text-xs text-slate-400 dark:text-slate-500">Nothing here.</p>
+      <p v-if="group.count === 0" class="text-xs text-ink-dim">Nothing here.</p>
       <ul v-else class="flex flex-col gap-2">
         <li v-for="card in group.tasks" :key="card.taskId">
           <button
             type="button"
-            class="flex w-full flex-col items-start gap-1 rounded-md border border-slate-200 p-3 text-left active:bg-slate-100 dark:border-slate-800 dark:active:bg-slate-900"
+            class="flex w-full flex-col items-start gap-1 rounded-md border border-line p-3 text-left active:bg-panel-sunken"
             @click="openSheet(card)"
           >
             <span
               class="w-full truncate text-sm font-medium"
-              :class="card.labelIsFallback ? 'font-mono text-slate-500 dark:text-slate-400' : ''"
+              :class="card.labelIsFallback ? 'font-mono text-ink-dim' : ''"
             >
               {{ card.label }}
             </span>
-            <span class="flex w-full flex-wrap items-center gap-1.5 text-[11px] text-slate-500 dark:text-slate-400">
+            <span class="flex w-full flex-wrap items-center gap-1.5 text-[11px] text-ink-dim">
               <span v-if="card.projectName !== null" class="truncate">{{ card.projectName }}</span>
               <span v-if="card.createdBy !== null">· {{ card.createdBy }}</span>
               <span
                 v-if="card.isolatedInWorktree"
-                class="rounded-full bg-slate-100 px-1.5 py-0.5 font-semibold text-slate-600 dark:bg-slate-800 dark:text-slate-300"
+                class="rounded-full bg-panel-sunken px-1.5 py-0.5 font-semibold font-mono uppercase tracking-[0.08em] text-ink-dim"
               >
                 worktree
               </span>
               <span
                 v-if="card.manualReviewRequired"
-                class="rounded-full bg-amber-100 px-1.5 py-0.5 font-semibold text-amber-900 dark:bg-amber-900/60 dark:text-amber-100"
+                class="rounded-full bg-warn/10 px-1.5 py-0.5 font-semibold font-mono uppercase tracking-[0.08em] text-warn"
               >
                 manual review
               </span>
@@ -382,7 +382,7 @@ function livenessClass(liveness: string): string {
                    never rendered as 'dead'. -->
               <span
                 v-else-if="card.latestSession !== null"
-                class="rounded-full bg-slate-100 px-1.5 py-0.5 font-semibold text-slate-500 dark:bg-slate-800 dark:text-slate-400"
+                class="rounded-full bg-panel-sunken px-1.5 py-0.5 font-semibold font-mono uppercase tracking-[0.08em] text-ink-dim"
               >
                 session unknown
               </span>
@@ -398,7 +398,7 @@ function livenessClass(liveness: string): string {
     <section
       v-for="group in visibleFlow"
       :key="`section:${group.stage}`"
-      class="flex flex-col gap-2 rounded-lg border border-slate-200 p-3 dark:border-slate-800"
+      class="flex flex-col gap-2 rounded-lg border border-line p-3"
     >
       <button
         type="button"
@@ -406,37 +406,37 @@ function livenessClass(liveness: string): string {
         :aria-pressed="focusedStage === group.stage"
         @click="toggleFocus(group.stage)"
       >
-        <h2 class="text-sm font-semibold">{{ group.label }}</h2>
-        <span class="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold tabular-nums text-slate-700 dark:bg-slate-800 dark:text-slate-300">
+        <h2 class="text-sm font-semibold font-mono uppercase tracking-[0.08em]">{{ group.label }}</h2>
+        <span class="rounded-full bg-panel-sunken px-2 py-0.5 text-xs font-semibold font-mono tabular-nums text-ink-dim">
           {{ group.count }}
         </span>
       </button>
-      <p v-if="group.count === 0" class="text-xs text-slate-400 dark:text-slate-500">Nothing here.</p>
+      <p v-if="group.count === 0" class="text-xs text-ink-dim">Nothing here.</p>
       <ul v-else class="flex flex-col gap-2">
         <li v-for="card in group.tasks" :key="card.taskId">
           <button
             type="button"
-            class="flex w-full flex-col items-start gap-1 rounded-md border border-slate-200 p-3 text-left active:bg-slate-100 dark:border-slate-800 dark:active:bg-slate-900"
+            class="flex w-full flex-col items-start gap-1 rounded-md border border-line p-3 text-left active:bg-panel-sunken"
             @click="openSheet(card)"
           >
             <span
               class="w-full truncate text-sm font-medium"
-              :class="card.labelIsFallback ? 'font-mono text-slate-500 dark:text-slate-400' : ''"
+              :class="card.labelIsFallback ? 'font-mono text-ink-dim' : ''"
             >
               {{ card.label }}
             </span>
-            <span class="flex w-full flex-wrap items-center gap-1.5 text-[11px] text-slate-500 dark:text-slate-400">
+            <span class="flex w-full flex-wrap items-center gap-1.5 text-[11px] text-ink-dim">
               <span v-if="card.projectName !== null" class="truncate">{{ card.projectName }}</span>
               <span v-if="card.createdBy !== null">· {{ card.createdBy }}</span>
               <span
                 v-if="card.isolatedInWorktree"
-                class="rounded-full bg-slate-100 px-1.5 py-0.5 font-semibold text-slate-600 dark:bg-slate-800 dark:text-slate-300"
+                class="rounded-full bg-panel-sunken px-1.5 py-0.5 font-semibold font-mono uppercase tracking-[0.08em] text-ink-dim"
               >
                 worktree
               </span>
               <span
                 v-if="card.manualReviewRequired"
-                class="rounded-full bg-amber-100 px-1.5 py-0.5 font-semibold text-amber-900 dark:bg-amber-900/60 dark:text-amber-100"
+                class="rounded-full bg-warn/10 px-1.5 py-0.5 font-semibold font-mono uppercase tracking-[0.08em] text-warn"
               >
                 manual review
               </span>
@@ -449,7 +449,7 @@ function livenessClass(liveness: string): string {
               </span>
               <span
                 v-else-if="card.latestSession !== null"
-                class="rounded-full bg-slate-100 px-1.5 py-0.5 font-semibold text-slate-500 dark:bg-slate-800 dark:text-slate-400"
+                class="rounded-full bg-panel-sunken px-1.5 py-0.5 font-semibold font-mono uppercase tracking-[0.08em] text-ink-dim"
               >
                 session unknown
               </span>
@@ -465,15 +465,15 @@ function livenessClass(liveness: string): string {
     <section
       v-for="group in visibleUnknown"
       :key="`unknown:${group.stage}`"
-      class="flex flex-col gap-2 rounded-lg border border-dashed border-rose-300 p-3 dark:border-rose-800"
+      class="flex flex-col gap-2 rounded-lg border border-dashed border-crit/30 p-3"
     >
       <div class="flex items-center justify-between gap-2">
-        <h2 class="font-mono text-sm font-semibold">{{ group.label }}</h2>
-        <span class="rounded-full bg-rose-100 px-2 py-0.5 text-xs font-semibold tabular-nums text-rose-900 dark:bg-rose-900/60 dark:text-rose-100">
+        <h2 class="font-mono text-sm font-semibold uppercase tracking-[0.08em]">{{ group.label }}</h2>
+        <span class="rounded-full bg-crit/10 px-2 py-0.5 text-xs font-semibold font-mono tabular-nums text-crit">
           {{ group.count }}
         </span>
       </div>
-      <p class="text-[11px] text-slate-500 dark:text-slate-400">
+      <p class="text-[11px] text-ink-dim">
         This board does not recognise that stage. It is shown verbatim rather than hidden — the record says what it
         says.
       </p>
@@ -481,13 +481,13 @@ function livenessClass(liveness: string): string {
         <li v-for="card in group.tasks" :key="card.taskId">
           <button
             type="button"
-            class="flex w-full flex-col items-start gap-1 rounded-md border border-slate-200 p-3 text-left active:bg-slate-100 dark:border-slate-800 dark:active:bg-slate-900"
+            class="flex w-full flex-col items-start gap-1 rounded-md border border-line p-3 text-left active:bg-panel-sunken"
             @click="openSheet(card)"
           >
             <span class="w-full truncate text-sm font-medium" :class="card.labelIsFallback ? 'font-mono' : ''">
               {{ card.label }}
             </span>
-            <span v-if="card.projectName !== null" class="truncate text-[11px] text-slate-500 dark:text-slate-400">
+            <span v-if="card.projectName !== null" class="truncate text-[11px] text-ink-dim">
               {{ card.projectName }}
             </span>
           </button>
@@ -504,20 +504,20 @@ function livenessClass(liveness: string): string {
       aria-label="Task actions"
       @click.self="closeSheet"
     >
-      <div class="max-h-[85vh] w-full overflow-y-auto rounded-t-2xl bg-white p-4 dark:bg-slate-950">
+      <div class="max-h-[85vh] w-full overflow-y-auto rounded-t-2xl bg-panel p-4">
         <div class="flex items-start justify-between gap-3">
           <div class="min-w-0">
             <h2 class="truncate text-base font-semibold" :class="openCard.labelIsFallback ? 'font-mono' : ''">
               {{ openCard.label }}
             </h2>
-            <p class="truncate font-mono text-[11px] text-slate-500 dark:text-slate-400">{{ openCard.taskId }}</p>
-            <p class="text-xs text-slate-500 dark:text-slate-400">
+            <p class="truncate font-mono text-[11px] text-ink-dim">{{ openCard.taskId }}</p>
+            <p class="text-xs text-ink-dim">
               in {{ openCard.stage === '' ? '(no stage recorded)' : stageLabel(openCard.stage) }}
             </p>
           </div>
           <button
             type="button"
-            class="min-h-[44px] shrink-0 rounded-md border border-slate-300 px-3 text-sm font-medium dark:border-slate-700"
+            class="min-h-[44px] shrink-0 rounded-md border border-line px-3 text-sm font-medium"
             @click="closeSheet"
           >
             Close
@@ -558,8 +558,8 @@ function livenessClass(liveness: string): string {
              Mirroring TASK_STAGE_EDGES here would make this a second authority
              on legality — which 0.3 and principle 10 forbid — and would hide the
              very invariant this board exists to demonstrate. -->
-        <h3 class="mt-4 text-sm font-semibold">Move to…</h3>
-        <p class="mb-2 text-[11px] text-slate-500 dark:text-slate-400">
+        <h3 class="mt-4 text-sm font-semibold font-mono uppercase tracking-[0.08em]">Move to…</h3>
+        <p class="mb-2 text-[11px] text-ink-dim">
           Every stage is offered. VIMES decides which moves are legal, and says why when it refuses.
         </p>
         <ul class="flex flex-col gap-1.5">
@@ -569,28 +569,28 @@ function livenessClass(liveness: string): string {
               class="flex min-h-[44px] w-full items-center justify-between gap-2 rounded-md border px-3 text-left text-sm font-medium disabled:opacity-50"
               :class="
                 option.kind === 'exception'
-                  ? 'border-amber-300 dark:border-amber-800'
-                  : 'border-slate-300 dark:border-slate-700'
+                  ? 'border-warn/40'
+                  : 'border-line'
               "
               :disabled="moveInFlight"
               @click="proposeMove(option.stage)"
             >
               <span>{{ option.label }}</span>
-              <span aria-hidden="true" class="text-slate-400">›</span>
+              <span aria-hidden="true" class="text-ink-dim">›</span>
             </button>
           </li>
         </ul>
 
-        <h3 class="mt-4 text-sm font-semibold">Run it</h3>
+        <h3 class="mt-4 text-sm font-semibold font-mono uppercase tracking-[0.08em]">Run it</h3>
         <button
           type="button"
-          class="mt-2 min-h-[44px] w-full rounded-md border border-slate-900 bg-slate-900 px-3 text-sm font-semibold text-white disabled:opacity-50 dark:border-slate-100 dark:bg-slate-100 dark:text-slate-900"
+          class="mt-2 min-h-[44px] w-full rounded-md bg-accent px-3 text-sm font-semibold text-accent-fg active:bg-accent/90 disabled:opacity-50"
           :disabled="dispatchInFlight"
           @click="dispatch"
         >
           {{ dispatchInFlight ? 'Dispatching…' : 'Dispatch' }}
         </button>
-        <p class="mt-2 text-[11px] text-slate-500 dark:text-slate-400">
+        <p class="mt-2 text-[11px] text-ink-dim">
           One attempt, no retry. The worker is told its task, stage and directory.
         </p>
       </div>
@@ -605,60 +605,60 @@ function livenessClass(liveness: string): string {
       aria-label="New task"
       @click.self="createOpen = false"
     >
-      <div class="w-full rounded-t-2xl bg-white p-4 dark:bg-slate-950">
+      <div class="w-full rounded-t-2xl bg-panel p-4">
         <div class="flex items-center justify-between gap-3">
           <h2 class="text-base font-semibold">New task</h2>
           <button
             type="button"
-            class="min-h-[44px] rounded-md border border-slate-300 px-3 text-sm font-medium dark:border-slate-700"
+            class="min-h-[44px] rounded-md border border-line px-3 text-sm font-medium"
             @click="createOpen = false"
           >
             Close
           </button>
         </div>
 
-        <label class="mt-3 block text-xs font-medium text-slate-600 dark:text-slate-300" for="new-task-title">
+        <label class="mt-3 block text-xs font-medium font-mono uppercase tracking-[0.08em] text-ink-dim" for="new-task-title">
           Title (optional)
         </label>
         <input
           id="new-task-title"
           v-model="createTitle"
           type="text"
-          class="mt-1 min-h-[44px] w-full rounded-md border border-slate-300 px-3 text-sm dark:border-slate-700 dark:bg-slate-900"
+          class="mt-1 min-h-[44px] w-full rounded-md border border-line bg-panel-sunken px-3 text-sm"
           placeholder="what this task is"
         />
 
-        <label class="mt-3 block text-xs font-medium text-slate-600 dark:text-slate-300" for="new-task-root">
+        <label class="mt-3 block text-xs font-medium font-mono uppercase tracking-[0.08em] text-ink-dim" for="new-task-root">
           Project root
         </label>
         <input
           id="new-task-root"
           v-model="createProjectRoot"
           type="text"
-          class="mt-1 min-h-[44px] w-full rounded-md border border-slate-300 px-3 font-mono text-sm dark:border-slate-700 dark:bg-slate-900"
+          class="mt-1 min-h-[44px] w-full rounded-md border border-line bg-panel-sunken px-3 font-mono text-sm"
           placeholder="path to the project directory"
           autocapitalize="off"
           autocorrect="off"
           spellcheck="false"
         />
-        <p class="mt-1 text-[11px] text-slate-500 dark:text-slate-400">
+        <p class="mt-1 text-[11px] text-ink-dim">
           Full path to the project directory. Must be within an allowed project root — the daemon refuses anything outside it.
         </p>
 
-        <p class="mt-3 text-[11px] text-slate-500 dark:text-slate-400">
+        <p class="mt-3 text-[11px] text-ink-dim">
           A task is created in the backlog with worktree isolation (D32). The title cannot be changed afterwards —
           there is no rename.
         </p>
 
         <button
           type="button"
-          class="mt-3 min-h-[44px] w-full rounded-md border border-slate-900 bg-slate-900 px-3 text-sm font-semibold text-white disabled:opacity-50 dark:border-slate-100 dark:bg-slate-100 dark:text-slate-900"
+          class="mt-3 min-h-[44px] w-full rounded-md bg-accent px-3 text-sm font-semibold text-accent-fg active:bg-accent/90 disabled:opacity-50"
           :disabled="createInFlight || createProjectRoot === ''"
           @click="submitCreate"
         >
           {{ createInFlight ? 'Creating…' : 'Create' }}
         </button>
-        <p v-if="createNotice !== null" class="mt-2 text-xs text-slate-600 dark:text-slate-300" role="status">
+        <p v-if="createNotice !== null" class="mt-2 text-xs text-ink-dim" role="status">
           {{ createNotice }}
         </p>
       </div>
