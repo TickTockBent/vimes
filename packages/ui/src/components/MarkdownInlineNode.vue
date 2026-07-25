@@ -45,7 +45,7 @@ const pathHref = computed<string | null>(() => {
 
   <code
     v-else-if="node.kind === 'code'"
-    class="rounded bg-slate-200 px-1 py-0.5 font-mono text-[0.85em] break-all dark:bg-slate-700"
+    class="rounded bg-panel-sunken px-1 py-0.5 font-mono text-[0.85em] break-all"
   >{{ node.text }}</code>
 
   <!-- B3: `node.href` reached this component only because markdown.ts already
@@ -56,7 +56,7 @@ const pathHref = computed<string | null>(() => {
     :href="node.href"
     target="_blank"
     rel="noopener noreferrer"
-    class="underline decoration-dotted"
+    class="text-accent underline decoration-dotted"
   >
     <MarkdownInlineNode v-for="(child, childIndex) in node.children" :key="childIndex" :node="child" :cwd="cwd" />
   </a>
@@ -73,6 +73,6 @@ const pathHref = computed<string | null>(() => {
   <a
     v-else-if="node.kind === 'path' && pathHref !== null"
     :href="pathHref"
-    class="rounded bg-slate-200 px-1 py-0.5 font-mono text-[0.85em] break-all underline decoration-dotted dark:bg-slate-700"
+    class="rounded bg-panel-sunken px-1 py-0.5 font-mono text-[0.85em] break-all text-accent underline decoration-dotted"
   >{{ node.raw }}</a>
 </template>

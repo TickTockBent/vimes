@@ -67,7 +67,7 @@ const sessionListRoute = computed(() =>
        column's geometry. App.vue only passes focused=true when more than one
        panel is visible, so at N=1 (the phone) no ring renders — the single
        panel is byte-visually identical to today. -->
-  <div class="h-full" :class="focused ? 'ring-2 ring-inset ring-blue-500' : ''">
+  <div class="h-full" :class="focused ? 'ring-2 ring-inset ring-accent' : ''">
     <EditorView
       v-if="editorRoute"
       :key="editorRoute.path"

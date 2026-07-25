@@ -54,7 +54,7 @@ function alignClass(align: 'left' | 'center' | 'right' | 'none'): string {
       <component
         :is="`h${block.level}`"
         v-if="block.kind === 'heading'"
-        class="font-bold"
+        class="font-mono font-bold"
         :class="headingSizeClass(block.level)"
       >
         <MarkdownInlineNode v-for="(node, nodeIndex) in block.inlines" :key="nodeIndex" :node="node" :cwd="cwd" />
@@ -65,7 +65,7 @@ function alignClass(align: 'left' | 'center' | 'right' | 'none'): string {
            block rather than widening the page on a phone. -->
       <pre
         v-else-if="block.kind === 'codeBlock'"
-        class="overflow-x-auto rounded-md bg-slate-900 p-2 font-mono text-xs text-slate-100 dark:bg-black"
+        class="overflow-x-auto rounded-md border border-line bg-panel-sunken p-2 font-mono text-xs text-ink"
       ><code>{{ block.code }}</code></pre>
 
       <ul v-else-if="block.kind === 'list' && !block.ordered" class="list-disc space-y-0.5 pl-5">
@@ -80,7 +80,7 @@ function alignClass(align: 'left' | 'center' | 'right' | 'none'): string {
         </li>
       </ol>
 
-      <hr v-else-if="block.kind === 'rule'" class="border-slate-300 dark:border-slate-400/50" />
+      <hr v-else-if="block.kind === 'rule'" class="border-line" />
 
       <!-- Wide tables scroll INSIDE their own block, same pattern as the
            fenced-code block above — never widen the page on a phone. Cells
@@ -95,7 +95,7 @@ function alignClass(align: 'left' | 'center' | 'right' | 'none'): string {
                 v-for="(cell, cellIndex) in block.header"
                 :key="cellIndex"
                 :class="alignClass(block.align[cellIndex] ?? 'none')"
-                class="border-b border-slate-300 px-2 py-1 text-left font-semibold dark:border-slate-600"
+                class="border-b border-line px-2 py-1 text-left font-semibold"
               >
                 <MarkdownInlineNode
                   v-for="(node, nodeIndex) in cell.inlines"
@@ -112,7 +112,7 @@ function alignClass(align: 'left' | 'center' | 'right' | 'none'): string {
                 v-for="(cell, cellIndex) in row"
                 :key="cellIndex"
                 :class="alignClass(block.align[cellIndex] ?? 'none')"
-                class="border-b border-slate-200 px-2 py-1 dark:border-slate-700"
+                class="border-b border-line px-2 py-1"
               >
                 <MarkdownInlineNode
                   v-for="(node, nodeIndex) in cell.inlines"
