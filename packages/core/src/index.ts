@@ -4,6 +4,18 @@ export * from './schemas.js';
 export type { EventStore } from './eventStore.js';
 export { MemoryEventStore } from './memoryEventStore.js';
 export { EventRouter, type OnEvent } from './router.js';
+// S7·4 (rule 0.5) — the content-addressed artifact store, injected
+// infrastructure with NO live consumer yet (S7·5 is the first). Port + memory
+// fake here mirror EventStore/MemoryEventStore; the durable adapter is
+// packages/daemon/src/sqliteArtifactStore.ts.
+export {
+  computeArtifactHash,
+  buildArtifactEnvelope,
+  ArtifactEnvelopeValidationError,
+  type ArtifactStore,
+  type ArtifactPutMeta,
+} from './artifactStore.js';
+export { MemoryArtifactStore } from './memoryArtifactStore.js';
 
 export { canonicalJson } from './canonicalJson.js';
 export {
