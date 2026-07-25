@@ -13,6 +13,7 @@ import {
 import { panelLinkClick } from './lib/panelLinkClick.js';
 import { useLayoutMode } from './lib/useLayoutMode.js';
 import ThemePicker from './components/ThemePicker.vue';
+import UsageGauge from './components/UsageGauge.vue';
 
 const store = useVimesStore();
 
@@ -355,7 +356,10 @@ function toggleSidebarCollapsed(): void {
       </button>
       <span class="font-mono text-sm font-bold tracking-[0.14em] text-ink">VIMES</span>
       <span class="flex-1"></span>
-      <!-- usage gauge slot (unit 3b) -->
+      <!-- usage gauge (unit 3b): the account-usage instrument — binding constraint
+           always visible, click to expand every window. Right region so it shows in
+           every layout, ahead of the theme picker. -->
+      <UsageGauge />
       <ThemePicker />
     </header>
 
