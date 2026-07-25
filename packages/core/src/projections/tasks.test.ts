@@ -313,6 +313,63 @@ describe('tasks projection — I6, the S7·1 work-order widening is invisible wh
   });
 });
 
+// ── S7·2a — the work-order fields fold onto the birth record ─────────────────
+//
+// The forward path this unit turns on: a `task_created` that CARRIES the four
+// authored work-order fields folds them onto the record VERBATIM. The absent case
+// stays covered by the S7·1 describe above (deliberately unchanged — those tests
+// still pass, proving absent-stays-absent), so these cases exercise only the
+// PRESENT case and the I6 replay guarantee.
+describe('tasks projection — S7·2a, a carrying task_created folds the work-order fields', () => {
+  // A birth record carrying all four. `acceptanceCriteria` uses the FULL
+  // `{id,text}` shape because the writer mints the ids and writes them INTO the
+  // event — the fold reads them back, it never mints.
+  const WORK_ORDER = {
+    scope: 'carry the four authored work-order fields onto the born record',
+    explicitlyOut: ['workOrderRev (S7·2b)', 'the two-door UI (S7·8)'],
+    acceptanceCriteria: [
+      { id: 'crit-id-alpha', text: 'the fold preserves criterion ids' },
+      { id: 'crit-id-beta', text: 'absent stays absent' },
+    ],
+    killCriterion: 'a field cannot fold without a projection default',
+  };
+
+  function createTaskWithWorkOrder(): EventInput {
+    return taskCreated({
+      taskId: TASK_A,
+      projectRoot: '/home/user/projects/vimes',
+      createdBy: 'human',
+      isolation: 'worktree',
+      stage: 'backlog',
+      ...WORK_ORDER,
+    });
+  }
+
+  it('folds all four VERBATIM, ids preserved, and the record still satisfies the schema', () => {
+    const state = stateFromLog([[createTaskWithWorkOrder()]]);
+    const bornTask = state.tasks[TASK_A]!;
+
+    expect(bornTask.scope).toBe(WORK_ORDER.scope);
+    expect(bornTask.explicitlyOut).toEqual(WORK_ORDER.explicitlyOut);
+    // The criterion ids are preserved exactly — nothing re-mints on fold.
+    expect(bornTask.acceptanceCriteria).toEqual(WORK_ORDER.acceptanceCriteria);
+    expect(bornTask.killCriterion).toBe(WORK_ORDER.killCriterion);
+
+    const validated = taskRecordSchema.safeParse(bornTask);
+    expect(validated.success, JSON.stringify(validated.error?.issues)).toBe(true);
+  });
+
+  it('replay-equivalence (I6): folding the same carrying-log twice is byte-identical', () => {
+    // The whole reason the ids are written INTO the event rather than re-minted on
+    // fold. If any part of the fold re-derived a criterion id (or defaulted a
+    // field), a second fold of the SAME log would produce different bytes. It does
+    // not: `canonicalJson` of the record is identical across two independent folds.
+    const firstFold = stateFromLog([[createTaskWithWorkOrder()]]);
+    const secondFold = stateFromLog([[createTaskWithWorkOrder()]]);
+    expect(tasksProjection.serialize(secondFold)).toBe(tasksProjection.serialize(firstFold));
+  });
+});
+
 describe('tasks projection — task_transitioned', () => {
   it('updates the stage of the named task', () => {
     // Assertion 3a.

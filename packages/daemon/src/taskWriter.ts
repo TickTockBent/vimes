@@ -67,6 +67,24 @@ export interface CreateTaskInput {
   // projection folds `{}` (an ungated task), exactly as every pre-4b birth
   // record did.
   readonly gates?: TaskRecord['gates'];
+  // ── S7·2a: the four AUTHORED work-order fields ──────────────────────────────
+  //
+  // All OPTIONAL, matching the widened `task_created` payload: absent → the birth
+  // record carries no such key at all (NOT a default), so an unauthored creation
+  // stays byte-identical to every pre-slice-7 one (I6).
+  //
+  // ⚠ `acceptanceCriteria` is the INPUT shape `{ text }[]` — TEXT ONLY, NO id.
+  // This is DELIBERATELY DIFFERENT from the record/event criterion shape
+  // (`{ id, text }`, the reserved `acceptanceCriterionSchema`) and the two must
+  // NOT be unified: a criterion id is STABLE identity that `report_review` (S7·6)
+  // keys per-criterion pass/fail to, it must be unique, and a human authoring form
+  // (S7·3) must not hand-type it. So the id is MINTED SERVER-SIDE in `createTask`
+  // from the injected id source (the same source that mints `taskId`), never
+  // supplied by the caller.
+  readonly scope?: string;
+  readonly explicitlyOut?: string[];
+  readonly acceptanceCriteria?: { text: string }[];
+  readonly killCriterion?: string;
 }
 
 // The outcome of ONE proposal. A discriminated union in the same idiom as
@@ -111,6 +129,23 @@ export class TaskWriter {
    */
   createTask(input: CreateTaskInput): TaskRecord {
     const taskId = this.deps.ids.uuid();
+    // ⚠ MINT ONE id PER acceptance criterion, SERVER-SIDE, from the SAME injected
+    // source that minted `taskId` above (rule 0.3 — nothing here reaches for
+    // randomUUID). The input criterion is `{ text }` (text only); the RECORD/event
+    // criterion is `{ id, text }`, and this map is the ONE place the id comes into
+    // existence. Writing the FULL `{ id, text }` into the `task_created` payload is
+    // what makes replay deterministic: the fold reads the stored id back and never
+    // re-mints, so the same carrying-log folds to a byte-identical record every
+    // time (I6). `undefined` in → `undefined` out, so the conditional-spread below
+    // omits the key entirely and an unauthored creation stays byte-identical to a
+    // pre-slice-7 birth record.
+    const mintedAcceptanceCriteria =
+      input.acceptanceCriteria === undefined
+        ? undefined
+        : input.acceptanceCriteria.map((criterion) => ({
+            id: this.deps.ids.uuid(),
+            text: criterion.text,
+          }));
     this.deps.emit([
       taskCreated({
         taskId,
@@ -125,6 +160,17 @@ export class TaskWriter {
         // Omitted rather than sent as `{}` when the creator named no gates, so an
         // ungated task's birth record is byte-identical to every pre-4b one.
         ...(input.gates === undefined ? {} : { gates: input.gates }),
+        // The four AUTHORED work-order fields (S7·2a). Each omitted rather than
+        // sent as `undefined` when the creator named nothing, so an unauthored
+        // task's birth record is byte-identical to every pre-slice-7 one (I6) —
+        // the same idiom as `title`/`gates` above. `acceptanceCriteria` carries
+        // the MINTED `{ id, text }` entries computed above, never the raw input.
+        ...(input.scope === undefined ? {} : { scope: input.scope }),
+        ...(input.explicitlyOut === undefined ? {} : { explicitlyOut: input.explicitlyOut }),
+        ...(mintedAcceptanceCriteria === undefined
+          ? {}
+          : { acceptanceCriteria: mintedAcceptanceCriteria }),
+        ...(input.killCriterion === undefined ? {} : { killCriterion: input.killCriterion }),
       }),
     ]);
     const bornTask = this.deps.readTasks().tasks[taskId];

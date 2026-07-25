@@ -379,6 +379,129 @@ describe('POST /api/tasks — create', () => {
     const task = await createTaskThrough(harness, { title: '' });
     expect(task.title).toBe('');
   });
+
+  // ── S7·2a: the four AUTHORED work-order fields, over the wire ──────────────
+
+  it('accepts a full work-order body, persists it, and returns MINTED criterion ids', async () => {
+    // THE FORWARD PATH end to end. The client sends acceptance criteria as
+    // `{ text }` (text only); the writer mints an `{ id, text }` per criterion
+    // from its injected CountingIdSource — taskId is counter #1, so the criteria
+    // are #2 and #3 — and the birth record carries the FULL shape. Asserted at
+    // BOTH ends: the response body AND the event actually written, because a route
+    // that echoed its own input would satisfy the first alone (and would carry no
+    // id at all, since the input has none).
+    const harness = buildApiHarness();
+    const task = await createTaskThrough(harness, {
+      scope: 'fold the work-order fields onto the born record',
+      explicitlyOut: ['the amend path (S7·2b)', 'the authoring UI (S7·3)'],
+      acceptanceCriteria: [{ text: 'both suites pass' }, { text: 'ids are minted server-side' }],
+      killCriterion: 'a criterion id cannot be made deterministic',
+    });
+
+    expect(task.scope).toBe('fold the work-order fields onto the born record');
+    expect(task.explicitlyOut).toEqual(['the amend path (S7·2b)', 'the authoring UI (S7·3)']);
+    expect(task.killCriterion).toBe('a criterion id cannot be made deterministic');
+    expect(task.acceptanceCriteria).toEqual([
+      { id: '00000000-0000-4000-8000-000000000002', text: 'both suites pass' },
+      { id: '00000000-0000-4000-8000-000000000003', text: 'ids are minted server-side' },
+    ]);
+
+    // The LOG carries the minted `{id,text}` criteria, not the bare `{text}` input.
+    expect(harness.taskEventTypes()).toEqual([EVENT_TYPES.taskCreated]);
+    expect(harness.taskEvents()[0]!.payload).toMatchObject({
+      scope: 'fold the work-order fields onto the born record',
+      acceptanceCriteria: [
+        { id: '00000000-0000-4000-8000-000000000002', text: 'both suites pass' },
+        { id: '00000000-0000-4000-8000-000000000003', text: 'ids are minted server-side' },
+      ],
+    });
+  });
+
+  it('creation with NO work-order fields still succeeds and carries none of the keys', async () => {
+    // The widening is OPTIONAL-only, so an unauthored creation is byte-for-byte a
+    // pre-slice-7 request. Asserted with `in` — a record that grew `scope:
+    // undefined` would pass `toBeUndefined()` while changing serialized bytes.
+    const harness = buildApiHarness();
+    const task = await createTaskThrough(harness);
+    expect('scope' in task).toBe(false);
+    expect('explicitlyOut' in task).toBe(false);
+    expect('acceptanceCriteria' in task).toBe(false);
+    expect('killCriterion' in task).toBe(false);
+
+    const birthRecord = harness.taskEvents()[0]!;
+    expect('scope' in (birthRecord.payload as object)).toBe(false);
+    expect('acceptanceCriteria' in (birthRecord.payload as object)).toBe(false);
+  });
+
+  it('a `scope` one character OVER the 8000 cap is 400 with NO EVENT', async () => {
+    // A work-order field is free text from an untrusted caller landing in a durable
+    // append-only record (I8), so it is bounded at the boundary — and the refusal
+    // follows the 4b idiom: a body that was never a valid proposal WRITES NOTHING.
+    //
+    // ⚠ THE INSTRUMENT IS THE LOG, NOT THE STATUS CODE. A route that emitted the
+    // birth record before validating would still answer 400; only the untouched
+    // stream head proves nothing was written.
+    const cap = 8000;
+    const harness = buildApiHarness();
+
+    const atTheCap = await createTaskThrough(harness, { scope: 'x'.repeat(cap) });
+    expect(atTheCap.scope).toHaveLength(cap);
+    const headAfterAccepted = harness.tasksHead();
+
+    const overTheCap = await harness.request(
+      '/api/tasks',
+      postJson({
+        projectRoot: harness.allowedRoot,
+        createdBy: 'human',
+        scope: 'x'.repeat(cap + 1),
+      }),
+    );
+    expect(overTheCap.status).toBe(400);
+    expect(harness.tasksHead()).toBe(headAfterAccepted);
+    expect(harness.taskEventTypes()).toEqual([EVENT_TYPES.taskCreated]);
+  });
+
+  it('MORE than 100 acceptance criteria is 400 with NO EVENT (the list cap)', async () => {
+    // The list-length guard: a hostile caller must not be able to force a
+    // hundred-thousand-entry birth record. 100 entries is accepted; 101 is refused
+    // whole, with nothing written.
+    const harness = buildApiHarness();
+
+    const atCap = Array.from({ length: 100 }, (_unused, index) => ({ text: `criterion ${index}` }));
+    const accepted = await createTaskThrough(harness, { acceptanceCriteria: atCap });
+    expect(accepted.acceptanceCriteria).toHaveLength(100);
+    const headAfterAccepted = harness.tasksHead();
+
+    const overCap = Array.from({ length: 101 }, (_unused, index) => ({ text: `criterion ${index}` }));
+    const response = await harness.request(
+      '/api/tasks',
+      postJson({ projectRoot: harness.allowedRoot, createdBy: 'human', acceptanceCriteria: overCap }),
+    );
+    expect(response.status).toBe(400);
+    expect(harness.tasksHead()).toBe(headAfterAccepted);
+  });
+
+  it('a work-order body outside the projectRoot allowlist is 403 with NO EVENT', async () => {
+    // The security wall runs FIRST and is unchanged by this widening: work-order
+    // fields do not bypass it. A refused creation leaves no task-shaped record,
+    // work order or not.
+    const harness = buildApiHarness();
+    const headBefore = harness.tasksHead();
+
+    const response = await harness.request(
+      '/api/tasks',
+      postJson({
+        projectRoot: harness.outsideRoot,
+        createdBy: 'human',
+        scope: 'this should never be written',
+        acceptanceCriteria: [{ text: 'nor should this' }],
+      }),
+    );
+
+    expect(response.status).toBe(403);
+    expect(harness.tasksHead()).toBe(headBefore);
+    expect(harness.taskEvents()).toEqual([]);
+  });
 });
 
 // ── assertion 9: THE SECURITY BOUNDARY ───────────────────────────────────────

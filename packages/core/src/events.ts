@@ -483,6 +483,22 @@ export const meterPushOutcomePayloadSchema = z.object({
 // before the field existed omits it, still validates, and still serializes to
 // the same bytes. Title is named at creation and never changed — there is no
 // `task_renamed` (see the note on `taskRecordSchema.title`).
+// ⚠ WIDENED AGAIN IN S7·2a with the four AUTHORED work-order fields — `scope`,
+// `explicitlyOut`, `acceptanceCriteria`, `killCriterion` — OPTIONAL-only, exactly
+// as `gates` and `title` were widened above and for the same I6 reason: every
+// `task_created` already written omits all four, still validates, and still
+// serializes to the same bytes. They are DERIVED from `taskRecordSchema.shape.*`
+// (not re-typed) so the event and the record can never drift on the shape, and
+// because all four are already `.optional()` on the record they ride through
+// optional here without a further `.optional()` call. `acceptanceCriteria` is the
+// FULL record shape `{id,text}[]` (the reserved `acceptanceCriterionSchema`): the
+// writer mints each id server-side and writes it INTO this event, so replay reads
+// the stored ids and nothing re-mints on fold (deterministic, I6).
+//
+// ⚠ `workOrderRev` is DELIBERATELY NOT ADDED to the birth payload. Creation has
+// no revision — a task is born at rev-absent, and the first amendment (S7·2b, via
+// the reserved `work_order_amended` event) is what introduces a rev. Adding it
+// here would let a creator fabricate a revision for an unamended work order.
 export const taskCreatedPayloadSchema = z.object({
   taskId: z.string(),
   projectRoot: z.string(),
@@ -493,6 +509,10 @@ export const taskCreatedPayloadSchema = z.object({
   isolation: taskRecordSchema.shape.isolation,
   stage: taskStageSchema,
   gates: taskRecordSchema.shape.gates.optional(),
+  scope: taskRecordSchema.shape.scope,
+  explicitlyOut: taskRecordSchema.shape.explicitlyOut,
+  acceptanceCriteria: taskRecordSchema.shape.acceptanceCriteria, // full {id,text}[]
+  killCriterion: taskRecordSchema.shape.killCriterion,
 });
 
 // task_transitioned — one ACCEPTED transition, exactly as the state machine
