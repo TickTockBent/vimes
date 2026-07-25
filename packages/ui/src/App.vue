@@ -294,10 +294,71 @@ const bannerText = computed(() => {
   if (store.catchingUp) return 'Catching up…';
   return null;
 });
+
+// ── sidebar collapse (unit 6b·3a) ────────────────────────────────────────────
+// Desktop-only presentation state (rule 0.3 boundary — layout, never a projection
+// input): whether the ambient session-list sidebar is hidden so the content frames
+// fill the full width. Persisted to localStorage so the choice survives a reload;
+// the parse is a trivial boolean so it stays inline (glue, not unit-tested per the
+// house rule). On tablet/mobile showSidebar is false, so this ref is inert and its
+// toggle is hidden — collapsing only means anything in the sidebar layout paradigm.
+const SIDEBAR_COLLAPSED_STORAGE_KEY = 'vimes.sidebarCollapsed';
+
+function readStoredSidebarCollapsed(): boolean {
+  if (typeof window === 'undefined') {
+    return false;
+  }
+  try {
+    return window.localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === 'true';
+  } catch {
+    // localStorage can throw (private mode, disabled) — default to expanded.
+    return false;
+  }
+}
+
+const sidebarCollapsed = ref<boolean>(readStoredSidebarCollapsed());
+
+function toggleSidebarCollapsed(): void {
+  const nextCollapsed = !sidebarCollapsed.value;
+  sidebarCollapsed.value = nextCollapsed;
+  try {
+    window.localStorage.setItem(SIDEBAR_COLLAPSED_STORAGE_KEY, String(nextCollapsed));
+  } catch {
+    // Persisting is best-effort; the in-memory ref still drives this session.
+  }
+}
 </script>
 
 <template>
   <div class="flex h-[100dvh] flex-col overflow-hidden">
+    <!-- PERSISTENT TOP BAR (unit 6b·3a). A flex-none child of the 100dvh flex-col
+         shell, ABOVE the frame-row split and rendered in ALL layouts (not gated by
+         showSidebar), so the brand and — the point of this unit — the theme picker
+         are reachable on desktop, tablet AND mobile. It carries: a desktop-only
+         sidebar-collapse toggle, the VIMES wordmark, a spacer, a slot for the
+         usage gauge (unit 3b), and the picker (moved here from the sidebar foot).
+         flex-none keeps it out of the frame row's bounded height, so the 100dvh
+         model and the frames' own scrolling are untouched. -->
+    <header class="flex flex-none items-center gap-2 border-b border-line bg-panel px-3 py-2">
+      <!-- Sidebar-collapse toggle: desktop only (showSidebar). On tablet/mobile
+           there is no ambient sidebar, so the control is hidden and the ref inert. -->
+      <button
+        v-if="showSidebar"
+        type="button"
+        class="flex h-8 w-8 flex-none items-center justify-center rounded-md text-lg text-ink-dim transition-colors hover:bg-panel-sunken hover:text-ink"
+        :aria-pressed="sidebarCollapsed"
+        aria-label="Toggle sidebar"
+        title="Hide/show sidebar"
+        @click="toggleSidebarCollapsed()"
+      >
+        <span aria-hidden="true">☰</span>
+      </button>
+      <span class="font-mono text-sm font-bold tracking-[0.14em] text-ink">VIMES</span>
+      <span class="flex-1"></span>
+      <!-- usage gauge slot (unit 3b) -->
+      <ThemePicker />
+    </header>
+
     <!-- Persistent chrome above the panel row — unchanged from today. -->
     <div v-if="bannerText" class="sticky top-0 z-30 bg-amber-500 px-4 py-2 text-center text-sm font-medium text-white">
       {{ bannerText }}
@@ -330,12 +391,16 @@ const bannerText = computed(() => {
            plus onPanelClick so an in-app hash link inside it pushes a panel rather
            than hard-navigating the browser. -->
       <div
+        v-if="!sidebarCollapsed"
         class="flex w-80 shrink-0 flex-col overflow-hidden border-r border-slate-200 dark:border-slate-800"
         @click="onPanelClick($event, 0)"
       >
         <!-- The session list scrolls on its OWN (SessionListView is h-full +
-             overflow-y-auto); this wrapper just gives it the bounded height so
-             the picker below stays a FIXED foot, not part of the scroll. -->
+             overflow-y-auto); this wrapper gives it the bounded height. The unit
+             6b·1 frame structure is intact: an overflow-hidden column with the
+             PanelHost in a min-h-0 flex-1 region. The theme-picker foot (added in
+             6b·2) has MOVED to the persistent top bar (unit 6b·3a) so it is
+             reachable in every layout, not just desktop; nothing scrolls the doc. -->
         <div class="min-h-0 flex-1">
           <PanelHost
             :route="sidebarRoute"
@@ -352,14 +417,6 @@ const bannerText = computed(() => {
             @open-editor="openEditorPanel"
             @back="backFrom"
           />
-        </div>
-        <!-- Theme picker (unit 6b·2): a FIXED foot of the sidebar, OUTSIDE the
-             scroll region so it is ALWAYS visible. The earlier version rode inside
-             the scrolling column with mt-auto, so under a long session list it sat
-             below the fold (the bug Wes hit). Persistent top bar + mobile home is
-             a later unit; @click.stop so a tap on the picker doesn't navigate. -->
-        <div class="shrink-0 border-t border-line px-3 py-2" @click.stop>
-          <ThemePicker />
         </div>
       </div>
 
