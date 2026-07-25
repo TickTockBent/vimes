@@ -183,64 +183,63 @@ onBeforeUnmount(() => {
       class="absolute right-0 top-full z-40 mt-1 w-[min(92vw,34rem)] rounded-lg border border-line bg-panel p-3 shadow-lg"
     >
       <template v-if="hasData">
-        <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
-          <div
+        <!-- Flat rows in a LIST (Wes, 2026-07-25): each window spans full width —
+             label+binding on the left, the meter bar taking the middle, the % on
+             the right, with reset · burn · projected under the bar. More scannable
+             than a grid of square cards, and reads like an instrument readout. -->
+        <ul class="flex flex-col gap-1.5">
+          <li
             v-for="constraint in model.constraints"
             :key="constraint.meterId"
-            class="rounded-md border bg-panel-sunken p-3"
+            class="flex items-center gap-3 rounded-md border bg-panel-sunken px-3 py-2"
             :class="constraint.isBinding ? 'border-ink-dim' : 'border-line'"
           >
-            <div class="flex items-baseline justify-between gap-2">
+            <!-- label + binding chip -->
+            <div class="flex w-28 flex-none flex-col gap-0.5">
               <span class="truncate font-mono text-xs font-semibold text-ink">{{ constraint.label }}</span>
               <span
                 v-if="constraint.isBinding"
-                class="flex-none rounded-full border px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.1em]"
+                class="w-fit rounded-full border px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.1em]"
                 :class="toneTextClass(constraint.tone)"
               >
                 Binding
               </span>
             </div>
 
-            <div class="mt-2 flex items-baseline justify-between gap-2">
+            <!-- meter bar + the reset/burn/projected readout under it -->
+            <div class="min-w-0 flex-1">
+              <!-- Bar: fills only with a confident fresh percent; otherwise a dashed
+                   unknown track that never implies 0. -->
               <span
+                class="block h-2 w-full overflow-hidden rounded-full"
+                :class="constraint.displayPercent !== null ? 'bg-track' : 'border border-dashed border-line'"
+              >
+                <span
+                  v-if="constraint.displayPercent !== null"
+                  class="block h-full rounded-full motion-safe:transition-[width] motion-safe:duration-500"
+                  :class="toneBarClass(constraint.tone)"
+                  :style="{ width: `${constraint.displayPercent}%` }"
+                ></span>
+              </span>
+              <div class="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 font-mono text-[11px] tabular-nums text-ink-dim">
+                <span>reset <span class="text-ink">{{ constraint.resetLabel ?? '—' }}</span></span>
+                <span>burn <span class="text-ink">{{ constraint.burnRateLabel }}</span></span>
+                <span>proj <span class="text-ink">{{ constraint.exhaustionLabel }}</span></span>
+              </div>
+            </div>
+
+            <!-- the % (and observation age under it) -->
+            <div class="flex-none text-right">
+              <div
                 class="font-mono text-lg font-bold tabular-nums"
                 :class="constraint.displayPercent !== null ? toneTextClass(constraint.tone) : 'text-ink-dim'"
               >
                 {{ constraint.valueLabel }}
-              </span>
-              <span class="font-mono text-[10px] tabular-nums text-ink-dim">{{ constraint.ageLabel }}</span>
+              </div>
+              <div class="font-mono text-[10px] tabular-nums text-ink-dim">{{ constraint.ageLabel }}</div>
             </div>
-
-            <!-- Bar: fills only with a confident fresh percent; otherwise a dashed
-                 unknown track that never implies 0. -->
-            <span
-              class="mt-2 block h-2 w-full overflow-hidden rounded-full"
-              :class="constraint.displayPercent !== null ? 'bg-track' : 'border border-dashed border-line'"
-            >
-              <span
-                v-if="constraint.displayPercent !== null"
-                class="block h-full rounded-full motion-safe:transition-[width] motion-safe:duration-500"
-                :class="toneBarClass(constraint.tone)"
-                :style="{ width: `${constraint.displayPercent}%` }"
-              ></span>
-            </span>
-
-            <dl class="mt-2 grid grid-cols-1 gap-0.5 font-mono text-[11px] tabular-nums text-ink-dim">
-              <div class="flex justify-between gap-2">
-                <dt>reset</dt>
-                <dd class="text-ink">{{ constraint.resetLabel ?? 'no reset pending' }}</dd>
-              </div>
-              <div class="flex justify-between gap-2">
-                <dt>burn</dt>
-                <dd class="text-ink">{{ constraint.burnRateLabel }}</dd>
-              </div>
-              <div class="flex justify-between gap-2">
-                <dt>projected</dt>
-                <dd class="text-right text-ink">{{ constraint.exhaustionLabel }}</dd>
-              </div>
-            </dl>
-          </div>
-        </div>
+          </li>
+        </ul>
       </template>
 
       <!-- Honest empty state — never a fake gauge (pillar 4 / kill criterion). -->
