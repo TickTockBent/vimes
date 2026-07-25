@@ -174,14 +174,47 @@ dispatcher owns state / others propose, **I12** append-only.
 the OLD resume path still fires — acceptable because the gate criterion is a clean
 pass, but don't mistake a steered run for the gate.)*
 
-### Spike S7·0 — plan-mode A/B *(front-loaded, before S7·5/S7·7)*
+### Spike S7·0 — plan-mode A/B *(front-loaded, before S7·5/S7·7)* — **DONE 2026-07-25**
 Characterize the four D44 behaviors ((a) write-block in a spawned SDK session,
 (b) `ExitPlanMode` headless reliability + JSONL payload stability → **fixture it**,
 (c) can the adapter stop at plan emission without fighting the continuation,
 (d) lossless map into `submit_plan`). Deliverable: findings + an `ExitPlanMode`
 fixture. Isolated test sessions only — **never touches prod `vimes.service`**.
 
-### S7·1 — Reserve the schemas *(rule 0.5)* — `sonnet`
+**Outcome (live: SDK 0.3.207, CLI 2.1.220, ~$0.30, prod untouched). All four came
+back GREEN.** Full findings: `docs/evidence-spike-s7-0-planmode.md`; fixture:
+`fixtures/plan-mode/exitplanmode.jsonl`.
+- **(a) YES** — `permissionMode:'plan'` suppresses the user-work write *by mode*
+  (free read-only hardening for the planning stage, not `canUseTool` trust).
+- **(b) YES** — `ExitPlanMode` fires reliably headless; input is
+  `{plan:"<inline markdown>", planFilePath:"<local path>"}`; **fixtured.**
+- **(c) YES, cleanly** — denying `ExitPlanMode` from `canUseTool` ends the session
+  `result:success`/`completed`, no hang, no dirty teardown, no orphan. This was the
+  flagged trouble spot and it came back clean.
+- **(d) YES, trivially** — `input.plan` is one UTF-8 markdown string → store bytes →
+  hash → `planArtifactHash`. Thin normalization only (drop `planFilePath`).
+
+**Recommended S7·5 shape (measure-done; DECISION DEFERRED to Gate-D per rule 0.2):**
+native plan mode for BOTH read-only hardening AND plan capture —
+`permissionMode:'plan'` + capture the plan at the `canUseTool` boundary +
+deny-`ExitPlanMode`-to-stop; keep plain-prompt + `submit_plan` as the declared
+(unforced) D44 fallback. **Two risk-register items to price at Gate-D before S7·5
+builds:** **R-a** (plan mode's ungated `~/.claude/plans/` write, outside the project
+root) and **R-b** (`ExitPlanMode` input-shape drift — consume `plan` only). Both are
+in `risk-register.md`. ⚠ The existing MCP-SDK register row (transitive
+`@hono/node-server` advisory, "reachable the moment slice 7 builds the MCP surface")
+is now IN SCOPE — re-check it when S7·5 stands up the tool surface.
+
+### S7·1 — Reserve the schemas *(rule 0.5)* — `sonnet` — **DONE 2026-07-25**
+**Landed & gate-passed** (typecheck green; 860/860 core tests incl. scenario
+double-run byte-identical; I6 verify-by-breaking confirmed — a probe default in
+the projection reddened the absent-stays-absent test, then reverted clean). New
+`packages/core/src/tasks/workOrder.ts` (six reserved shapes) + `taskRecordSchema`
+widening + reserved no-emitter `work_order_amended` event. **No consumer, no
+projection change ⇒ no runtime behavior change ⇒ no daemon restart** (the restart
+first bites at S7·5). One shape refinement from the work-order: `report_review`'s
+`criterionId` DERIVES from `acceptanceCriterionSchema.shape.id` (not a bare
+`z.string()`) — the derive-don't-retype discipline, so the two can't drift.
 - **Scope:** all reserved shapes as zod in `packages/core` with **no live consumer**:
   work-order fields (scope, explicitlyOut, `acceptanceCriteria[]` individually-keyed,
   killCriterion) widening `taskRecordSchema`; amendment event + `workOrderRev`;
