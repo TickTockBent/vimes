@@ -21,6 +21,7 @@ import {
   taskTransitionRejectedPayloadSchema,
 } from '../events.js';
 import { taskRecordSchema, type TaskRecord } from '../schemas.js';
+import { DISPATCHABLE_TASK_STAGES, NON_DISPATCHABLE_TASK_STAGES } from './dispatchDecision.js';
 
 // ─── the enumeration harness ─────────────────────────────────────────────────
 //
@@ -340,6 +341,71 @@ describe('assertion 8 — review -> implementing is the fix loop', () => {
       task = backToImplementing.nextTask;
     }
     expect(task.stage).toBe('implementing');
+  });
+});
+
+// ── assertion 10 ─────────────────────────────────────────────────────────────
+describe('assertion 10 — cancelled (S11): reachable from everywhere but done, recovers only to backlog', () => {
+  const nonDoneNonCancelledStages = TASK_STAGES.filter(
+    (stage) => stage !== 'done' && stage !== 'cancelled',
+  );
+
+  it.each([...nonDoneNonCancelledStages])('%s -> cancelled is accepted', (fromStage) => {
+    const outcome = proposeTransition(taskAtStage(fromStage), proposal('cancelled'));
+    expect(outcome.accepted).toBe(true);
+    if (outcome.accepted) {
+      expect(outcome.nextTask.stage).toBe('cancelled');
+    }
+  });
+
+  it('done -> cancelled is refused terminal-stage, NOT illegal-edge (done stays terminal)', () => {
+    const outcome = proposeTransition(taskAtStage('done'), proposal('cancelled'));
+    expect(outcome).toEqual({ accepted: false, reason: 'terminal-stage' });
+  });
+
+  it("done's edge set stays empty — cancelled is not among its targets", () => {
+    expect([...(TASK_STAGE_EDGES.get('done') ?? [])]).toEqual([]);
+    expect(isLegalTaskEdge('done', 'cancelled')).toBe(false);
+  });
+
+  it('cancelled -> backlog is accepted (the recovery edge)', () => {
+    const outcome = proposeTransition(taskAtStage('cancelled'), proposal('backlog'));
+    expect(outcome.accepted).toBe(true);
+    if (outcome.accepted) {
+      expect(outcome.nextTask.stage).toBe('backlog');
+    }
+  });
+
+  it('cancelled has exactly one out-edge: backlog', () => {
+    expect([...(TASK_STAGE_EDGES.get('cancelled') ?? [])]).toEqual(['backlog']);
+  });
+
+  it('cancelled -> done is refused illegal-edge (recovery only re-enters the queue)', () => {
+    const outcome = proposeTransition(taskAtStage('cancelled'), proposal('done'));
+    expect(outcome).toEqual({ accepted: false, reason: 'illegal-edge' });
+  });
+
+  it('cancelled -> cancelled is a same-stage no-op', () => {
+    const outcome = proposeTransition(taskAtStage('cancelled'), proposal('cancelled'));
+    expect(outcome).toEqual({ accepted: false, reason: 'same-stage' });
+  });
+
+  it('a cancelled task is non-dispatchable (it never spawns a worker)', () => {
+    expect(DISPATCHABLE_TASK_STAGES.has('cancelled')).toBe(false);
+    expect(NON_DISPATCHABLE_TASK_STAGES).toContain('cancelled');
+  });
+
+  it('cancel-then-recover round-trips a task back to backlog', () => {
+    const task = taskAtStage('implementing');
+    const cancelled = proposeTransition(task, proposal('cancelled'));
+    expect(cancelled.accepted).toBe(true);
+    if (!cancelled.accepted) return;
+    expect(cancelled.nextTask.stage).toBe('cancelled');
+
+    const recovered = proposeTransition(cancelled.nextTask, proposal('backlog'));
+    expect(recovered.accepted).toBe(true);
+    if (!recovered.accepted) return;
+    expect(recovered.nextTask.stage).toBe('backlog');
   });
 });
 

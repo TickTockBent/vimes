@@ -102,6 +102,13 @@ const ISOLATION_VALUES = exhaustiveVocabulary<TaskRecord['isolation']>()([
   'shared-dir',
   'worktree',
 ]);
+// ⚠ THIRD MIRROR of the stage vocabulary. Adding a stage means updating THREE
+// places in lockstep: core's `taskRecordSchema.stage` enum (the source), this
+// array, and the UI's mirror in `packages/ui/src/lib/taskBoard.ts`. This copy
+// exists because of the zod3/zod4 split noted above; `exhaustiveVocabulary` binds
+// it to core's union at the type level, so a missing value fails typecheck (which
+// is exactly how `cancelled` was caught, S11 2026-07-24) — the guard works, but
+// it is a manual sync until the zod versions converge.
 const TASK_STAGE_VALUES = exhaustiveVocabulary<TaskRecord['stage']>()([
   'backlog',
   'planning',
@@ -111,6 +118,7 @@ const TASK_STAGE_VALUES = exhaustiveVocabulary<TaskRecord['stage']>()([
   'done',
   'blocked-external',
   'quarantined',
+  'cancelled',
 ]);
 const PROPOSED_BY_VALUES = exhaustiveVocabulary<TransitionProposedBy>()([
   'human',

@@ -65,7 +65,11 @@ export const FLOW_STAGES = [
 // NOT pipeline positions. The edge table makes both reachable from nearly every
 // stage and both lead back out again, so rendering them inline with the flow
 // would draw them as steps of a pipeline they are not part of.
-export const EXCEPTION_STAGES = ['quarantined', 'blocked-external'] as const;
+//
+// `cancelled` (S11, 2026-07-24) joins them for the same reason: it is reachable
+// from nearly every flow stage and recovers back to `backlog` rather than
+// occupying a pipeline position of its own — a give-up that can be undone.
+export const EXCEPTION_STAGES = ['quarantined', 'blocked-external', 'cancelled'] as const;
 
 export type FlowStage = (typeof FLOW_STAGES)[number];
 export type ExceptionStage = (typeof EXCEPTION_STAGES)[number];
@@ -89,6 +93,7 @@ const STAGE_LABEL: Readonly<Record<TaskStage, string>> = {
   done: 'Done',
   quarantined: 'Quarantined',
   'blocked-external': 'Blocked (external)',
+  cancelled: 'Cancelled',
 };
 
 function isKnownStage(candidate: string): candidate is TaskStage {

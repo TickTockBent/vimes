@@ -198,6 +198,7 @@ export const taskRecordSchema = z.object({
     'done',
     'blocked-external',
     'quarantined',
+    'cancelled',
   ]),
   manualReviewRequired: z.boolean(),
   isolation: z.enum(['shared-dir', 'worktree']),

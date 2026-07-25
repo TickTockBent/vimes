@@ -13,6 +13,7 @@ import {
   moveOptionsFor,
   shortTaskId,
   stageKind,
+  stageLabel,
 } from './taskBoard.js';
 
 // ─── slice 6 step 9 — the task board's pure derivations ──────────────────────
@@ -127,12 +128,15 @@ describe('groupTasksForBoard — stages, kinds, and the layout-agnostic contract
         taskRecord({ taskId: TASK_TWO, stage: 'blocked-external' }),
       ),
     );
-    expect(board.exceptions.map((group) => group.stage)).toEqual([
-      'quarantined',
-      'blocked-external',
-    ]);
+    expect(board.exceptions.map((group) => group.stage)).toEqual([...EXCEPTION_STAGES]);
     expect(board.exceptions.every((group) => group.kind === 'exception')).toBe(true);
-    expect(board.exceptions.map((group) => group.count)).toEqual([1, 1]);
+    expect(
+      board.exceptions.find((group) => group.stage === 'quarantined')?.count,
+    ).toBe(1);
+    expect(
+      board.exceptions.find((group) => group.stage === 'blocked-external')?.count,
+    ).toBe(1);
+    expect(board.exceptions.find((group) => group.stage === 'cancelled')?.count).toBe(0);
 
     // ...and NOT in the flow, at any count.
     const flowStages = board.flow.map((group) => group.stage);
@@ -141,10 +145,30 @@ describe('groupTasksForBoard — stages, kinds, and the layout-agnostic contract
     expect(board.flow.every((group) => group.count === 0)).toBe(true);
   });
 
+  it('classifies cancelled (S11) as EXCEPTION too, never unknown', () => {
+    // The mirrored vocabulary must grow WITH core's enum, or a cancelled task
+    // renders as `unknown` instead of the exception group it belongs in.
+    expect(stageKind('cancelled')).toBe('exception');
+    expect(stageLabel('cancelled')).toBe('Cancelled');
+    expect(EXCEPTION_STAGES).toContain('cancelled');
+
+    const board = groupTasksForBoard(
+      projectionBody(taskRecord({ taskId: TASK_ONE, stage: 'cancelled' })),
+    );
+    const cancelledGroup = board.exceptions.find((group) => group.stage === 'cancelled');
+    expect(cancelledGroup).toBeDefined();
+    expect(cancelledGroup?.kind).toBe('exception');
+    expect(cancelledGroup?.tasks.map((card) => card.taskId)).toEqual([TASK_ONE]);
+    expect(board.unknown).toHaveLength(0);
+
+    // ...and NOT in the flow.
+    expect(board.flow.map((group) => group.stage)).not.toContain('cancelled');
+  });
+
   it('renders a ZERO-count tray — "no blocked work" is a fact worth showing', () => {
     const board = groupTasksForBoard(projectionBody(taskRecord({ stage: 'backlog' })));
-    expect(board.exceptions).toHaveLength(2);
-    expect(board.exceptions.map((group) => group.count)).toEqual([0, 0]);
+    expect(board.exceptions).toHaveLength(EXCEPTION_STAGES.length);
+    expect(board.exceptions.map((group) => group.count)).toEqual(EXCEPTION_STAGES.map(() => 0));
   });
 
   it('is LAYOUT-AGNOSTIC: every stage carries its kind, and nothing is presentational', () => {
@@ -190,9 +214,10 @@ describe('groupTasksForBoard — stages, kinds, and the layout-agnostic contract
     // The mirrored vocabulary is a wire shape (lib/types.ts sanctions that
     // narrowly). A legality table would be a copied DECISION — see assertion 8.
     expect(KNOWN_STAGES).toEqual([...FLOW_STAGES, ...EXCEPTION_STAGES]);
-    expect(KNOWN_STAGES).toHaveLength(8);
+    expect(KNOWN_STAGES).toHaveLength(9);
     expect(stageKind('done')).toBe('flow');
     expect(stageKind('quarantined')).toBe('exception');
+    expect(stageKind('cancelled')).toBe('exception');
     expect(stageKind('teleported')).toBe('unknown');
   });
 });
