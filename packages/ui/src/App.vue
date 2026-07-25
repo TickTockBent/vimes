@@ -364,17 +364,17 @@ function toggleSidebarCollapsed(): void {
     </header>
 
     <!-- Persistent chrome above the panel row — unchanged from today. -->
-    <div v-if="bannerText" class="sticky top-0 z-30 bg-amber-500 px-4 py-2 text-center text-sm font-medium text-white">
+    <div v-if="bannerText" class="sticky top-0 z-30 bg-warn px-4 py-2 text-center text-sm font-medium text-accent-fg">
       {{ bannerText }}
     </div>
     <div
       v-if="store.lastRefusal"
-      class="sticky top-0 z-30 flex items-center justify-between gap-3 bg-rose-600 px-4 py-2 text-sm text-white"
+      class="sticky top-0 z-30 flex items-center justify-between gap-3 bg-crit px-4 py-2 text-sm text-accent-fg"
     >
       <span class="truncate">{{ store.lastRefusal.reason }}</span>
       <button
         type="button"
-        class="min-h-[44px] min-w-[44px] shrink-0 rounded px-3 font-semibold active:bg-rose-700"
+        class="min-h-[44px] min-w-[44px] shrink-0 rounded px-3 font-semibold active:bg-crit/80"
         @click="store.dismissRefusal()"
       >
         Dismiss
@@ -396,7 +396,7 @@ function toggleSidebarCollapsed(): void {
            than hard-navigating the browser. -->
       <div
         v-if="!sidebarCollapsed"
-        class="flex w-80 shrink-0 flex-col overflow-hidden border-r border-slate-200 dark:border-slate-800"
+        class="flex w-80 shrink-0 flex-col overflow-hidden border-r border-line"
         @click="onPanelClick($event, 0)"
       >
         <!-- The session list scrolls on its OWN (SessionListView is h-full +
@@ -433,7 +433,7 @@ function toggleSidebarCollapsed(): void {
           v-for="(panel, localIndex) in contentPanels"
           :key="panel.trueIndex"
           class="min-w-0 flex-1 overflow-y-auto"
-          :class="localIndex > 0 ? 'border-l border-slate-200 dark:border-slate-800' : ''"
+          :class="localIndex > 0 ? 'border-l border-line' : ''"
           @mousedown="focusedIndex = panel.trueIndex"
           @click="onPanelClick($event, panel.trueIndex)"
         >
@@ -455,7 +455,7 @@ function toggleSidebarCollapsed(): void {
         </div>
         <div
           v-if="contentPanels.length === 0"
-          class="flex min-h-0 flex-1 items-center justify-center p-8 text-center text-sm text-slate-500 dark:text-slate-400"
+          class="flex min-h-0 flex-1 items-center justify-center p-8 text-center text-sm text-ink-dim"
         >
           Select a session, or start one from the sidebar.
         </div>
@@ -471,7 +471,7 @@ function toggleSidebarCollapsed(): void {
         v-for="(panel, localIndex) in visiblePanels"
         :key="panel.trueIndex"
         class="min-w-0 flex-1 overflow-y-auto"
-        :class="localIndex > 0 ? 'border-l border-slate-200 dark:border-slate-800' : ''"
+        :class="localIndex > 0 ? 'border-l border-line' : ''"
         @mousedown="focusedIndex = panel.trueIndex"
         @click="onPanelClick($event, panel.trueIndex)"
       >

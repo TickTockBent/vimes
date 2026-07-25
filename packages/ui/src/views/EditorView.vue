@@ -174,10 +174,10 @@ const fileName = () => props.path.slice(props.path.lastIndexOf('/') + 1);
 
 <template>
   <div class="flex h-full flex-col overflow-hidden">
-    <header class="sticky top-0 z-20 flex items-center gap-2 border-b border-slate-200 bg-white px-3 py-2 dark:border-slate-800 dark:bg-slate-950">
+    <header class="sticky top-0 z-20 flex items-center gap-2 border-b border-line bg-panel px-3 py-2">
       <button
         type="button"
-        class="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md text-lg active:bg-slate-100 dark:active:bg-slate-900"
+        class="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md text-lg active:bg-panel-sunken"
         :aria-label="props.backKind === 'close' ? 'Close panel' : 'Back'"
         @click="emit('back')"
       >
@@ -186,14 +186,14 @@ const fileName = () => props.path.slice(props.path.lastIndexOf('/') + 1);
       <div class="min-w-0 flex-1">
         <div class="flex items-center gap-1 truncate font-medium">
           <span class="truncate">{{ fileName() }}</span>
-          <span v-if="dirty()" class="text-amber-500" title="Unsaved changes" aria-label="Unsaved changes">●</span>
+          <span v-if="dirty()" class="text-warn" title="Unsaved changes" aria-label="Unsaved changes">●</span>
         </div>
-        <div class="truncate text-xs text-slate-500 dark:text-slate-400">{{ props.path }}</div>
+        <div class="truncate text-xs text-ink-dim">{{ props.path }}</div>
       </div>
       <button
         v-if="loadState === 'ready'"
         type="button"
-        class="min-h-[44px] rounded-md bg-sky-600 px-4 text-sm font-semibold text-white active:bg-sky-700 disabled:opacity-50"
+        class="min-h-[44px] rounded-md bg-accent px-4 text-sm font-semibold text-accent-fg active:bg-accent/80 disabled:opacity-50"
         :disabled="saveState.status === 'saving' || !dirty()"
         @click="requestSave"
       >
@@ -203,22 +203,22 @@ const fileName = () => props.path.slice(props.path.lastIndexOf('/') + 1);
 
     <div
       v-if="saveState.status === 'conflict'"
-      class="flex flex-col gap-2 border-b border-amber-300 bg-amber-50 px-3 py-2 text-sm dark:border-amber-800 dark:bg-amber-950/40"
+      class="flex flex-col gap-2 border-b border-warn/30 bg-warn/10 px-3 py-2 text-sm"
     >
-      <span class="font-medium text-amber-800 dark:text-amber-200">
+      <span class="font-medium text-warn">
         This file changed on disk since you opened it.
       </span>
       <div class="flex gap-2">
         <button
           type="button"
-          class="min-h-[44px] rounded-md bg-rose-600 px-4 text-sm font-semibold text-white active:bg-rose-700"
+          class="min-h-[44px] rounded-md bg-crit px-4 text-sm font-semibold text-accent-fg active:bg-crit/80"
           @click="overwrite"
         >
           Overwrite
         </button>
         <button
           type="button"
-          class="min-h-[44px] rounded-md border border-slate-300 px-4 text-sm font-semibold active:bg-slate-100 dark:border-slate-700 dark:active:bg-slate-900"
+          class="min-h-[44px] rounded-md border border-line px-4 text-sm font-semibold active:bg-panel-sunken"
           @click="reloadFromDisk"
         >
           Reload from disk
@@ -226,21 +226,21 @@ const fileName = () => props.path.slice(props.path.lastIndexOf('/') + 1);
       </div>
     </div>
 
-    <div v-if="loadState === 'loading'" class="flex flex-1 items-center justify-center p-8 text-sm text-slate-500">
+    <div v-if="loadState === 'loading'" class="flex flex-1 items-center justify-center p-8 text-sm text-ink-dim">
       Opening…
     </div>
 
     <div v-else-if="loadState === 'error'" class="flex flex-1 flex-col items-center justify-center gap-2 p-8 text-center">
-      <p class="text-sm text-rose-600">{{ errorMessage }}</p>
+      <p class="text-sm text-crit">{{ errorMessage }}</p>
     </div>
 
     <div v-else-if="loadState === 'binary'" class="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center">
-      <p class="text-sm text-slate-600 dark:text-slate-300">
+      <p class="text-sm text-ink-dim">
         This looks like a binary file and can't be edited as text.
       </p>
       <a
         :href="downloadHref()"
-        class="min-h-[44px] rounded-md bg-sky-600 px-4 py-2 text-sm font-semibold text-white active:bg-sky-700"
+        class="min-h-[44px] rounded-md bg-accent px-4 py-2 text-sm font-semibold text-accent-fg active:bg-accent/80"
       >
         Download instead
       </a>
@@ -254,14 +254,14 @@ const fileName = () => props.path.slice(props.path.lastIndexOf('/') + 1);
          keyboard; the buttons dispatch CM6 commands. -->
     <nav
       v-if="loadState === 'ready'"
-      class="sticky bottom-0 z-20 flex gap-1 overflow-x-auto border-t border-slate-200 bg-white px-2 py-1 dark:border-slate-800 dark:bg-slate-950"
+      class="sticky bottom-0 z-20 flex gap-1 overflow-x-auto border-t border-line bg-panel px-2 py-1"
     >
       <button type="button" class="tb" @click="toolbar('tab')">Tab</button>
       <button type="button" class="tb" @click="toolbar('escape')">Esc</button>
       <button
         type="button"
         class="tb"
-        :class="ctrlArmed ? 'bg-sky-600 text-white' : ''"
+        :class="ctrlArmed ? 'bg-accent text-accent-fg' : ''"
         :aria-pressed="ctrlArmed"
         @click="toggleCtrl"
       >
@@ -282,21 +282,18 @@ const fileName = () => props.path.slice(props.path.lastIndexOf('/') + 1);
   min-width: 44px;
   flex: 0 0 auto;
   border-radius: 0.375rem;
-  border: 1px solid rgb(203 213 225);
+  border: 1px solid var(--line);
   padding: 0 0.75rem;
   font-size: 0.875rem;
   font-weight: 600;
 }
 .tb:active {
-  background: rgb(241 245 249);
+  background: var(--panel-sunken);
 }
 .tb-save {
   margin-left: auto;
-  background: rgb(2 132 199);
-  color: white;
-  border-color: rgb(2 132 199);
-}
-:global(.dark) .tb {
-  border-color: rgb(51 65 85);
+  background: var(--accent);
+  color: var(--accent-fg);
+  border-color: var(--accent);
 }
 </style>

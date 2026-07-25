@@ -145,10 +145,10 @@ function icon(type: TreeRow['type']): string {
 
 <template>
   <div class="flex h-full flex-col overflow-hidden">
-    <header class="sticky top-0 z-20 flex items-center gap-2 border-b border-slate-200 bg-white px-3 py-2 dark:border-slate-800 dark:bg-slate-950">
+    <header class="sticky top-0 z-20 flex items-center gap-2 border-b border-line bg-panel px-3 py-2">
       <button
         type="button"
-        class="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md text-lg active:bg-slate-100 dark:active:bg-slate-900"
+        class="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md text-lg active:bg-panel-sunken"
         :aria-label="props.backKind === 'close' ? 'Close panel' : 'Back to sessions'"
         @click="emit('back')"
       >
@@ -157,7 +157,7 @@ function icon(type: TreeRow['type']): string {
       <h1 class="flex-1 truncate font-semibold">Files</h1>
       <button
         type="button"
-        class="min-h-[44px] rounded-md border border-slate-300 px-3 text-sm font-medium active:bg-slate-100 dark:border-slate-700 dark:active:bg-slate-900"
+        class="min-h-[44px] rounded-md border border-line px-3 text-sm font-medium active:bg-panel-sunken"
         @click="emit('search')"
       >
         🔍 Search
@@ -165,71 +165,71 @@ function icon(type: TreeRow['type']): string {
     </header>
 
     <div v-if="!hasRoots" class="flex flex-1 flex-col items-center justify-center gap-2 p-8 text-center">
-      <p class="text-sm text-slate-500 dark:text-slate-400">
+      <p class="text-sm text-ink-dim">
         No workspace roots yet. Start or discover a session first — its working
         directory becomes a browsable root.
       </p>
     </div>
 
     <template v-else>
-      <div class="flex flex-col gap-2 border-b border-slate-200 p-3 dark:border-slate-800">
-        <label class="text-xs font-medium text-slate-500 dark:text-slate-400" for="root-select">Root</label>
+      <div class="flex flex-col gap-2 border-b border-line p-3">
+        <label class="text-xs font-medium font-mono uppercase tracking-[0.08em] text-ink-dim" for="root-select">Root</label>
         <select
           id="root-select"
-          class="min-h-[44px] rounded-md border border-slate-300 px-2 text-sm dark:border-slate-700 dark:bg-slate-900"
+          class="min-h-[44px] rounded-md border border-line bg-panel px-2 text-sm"
           :value="roots.includes(currentDir ?? '') ? currentDir : ''"
           @change="selectRoot"
         >
           <option value="" disabled>Select a root…</option>
           <option v-for="root in roots" :key="root" :value="root">{{ root }}</option>
         </select>
-        <div class="truncate text-xs text-slate-500 dark:text-slate-400">{{ currentDir }}</div>
+        <div class="truncate text-xs text-ink-dim">{{ currentDir }}</div>
       </div>
 
-      <p v-if="boundaryHit" class="border-b border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+      <p v-if="boundaryHit" class="border-b border-warn/30 bg-warn/10 px-3 py-2 text-xs text-warn">
         That's the edge of the workspace — you can't go higher from here.
       </p>
 
-      <ul class="min-h-0 flex-1 divide-y divide-slate-100 overflow-y-auto overscroll-contain dark:divide-slate-900">
+      <ul class="min-h-0 flex-1 divide-y divide-line overflow-y-auto overscroll-contain">
         <li>
           <button
             type="button"
-            class="flex min-h-[44px] w-full items-center gap-3 px-3 text-left text-sm active:bg-slate-100 dark:active:bg-slate-900"
+            class="flex min-h-[44px] w-full items-center gap-3 px-3 text-left text-sm active:bg-panel-sunken"
             @click="goUp"
           >
             <span aria-hidden="true">↩</span>
-            <span class="text-slate-500 dark:text-slate-400">.. (up)</span>
+            <span class="text-ink-dim">.. (up)</span>
           </button>
         </li>
         <li v-for="row in rows" :key="row.absolute" class="flex items-center">
           <button
             type="button"
-            class="flex min-h-[44px] w-full min-w-0 items-center gap-3 px-3 text-left text-sm active:bg-slate-100 dark:active:bg-slate-900"
+            class="flex min-h-[44px] w-full min-w-0 items-center gap-3 px-3 text-left text-sm active:bg-panel-sunken"
             @click="openDir(row)"
           >
             <span aria-hidden="true">{{ icon(row.type) }}</span>
-            <span class="min-w-0 flex-1 truncate" :class="row.hidden ? 'text-slate-400 dark:text-slate-500' : ''">
+            <span class="min-w-0 flex-1 truncate" :class="row.hidden ? 'text-ink-dim' : ''">
               {{ row.name }}
             </span>
-            <span v-if="row.sizeLabel" class="shrink-0 text-xs text-slate-400">{{ row.sizeLabel }}</span>
+            <span v-if="row.sizeLabel" class="shrink-0 font-mono text-xs tabular-nums text-ink-dim">{{ row.sizeLabel }}</span>
           </button>
           <a
             v-if="row.type !== 'symlink'"
             :href="downloadHref(row)"
-            class="flex min-h-[44px] min-w-[44px] items-center justify-center text-slate-400 active:bg-slate-100 dark:active:bg-slate-900"
+            class="flex min-h-[44px] min-w-[44px] items-center justify-center text-ink-dim active:bg-panel-sunken"
             :aria-label="`Download ${row.name}`"
             @click.stop
           >
             ⬇
           </a>
         </li>
-        <li v-if="loadState === 'ready' && rows.length === 0" class="px-3 py-4 text-center text-sm text-slate-500 dark:text-slate-400">
+        <li v-if="loadState === 'ready' && rows.length === 0" class="px-3 py-4 text-center text-sm text-ink-dim">
           Empty directory.
         </li>
       </ul>
 
-      <p v-if="loadState === 'error'" class="px-3 py-4 text-center text-sm text-rose-600">{{ errorMessage }}</p>
-      <p v-else-if="loadState === 'loading'" class="px-3 py-4 text-center text-sm text-slate-400">Loading…</p>
+      <p v-if="loadState === 'error'" class="px-3 py-4 text-center text-sm text-crit">{{ errorMessage }}</p>
+      <p v-else-if="loadState === 'loading'" class="px-3 py-4 text-center text-sm text-ink-dim">Loading…</p>
     </template>
   </div>
 </template>
