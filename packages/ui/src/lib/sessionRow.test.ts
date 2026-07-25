@@ -58,20 +58,27 @@ describe('deriveSessionRow', () => {
   });
 
   it.each([
-    ['spawning', 'bg-sky-500 text-white'],
-    ['running', 'bg-emerald-500 text-white'],
-    ['dormant', 'bg-slate-400 text-white'],
-    ['interrupted', 'bg-amber-500 text-white'],
-    ['dead', 'bg-rose-600 text-white'],
+    ['spawning', 'bg-accent text-accent-fg'],
+    ['running', 'bg-ok text-accent-fg'],
+    ['dormant', 'bg-ink-dim text-ground'],
+    ['interrupted', 'bg-warn text-accent-fg'],
+    ['dead', 'bg-crit text-accent-fg'],
   ] as const)('gives %s a distinct color class', (liveness, colorClass) => {
     const row = deriveSessionRow(makeSession({ liveness }));
     expect(row.livenessLabel).toBe(liveness);
     expect(row.livenessColorClass).toBe(colorClass);
   });
 
-  it('interrupted is amber (scope requirement)', () => {
+  it('interrupted is the warn tone (scope requirement: amber in spirit)', () => {
     const row = deriveSessionRow(makeSession({ liveness: 'interrupted' }));
-    expect(row.livenessColorClass).toContain('amber');
+    expect(row.livenessColorClass).toContain('bg-warn');
+  });
+
+  it('every liveness state gets its own color class (distinct colors requirement)', () => {
+    const classes = (['spawning', 'running', 'dormant', 'interrupted', 'dead'] as const).map(
+      (liveness) => deriveSessionRow(makeSession({ liveness })).livenessColorClass,
+    );
+    expect(new Set(classes).size).toBe(classes.length);
   });
 
   it('hides the attention badge when needsAttention is null', () => {

@@ -20,13 +20,16 @@ export interface SessionRow {
 }
 
 // Distinct colors per liveness state; interrupted is amber (scope requirement:
-// "distinct colors, interrupted amber").
+// "distinct colors, interrupted amber"). Tone tokens (unit 6b·4a·2, see
+// scratchpad/reskin-conventions.md): text-accent-fg is the on-fill foreground
+// for every solid tone/accent fill, dormant uses bg-ink-dim (a quiet neutral,
+// not one of the three status tones) since it isn't ok/warn/crit/in-progress.
 const LIVENESS_STYLE: Readonly<Record<Liveness, { label: string; colorClass: string }>> = {
-  spawning: { label: 'spawning', colorClass: 'bg-sky-500 text-white' },
-  running: { label: 'running', colorClass: 'bg-emerald-500 text-white' },
-  dormant: { label: 'dormant', colorClass: 'bg-slate-400 text-white' },
-  interrupted: { label: 'interrupted', colorClass: 'bg-amber-500 text-white' },
-  dead: { label: 'dead', colorClass: 'bg-rose-600 text-white' },
+  spawning: { label: 'spawning', colorClass: 'bg-accent text-accent-fg' },
+  running: { label: 'running', colorClass: 'bg-ok text-accent-fg' },
+  dormant: { label: 'dormant', colorClass: 'bg-ink-dim text-ground' },
+  interrupted: { label: 'interrupted', colorClass: 'bg-warn text-accent-fg' },
+  dead: { label: 'dead', colorClass: 'bg-crit text-accent-fg' },
 };
 
 const ATTENTION_LABEL: Readonly<Record<AttentionReason, string>> = {
