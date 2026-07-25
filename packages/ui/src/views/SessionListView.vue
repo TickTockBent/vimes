@@ -181,10 +181,10 @@ function bellIcon(): string {
 // (principle 11): it informs, it doesn't dominate the row. Only the tone KEY
 // comes from cacheBadge.ts — the colour mapping lives here.
 const TONE_CLASS: Readonly<Record<CacheTtlTone, string>> = {
-  green: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/50 dark:text-emerald-200',
-  amber: 'bg-amber-100 text-amber-800 dark:bg-amber-900/50 dark:text-amber-200',
-  sky: 'bg-sky-100 text-sky-800 dark:bg-sky-900/50 dark:text-sky-200',
-  slate: 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300',
+  green: 'bg-ok/10 text-ok',
+  amber: 'bg-warn/10 text-warn',
+  sky: 'bg-accent/10 text-accent',
+  slate: 'bg-panel-sunken text-ink-dim',
 };
 
 // `nowMs` is INJECTED (rule 0.3): the age lives in cacheWarmth, never a clock
@@ -339,9 +339,9 @@ const bindingMeter = computed<MeterRow | null>(() => meterRows.value[0] ?? null)
 const refreshMessage = computed(() => refreshNotice(store.lastUsageRefresh));
 
 const REFRESH_TONE_CLASS: Readonly<Record<RefreshNoticeTone, string>> = {
-  success: 'text-emerald-700 dark:text-emerald-300',
-  throttled: 'text-slate-500 dark:text-slate-400',
-  failed: 'text-rose-600 dark:text-rose-400',
+  success: 'text-ok',
+  throttled: 'text-ink-dim',
+  failed: 'text-crit',
 };
 
 function tapRefreshUsage(): void {
@@ -349,17 +349,17 @@ function tapRefreshUsage(): void {
 }
 
 const METER_TONE_BAR_CLASS: Readonly<Record<MeterTone, string>> = {
-  normal: 'bg-emerald-500',
-  elevated: 'bg-amber-500',
-  high: 'bg-rose-500',
-  unknown: 'bg-slate-300 dark:bg-slate-600',
+  normal: 'bg-ok',
+  elevated: 'bg-warn',
+  high: 'bg-crit',
+  unknown: 'bg-ink-dim',
 };
 
 const METER_TONE_TEXT_CLASS: Readonly<Record<MeterTone, string>> = {
-  normal: 'text-emerald-700 dark:text-emerald-300',
-  elevated: 'text-amber-700 dark:text-amber-300',
-  high: 'text-rose-700 dark:text-rose-300',
-  unknown: 'text-slate-500 dark:text-slate-400',
+  normal: 'text-ok',
+  elevated: 'text-warn',
+  high: 'text-crit',
+  unknown: 'text-ink-dim',
 };
 
 // Bar fill width. Unknown/stale rows get no fill at all — an empty bar plus the
@@ -393,15 +393,15 @@ onUnmounted(() => {
 <template>
   <div class="mx-auto flex h-full max-w-lg flex-col gap-4 overflow-y-auto overscroll-contain p-4">
     <div class="flex items-center justify-between gap-2">
-      <h1 class="text-lg font-semibold">Sessions</h1>
+      <h1 class="text-lg font-semibold uppercase tracking-[0.08em] text-ink">Sessions</h1>
       <div class="flex flex-wrap items-center gap-x-2 gap-y-2">
         <button
           type="button"
           class="flex min-h-[44px] items-center gap-1 rounded-md border px-3 text-sm font-medium disabled:opacity-50"
           :class="
             store.pushState === 'on'
-              ? 'border-sky-400 text-sky-700 active:bg-sky-50 dark:border-sky-600 dark:text-sky-300 dark:active:bg-sky-950'
-              : 'border-slate-300 active:bg-slate-100 dark:border-slate-700 dark:active:bg-slate-900'
+              ? 'border-accent text-accent active:bg-accent/10'
+              : 'border-line active:bg-panel-sunken'
           "
           :disabled="!isBellActionable(store.pushState)"
           :title="pushStateLabel(store.pushState)"
@@ -412,7 +412,7 @@ onUnmounted(() => {
         </button>
         <button
           type="button"
-          class="min-h-[44px] rounded-md border border-slate-300 px-3 text-sm font-medium active:bg-slate-100 dark:border-slate-700 dark:active:bg-slate-900"
+          class="min-h-[44px] rounded-md border border-line px-3 text-sm font-medium active:bg-panel-sunken"
           aria-label="Files"
           @click="emit('openFiles')"
         >
@@ -420,7 +420,7 @@ onUnmounted(() => {
         </button>
         <button
           type="button"
-          class="min-h-[44px] rounded-md border border-slate-300 px-3 text-sm font-medium active:bg-slate-100 dark:border-slate-700 dark:active:bg-slate-900"
+          class="min-h-[44px] rounded-md border border-line px-3 text-sm font-medium active:bg-panel-sunken"
           aria-label="Search"
           @click="emit('openSearch')"
         >
@@ -428,7 +428,7 @@ onUnmounted(() => {
         </button>
         <button
           type="button"
-          class="min-h-[44px] rounded-md border border-slate-300 px-3 text-sm font-medium active:bg-slate-100 dark:border-slate-700 dark:active:bg-slate-900"
+          class="min-h-[44px] rounded-md border border-line px-3 text-sm font-medium active:bg-panel-sunken"
           aria-label="Terminal"
           @click="emit('openTerminal')"
         >
@@ -436,7 +436,7 @@ onUnmounted(() => {
         </button>
         <button
           type="button"
-          class="min-h-[44px] rounded-md border border-slate-300 px-3 text-sm font-medium active:bg-slate-100 dark:border-slate-700 dark:active:bg-slate-900"
+          class="min-h-[44px] rounded-md border border-line px-3 text-sm font-medium active:bg-panel-sunken"
           aria-label="Git"
           @click="emit('openGit')"
         >
@@ -444,7 +444,7 @@ onUnmounted(() => {
         </button>
         <button
           type="button"
-          class="min-h-[44px] rounded-md border border-slate-300 px-3 text-sm font-medium active:bg-slate-100 dark:border-slate-700 dark:active:bg-slate-900"
+          class="min-h-[44px] rounded-md border border-line px-3 text-sm font-medium active:bg-panel-sunken"
           aria-label="Cost ledger"
           @click="emit('openCost')"
         >
@@ -452,7 +452,7 @@ onUnmounted(() => {
         </button>
         <button
           type="button"
-          class="min-h-[44px] rounded-md border border-slate-300 px-3 text-sm font-medium active:bg-slate-100 dark:border-slate-700 dark:active:bg-slate-900"
+          class="min-h-[44px] rounded-md border border-line px-3 text-sm font-medium active:bg-panel-sunken"
           aria-label="Task board"
           @click="emit('openTasks')"
         >
@@ -460,7 +460,7 @@ onUnmounted(() => {
         </button>
         <button
           type="button"
-          class="min-h-[44px] rounded-md border border-slate-300 px-3 text-sm font-medium active:bg-slate-100 dark:border-slate-700 dark:active:bg-slate-900"
+          class="min-h-[44px] rounded-md border border-line px-3 text-sm font-medium active:bg-panel-sunken"
           @click="refreshDiscover"
         >
           ↻ Discover
@@ -481,7 +481,7 @@ onUnmounted(() => {
     <div class="flex flex-col gap-2">
       <button
         type="button"
-        class="flex min-h-[44px] w-full items-center justify-center gap-1.5 rounded-lg border border-sky-300 bg-sky-50 text-sm font-semibold text-sky-700 active:bg-sky-100 dark:border-sky-800 dark:bg-sky-950 dark:text-sky-300 dark:active:bg-sky-900"
+        class="flex min-h-[44px] w-full items-center justify-center gap-1.5 rounded-lg border border-accent/30 bg-accent/10 text-sm font-semibold text-accent active:bg-accent/15"
         :aria-expanded="spawnFormExpanded"
         aria-controls="new-session-form"
         @click="toggleSpawnForm()"
@@ -499,16 +499,16 @@ onUnmounted(() => {
       <form
         v-if="spawnFormExpanded"
         id="new-session-form"
-        class="flex flex-col gap-2 rounded-lg border border-slate-200 p-3 dark:border-slate-800"
+        class="flex flex-col gap-2 rounded-lg border border-line p-3"
         @submit.prevent="spawn"
       >
-        <label class="text-sm font-medium" for="new-session-cwd">New session · cwd</label>
+        <label class="text-sm font-medium font-mono uppercase tracking-[0.08em] text-ink-dim" for="new-session-cwd">New session · cwd</label>
         <input
           id="new-session-cwd"
           v-model="cwd"
           type="text"
           placeholder="/home/wes/projects/games/dongfu"
-          class="min-h-[44px] rounded-md border border-slate-300 px-3 text-sm dark:border-slate-700 dark:bg-slate-900"
+          class="min-h-[44px] rounded-md border border-line bg-panel-sunken px-3 text-sm"
         />
         <div class="flex items-center gap-4 text-sm">
           <label class="flex items-center gap-1">
@@ -522,7 +522,7 @@ onUnmounted(() => {
         </div>
         <button
           type="submit"
-          class="min-h-[44px] rounded-md bg-sky-600 font-semibold text-white active:bg-sky-700 disabled:opacity-50"
+          class="min-h-[44px] rounded-md bg-accent font-semibold text-accent-fg active:bg-accent/90 disabled:opacity-50"
           :disabled="spawning || cwd.trim().length === 0"
         >
           {{ spawning ? 'Spawning…' : 'Spawn session' }}
@@ -530,10 +530,10 @@ onUnmounted(() => {
       </form>
     </div>
 
-    <p v-if="store.pushState === 'off'" class="-mt-2 text-xs text-slate-500 dark:text-slate-400">
+    <p v-if="store.pushState === 'off'" class="-mt-2 text-xs text-ink-dim">
       Tap the bell to enable push notifications for gates and completions.
     </p>
-    <p v-else-if="store.pushState === 'denied'" class="-mt-2 text-xs text-rose-500">
+    <p v-else-if="store.pushState === 'denied'" class="-mt-2 text-xs text-crit">
       Notifications are blocked — re-enable them in your browser settings.
     </p>
 
@@ -542,7 +542,7 @@ onUnmounted(() => {
          tap to expand inline (no new route; `/#/meters` just arrives expanded).
          A stale/unknown meter shows words, never a figure, and EVERY reading
          shows its age so freshness is a gradient the user can see. -->
-    <section class="rounded-lg border border-slate-200 dark:border-slate-800" aria-label="Usage meters">
+    <section class="rounded-lg border border-line" aria-label="Usage meters">
       <div class="flex items-stretch gap-1">
         <button
           v-if="bindingMeter !== null"
@@ -556,32 +556,32 @@ onUnmounted(() => {
               <span class="truncate text-sm font-semibold">{{ bindingMeter.label }}</span>
               <span
                 v-if="bindingMeter.isBinding"
-                class="shrink-0 rounded-full bg-sky-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-sky-800 dark:bg-sky-900/50 dark:text-sky-200"
+                class="shrink-0 rounded-full bg-accent/10 px-1.5 py-0.5 text-[10px] font-semibold font-mono uppercase tracking-[0.08em] text-accent"
               >
                 binding
               </span>
             </span>
-            <span class="shrink-0 text-sm font-semibold" :class="METER_TONE_TEXT_CLASS[bindingMeter.tone]">
+            <span class="shrink-0 text-sm font-semibold font-mono tabular-nums" :class="METER_TONE_TEXT_CLASS[bindingMeter.tone]">
               {{ meterValueLabel(bindingMeter) }}
             </span>
           </div>
-          <div class="h-1.5 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-slate-800">
+          <div class="h-1.5 w-full overflow-hidden rounded-full bg-track">
             <div class="h-full rounded-full" :class="METER_TONE_BAR_CLASS[bindingMeter.tone]" :style="meterBarStyle(bindingMeter)"></div>
           </div>
-          <div class="flex items-center justify-between gap-2 text-xs text-slate-500 dark:text-slate-400">
+          <div class="flex items-center justify-between gap-2 text-xs text-ink-dim font-mono tabular-nums">
             <!-- The age is never optional and never hidden behind the expander:
                  a meter that hides how old it is overstates its precision. -->
             <span class="truncate">{{ bindingMeter.ageLabel }}</span>
             <span class="shrink-0">{{ metersExpanded ? '▴' : `▾ ${meterRows.length} meters` }}</span>
           </div>
-          <div class="w-full truncate text-xs text-slate-500 dark:text-slate-400">
+          <div class="w-full truncate text-xs text-ink-dim font-mono tabular-nums">
             {{ bindingMeter.resetLabel ?? 'no reset pending' }}
           </div>
         </button>
 
         <!-- Fresh install, poller disabled, or the endpoint dead since boot: one
              honest line, never an empty gap and never zeros. -->
-        <p v-else class="min-w-0 flex-1 px-3 py-3 text-sm text-slate-500 dark:text-slate-400">
+        <p v-else class="min-w-0 flex-1 px-3 py-3 text-sm text-ink-dim">
           Usage unknown — no meters observed yet.
         </p>
 
@@ -589,7 +589,7 @@ onUnmounted(() => {
              cannot stack requests against an unofficial endpoint. -->
         <button
           type="button"
-          class="m-1 min-h-[44px] min-w-[44px] shrink-0 self-start rounded-md border border-slate-300 text-sm font-medium active:bg-slate-100 disabled:opacity-50 dark:border-slate-700 dark:active:bg-slate-900"
+          class="m-1 min-h-[44px] min-w-[44px] shrink-0 self-start rounded-md border border-line text-sm font-medium active:bg-panel-sunken disabled:opacity-50"
           :disabled="store.usageRefreshInFlight"
           aria-label="Refresh usage meters"
           @click="tapRefreshUsage()"
@@ -605,32 +605,32 @@ onUnmounted(() => {
       <!-- No staleness band at all: the daemon says its poller is disabled, so
            every reading is 'unknown' by construction. Say WHY rather than let it
            read as a transient hiccup. -->
-      <p v-if="strip.freshnessBandMissing && meterRows.length > 0" class="px-3 pb-2 text-xs text-slate-500 dark:text-slate-400">
+      <p v-if="strip.freshnessBandMissing && meterRows.length > 0" class="px-3 pb-2 text-xs text-ink-dim">
         Usage polling is disabled — freshness cannot be judged.
       </p>
 
       <!-- Expanded: EVERY meter with its countdown, age, freshness, burn rate
            and exhaustion projection. This is also what `/#/meters` lands on. -->
-      <ul v-if="metersExpanded && meterRows.length > 0" class="flex flex-col gap-3 border-t border-slate-200 px-3 py-2 dark:border-slate-800">
+      <ul v-if="metersExpanded && meterRows.length > 0" class="flex flex-col gap-3 border-t border-line px-3 py-2">
         <li v-for="meter in meterRows" :key="meter.meterId" class="flex flex-col gap-1">
           <div class="flex items-baseline justify-between gap-2 text-xs">
             <span class="flex min-w-0 items-baseline gap-1.5">
-              <span class="truncate text-slate-600 dark:text-slate-300">{{ meter.label }}</span>
+              <span class="truncate text-ink-dim">{{ meter.label }}</span>
               <span
                 v-if="meter.isBinding"
-                class="shrink-0 rounded-full bg-sky-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-sky-800 dark:bg-sky-900/50 dark:text-sky-200"
+                class="shrink-0 rounded-full bg-accent/10 px-1.5 py-0.5 text-[10px] font-semibold font-mono uppercase tracking-[0.08em] text-accent"
               >
                 binding
               </span>
             </span>
-            <span class="shrink-0 font-semibold" :class="METER_TONE_TEXT_CLASS[meter.tone]">
+            <span class="shrink-0 font-semibold font-mono tabular-nums" :class="METER_TONE_TEXT_CLASS[meter.tone]">
               {{ meterValueLabel(meter) }}
             </span>
           </div>
-          <div class="h-1 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-slate-800">
+          <div class="h-1 w-full overflow-hidden rounded-full bg-track">
             <div class="h-full rounded-full" :class="METER_TONE_BAR_CLASS[meter.tone]" :style="meterBarStyle(meter)"></div>
           </div>
-          <div class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[11px] text-slate-500 dark:text-slate-400">
+          <div class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[11px] text-ink-dim font-mono tabular-nums">
             <!-- A meter at 0% with no resetsAt is a NORMAL freshly-rolled window
                  (observed live 2026-07-21), so this reads calmly, not as a fault. -->
             <span>{{ meter.resetLabel ?? 'no reset pending' }}</span>
@@ -639,7 +639,7 @@ onUnmounted(() => {
             <span aria-hidden="true">·</span>
             <span>{{ meter.freshness }}</span>
           </div>
-          <div class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[11px] text-slate-500 dark:text-slate-400">
+          <div class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[11px] text-ink-dim font-mono tabular-nums">
             <span>{{ meter.burnRateLabel }}</span>
             <span aria-hidden="true">·</span>
             <span>{{ meter.exhaustionLabel }}</span>
@@ -662,7 +662,7 @@ onUnmounted(() => {
         <template v-for="item in sessionListItems" :key="item.kind === 'row' ? item.row.appSessionId : 'older-toggle'">
           <li
             v-if="item.kind === 'row'"
-            class="flex flex-col gap-2 rounded-lg border border-slate-200 p-3 dark:border-slate-800"
+            class="flex flex-col gap-2 rounded-lg border border-line p-3"
           >
             <button
               type="button"
@@ -674,7 +674,7 @@ onUnmounted(() => {
                 <span class="flex shrink-0 items-center gap-1">
                   <span
                     v-if="item.row.mirrored"
-                    class="rounded-full bg-violet-100 px-2 py-0.5 text-xs font-semibold text-violet-800 dark:bg-violet-900/50 dark:text-violet-200"
+                    class="rounded-full bg-accent/10 px-2 py-0.5 text-xs font-semibold font-mono uppercase tracking-[0.08em] text-accent"
                   >
                     mirrored
                   </span>
@@ -683,12 +683,12 @@ onUnmounted(() => {
                   </span>
                 </span>
               </div>
-              <div class="flex items-center justify-between gap-2 text-sm text-slate-500 dark:text-slate-400">
+              <div class="flex items-center justify-between gap-2 text-sm text-ink-dim">
                 <span class="flex min-w-0 items-center gap-1.5">
                   <span class="truncate">{{ item.row.channel }} · {{ item.row.cwdTail }}</span>
                   <span
                     v-if="cacheBadges[item.row.appSessionId]"
-                    class="shrink-0 rounded-full px-1.5 py-0.5 text-xs font-semibold"
+                    class="shrink-0 rounded-full px-1.5 py-0.5 text-xs font-semibold font-mono uppercase tracking-[0.08em]"
                     :class="cacheBadges[item.row.appSessionId]?.toneClass"
                     :title="cacheBadges[item.row.appSessionId]?.title"
                   >
@@ -697,7 +697,7 @@ onUnmounted(() => {
                 </span>
                 <span
                   v-if="item.row.attention.visible"
-                  class="shrink-0 rounded-full bg-orange-100 px-2 py-0.5 text-xs font-semibold text-orange-800 dark:bg-orange-900/50 dark:text-orange-200"
+                  class="shrink-0 rounded-full bg-warn/10 px-2 py-0.5 text-xs font-semibold font-mono uppercase tracking-[0.08em] text-warn"
                 >
                   {{ item.row.attention.label }}
                 </span>
@@ -709,14 +709,14 @@ onUnmounted(() => {
                 v-model="renameDraft"
                 type="text"
                 maxlength="120"
-                class="min-h-[36px] min-w-0 flex-1 rounded-md border border-slate-300 px-2 text-sm dark:border-slate-700 dark:bg-slate-900"
+                class="min-h-[36px] min-w-0 flex-1 rounded-md border border-line bg-panel-sunken px-2 text-sm"
                 @keyup.enter="commitRename(item.row.appSessionId)"
                 @keyup.esc="cancelRename"
               />
-              <button type="button" class="min-h-[36px] rounded-md bg-sky-600 px-3 text-sm font-semibold text-white active:bg-sky-700" @click="commitRename(item.row.appSessionId)">
+              <button type="button" class="min-h-[36px] rounded-md bg-accent px-3 text-sm font-semibold text-accent-fg active:bg-accent/90" @click="commitRename(item.row.appSessionId)">
                 Save
               </button>
-              <button type="button" class="min-h-[36px] rounded-md px-2 text-sm text-slate-500 active:bg-slate-100 dark:active:bg-slate-900" @click="cancelRename">
+              <button type="button" class="min-h-[36px] rounded-md px-2 text-sm text-ink-dim active:bg-panel-sunken" @click="cancelRename">
                 Cancel
               </button>
             </div>
@@ -725,7 +725,7 @@ onUnmounted(() => {
               <button
                 v-if="item.row.canAdopt"
                 type="button"
-                class="min-h-[36px] rounded-md bg-violet-600 px-3 font-semibold text-white active:bg-violet-700"
+                class="min-h-[36px] rounded-md bg-accent px-3 font-semibold text-accent-fg active:bg-accent/90"
                 @click="adopt(item.row.appSessionId)"
               >
                 Adopt
@@ -733,8 +733,8 @@ onUnmounted(() => {
               <button
                 v-if="item.row.canKill"
                 type="button"
-                class="min-h-[36px] rounded-md px-3 font-semibold active:bg-rose-100 dark:active:bg-rose-900/40"
-                :class="isConfirmingKill(killConfirm, item.row.appSessionId) ? 'bg-rose-600 text-white' : 'border border-rose-300 text-rose-700 dark:border-rose-800 dark:text-rose-300'"
+                class="min-h-[36px] rounded-md px-3 font-semibold active:bg-crit/10"
+                :class="isConfirmingKill(killConfirm, item.row.appSessionId) ? 'bg-crit text-accent-fg' : 'border border-crit/40 text-crit'"
                 @click="tapKill(item.row.appSessionId)"
               >
                 {{ killLabel(item.row.appSessionId) }}
@@ -742,7 +742,7 @@ onUnmounted(() => {
               <button
                 v-if="item.row.canRename"
                 type="button"
-                class="min-h-[36px] rounded-md border border-slate-300 px-3 text-slate-600 active:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:active:bg-slate-900"
+                class="min-h-[36px] rounded-md border border-line px-3 text-ink-dim active:bg-panel-sunken"
                 @click="startRename(item.row.appSessionId, item.row.label)"
               >
                 Rename
@@ -764,7 +764,7 @@ onUnmounted(() => {
           <li v-else class="flex flex-col gap-2">
             <button
               type="button"
-              class="flex min-h-[44px] w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-slate-300 text-sm font-medium text-slate-600 active:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:active:bg-slate-900"
+              class="flex min-h-[44px] w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-line text-sm font-medium text-ink-dim active:bg-panel-sunken"
               :aria-expanded="showOlderSessions"
               @click="toggleOlderSessions()"
             >
@@ -777,7 +777,7 @@ onUnmounted(() => {
         <!-- The floor rule (lib/sessionListPartition.ts) means `visible` is
              only empty when `older` is too — this cannot fire while
              `minVisible >= 1` and any session exists. -->
-        <li v-if="sessionListItems.length === 0" class="p-3 text-center text-sm text-slate-500 dark:text-slate-400">
+        <li v-if="sessionListItems.length === 0" class="p-3 text-center text-sm text-ink-dim">
           No sessions yet — spawn one above, or Discover terminal-started ones.
         </li>
       </ul>
