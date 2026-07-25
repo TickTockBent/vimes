@@ -240,11 +240,11 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="flex h-full flex-col overflow-hidden bg-slate-950">
-    <header class="sticky top-0 z-20 flex items-center gap-2 border-b border-slate-800 bg-slate-950 px-3 py-2">
+  <div class="flex h-full flex-col overflow-hidden bg-ground">
+    <header class="sticky top-0 z-20 flex items-center gap-2 border-b border-line bg-ground px-3 py-2">
       <button
         type="button"
-        class="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md text-lg text-slate-200 active:bg-slate-900"
+        class="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md text-lg text-ink active:bg-panel-sunken"
         :aria-label="
           started
             ? 'Back to terminals'
@@ -256,13 +256,13 @@ onBeforeUnmount(() => {
       >
         {{ !started && props.backKind === 'close' ? '✕' : '‹' }}
       </button>
-      <h1 class="flex-1 truncate font-semibold text-slate-100">{{ started ? 'Terminal' : 'Terminals' }}</h1>
-      <span class="shrink-0 text-xs text-slate-400">{{ statusLabel }}</span>
+      <h1 class="flex-1 truncate font-semibold text-ink">{{ started ? 'Terminal' : 'Terminals' }}</h1>
+      <span class="shrink-0 text-xs text-ink-dim">{{ statusLabel }}</span>
     </header>
 
     <p
       v-if="lostNotice"
-      class="border-b border-amber-800 bg-amber-950/40 px-3 py-2 text-xs text-amber-200"
+      class="border-b border-warn/30 bg-warn/10 px-3 py-2 text-xs text-warn"
     >
       Output was dropped — you reconnected past the buffer window. The stream is live again from here.
     </p>
@@ -271,36 +271,36 @@ onBeforeUnmount(() => {
          appear here so they can be re-entered, kept (resilient), or killed. -->
     <div v-if="!started" class="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4">
       <section v-if="terminalRows.length > 0" class="mx-auto flex max-w-2xl flex-col gap-2">
-        <h2 class="px-1 text-xs font-semibold uppercase tracking-wide text-slate-500">Running shells</h2>
+        <h2 class="px-1 text-xs font-semibold font-mono uppercase tracking-[0.08em] text-ink-dim">Running shells</h2>
         <ul class="flex flex-col gap-2">
           <li
             v-for="row in terminalRows"
             :key="row.terminalId"
-            class="flex items-center gap-2 rounded-lg border border-slate-800 bg-slate-900 p-2"
+            class="flex items-center gap-2 rounded-lg border border-line bg-panel p-2"
           >
             <button
               type="button"
-              class="flex min-h-[44px] flex-1 flex-col items-start justify-center gap-0.5 rounded-md px-2 text-left active:bg-slate-800"
+              class="flex min-h-[44px] flex-1 flex-col items-start justify-center gap-0.5 rounded-md px-2 text-left active:bg-panel-sunken"
               @click="enter(row.terminalId, row.cwd)"
             >
               <span class="flex items-center gap-2">
-                <span class="font-medium text-slate-100">{{ row.cwdTail }}</span>
+                <span class="font-medium text-ink">{{ row.cwdTail }}</span>
                 <span
                   v-if="row.resilient"
-                  class="rounded bg-emerald-900/60 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-300"
+                  class="rounded bg-ok/10 px-1.5 py-0.5 text-[10px] font-semibold font-mono uppercase tracking-[0.08em] text-ok"
                 >kept</span>
-                <span v-if="row.watched" class="text-[10px] text-sky-400">watching</span>
+                <span v-if="row.watched" class="text-[10px] font-mono uppercase tracking-[0.08em] text-accent">watching</span>
               </span>
-              <span class="truncate text-xs text-slate-500">{{ row.cwd }}</span>
-              <span class="text-[11px] text-slate-500">active {{ row.lastActiveLabel }}</span>
+              <span class="truncate text-xs text-ink-dim">{{ row.cwd }}</span>
+              <span class="font-mono text-[11px] tabular-nums text-ink-dim">active {{ row.lastActiveLabel }}</span>
             </button>
             <label
-              class="flex min-h-[44px] cursor-pointer items-center gap-1.5 rounded-md px-2 text-xs text-slate-300 active:bg-slate-800"
+              class="flex min-h-[44px] cursor-pointer items-center gap-1.5 rounded-md px-2 text-xs text-ink-dim active:bg-panel-sunken"
               :title="'Resilient — exempt this shell from the idle reaper'"
             >
               <input
                 type="checkbox"
-                class="h-4 w-4 accent-emerald-500"
+                class="h-4 w-4 accent-ok"
                 :checked="row.resilient"
                 @change="toggleResilient(row.terminalId, ($event.target as HTMLInputElement).checked)"
               />
@@ -308,7 +308,7 @@ onBeforeUnmount(() => {
             </label>
             <button
               type="button"
-              class="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md text-sm font-semibold text-rose-400 active:bg-rose-950"
+              class="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md text-sm font-semibold text-crit active:bg-crit/10"
               :aria-label="`Kill shell ${row.cwdTail}`"
               @click="kill(row.terminalId)"
             >
@@ -316,13 +316,13 @@ onBeforeUnmount(() => {
             </button>
           </li>
         </ul>
-        <p class="px-1 text-[11px] text-slate-600">
+        <p class="px-1 text-[11px] text-ink-dim">
           Shells persist across reconnects. Idle shells are auto-reaped unless kept; killing one ends its process tree.
         </p>
       </section>
 
       <section class="mx-auto mt-6 flex max-w-2xl flex-col gap-3">
-        <div v-if="roots.length === 0 && terminalRows.length === 0" class="text-center text-sm text-slate-400">
+        <div v-if="roots.length === 0 && terminalRows.length === 0" class="text-center text-sm text-ink-dim">
           No workspace roots yet. Start or discover a session first — its working
           directory becomes a place you can open a shell.
         </div>
@@ -330,20 +330,20 @@ onBeforeUnmount(() => {
           <button
             v-if="!showNewShell"
             type="button"
-            class="min-h-[44px] self-start rounded-md border border-slate-700 bg-slate-900 px-4 text-sm font-semibold text-slate-100 active:bg-slate-800"
+            class="min-h-[44px] self-start rounded-md border border-line bg-panel px-4 text-sm font-semibold text-ink active:bg-panel-sunken"
             @click="showNewShell = true"
           >
             + New shell
           </button>
-          <div v-else class="flex flex-col gap-3 rounded-lg border border-slate-800 bg-slate-900 p-3">
-            <p class="text-sm text-slate-300">Open a new shell rooted at:</p>
+          <div v-else class="flex flex-col gap-3 rounded-lg border border-line bg-panel p-3">
+            <p class="text-sm text-ink-dim">Open a new shell rooted at:</p>
             <select
               v-model="selectedRoot"
-              class="min-h-[44px] w-full rounded-md border border-slate-700 bg-slate-950 px-2 text-sm text-slate-100"
+              class="min-h-[44px] w-full rounded-md border border-line bg-panel-sunken px-2 text-sm text-ink"
             >
               <option v-for="root in roots" :key="root" :value="root">{{ root }}</option>
             </select>
-            <label class="flex flex-col gap-1 text-xs text-slate-400">
+            <label class="flex flex-col gap-1 text-xs text-ink-dim">
               Working directory (edit to open at a subpath)
               <input
                 v-model="cwdField"
@@ -353,31 +353,31 @@ onBeforeUnmount(() => {
                 autocorrect="off"
                 spellcheck="false"
                 placeholder="Pick a root above, or type a path inside one"
-                class="min-h-[44px] w-full rounded-md border border-slate-700 bg-slate-950 px-2 font-mono text-sm text-slate-100"
+                class="min-h-[44px] w-full rounded-md border border-line bg-panel-sunken px-2 font-mono text-sm text-ink"
               />
             </label>
             <div class="flex gap-2">
               <button
                 type="button"
-                class="min-h-[44px] rounded-md bg-sky-600 px-6 text-sm font-semibold text-white active:bg-sky-700"
+                class="min-h-[44px] rounded-md bg-accent px-6 text-sm font-semibold text-accent-fg active:bg-accent/80"
                 @click="start"
               >
                 Open terminal
               </button>
               <button
                 type="button"
-                class="min-h-[44px] rounded-md px-4 text-sm text-slate-400 active:bg-slate-800"
+                class="min-h-[44px] rounded-md px-4 text-sm text-ink-dim active:bg-panel-sunken"
                 @click="showNewShell = false"
               >
                 Cancel
               </button>
             </div>
-            <p class="text-xs text-slate-500">
+            <p class="text-xs text-ink-dim">
               This is a real shell on the dev box — the same access a local terminal has.
             </p>
           </div>
         </template>
-        <p v-if="loadError" class="text-xs text-rose-400">{{ loadError }}</p>
+        <p v-if="loadError" class="text-xs text-crit">{{ loadError }}</p>
       </section>
     </div>
 
