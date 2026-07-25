@@ -443,10 +443,10 @@ function resume(): void {
 
 <template>
   <div class="mx-auto flex h-full max-w-lg flex-col overflow-hidden">
-    <header class="sticky top-0 z-10 flex min-h-[44px] items-center gap-2 border-b border-slate-200 bg-white/95 px-3 py-2 backdrop-blur dark:border-slate-800 dark:bg-slate-950/95">
+    <header class="sticky top-0 z-10 flex min-h-[44px] items-center gap-2 border-b border-line bg-panel/95 px-3 py-2 backdrop-blur">
       <button
         type="button"
-        class="min-h-[44px] min-w-[44px] rounded-md text-lg active:bg-slate-100 dark:active:bg-slate-900"
+        class="min-h-[44px] min-w-[44px] rounded-md text-lg active:bg-panel-sunken"
         :aria-label="props.backKind === 'close' ? 'Close panel' : undefined"
         @click="$emit('back')"
       >
@@ -455,7 +455,7 @@ function resume(): void {
       <span class="truncate font-medium">{{ session?.name ?? props.appSessionId.slice(0, 8) }}</span>
       <span
         v-if="mirrored"
-        class="shrink-0 rounded-full bg-violet-100 px-2 py-0.5 text-xs font-semibold text-violet-800 dark:bg-violet-900/50 dark:text-violet-200"
+        class="shrink-0 rounded-full bg-accent/10 px-2 py-0.5 font-mono text-xs font-semibold uppercase tracking-[0.08em] text-accent"
       >
         mirrored
       </span>
@@ -463,7 +463,7 @@ function resume(): void {
       <button
         v-if="attention"
         type="button"
-        class="shrink-0 rounded-full bg-orange-100 px-3 py-1 text-xs font-semibold text-orange-800 active:bg-orange-200 dark:bg-orange-900/50 dark:text-orange-200"
+        class="shrink-0 rounded-full bg-warn/10 px-3 py-1 font-mono text-xs font-semibold uppercase tracking-[0.08em] text-warn active:bg-warn/20"
         @click="dismissAttention"
       >
         {{ attention.reason }} · dismiss
@@ -471,7 +471,7 @@ function resume(): void {
     </header>
     <p
       v-if="cacheDetailLabel !== null"
-      class="truncate border-b border-slate-100 px-3 py-1 text-xs text-slate-500 dark:border-slate-900 dark:text-slate-400"
+      class="truncate border-b border-line px-3 py-1 font-mono text-xs tabular-nums text-ink-dim"
     >
       {{ cacheDetailLabel }}
     </p>
@@ -480,13 +480,13 @@ function resume(): void {
          usage. Semi-live — the numbers update per turn and the ages tick between;
          no real-time claim. Each cell degrades independently to "unknown". -->
     <div
-      class="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 border-b border-slate-100 px-3 py-1 text-xs text-slate-500 dark:border-slate-900 dark:text-slate-400"
+      class="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 border-b border-line px-3 py-1 font-mono text-xs tabular-nums text-ink-dim"
     >
       <!-- Context: absolute observed input-side tokens of the latest turn. -->
       <span
         :title="contextCellLabel === null ? 'context size not yet observed' : 'input-side tokens fed to the model on the latest observed turn'"
       >
-        <span class="uppercase tracking-wide text-[10px] text-slate-400 dark:text-slate-500">ctx</span>
+        <span class="uppercase tracking-[0.08em] text-[10px] text-ink-dim">ctx</span>
         {{ contextCellLabel ?? '—' }}
       </span>
 
@@ -504,7 +504,7 @@ function resume(): void {
           ? 'account-wide usage not observed yet'
           : `account-wide binding limit (${bindingMeter.label}) — the same across every session`"
       >
-        <span class="rounded bg-slate-100 px-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:bg-slate-800 dark:text-slate-400">
+        <span class="rounded bg-panel-sunken px-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-dim">
           account
         </span>
         <template v-if="bindingMeter !== null">
@@ -529,19 +529,19 @@ function resume(): void {
           <template v-for="(block, blockIndex) in contentBlocksOf(event)" :key="`${event.eventId}-${blockIndex}`">
             <p
               v-if="block.kind === 'thinking'"
-              class="text-center text-xs italic text-slate-400 dark:text-slate-500"
+              class="text-center text-xs italic text-ink-dim"
             >
               · thinking ·
             </p>
 
             <p
               v-else-if="block.kind === 'tool'"
-              class="truncate text-center font-mono text-xs text-slate-400 dark:text-slate-500"
+              class="truncate text-center font-mono text-xs text-ink-dim"
             >
               ⚙ {{ block.name }} {{ block.inputPreview }}
             </p>
 
-            <div v-else-if="block.kind === 'toolResult'" class="text-center text-xs text-slate-400 dark:text-slate-500">
+            <div v-else-if="block.kind === 'toolResult'" class="text-center text-xs text-ink-dim">
               <button
                 v-if="!isToolResultExpanded(event, blockIndex)"
                 type="button"
@@ -565,8 +565,8 @@ function resume(): void {
                 class="max-w-[85%] min-w-0 rounded-lg px-3 py-2 text-sm"
                 :class="
                   roleOf(event) === 'user'
-                    ? 'bg-sky-600 text-white whitespace-pre-wrap'
-                    : 'bg-slate-100 text-slate-900 dark:bg-slate-800 dark:text-slate-100'
+                    ? 'bg-panel-sunken text-ink whitespace-pre-wrap'
+                    : 'bg-panel text-ink'
                 "
               >
                 <!-- ASSISTANT MESSAGES ONLY get markdown rendering — a user's
@@ -583,7 +583,7 @@ function resume(): void {
 
         <p
           v-else-if="event.type === 'usage_block' && visibleUsageEventIds.has(event.eventId)"
-          class="text-center text-xs text-slate-400 dark:text-slate-500"
+          class="text-center font-mono text-xs tabular-nums text-ink-dim"
         >
           {{ usageSummary(event) }}
         </p>
@@ -597,27 +597,27 @@ function resume(): void {
           @respond="(response) => respond(activeCardFor(event)!, response)"
         />
 
-        <div v-else-if="event.type === 'run_completed'" class="my-2 flex items-center gap-2 text-xs text-slate-400 dark:text-slate-500">
-          <span class="h-px flex-1 bg-slate-200 dark:bg-slate-800" />
+        <div v-else-if="event.type === 'run_completed'" class="my-2 flex items-center gap-2 text-xs text-ink-dim">
+          <span class="h-px flex-1 bg-line" />
           run completed
-          <span class="h-px flex-1 bg-slate-200 dark:bg-slate-800" />
+          <span class="h-px flex-1 bg-line" />
         </div>
       </template>
       </div>
     </main>
 
     <footer
-      class="keyboard-safe-footer sticky bottom-0 flex flex-col gap-2 border-t border-slate-200 bg-white p-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] dark:border-slate-800 dark:bg-slate-950"
+      class="keyboard-safe-footer sticky bottom-0 flex flex-col gap-2 border-t border-line bg-panel p-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))]"
       :style="{ '--keyboard-offset': `${keyboardOffsetPx}px` }"
     >
       <div
         v-if="mirrored"
-        class="flex flex-col gap-2 rounded-md bg-slate-100 p-3 text-sm text-slate-600 dark:bg-slate-900 dark:text-slate-300"
+        class="flex flex-col gap-2 rounded-md bg-panel-sunken p-3 text-sm text-ink-dim"
       >
         <span>This is a mirrored terminal session — read-only. Adopt it to send messages or resume.</span>
         <button
           type="button"
-          class="min-h-[44px] rounded-md bg-violet-600 font-semibold text-white active:bg-violet-700"
+          class="min-h-[44px] rounded-md bg-accent font-semibold text-accent-fg active:bg-accent/90"
           @click="adopt"
         >
           Adopt session
@@ -626,7 +626,7 @@ function resume(): void {
       <button
         v-if="!mirrored && canResume"
         type="button"
-        class="min-h-[44px] rounded-md bg-amber-500 font-semibold text-white active:bg-amber-600"
+        class="min-h-[44px] rounded-md bg-warn font-semibold text-accent-fg active:bg-warn/90"
         @click="resume"
       >
         Resume
@@ -635,7 +635,7 @@ function resume(): void {
         v-if="!mirrored && correctionQueuedForLabel !== null"
         role="status"
         aria-live="polite"
-        class="flex flex-col gap-0.5 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200"
+        class="flex flex-col gap-0.5 rounded-md border border-warn/30 bg-warn/10 px-3 py-2 text-xs text-warn"
       >
         <span class="font-semibold">Correction queued · {{ correctionQueuedForLabel }}</span>
         <span>It will be delivered once the current step finishes.</span>
@@ -646,13 +646,13 @@ function resume(): void {
           v-model="draft"
           rows="1"
           placeholder="Message…"
-          class="max-h-40 min-h-[44px] min-w-0 flex-1 resize-none overflow-y-hidden rounded-md border border-slate-300 px-3 py-2.5 text-sm leading-5 dark:border-slate-700 dark:bg-slate-900"
+          class="max-h-40 min-h-[44px] min-w-0 flex-1 resize-none overflow-y-hidden rounded-md border border-line bg-panel-sunken px-3 py-2.5 text-sm leading-5 text-ink"
           @input="autoGrowComposer"
           @keydown.enter="onComposerEnter"
         />
         <button
           type="submit"
-          class="min-h-[44px] min-w-[44px] shrink-0 rounded-md bg-sky-600 px-4 font-semibold text-white active:bg-sky-700 disabled:opacity-50"
+          class="min-h-[44px] min-w-[44px] shrink-0 rounded-md bg-accent px-4 font-semibold text-accent-fg active:bg-accent/90 disabled:opacity-50"
           :disabled="draft.trim().length === 0"
         >
           Send
