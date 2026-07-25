@@ -240,7 +240,13 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="flex h-full flex-col overflow-hidden bg-ground">
+  <!-- data-theme="dark" pins this whole subtree (pane + 4d chrome) to the dark
+       token values regardless of the app theme (Wes's always-dark terminal,
+       unit 6b·4f). The token blocks in style.css are scoped without `:root` so
+       this nested attribute resolves locally; xterm reads the same dark tokens
+       off this element. Flip point: remove this attribute to let the terminal
+       follow the picker like everything else. -->
+  <div data-theme="dark" class="flex h-full flex-col overflow-hidden bg-ground">
     <header class="sticky top-0 z-20 flex items-center gap-2 border-b border-line bg-ground px-3 py-2">
       <button
         type="button"

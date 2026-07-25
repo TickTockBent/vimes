@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref, shallowRef } from 'vue';
+import { onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
 import { languageForPath } from '../lib/languageByExtension.js';
+import { useTheme } from '../lib/useTheme.js';
 import {
   initialSaveConflictState,
   isDirty as isDirtyState,
@@ -24,6 +25,9 @@ const errorMessage = ref('');
 
 const editorHost = ref<HTMLElement | null>(null);
 const handle = shallowRef<EditorHandle | null>(null);
+// The editor FOLLOWS the app picker (unlike the always-dark terminal). We seed
+// the CM theme at mount and reconfigure it whenever the resolved theme flips.
+const { resolvedTheme } = useTheme();
 const saveState = ref<SaveConflictState>(initialSaveConflictState('', null));
 // Sticky-Ctrl for the toolbar: when armed, an arrow does the word/doc variant.
 const ctrlArmed = ref(false);
@@ -71,6 +75,7 @@ onMounted(async () => {
     parent: editorHost.value,
     doc: loaded.text,
     language: languageForPath(props.path),
+    theme: resolvedTheme.value,
     onChange: (content) => {
       saveState.value = reduceSaveConflict(saveState.value, { type: 'edit', content });
     },
@@ -80,6 +85,12 @@ onMounted(async () => {
   if (props.line !== undefined) {
     handle.value.goToLine(props.line);
   }
+});
+
+// Re-theme in place when the picker flips (handle may not exist yet while the
+// file is still loading; the mount seeds the correct theme in that case).
+watch(resolvedTheme, (mode) => {
+  handle.value?.setTheme(mode);
 });
 
 onBeforeUnmount(() => {
