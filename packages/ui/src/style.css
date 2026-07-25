@@ -46,7 +46,14 @@
   }
 }
 
-:root[data-theme="light"] {
+/* Explicit-theme token blocks are scoped WITHOUT the `:root` qualifier so they
+   match at ANY nesting level, not only <html>. This is what lets a subtree
+   (the always-dark TerminalView, unit 6b·4f) carry its own `data-theme="dark"`
+   and resolve the dark token values locally, while the picker's attribute on
+   <html> keeps theming the whole app (a `[data-theme]` selector matches <html>
+   too). The AUTO branch above stays `:root`-scoped on purpose: OS-follow only
+   applies at the document root, never per-subtree. */
+[data-theme="light"] {
   --ground: #f7f8fa;
   --panel: #ffffff;
   --panel-sunken: #eef1f5;
@@ -61,7 +68,7 @@
   --crit: #dc2626;
 }
 
-:root[data-theme="dark"] {
+[data-theme="dark"] {
   --ground: #0a0e14;
   --panel: #10151d;
   --panel-sunken: #0d131b;
