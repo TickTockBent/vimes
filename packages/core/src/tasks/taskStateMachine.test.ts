@@ -620,3 +620,26 @@ describe('I8 — proposeTransition stays TOTAL over the S7·1-widened record', (
     }
   });
 });
+
+// ── I8 — the S7·5a plan-reference field must not perturb the machine either ──
+describe('I8 — proposeTransition stays TOTAL over a record carrying planArtifactHash', () => {
+  // `planArtifactHash` (S7·5a) is folded by `plan_submitted`, never by
+  // `proposeTransition` — the machine reads only `task.stage` and the
+  // proposal, so a legal edge accepting AND the field riding through the
+  // spread unchanged is the same proof `widenedTask` above establishes for the
+  // S7·1 work-order fields.
+  const taskWithPlan = taskAtStage('planning', {
+    planArtifactHash: 'sha256:aaaa',
+  });
+
+  it('a legal edge still ACCEPTS, carrying planArtifactHash through UNCHANGED', () => {
+    const outcome = proposeTransition(taskWithPlan, proposal('plan-ready'));
+
+    expect(outcome.accepted).toBe(true);
+    if (outcome.accepted) {
+      expect(outcome.nextTask).toEqual({ ...taskWithPlan, stage: 'plan-ready' });
+      expect(outcome.nextTask.planArtifactHash).toBe(taskWithPlan.planArtifactHash);
+      expect(taskRecordSchema.safeParse(outcome.nextTask).success).toBe(true);
+    }
+  });
+});

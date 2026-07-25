@@ -22,11 +22,13 @@ import {
   sessionAdoptedPayloadSchema,
   sessionRenamed,
   sessionRenamedPayloadSchema,
+  planSubmitted,
   taskCreatedPayloadSchema,
   workOrderAmended,
   workOrderAmendedPayloadSchema,
 } from './events.js';
 import { sessionRecordSchema } from './schemas.js';
+import { submitPlanPayloadSchema } from './tasks/workOrder.js';
 
 // gate_fired's schema widened (rule 0.7) to match wire reality: the daemon's
 // real SDK gate carries requestId (sessionHost.ts's handleGate), harness
@@ -309,6 +311,39 @@ describe('work_order_amended (S7·1 — RESERVED, no emitter)', () => {
     expect(
       workOrderAmendedPayloadSchema.safeParse({ ...amendmentPayload, workOrderRev: -1 }).success,
     ).toBe(false);
+  });
+});
+
+describe('plan_submitted (S7·5a — RESERVED, payload REUSED from tasks/workOrder.ts)', () => {
+  // Precedent: `dispatch_refused` (slice 0 -> emitted slice 6) and
+  // `work_order_amended` above are both schema-first reservations with no
+  // emitter yet; this follows the same posture (S7·5b is the emitter). The
+  // identity assertion below is the point of this describe: `submit_plan`'s
+  // tool payload and this event's payload are not merely equal in SHAPE, they
+  // are the SAME zod object (D48) — declaring a second, near-identical schema
+  // would be the "one source of record per fact" violation principle 9 names.
+  const planPayload = {
+    taskId: 'task-aaaa-0001',
+    stage: 'planning' as const,
+    attempt: 1,
+    workOrderRev: 0,
+    planArtifactHash: 'sha256:deadbeef',
+    plannerSessionRef: { appSessionId: 'session-planner-0001' },
+  };
+
+  it('constructs on the tasks stream and validates against submitPlanPayloadSchema', () => {
+    expect(planSubmitted(planPayload)).toEqual({
+      stream: 'tasks',
+      type: 'plan_submitted',
+      payload: planPayload,
+    });
+    expect(submitPlanPayloadSchema.safeParse(planPayload).success).toBe(true);
+  });
+
+  it('is registered under the plan_submitted type string, IDENTICAL to submitPlanPayloadSchema', () => {
+    expect(EVENT_TYPES.planSubmitted).toBe('plan_submitted');
+    // Identity (===), not mere schema equivalence — the reuse D48 calls for.
+    expect(EVENT_PAYLOAD_SCHEMAS[EVENT_TYPES.planSubmitted]).toBe(submitPlanPayloadSchema);
   });
 });
 

@@ -10,6 +10,13 @@ import {
   transitionProposedBySchema,
   transitionRejectionReasonSchema,
 } from './tasks/taskStateMachine.js';
+// S7·5a: `plan_submitted`'s payload REUSES the reserved `submit_plan` MCP tool
+// payload (D48) rather than re-declaring a shape that would inevitably drift
+// from it — one source of record per fact (principle 9), the same discipline
+// the header comment above documents for the state-machine imports. Direction
+// is events.ts -> tasks/workOrder.ts -> { schemas.ts, taskStateMachine.ts}; that
+// module imports nothing from here, so there is no cycle.
+import { submitPlanPayloadSchema, type SubmitPlanPayload } from './tasks/workOrder.js';
 
 // The domain event vocabulary (spec §3.3 / slice-0.md). Each type carries a zod
 // payload schema; helper constructors build EventInput records ready for
@@ -163,6 +170,19 @@ export const EVENT_TYPES = {
   // **NOTHING IN THIS UNIT EMITS IT.** If you are grepping for the code path
   // that emits an amendment, there isn't one yet, and that is deliberate.
   workOrderAmended: 'work_order_amended',
+  // Slice-7 D48: a plan crossed the tool boundary. RESERVED, no emitter yet
+  // (S7·5b — the daemon's SDK adapter — intercepts `ExitPlanMode` and emits
+  // exactly one of these per submitted plan), following the same posture as
+  // `dispatch_refused` (schema landed slice 0, emitted slice 6) and
+  // `work_order_amended` just above.
+  //
+  // Like `task_session_attached`, this AUGMENTS the task record — it folds
+  // `planArtifactHash` onto it — and is deliberately NOT a stage transition.
+  // The planning -> plan-ready move is a separate `task_transitioned`, emitted
+  // by the dispatcher (S7·5b) once it has observed the plan submission; folding
+  // a stage change in HERE as well would let the record disagree with itself
+  // about which event is the authority for stage (principle 9).
+  planSubmitted: 'plan_submitted',
 } as const;
 
 export const SYSTEM_STREAM = 'system';
@@ -669,6 +689,18 @@ export const workOrderAmendedPayloadSchema = z.object({
 });
 export type WorkOrderAmendedPayload = z.infer<typeof workOrderAmendedPayloadSchema>;
 
+// plan_submitted (S7·5a, RESERVED — see the note on EVENT_TYPES.planSubmitted
+// above; S7·5b is the emitter). D48: **the reserved `submit_plan` MCP tool
+// payload IS the event payload**, not a second, restated shape — the same
+// `submitPlanPayloadSchema` (imported above from `tasks/workOrder.js`) that
+// validates the tool call crossing the boundary is registered VERBATIM below
+// as this event's payload schema. Declaring a second, near-identical
+// `planSubmittedPayloadSchema` here would be exactly the "one source of record
+// per fact" violation principle 9 exists to name — the tool input and the
+// event would carry the same facts under two names, free to drift the moment
+// either changed alone. No new payload type is minted either: `SubmitPlanPayload`
+// (from `tasks/workOrder.js`) is the type used everywhere below.
+
 export const EVENT_PAYLOAD_SCHEMAS = {
   [EVENT_TYPES.sessionCreated]: sessionCreatedPayloadSchema,
   [EVENT_TYPES.livenessChanged]: livenessChangedPayloadSchema,
@@ -712,6 +744,9 @@ export const EVENT_PAYLOAD_SCHEMAS = {
   [EVENT_TYPES.correctionQueued]: correctionQueuedPayloadSchema,
   [EVENT_TYPES.correctionDelivered]: correctionDeliveredPayloadSchema,
   [EVENT_TYPES.workOrderAmended]: workOrderAmendedPayloadSchema,
+  // Reused verbatim — see the note above `EVENT_TYPES.planSubmitted` /
+  // just above this schema's own registration.
+  [EVENT_TYPES.planSubmitted]: submitPlanPayloadSchema,
 } as const;
 
 export type SessionCreatedPayload = z.infer<typeof sessionCreatedPayloadSchema>;
@@ -796,7 +831,8 @@ export type DomainEvent =
   | { type: typeof EVENT_TYPES.taskWorktreeCreated; payload: TaskWorktreeCreatedPayload }
   | { type: typeof EVENT_TYPES.correctionQueued; payload: CorrectionQueuedPayload }
   | { type: typeof EVENT_TYPES.correctionDelivered; payload: CorrectionDeliveredPayload }
-  | { type: typeof EVENT_TYPES.workOrderAmended; payload: WorkOrderAmendedPayload };
+  | { type: typeof EVENT_TYPES.workOrderAmended; payload: WorkOrderAmendedPayload }
+  | { type: typeof EVENT_TYPES.planSubmitted; payload: SubmitPlanPayload };
 
 // Maps each attention-setting event type to the needsAttention reason it sets.
 const ATTENTION_SETTER_REASON: Readonly<Record<string, AttentionReason>> = {
@@ -916,6 +952,17 @@ export function taskTransitionRejected(payload: TaskTransitionRejectedPayload): 
 // exists so S7·2b needs no migration when it lands the writer.
 export function workOrderAmended(payload: WorkOrderAmendedPayload): EventInput {
   return { stream: 'tasks', type: EVENT_TYPES.workOrderAmended, payload };
+}
+// plan_submitted (S7·5a, RESERVED — see EVENT_TYPES.planSubmitted and
+// `submitPlanPayloadSchema`'s registration above). Same 'tasks' stream and same
+// literal-string reasoning as its siblings: the vocabulary module stays
+// free-standing. NO CALLER INVOKES THIS YET — S7·5b (the daemon's SDK adapter,
+// after intercepting `ExitPlanMode`) is the emitter. It AUGMENTS the task
+// record (folds `planArtifactHash` — see projections/tasks.ts) and is not a
+// stage transition; the dispatcher's own `task_transitioned` handles
+// planning -> plan-ready separately.
+export function planSubmitted(payload: SubmitPlanPayload): EventInput {
+  return { stream: 'tasks', type: EVENT_TYPES.planSubmitted, payload };
 }
 
 // The task↔session link (step 4a). On the 'tasks' stream and NOT the session's

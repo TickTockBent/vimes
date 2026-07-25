@@ -227,6 +227,14 @@ export const taskRecordSchema = z.object({
   // not mutated). Absent until the first amendment; S7·2b bumps it via the
   // reserved `work_order_amended` event. Reserved here, no writer yet.
   workOrderRev: z.number().int().nonnegative().optional(),
+  // The content hash of the CURRENT plan artifact submitted for this task (D48,
+  // S7·5a). The plan BLOB lives in the artifact store; the record carries only the
+  // reference, so the handoff (S7·7a) fetches the plan by hash. OPTIONAL-only, same
+  // I6 discipline as the work-order fields above: a task with no plan submitted yet
+  // has NO such key (absent stays absent — the projection does not default it), so
+  // every pre-S7·5a task_created folds byte-identically. LATEST-WINS: a re-plan
+  // overwrites it (see the fold). Consumer: S7·7a (handoff) + the board.
+  planArtifactHash: z.string().optional(),
   stage: z.enum([
     'backlog',
     'planning',
