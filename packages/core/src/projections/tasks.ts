@@ -7,6 +7,10 @@ import {
   taskSessionAttachedPayloadSchema,
   taskTransitionedPayloadSchema,
 } from '../events.js';
+// S7·5a: `plan_submitted`'s payload is the reserved `submit_plan` tool payload
+// (D48) — imported from its owning module rather than restated, exactly as
+// `events.ts` itself registers it (one source of record per fact, principle 9).
+import { submitPlanPayloadSchema } from '../tasks/workOrder.js';
 
 // ─── slice 6 step 2 — the tasks projection (PURE, packages/core) ─────────────
 //
@@ -187,6 +191,46 @@ export const tasksProjection: Projection<TasksState> = {
             ],
           };
         });
+      }
+
+      case EVENT_TYPES.planSubmitted: {
+        const parsed = submitPlanPayloadSchema.safeParse(event.payload);
+        if (!parsed.success) {
+          return state;
+        }
+        const payload = parsed.data;
+        // Unknown task → no-op, exactly like `task_transitioned` and
+        // `task_session_attached` above: a plan for a task we never saw created
+        // must never fabricate a record.
+        return withTask(state, payload.taskId, (task) => ({
+          ...task,
+          // AUGMENT, not a transition: `plan_submitted` mirrors
+          // `task_session_attached` in kind — it records a fact ABOUT the task
+          // (which plan artifact is current) without moving `stage`. The
+          // planning -> plan-ready move is a SEPARATE `task_transitioned`,
+          // emitted by the dispatcher (S7·5b) once it has observed this event;
+          // folding a stage change in here too would give the record two
+          // authorities over its own stage (principle 9).
+          //
+          // LATEST-WINS, unlike `sessionRefs`' accumulation. A re-plan (a fresh
+          // attempt after review sends the task back to planning) SUPERSEDES
+          // the prior plan — the board and the handoff (S7·7a) want the CURRENT
+          // plan, never a history of every plan ever drafted, so an ordinary
+          // overwrite is the right shape and is naturally idempotent: folding
+          // the SAME `plan_submitted` twice (or twice-delivered, at-least-once)
+          // leaves the field at the same single hash, with no accumulating
+          // trace the way a duplicate `task_session_attached` would leave on
+          // `sessionRefs`. That is also why this case needs no dedicated
+          // idempotence guard the way the attach case does above.
+          //
+          // Only `planArtifactHash` is folded onto the record. The rest of the
+          // payload (stage/attempt/workOrderRev/plannerSessionRef) stays
+          // recorded on the EVENT for audit/replay — the handoff locates the
+          // plan by hash alone, and the artifact envelope (S7·4) carries the
+          // rest, so restating them on the record here would be a second
+          // source of the same facts.
+          planArtifactHash: payload.planArtifactHash,
+        }));
       }
 
       // ── deliberately NOT folded ────────────────────────────────────────────

@@ -5,6 +5,7 @@ import type { EventInput, EventRecord, TaskRecord } from '../schemas.js';
 import { taskRecordSchema } from '../schemas.js';
 import {
   dispatchRefused,
+  planSubmitted,
   taskCreated,
   taskQuarantined,
   taskSessionAttached,
@@ -688,6 +689,107 @@ describe('tasks projection — task_session_attached', () => {
     // The frozen input is byte-for-byte what it was.
     expect(tasksProjection.serialize(frozenState)).toBe(serializedBefore);
     expect(frozenState.tasks[TASK_A]!.sessionRefs).toHaveLength(1);
+  });
+});
+
+// ── S7·5a — plan_submitted AUGMENTS the record, exactly like task_session_
+// attached above; it is NOT a transition ─────────────────────────────────────
+//
+// D48: the plan BLOB lives in the artifact store; the LOG carries only the
+// reference (the hash), so this fold's whole job is keeping `planArtifactHash`
+// current. The planning -> plan-ready move is a SEPARATE `task_transitioned`
+// (the dispatcher's, S7·5b) — this event never touches `stage`.
+function submitPlanForTaskA(planArtifactHash: string): EventInput {
+  return planSubmitted({
+    taskId: TASK_A,
+    stage: 'planning',
+    attempt: 1,
+    workOrderRev: 0,
+    planArtifactHash,
+    plannerSessionRef: { appSessionId: STAGE_SESSION_ID },
+  });
+}
+
+describe('tasks projection — plan_submitted', () => {
+  it('folds planArtifactHash onto an existing task', () => {
+    const state = stateFromLog([[createTaskA()], [submitPlanForTaskA('sha256:aaaa')]]);
+    expect(state.tasks[TASK_A]!.planArtifactHash).toBe('sha256:aaaa');
+    expect(taskRecordSchema.safeParse(state.tasks[TASK_A]).success).toBe(true);
+  });
+
+  it('LATEST-WINS: a second plan_submitted (a re-plan) overwrites the first', () => {
+    // Unlike sessionRefs' accumulation, this field is a plain overwrite: the
+    // board and the handoff (S7·7a) want the CURRENT plan, never a history of
+    // every plan ever drafted.
+    const state = stateFromLog([
+      [createTaskA()],
+      [submitPlanForTaskA('sha256:aaaa')],
+      [submitPlanForTaskA('sha256:bbbb')],
+    ]);
+    expect(state.tasks[TASK_A]!.planArtifactHash).toBe('sha256:bbbb');
+  });
+
+  it('ignores a plan_submitted for an unknown task — it never fabricates a record', () => {
+    const state = stateFromLog([
+      [createTaskA()],
+      [
+        planSubmitted({
+          taskId: TASK_B,
+          stage: 'planning',
+          attempt: 1,
+          workOrderRev: 0,
+          planArtifactHash: 'sha256:cccc',
+          plannerSessionRef: { appSessionId: STAGE_SESSION_ID },
+        }),
+      ],
+    ]);
+    expect(state.tasks[TASK_B]).toBeUndefined();
+    expect('planArtifactHash' in state.tasks[TASK_A]!).toBe(false);
+  });
+
+  // The load-bearing I6 case for this unit: a task that never received a
+  // plan_submitted must carry NO planArtifactHash key at all — absent stays
+  // absent, mirroring the S7·1/S7·2a work-order fields' own discipline. See
+  // the verify-by-breaking note in the S7·5a checkpoint: adding a projection
+  // default here (e.g. `planArtifactHash: task.planArtifactHash ?? ''`) reddens
+  // exactly this assertion.
+  it("I6 absent-stays-absent: a task with no plan_submitted has NO planArtifactHash key", () => {
+    const state = stateFromLog([[createTaskA()]]);
+    expect('planArtifactHash' in state.tasks[TASK_A]!).toBe(false);
+  });
+
+  it('I6 replay-equivalence: folding a carrying-log twice is byte-identical', () => {
+    const log = [[createTaskA()], [submitPlanForTaskA('sha256:aaaa')]];
+    const firstFold = stateFromLog(log);
+    const secondFold = stateFromLog(log);
+    expect(tasksProjection.serialize(secondFold)).toBe(tasksProjection.serialize(firstFold));
+  });
+
+  it('is idempotent: folding the SAME plan_submitted twice leaves a single hash (an overwrite, no trace)', () => {
+    // Unlike task_session_attached's `sessionRefs`, this needs no dedicated
+    // dedup guard: an overwrite of the same value with itself IS the same
+    // value, so there is nothing here for a duplicate-delivery guard to catch.
+    const state = stateFromLog([
+      [createTaskA()],
+      [submitPlanForTaskA('sha256:aaaa')],
+      [submitPlanForTaskA('sha256:aaaa')],
+    ]);
+    expect(state.tasks[TASK_A]!.planArtifactHash).toBe('sha256:aaaa');
+  });
+
+  it('a malformed plan_submitted payload is a no-op and never throws', () => {
+    const before = stateFromLog([[createTaskA()]]);
+    const serializedBefore = tasksProjection.serialize(before);
+    const malformedRecord = {
+      ...recordOf(submitPlanForTaskA('sha256:aaaa')),
+      payload: { taskId: TASK_A },
+    } as unknown as EventRecord;
+    let after: TasksState | undefined;
+    expect(() => {
+      after = tasksProjection.apply(before, malformedRecord);
+    }).not.toThrow();
+    expect(after).toBe(before);
+    expect(tasksProjection.serialize(before)).toBe(serializedBefore);
   });
 });
 
