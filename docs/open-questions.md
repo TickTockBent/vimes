@@ -222,83 +222,12 @@ rollup. This is designed from zero, on raw material none of them had.
      stream's events, because the log has no global ordering column — is recorded
      in architecture.md. Wes approved the recommendation. -->
 
-## D43 — A task's spec source: title-only, or a durable `description` field? *(trigger: slice 7 — the first time a worker needs a brief beyond a title, esp. the independent reviewer)*
+## D43 — task spec source — ✅ DECIDED 2026-07-25 → decisions.md D43
+A task IS a work-order: structured fields (scope / explicitly-out / acceptance-as-list
+/ kill) for what the machine reads, attached artifacts by reference for what only an
+agent reads. Revisioned, not mutated. Full record + rationale: **decisions.md D43**
+(and D44 for the plan handoff, D46 for fix-freshness). Operational plan: slice-7.md.
 
-Surfaced 2026-07-24 while drafting the stage-instruction seam-fill (parked here so
-slice 6 can close on a *minimal* instruction — see the seam-fill draft). Today
-`TaskRecord` carries only an **optional `title`** — there is no description/spec
-field. The minimal slice-6 instruction gets by on title + the human's mid-run
-steering. But the richer pipeline needs a real brief: the **independent reviewer**
-(`review` always spawns fresh — the independence rule) has *only a title* to
-review against, and a cold-spawn implementer likewise.
-
-**Lean (2026-07-24):** add an **optional `description` field**, same widening
-discipline `title`/`gates` already followed (absent stays absent, I6-safe, set at
-creation). It is the cheapest thing that gives the reviewer and the cold
-implementer something concrete. Interacts with D44 (the plan may BE the
-implementer's spec, in which case the description is the *planner's* brief, not the
-implementer's). Decide the two together.
-
-**⚠ Evidence from T7 real-use (2026-07-24) — this may be BIGGER than a
-`description` string.** Running the board for the first time, Wes hit the gap
-directly and named the real shape of it: *"the workflow isn't me saying in 256
-characters 'I want to do this' and then hammering you with mid-turn corrections."*
-The board as built encodes a **chat-and-steer** model (thin title → dispatch →
-converge by live correction). But the software-orchestration workflow VIMES exists
-to run is **spec-and-verify**: a precise **work-order** (scope / files-to-read /
-assertions / verify / report — the shape of every `scratchpad/unit-*.md` and
-`spike-*.md` in this repo) → **one** agent dispatched against it → the orchestrator
-**verifies** → a wrong result goes to a **new** agent with a new spec, not a barrage
-of corrections. Mid-run correction is the *exception* (the kill-criterion lever),
-not the mechanism.
-
-So the D43 answer may not be an optional string but a **work-order-shaped spec
-artifact** authored before dispatch, and D44's "plan" is one such artifact produced
-by the planning stage. This reframes D43/D44 from "add a field" to "make a task a
-work-order and the stage flow mirror the orchestrate→dispatch→verify→fix-to-new-agent
-loop." Related symptoms from the same T7 run: the create-sheet showed only the
-allowlist container not the projects in it (fixed 2026-07-24, `TaskBoardView.vue`);
-the move modal shows all stages but the machine refuses most (QUEUE S8). **Status:
-OPEN — Wes deferred the rule-0.1 decision record to keep running T7 ("capture the
-confusion, I'll continue the test"); this note is the captured evidence, NOT a
-settled call.**
-
-## D44 — The plan→implement hand-off for a cold-spawned implementer *(trigger: slice 7 — when planning and implementing run as separate auto-dispatched stages)*
-
-Surfaced 2026-07-24, same investigation. `resolveStageRunner` rule 3 spawns the
-**first implementer FRESH and deliberately does NOT resume the planning session**
-("a planning session is NOT the author" — resuming it would carry the wrong
-artifact). So a first-pass implementer has the **title but not the plan the
-planning stage produced** — the plan lives in a session context it is explicitly
-not resumed into. Nothing currently conveys the plan across that boundary.
-
-**Lean (2026-07-24):** the plan must become a **durable artifact** the instruction
-can reference — captured from the planning session and attached to the task
-(candidate homes: a `plan` field, or the `description` from D43 repurposed) — so
-`composeStageInstruction` for `implementing` can hand the fresh worker the actual
-plan. The alternative (read the planner's transcript to extract the plan) is
-fragile and edges toward screen-parsing (rule 0.8). Decide with D43. **Not a
-slice-6 blocker** — slice 6 closes on a single-stage dispatch that never crosses
-this boundary.
-
-**⚠ Wes's articulated mechanism, T7 real-use (2026-07-24, session `3a81825a`).** After
-accepting a planning worker's plan, Wes described the handoff he'd want, and it *is*
-the target design: *"ideally we'd have the orchestrator at this point lift out the
-plan and attach it to the task and then ingest it in the worker session we spawn
-next. Or if the agent needed more information we'd send the task back up for human
-review and buzz my phone."* This names three pieces:
-1. **Plan capture → attach → ingest.** An orchestrator step lifts the plan out of the
-   planning session, persists it as the task's durable artifact (D43/D44 field), and
-   `composeStageInstruction` for `implementing` feeds it to the FRESH implementer.
-   `resolveStageRunner` rule 3 already guarantees the fresh spawn (never resume the
-   planner — "a planning session is NOT the author"), so the independence half is
-   built; the capture/attach/ingest half is not.
-2. **The needs-more-info branch → human review + notify.** When the worker needs
-   more than it has, the task routes back to a human gate (`blocked-external` or a
-   review bounce) with `needsAttention` → the push pipeline buzzes the phone. States
-   + notify path exist (slices 0–2); the worker *signaling* the need is the new part.
-3. **WHO is "the orchestrator"?** Today it is the human or Fable, by hand. Automating
-   this role — capture, verify, attach, dispatch-next, or bounce-with-notification —
-   is the slice-7 orchestrator surface (the MCP/agent-facing proposer, principle 10:
-   a thin client of the daemon, never a second writer). This is its first concrete
-   job. Feeds directly into the task-model finding under D43.
+## D44 — plan→implement handoff — ✅ DECIDED 2026-07-25 → decisions.md D44
+The plan crosses via a `submit_plan` tool call, validated in-run (retry locality);
+native plan mode lives below the claude-adapter line. Full record: **decisions.md D44**.

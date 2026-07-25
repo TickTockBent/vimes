@@ -1355,3 +1355,171 @@ does not rediscover it.
 **Sequencing.** Build AFTER slice 6 closes (its exit gate is one test away; do not
 destabilize it). Slice-7 MVP = picker + registry + derived scoping. The history
 read-model and the onboarding init-workflow are follow-ons, not the first cut.
+
+## D45 — Transcript dirs are DISCOVERED (matched by session id / internal cwd field), never COMPUTED from a slug rule we mirror
+
+*(2026-07-25. A rule-0.1 finding from the T6 CLI-2.1.220 verify spike, verified
+independently by the orchestrator against real transcripts, then Wes's call.)*
+
+**The finding.** `encodeCwdForProjects` (`transcriptPaths.ts:17`) folds `/` and `.`
+to `-` but **preserves `_`** (`/[/.]/g`), on the strength of a code comment
+claiming that was observed truth at CLI 2.1.207. **That comment is false.** Ground
+truth (rule 0.7): the on-disk dir `…-games-space-industry` contains a transcript
+whose own `cwd` field is `/home/ticktockbent/projects/games/space_industry` — the
+CLI folded `_`→`-` when naming the dir (same on `ThermAI_FlightDeck →
+ThermAI-FlightDeck`; uppercase is preserved, so the fold is `_` only). So for any
+project whose path contains an underscore, `encodeCwdForProjects` computes a dir
+that does not exist and **transcript tailing + discovery silently find nothing** —
+no error, just missing data. Pre-existing (the fold is visible back to ≤2.1.207),
+NOT a 2.1.220 regression.
+
+**Why not just fix the regex (`/[/.]/g → /[/._]/g`).** Earlier the same day the
+orchestrator's own `ls` showed a dir `…-unnamed_progress_ship_game` with the
+underscore **preserved** (now gone). One folded dir and one preserved dir in
+recent history ⇒ the CLI's slug rule appears **version-dependent** — precisely the
+rule-0.6 "external surface drifts under you" hazard. Mirroring today's rule
+re-bets on a surface we just watched change, and the `.`→`-` edge has *never* been
+observable (no dotted project dir has ever existed). A computed slug is a
+standing guess about someone else's private encoding.
+
+**The decision (Wes, 2026-07-25): approach B — discover, don't compute.** Stop
+reconstructing the dir name from cwd; find the real path instead, immune to
+whatever the CLI's slug rule is (rule-0.8-aligned: depend on structured content,
+not on a fragile derived name). It is **not a uniform swap** — two caller shapes:
+- **Session id known** (`sessionHost.ts:425,1064`, via `transcriptFileFor`):
+  glob `~/.claude/projects/*/<claudeSessionId>.jsonl` and take the match.
+- **Only a cwd known** (`tailer.ts:111`, `discovery.ts:42`, via
+  `transcriptDirFor`): resolve the dir by matching each candidate dir's *internal*
+  `cwd` field against the target cwd — discovery already enumerates the dirs, so it
+  reads truth rather than predicting a name. (Discovery fundamentally cannot know
+  a session id in advance — that is what it is discovering.)
+
+**Scope note for the build.** Keep a single fragile-adapter module; the computed
+slug may survive as a *hint*/fast-path but never as the authority. Delete the false
+comment. Land a test with an underscore cwd (the guard that would have caught
+this). The `.`→`-` edge stops being load-bearing under B, which is part of the
+point. Queued (QUEUE.md), not yet built — its own small unit, sequenced by Wes
+against the task-model pass.
+
+**Unrelated T6 outcome (not a finding).** Bumping `VIMES_EXPECTED_CLI_VERSION`
+2.1.217→2.1.220 is safe (warn-only, gates no spawn, no boundary drift observed);
+it needs a root `/etc/vimes/env` edit + restart, so batch it into the next real
+deploy rather than a dedicated restart. The B fix does NOT depend on the pin.
+
+## D43 — A task IS a work-order: structured fields for what the machine reads, attached artifacts (by reference) for what only an agent reads
+
+*(2026-07-25. Migrated from open-questions D43; the T7 real-use evidence there is
+the trigger. Settled with D44 and D46 as one design pass. This supersedes the
+"add an optional `description` string" lean — the finding was bigger than a field.)*
+
+The task stops being `{title, stage}` and becomes a **work-order**: the
+spec-and-verify unit the whole workflow runs on, not a chat prompt to steer.
+
+**The dividing rule (fields vs. artifact).** *If the dispatcher, the verifier, or
+the board branches or renders on it, it is a FIELD. If only an agent reads it, it
+is an attached ARTIFACT by reference.* Both, with that boundary:
+- **Fields on the task record:** scope summary; explicitly-out; **acceptance
+  criteria as a structured LIST** — each criterion individually addressable, never
+  a text blob; kill criterion; plus what already exists (isolation, gates).
+- **Artifacts, content-addressed, referenced by the record:** the plan and its
+  kind — a self-owned blob (the codor/AgenC pattern), never inlined into the task
+  row. (Envelope reserved under the slice-7 floor pieces, slice-7.md.)
+
+**Two shapes that are quietly load-bearing later, reserved now (rule 0.5):**
+1. **Acceptance-as-list is a rubric.** A structured criteria list is exactly what
+   the verify stage grades against, so `review` can grow toward the "grader iterates
+   against criteria" (Outcomes) shape **without a second schema pass**. This is why
+   it must be a list, not prose — see D46's `report_review` floor piece.
+2. **Work-orders are revisioned, not mutated (spine discipline).** Edits land as
+   **amendment events**; a stage run records **which `workOrderRev` it was
+   dispatched against**. That gives every stage run the identity
+   **`(taskId, stage, attempt, workOrderRev)`**, which turns "the implementer built
+   against the old scope" from an argument into a queryable fact — and is the same
+   key D46 relies on to keep per-attempt cost/usage honest.
+
+Widening discipline as ever: base fields absent-stays-absent, I6-safe; amendments
+are appended events, never in-place edits.
+
+## D44 — The plan crosses the plan→implement boundary as a `submit_plan` TOOL CALL, validated in-run; native plan mode lives below the adapter line
+
+*(2026-07-25. Migrated from open-questions D44; decided with D43/D46.)*
+
+The planning stage emits its plan by calling a Vimes-owned **`submit_plan` MCP
+tool**, whose payload is **validated against the plan schema at submission time,
+inside the planner's own run**. Not a structured final message.
+
+**The deciding argument — retry locality.** A schema-invalid plan submitted via the
+tool **bounces back as a tool result and the planner fixes it in-session**. A
+structured *final message* only fails **after the run has ended** — dead session,
+respawn, cold start — so every schema miss becomes a full stage retry. Supporting:
+matches the typed-reports-over-prose consensus; is byte-identical across the SDK and
+PTY channels (it rides the stream/JSONL either way); and gives a natural
+**provenance hook** — the tool result records the artifact **hash** and the
+**planner session ref** onto the task. The plan itself persists as a D43 artifact
+(content-addressed blob + envelope); `submit_plan` is what writes it.
+
+**Multi-provider seam (why a custom tool and not native plan mode as the contract).**
+`submit_plan` is **THE CONTRACT** — schema-validated and provider-neutral, and
+multi-provider is eventual. Claude Code's native **plan mode is a Claude-ism**: it
+already emits a machine-liftable plan (the content rides in the **`ExitPlanMode`
+tool call's input**, in the JSONL — no screen involved), but that belongs **below
+the claude-adapter line** per the seam rule. The adapter *may optionally* use native
+plan mode as the planning UX and **funnel its output into the same `submit_plan`
+shape**. The contract stays ours; Claude's mechanism is an implementation detail.
+(The plan-mode A/B spike reframes accordingly — it no longer asks "which wins" but
+characterizes plan mode's behaviors and confirms `ExitPlanMode` is cleanly liftable;
+scope in slice-7.md.)
+
+## D46 — Stage-run fixes spawn FRESH; `mode:'resume'` dies for stage runs. Two correction doors, both fresh, differing only by `workOrderRev`
+
+*(2026-07-25. The one sub-decision inside the task-model pass; Wes sided with the
+orchestrator's synthesis. Resolves S10 — "resume bypasses stage independence" — by
+never resuming a stage run at all.)*
+
+There are exactly two legitimate ways to correct dispatched work, and **both spawn
+a fresh session**:
+- **Steer (the fix loop, `review → implementing`):** a **fresh** implementer seeded
+  with `(same workOrderRev + the prior attempt's diff + the review feedback + the
+  author's worklog)`, `attempt++`.
+- **Amend (new scope):** a **fresh** dispatch against a **new `workOrderRev`**.
+
+They differ **only** in whether `workOrderRev` changes. `resolveStageRunner` loses
+its resume mode; the dispatcher loses a branch; the fix-seed composition moves into
+`composeStageInstruction` where it belongs (net simplification).
+
+**Why (two independent arguments — the second recorded deliberately so the decision
+survives even if the doctrine is later disputed):**
+1. **Doctrine / identity.** Resume-the-author is chat-and-steer wearing a task
+   costume. A resumed author makes **one transcript straddle two attempts**, which
+   muddies per-attempt **usage attribution**, **replay (I6)**, and the convergence
+   loop's "are attempts improving?" comparison — all at once. The
+   `(taskId, stage, attempt, workOrderRev)` key stays honest **only if a session
+   never spans attempts**.
+2. **Anchoring (survives even if you reject #1).** An author resumed with its own
+   review feedback is **structurally invited to defend its original approach** — it
+   is marinating in its own rationale. A **fresh** implementer reading
+   work-order + diff + feedback **cold** judges the fix against the **contract**, not
+   against its memory of why it did it that way. Review-stage independence and
+   fix-stage freshness are the same principle.
+
+**Rider 1 — the fix-seed MUST carry the worklog, not just the diff.** What you lose
+with fresh dispatch is **not** memory of the code (the diff has that) — it is memory
+of the **dead ends**. So `report_completion`'s payload carries **decisions-made and
+paths-rejected**; without that worklog a fresh fixer re-explores the dead ends on
+our tokens. (This makes the worklog a reserved floor piece, slice-7.md.)
+
+**Rider 2 — scope precisely.** This governs **stage runs only**. Interactive free
+sessions keep `resume` untouched — that is the human's own door and always was.
+
+**Honest cost — measure, don't argue it away.** A warm resumed author re-reads its
+context at **cache-read** rates inside the 1h TTL; a fresh implementer pays **cold
+prefix + re-reads**. So re-dispatch-with-feedback is genuinely **more expensive per
+fix cycle**. Clean attempt identity (rationale #1) is exactly what makes per-attempt
+cost a **queryable number** — so the standing call is **"revisit if fix-cycle cost
+proves material,"** with the data pipeline to actually know.
+
+**The two-door UX (T7's deepest lesson).** The failure in T7 was never a missing
+door — it was that the doors **weren't labeled**. The board must make **choosing the
+door a visible act**: steer (same rev, new attempt) vs. amend (new rev, fresh
+dispatch). This is the correction model made legible, and it is where the
+chat-and-steer instinct gets a legitimate, bounded home.

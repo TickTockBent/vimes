@@ -20,9 +20,17 @@ where the workflow is **spec-and-verify** — see **open-questions D43** (eviden
 plan-as-artifact handoff, and the orchestrator role** — *not* "add a description field."
 
 **Loose ends (not slice-6 blockers):**
-1. **T6** — the 2.1.218 fixture check; carries the **Finding 2** slug fix
-   (`encodeCwdForProjects` vs the CLI's `_`→`-`; latent, PTY+underscore only). Clears the
-   every-boot drift warning.
+1. **T6 — DONE (2026-07-25).** Verify spike ran (`spike-t6-cli-2.1.220-FINDINGS.md`),
+   orchestrator-verified. Two outcomes: (a) pin bump 2.1.217→2.1.220 is SAFE (warn-only) —
+   **batch it into the next real deploy** (root env edit + restart, not worth a dedicated one);
+   (b) the slug check surfaced a real rule-0.1 finding → **D45** below, queued as its own unit.
+1b. **Slug fix (D45) — QUEUED, dispatch-ready.** `encodeCwdForProjects` is wrong: the CLI folds
+   `_`→`-` (verified: cwd `space_industry` → dir `space-industry`), so transcript tailing +
+   discovery silently miss any underscore project. Fix = **approach B (discover, don't compute)**,
+   two caller shapes: session-id-known (`sessionHost.ts:425,1064`) → glob `*/<sessionId>.jsonl`;
+   cwd-only (`tailer.ts:111`, `discovery.ts:42`) → match each dir's internal `cwd` field. Delete
+   the false comment; land a test with an underscore cwd. Full rationale + why-not-a-regex-swap:
+   **decisions.md D45**. Sequenced by Wes against the task-model pass.
 2. **Advisory-gate pin (PARKED, no urgency)** — `brace-expansion@5.0.8` override; single-root
    cascade, **0/12 runtime-reachable** (all build/dev/test). Needs a lock regen (+56 in-range,
    incl. SDK 0.3.207→0.3.219) + deliberate restart. Full analysis:
