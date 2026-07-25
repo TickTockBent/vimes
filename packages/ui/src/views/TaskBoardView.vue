@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, reactive, ref } from 'vue';
 import { useVimesStore } from '../stores/vimesStore.js';
+import { buildWorkOrderBody, type WorkOrderFormModel } from '../lib/workOrderForm.js';
 import {
   describeCreateResponse,
   describeDispatchResponse,
@@ -158,11 +159,64 @@ const createProjectRoot = ref('');
 const createInFlight = ref(false);
 const createNotice = ref<string | null>(null);
 
+// S7·3 — the four AUTHORED work-order fields. The FIELD LIST is not hard-coded:
+// the sheet renders whatever `store.workOrderSchema` (served by the daemon)
+// says, keyed by descriptor `key`. `workOrderText` holds the `longtext` fields;
+// `workOrderRows` holds the repeatable `list`/`criteria-list` rows (one string
+// per row). Both are seeded from the descriptor when the sheet opens, so nothing
+// here names a field the daemon did not serve. `buildWorkOrderBody` (pure,
+// tested) turns this raw model into the create-body fragment with empties omitted.
+const workOrderText = reactive<Record<string, string>>({});
+const workOrderRows = reactive<Record<string, string[]>>({});
+
+function resetWorkOrderForm(): void {
+  for (const field of store.workOrderSchema ?? []) {
+    if (field.kind === 'longtext') {
+      workOrderText[field.key] = '';
+    } else {
+      // Start every repeatable field with one empty row to type into. An
+      // untouched row is dropped by buildWorkOrderBody, so this costs nothing.
+      workOrderRows[field.key] = [''];
+    }
+  }
+}
+
+function addRow(fieldKey: string): void {
+  (workOrderRows[fieldKey] ??= []).push('');
+}
+
+function removeRow(fieldKey: string, rowIndex: number): void {
+  const rows = workOrderRows[fieldKey];
+  if (rows === undefined) {
+    return;
+  }
+  rows.splice(rowIndex, 1);
+  // Always leave one row present so the field never disappears entirely.
+  if (rows.length === 0) {
+    rows.push('');
+  }
+}
+
+// Write one row's text back into the model. An explicit setter (rather than a
+// `v-model` into an indexed array) keeps `noUncheckedIndexedAccess` honest — the
+// array may not exist for a key the descriptor did not seed.
+function updateRow(fieldKey: string, rowIndex: number, value: string): void {
+  const rows = workOrderRows[fieldKey];
+  if (rows === undefined) {
+    return;
+  }
+  rows[rowIndex] = value;
+}
+
 const rootOptions = computed(() => store.roots ?? []);
 
 function openCreate(): void {
-  createOpen.value = true;
   createNotice.value = null;
+  // Seed the work-order form from the served descriptor (fetched on mount by
+  // watchTasks, the same place stage-edges is fetched). Falls back to no fields
+  // until the descriptor lands — never a hard-coded list.
+  resetWorkOrderForm();
+  createOpen.value = true;
   if (createProjectRoot.value === '' && rootOptions.value.length > 0) {
     // Prefill with the projects container (the shortest known root — a container
     // is shorter than any project path inside it) plus a trailing slash, so the
@@ -185,16 +239,27 @@ async function submitCreate(): Promise<void> {
   createInFlight.value = true;
   try {
     const trimmedTitle = createTitle.value.trim();
+    // Build the work-order fragment from the raw form model. `buildWorkOrderBody`
+    // OMITS every empty field/row, so an unauthored create is byte-identical to a
+    // title-only POST (absent stays absent — enforced there, not here).
+    const workOrderFormModel: WorkOrderFormModel = {
+      scope: workOrderText.scope ?? '',
+      killCriterion: workOrderText.killCriterion ?? '',
+      explicitlyOut: workOrderRows.explicitlyOut ?? [],
+      acceptanceCriteria: workOrderRows.acceptanceCriteria ?? [],
+    };
     const answer = await store.createTask({
       projectRoot: createProjectRoot.value,
       // Absent stays absent all the way to the birth record — a blank box must
       // not become a task titled with an empty string.
       ...(trimmedTitle === '' ? {} : { title: trimmedTitle }),
+      ...buildWorkOrderBody(workOrderFormModel),
     });
     const outcome = describeCreateResponse(answer.status, answer.body);
     createNotice.value = outcome.sentence;
     if (outcome.kind === 'created') {
       createTitle.value = '';
+      resetWorkOrderForm();
       createOpen.value = false;
     }
   } finally {
@@ -605,7 +670,7 @@ function livenessClass(liveness: string): string {
       aria-label="New task"
       @click.self="createOpen = false"
     >
-      <div class="w-full rounded-t-2xl bg-panel p-4">
+      <div class="max-h-[88vh] w-full overflow-y-auto rounded-t-2xl bg-panel p-4">
         <div class="flex items-center justify-between gap-3">
           <h2 class="text-base font-semibold">New task</h2>
           <button
@@ -644,6 +709,62 @@ function livenessClass(liveness: string): string {
         <p class="mt-1 text-[11px] text-ink-dim">
           Full path to the project directory. Must be within an allowed project root — the daemon refuses anything outside it.
         </p>
+
+        <!-- ── The AUTHORED work-order fields (S7·3) ──────────────────────────
+             Rendered from `store.workOrderSchema` (served by the daemon), never a
+             hard-coded field list. Every field is optional; empties are dropped
+             by buildWorkOrderBody on submit. -->
+        <template v-for="field in store.workOrderSchema ?? []" :key="field.key">
+          <label
+            class="mt-3 block text-xs font-medium font-mono uppercase tracking-[0.08em] text-ink-dim"
+            :for="`new-task-wo-${field.key}`"
+          >
+            {{ field.label }} (optional)
+          </label>
+
+          <textarea
+            v-if="field.kind === 'longtext'"
+            :id="`new-task-wo-${field.key}`"
+            v-model="workOrderText[field.key]"
+            :maxlength="field.maxLength"
+            rows="3"
+            class="mt-1 w-full resize-y rounded-md border border-line bg-panel-sunken px-3 py-2 text-sm"
+          ></textarea>
+
+          <div v-else class="mt-1 space-y-2">
+            <div
+              v-for="(_row, rowIndex) in workOrderRows[field.key] ?? []"
+              :key="rowIndex"
+              class="flex items-center gap-2"
+            >
+              <input
+                :value="workOrderRows[field.key]?.[rowIndex] ?? ''"
+                type="text"
+                :maxlength="field.itemMaxLength"
+                class="min-h-[44px] w-full flex-1 rounded-md border border-line bg-panel-sunken px-3 text-sm"
+                placeholder="one per line"
+                @input="updateRow(field.key, rowIndex, ($event.target as HTMLInputElement).value)"
+              />
+              <button
+                type="button"
+                class="min-h-[44px] shrink-0 rounded-md border border-line px-3 text-sm text-ink-dim"
+                :aria-label="`Remove ${field.label} row`"
+                @click="removeRow(field.key, rowIndex)"
+              >
+                −
+              </button>
+            </div>
+            <button
+              type="button"
+              class="min-h-[44px] w-full rounded-md border border-line px-3 text-sm text-ink-dim"
+              @click="addRow(field.key)"
+            >
+              + Add row
+            </button>
+          </div>
+
+          <p class="mt-1 text-[11px] text-ink-dim">{{ field.help }}</p>
+        </template>
 
         <p class="mt-3 text-[11px] text-ink-dim">
           A task is created in the backlog with worktree isolation (D32). The title cannot be changed afterwards —
