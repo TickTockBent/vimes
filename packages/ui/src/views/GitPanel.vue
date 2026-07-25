@@ -281,7 +281,7 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="flex min-h-screen flex-col bg-white text-slate-900 dark:bg-slate-950 dark:text-slate-100">
+  <div class="flex h-full flex-col overflow-hidden bg-white text-slate-900 dark:bg-slate-950 dark:text-slate-100">
     <header
       class="sticky top-0 z-20 flex items-center gap-2 border-b border-slate-200 bg-white px-3 py-2 dark:border-slate-800 dark:bg-slate-950"
     >
@@ -315,7 +315,7 @@ onMounted(async () => {
     </p>
 
     <!-- ── Changed-files list (home) ───────────────────────────────────────── -->
-    <div v-if="!activeFilePath" class="min-h-0 flex-1 overflow-y-auto p-4">
+    <div v-if="!activeFilePath" class="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4">
       <div class="mx-auto flex max-w-2xl flex-col gap-4">
         <section class="flex flex-col gap-2">
           <label for="git-repo-picker" class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
@@ -465,7 +465,7 @@ onMounted(async () => {
     </div>
 
     <!-- ── Diff screen ─────────────────────────────────────────────────────── -->
-    <div v-else class="min-h-0 flex-1 overflow-y-auto">
+    <div v-else class="min-h-0 flex-1 overflow-y-auto overscroll-contain">
       <div class="mx-auto flex max-w-3xl flex-col gap-3 p-3">
         <div class="flex flex-col gap-2">
           <p class="break-all font-mono text-sm font-medium">{{ activeFilePath }}</p>

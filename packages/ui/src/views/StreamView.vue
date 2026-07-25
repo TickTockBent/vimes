@@ -87,7 +87,10 @@ function handleVisualViewportChange(): void {
   // (and the composer riding above the keyboard) can end up out of view —
   // pull it back to the bottom.
   if (!wasOpen && nowOpen && document.activeElement === composerRef.value) {
-    window.scrollTo({ top: document.documentElement.scrollHeight });
+    const streamBody = streamBodyRef.value;
+    if (streamBody !== null) {
+      streamBody.scrollTop = streamBody.scrollHeight;
+    }
   }
 }
 
@@ -109,12 +112,12 @@ const correctionNowMs = ref(Date.now());
 let correctionClockHandle: ReturnType<typeof setInterval> | null = null;
 
 // ── Stick-to-bottom auto-scroll ──────────────────────────────────────────────
-// The page scrolls the DOCUMENT, not an inner element: the root is
-// `min-h-screen flex-col` with a sticky header/footer and a `flex-1` <main> that
-// has no overflow of its own — the ONLY overflow in this view is the composer
-// textarea. This is the same scroller the keyboard-offset handler already drives
-// via `window.scrollTo(document.documentElement.scrollHeight)` above. So we read
-// and scroll window + document.documentElement, never a child element.
+// Under the frame model this view is a bounded flex column (h-full) whose <main>
+// body is the ONE scroller (min-h-0 flex-1 overflow-y-auto overscroll-contain);
+// the pinned head (title + cache line + vitals strip) and the composer foot are
+// non-scrolling flex siblings. So we read geometry off, and scroll, the stream
+// body element (streamBodyRef) — never window / document.documentElement. The
+// keyboard-offset handler above drives the same body element.
 //
 // The whole trick — and the reason a naive "scroll on every new event" is wrong:
 // `stuckToBottom` is captured from the USER'S OWN scrolling, NOT from content
@@ -124,23 +127,35 @@ let correctionClockHandle: ReturnType<typeof setInterval> | null = null;
 // precisely what makes the "don't yank a reader back down" guarantee hold.
 const NEAR_BOTTOM_THRESHOLD_PX = 64; // near-bottom UX tolerance: within 64px of the bottom still counts as "at the bottom"
 const stuckToBottom = ref(true);
+// streamBodyRef is the ONE scroller (the <main> body); streamContentRef is the
+// inner content wrapper whose height grows as messages stream — the
+// ResizeObserver watches THAT (a fixed-height scroller's own box never changes
+// on content growth, so observing the body would miss mid-stream growth).
+const streamBodyRef = ref<HTMLElement | null>(null);
 const streamContentRef = ref<HTMLElement | null>(null);
+// The exact element the scroll listener was bound to, captured for symmetric
+// teardown (the template ref may already be null by onUnmounted).
+let streamBodyScrollTarget: HTMLElement | null = null;
 let streamResizeObserver: ResizeObserver | null = null;
 let scrollIntentFrameHandle: number | null = null;
 
-// Passive scroll listener → refresh the intent flag off live document geometry.
+// Passive scroll listener → refresh the intent flag off the live body geometry.
 // Throttled to a single pending rAF so a fast flick doesn't recompute on every
 // scroll event.
-function handleWindowScroll(): void {
+function handleStreamBodyScroll(): void {
   if (scrollIntentFrameHandle !== null) {
     return;
   }
   scrollIntentFrameHandle = window.requestAnimationFrame(() => {
     scrollIntentFrameHandle = null;
+    const streamBody = streamBodyRef.value;
+    if (streamBody === null) {
+      return;
+    }
     stuckToBottom.value = shouldStick(
-      window.scrollY,
-      window.innerHeight,
-      document.documentElement.scrollHeight,
+      streamBody.scrollTop,
+      streamBody.clientHeight,
+      streamBody.scrollHeight,
       NEAR_BOTTOM_THRESHOLD_PX,
     );
   });
@@ -155,7 +170,10 @@ function followBottomIfStuck(): void {
     return;
   }
   void nextTick(() => {
-    window.scrollTo({ top: document.documentElement.scrollHeight });
+    const streamBody = streamBodyRef.value;
+    if (streamBody !== null) {
+      streamBody.scrollTop = streamBody.scrollHeight;
+    }
   });
 }
 
@@ -175,9 +193,10 @@ onMounted(() => {
     correctionNowMs.value = Date.now();
   }, CORRECTION_CLOCK_TICK_MS);
 
-  // Intent flag comes from the user's own scrolling (passive — we never
-  // preventDefault the scroll).
-  window.addEventListener('scroll', handleWindowScroll, { passive: true });
+  // Intent flag comes from the user's own scrolling of the stream body (passive
+  // — we never preventDefault the scroll).
+  streamBodyScrollTarget = streamBodyRef.value;
+  streamBodyScrollTarget?.addEventListener('scroll', handleStreamBodyScroll, { passive: true });
   // A ResizeObserver on the stream content is the PRIMARY follow signal: it fires
   // on ANY height change, so it catches a message growing mid-stream — something a
   // `watch(events.length)` (below) would miss because the array length doesn't
@@ -204,7 +223,8 @@ onUnmounted(() => {
   }
   // No leaked observers/listeners across the many sessions a long-lived PWA opens
   // and closes — same cleanup discipline as correctionClockHandle above.
-  window.removeEventListener('scroll', handleWindowScroll);
+  streamBodyScrollTarget?.removeEventListener('scroll', handleStreamBodyScroll);
+  streamBodyScrollTarget = null;
   if (streamResizeObserver !== null) {
     streamResizeObserver.disconnect();
     streamResizeObserver = null;
@@ -422,7 +442,7 @@ function resume(): void {
 </script>
 
 <template>
-  <div class="mx-auto flex min-h-screen max-w-lg flex-col">
+  <div class="mx-auto flex h-full max-w-lg flex-col overflow-hidden">
     <header class="sticky top-0 z-10 flex min-h-[44px] items-center gap-2 border-b border-slate-200 bg-white/95 px-3 py-2 backdrop-blur dark:border-slate-800 dark:bg-slate-950/95">
       <button
         type="button"
@@ -502,7 +522,8 @@ function resume(): void {
       </span>
     </div>
 
-    <main ref="streamContentRef" class="flex-1 space-y-2 p-3">
+    <main ref="streamBodyRef" class="min-h-0 flex-1 overflow-y-auto overscroll-contain p-3">
+      <div ref="streamContentRef" class="space-y-2">
       <template v-for="event in events" :key="event.eventId">
         <template v-if="event.type === 'message'">
           <template v-for="(block, blockIndex) in contentBlocksOf(event)" :key="`${event.eventId}-${blockIndex}`">
@@ -582,6 +603,7 @@ function resume(): void {
           <span class="h-px flex-1 bg-slate-200 dark:bg-slate-800" />
         </div>
       </template>
+      </div>
     </main>
 
     <footer

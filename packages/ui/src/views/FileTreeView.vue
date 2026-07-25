@@ -144,7 +144,7 @@ function icon(type: TreeRow['type']): string {
 </script>
 
 <template>
-  <div class="flex min-h-screen flex-col">
+  <div class="flex h-full flex-col overflow-hidden">
     <header class="sticky top-0 z-20 flex items-center gap-2 border-b border-slate-200 bg-white px-3 py-2 dark:border-slate-800 dark:bg-slate-950">
       <button
         type="button"
@@ -190,7 +190,7 @@ function icon(type: TreeRow['type']): string {
         That's the edge of the workspace — you can't go higher from here.
       </p>
 
-      <ul class="flex-1 divide-y divide-slate-100 dark:divide-slate-900">
+      <ul class="min-h-0 flex-1 divide-y divide-slate-100 overflow-y-auto overscroll-contain dark:divide-slate-900">
         <li>
           <button
             type="button"
