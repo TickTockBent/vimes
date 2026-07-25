@@ -89,7 +89,7 @@ const dispatchNotice = ref<DispatchReport | null>(null);
 const dispatchedSessionId = ref<string | null>(null);
 
 const moveOptions = computed<readonly MoveOption[]>(() =>
-  openCard.value === null ? [] : moveOptionsFor(openCard.value.stage),
+  openCard.value === null ? [] : moveOptionsFor(openCard.value.stage, store.stageEdges),
 );
 
 function openSheet(card: TaskCard): void {
@@ -591,8 +591,7 @@ function livenessClass(liveness: string): string {
           {{ dispatchInFlight ? 'Dispatching…' : 'Dispatch' }}
         </button>
         <p class="mt-2 text-[11px] text-slate-500 dark:text-slate-400">
-          One attempt, no retry. A dispatched session is currently told NOTHING — stage instructions are not written
-          yet, so it will spawn and sit idle until you talk to it.
+          One attempt, no retry. The worker is told its task, stage and directory.
         </p>
       </div>
     </div>

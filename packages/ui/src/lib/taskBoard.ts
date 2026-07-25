@@ -27,10 +27,13 @@
 // ════════════════════════════════════════════════════════════════════════════
 //
 // ⚠ RULE TWO: **THE UI PROPOSES, THE MACHINE DECIDES.** `TASK_STAGE_EDGES` is
-// NOT mirrored here and must never be. `moveOptionsFor` offers every stage
-// except the current one and lets `POST /api/tasks/:taskId/transitions` refuse —
-// see that function's own note for why hiding illegal moves would be a bug and
-// not a courtesy.
+// NOT copied into this source and must never be — but `moveOptionsFor` DOES now
+// filter to the legal targets, read from the edge table the daemon SERVES at
+// runtime (`GET /api/tasks/stage-edges`, core's one table) and the store fetches.
+// So the UI reflects the machine's legality without owning it, and `POST
+// /api/tasks/:taskId/transitions` STILL enforces on submit. See that function's
+// note for the 2026-07-24 reversal (show only valid moves) and why daemon-
+// sourcing answers the drift objection this comment used to rest on.
 //
 // @vimes/core is deliberately NOT a dependency of packages/ui (see the header of
 // lib/types.ts), so the wire shapes below mirror packages/core/src/schemas.ts
@@ -382,32 +385,44 @@ export interface MoveOption {
 }
 
 /**
- * The stages the move sheet offers: **EVERY known stage except the task's
- * current one.**
+ * The stages the move sheet offers: the task's LEGAL next stages, filtered
+ * against the daemon-served edge table — never the full stage list.
  *
- * ⚠ **DELIBERATELY NOT FILTERED BY LEGALITY, AND A FUTURE "HELPFUL" EDGE TABLE
- * HERE WOULD BE A BUG.** Three reasons, and the third is the one that matters:
+ * ⟨Wes ruling, 2026-07-24, reversing this function's original "surface every
+ * move, let the machine refuse" stance.⟩ Options that can never be valid from
+ * the current stage read as deceptive, not as a demonstration of I7. So the
+ * sheet shows only legal targets. The original three objections are ANSWERED,
+ * not ignored:
+ *   1. The edge table is NOT copied into the UI (the drift hazard) — it is
+ *      FETCHED from the daemon (core's TASK_STAGE_EDGES, the one source) and
+ *      passed in here. A stage added to the machine flows through the served
+ *      table; nothing here re-declares the vocabulary.
+ *   2. This is not a second AUTHORITY: the UI reflects the machine's own rules
+ *      and the server STILL enforces on submit — a forced illegal edge is still
+ *      409 + an evented task_transition_rejected, so I7 stays assertable and is
+ *      demonstrated by the API and its tests, not by baiting an operator into an
+ *      illegal tap.
+ *   3. The refusal path is unchanged and still the record; it is simply no
+ *      longer the primary way to discover the graph.
  *
- *  1. `@vimes/core` is not a dependency of packages/ui, so `TASK_STAGE_EDGES`
- *     would have to be COPIED — and a copied vocabulary drifts. That is the
- *     exact drift `taskApi.ts` binds against with `exhaustiveVocabulary`, and
- *     nothing here could bind against anything.
- *  2. Filtering would make this UI a SECOND AUTHORITY on transition legality,
- *     which rule 0.3 and principle 10 forbid outright: UIs propose transitions,
- *     they never own them.
- *  3. The refusal is already built, enumerated and EVENTED (I7). Surfacing it is
- *     not a fallback — **it is the feature.** A board that hides illegal moves
- *     hides the invariant; a board that asks and reports the machine's answer
- *     demonstrates it, every time anyone taps.
- *
- * The current stage is excluded for one reason only, and it is not legality:
- * offering it would be offering a no-op. (The machine agrees, and says
- * `same-stage` — which is why that reason still has a sentence below.)
+ * Current stage is excluded (a no-op; the machine says same-stage). No served
+ * edges yet, or a stage with an empty edge set (e.g. terminal `done`) → no
+ * options, which is correct.
  */
-export function moveOptionsFor(currentStage: string): readonly MoveOption[] {
-  return KNOWN_STAGES.filter((stage) => stage !== currentStage).map((stage) => ({
-    stage,
-    label: STAGE_LABEL[stage],
+export function moveOptionsFor(
+  currentStage: string,
+  stageEdges: Record<string, readonly string[]> | null,
+): readonly MoveOption[] {
+  if (stageEdges === null) {
+    return [];
+  }
+  const legalTargets = stageEdges[currentStage];
+  if (legalTargets === undefined) {
+    return [];
+  }
+  return legalTargets.map((stage) => ({
+    stage: stage as TaskStage,
+    label: stageLabel(stage),
     kind: stageKind(stage),
   }));
 }

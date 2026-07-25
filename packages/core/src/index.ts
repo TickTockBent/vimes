@@ -89,6 +89,7 @@ export {
   transitionRejectionReasonSchema,
   isLegalTaskEdge,
   proposeTransition,
+  taskStageEdgesRecord,
   type TaskStage,
   type TransitionProposal,
   type TransitionProposedBy,

@@ -23,7 +23,24 @@ import {
 //
 //   • the grouping output is LAYOUT-AGNOSTIC — a desktop board must be able to
 //     arrange it horizontally from the identical value (assertion 6), and
-//   • the move sheet is NOT filtered by transition legality (assertion 8).
+//   • the move sheet IS filtered by the SERVED edge table, never a copy of it
+//     (assertion 8, reversed 2026-07-24 — see moveOptionsFor's own note).
+
+// A fixture mirroring the WIRE SHAPE `GET /api/tasks/stage-edges` serves
+// (packages/core's TASK_STAGE_EDGES, rendered by taskStageEdgesRecord()) —
+// transcribed here as test data ONLY, exactly like every other mirrored wire
+// shape in this file. This is not a second copy of the legality DECISION: it
+// stands in for what the daemon would hand `moveOptionsFor` at runtime.
+const STAGE_EDGES_FIXTURE: Record<string, readonly string[]> = {
+  backlog: ['planning', 'blocked-external'],
+  planning: ['plan-ready', 'blocked-external', 'quarantined', 'backlog'],
+  'plan-ready': ['implementing', 'planning', 'blocked-external', 'backlog'],
+  implementing: ['review', 'blocked-external', 'quarantined'],
+  review: ['done', 'implementing', 'blocked-external', 'quarantined'],
+  'blocked-external': ['backlog', 'planning', 'plan-ready', 'implementing', 'review'],
+  quarantined: ['backlog', 'planning', 'implementing', 'blocked-external'],
+  done: [],
+};
 
 const TASK_ONE = 'aaaaaaaa-1111-4000-8000-000000000001';
 const TASK_TWO = 'bbbbbbbb-2222-4000-8000-000000000002';
@@ -273,28 +290,24 @@ describe('deriveTaskCard — labelling, and never a fabricated field', () => {
   });
 });
 
-// ── ASSERTION 8: the move sheet offers EVERY stage but the current one ──────
+// ── ASSERTION 8: the move sheet offers ONLY the LEGAL next stages (S8) ──────
 
-describe('moveOptionsFor — the UI proposes, the machine decides', () => {
-  it('offers every known stage EXCEPT the current one', () => {
-    for (const currentStage of KNOWN_STAGES) {
-      const offered = moveOptionsFor(currentStage).map((option) => option.stage);
-      expect(offered, currentStage).toHaveLength(KNOWN_STAGES.length - 1);
-      expect(offered, currentStage).not.toContain(currentStage);
-      for (const stage of KNOWN_STAGES) {
-        if (stage !== currentStage) {
-          expect(offered, `${currentStage} → ${stage}`).toContain(stage);
-        }
-      }
+describe('moveOptionsFor — the UI reflects the served edge table, the machine still decides', () => {
+  it('offers exactly the SERVED legal targets for each stage — nothing more, nothing less', () => {
+    for (const currentStage of Object.keys(STAGE_EDGES_FIXTURE)) {
+      const offered = moveOptionsFor(currentStage, STAGE_EDGES_FIXTURE).map(
+        (option) => option.stage,
+      );
+      expect(new Set(offered), currentStage).toEqual(
+        new Set(STAGE_EDGES_FIXTURE[currentStage]),
+      );
     }
   });
 
-  it('IS NOT FILTERED BY LEGALITY — the pin against a future edge table in the UI', () => {
-    // ⚠ THIS IS THE ASSERTION THAT STOPS A "HELPFUL" MIRROR OF TASK_STAGE_EDGES
-    // APPEARING HERE. Each case below is an edge core's state machine REFUSES,
-    // and every one of them must still be OFFERED: the UI proposes, the machine
-    // decides, and surfacing the enumerated refusal is the feature (I7), not a
-    // fallback. If someone filters this list, these expectations redden.
+  it('ONLY-LEGAL-SHOWN — an edge the machine refuses is never offered', () => {
+    // ⚠ THIS IS THE ASSERTION THAT STOPS A REGRESSION BACK TO "SURFACE EVERY
+    // STAGE". Each case below is an edge core's state machine REFUSES, and none
+    // of them may be offered from that stage.
     const illegalEdgesTheMachineRefuses: readonly (readonly [string, string])[] = [
       // `backlog` only reaches planning / blocked-external.
       ['backlog', 'done'],
@@ -314,23 +327,30 @@ describe('moveOptionsFor — the UI proposes, the machine decides', () => {
       ['implementing', 'plan-ready'],
     ];
     for (const [fromStage, toStage] of illegalEdgesTheMachineRefuses) {
-      const offered = moveOptionsFor(fromStage).map((option) => option.stage);
-      expect(offered, `${fromStage} → ${toStage} must still be OFFERED`).toContain(toStage);
+      const offered = moveOptionsFor(fromStage, STAGE_EDGES_FIXTURE).map((option) => option.stage);
+      expect(offered, `${fromStage} → ${toStage} must NOT be offered`).not.toContain(toStage);
     }
   });
 
-  it('offers every known stage when the task sits in a stage the UI does not know', () => {
-    // Nothing to exclude, and no reason to offer nothing: an operator looking at
-    // a task in an unrecognised stage is exactly who needs to move it out.
-    const offered = moveOptionsFor('teleported').map((option) => option.stage);
-    expect(offered).toEqual([...KNOWN_STAGES]);
+  it('null stageEdges (not loaded yet) → a safe empty, never all-stages', () => {
+    for (const currentStage of KNOWN_STAGES) {
+      expect(moveOptionsFor(currentStage, null), currentStage).toEqual([]);
+    }
+  });
+
+  it('a stage with no entry in the served table → empty (never falls back to "everything")', () => {
+    expect(moveOptionsFor('teleported', STAGE_EDGES_FIXTURE)).toEqual([]);
+  });
+
+  it("done -> [] : the terminal stage's served empty set means no options", () => {
+    expect(moveOptionsFor('done', STAGE_EDGES_FIXTURE)).toEqual([]);
   });
 
   it('labels each option and carries its kind, so a sheet can group flow vs exception', () => {
-    const options = moveOptionsFor('backlog');
+    const options = moveOptionsFor('planning', STAGE_EDGES_FIXTURE);
     expect(options.find((option) => option.stage === 'plan-ready')?.label).toBe('Plan ready');
     expect(options.find((option) => option.stage === 'quarantined')?.kind).toBe('exception');
-    expect(options.find((option) => option.stage === 'review')?.kind).toBe('flow');
+    expect(options.find((option) => option.stage === 'backlog')?.kind).toBe('flow');
   });
 });
 

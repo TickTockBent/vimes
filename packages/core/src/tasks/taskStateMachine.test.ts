@@ -5,6 +5,7 @@ import {
   TASK_STAGE_EDGES,
   isLegalTaskEdge,
   proposeTransition,
+  taskStageEdgesRecord,
   type TaskStage,
   type TransitionProposal,
   type TransitionRejectionReason,
@@ -98,6 +99,25 @@ describe('the transition table itself', () => {
   it('partitions the cross product into legal + illegal with no overlap or gap', () => {
     expect(LEGAL_EDGES.length + ILLEGAL_EDGES.length).toBe(ALL_EDGES.length);
     expect(ALL_EDGES.length).toBe(TASK_STAGES.length * TASK_STAGES.length);
+  });
+});
+
+// ── taskStageEdgesRecord — the wire form the daemon serves (S8) ─────────────
+describe('taskStageEdgesRecord — TASK_STAGE_EDGES as a plain, JSON-able record', () => {
+  it('has every stage present as a key', () => {
+    const record = taskStageEdgesRecord();
+    expect(Object.keys(record).sort()).toEqual([...TASK_STAGES].sort());
+  });
+
+  it("each stage's target set matches TASK_STAGE_EDGES exactly", () => {
+    const record = taskStageEdgesRecord();
+    for (const stage of TASK_STAGES) {
+      expect(new Set(record[stage])).toEqual(new Set(TASK_STAGE_EDGES.get(stage) ?? []));
+    }
+  });
+
+  it("done's targets are the empty array (the terminal stage has no outgoing edges)", () => {
+    expect(taskStageEdgesRecord().done).toEqual([]);
   });
 });
 

@@ -181,6 +181,11 @@ export const useVimesStore = defineStore('vimes', () => {
   // have not looked yet" from "we looked and the board is empty". An empty board
   // is a fact; a blank screen that means "still loading" is not.
   const tasksLoading = ref(false);
+  // S8: the legal-edge table, fetched from GET /api/tasks/stage-edges. Null
+  // until the first fetch lands — `moveOptionsFor` treats null as "not loaded
+  // yet" and offers nothing (a safe empty, never all-stages). This is the SERVED
+  // form of core's TASK_STAGE_EDGES; the value is never re-derived here.
+  const stageEdges = ref<Record<string, string[]> | null>(null);
   // ── Git review (slice 4 step 3) — the primary-human-job surface (spec §3.4) ──
   // Plain REST-into-ref, mirroring fetchTerminals: fetch, credentials
   // same-origin, tolerant of transient failure. The daemon's /api/git/* endpoints
@@ -436,6 +441,29 @@ export const useVimesStore = defineStore('vimes', () => {
     }
   }
 
+  // GET /api/tasks/stage-edges (S8) — the legal-edge table, mirroring
+  // fetchRoots: same-origin fetch, tolerant of a transient failure or a
+  // malformed body. A bad/absent body leaves `stageEdges` at its previous value
+  // (null before the first success) rather than throwing — `moveOptionsFor`
+  // treats null as "not loaded" and offers nothing, which is the safe empty.
+  // Static data (the edge table never changes at runtime), so this is called
+  // once where the board mounts and never polled.
+  async function fetchStageEdges(): Promise<void> {
+    try {
+      const response = await fetch('/api/tasks/stage-edges', { credentials: 'same-origin' });
+      if (!response.ok) {
+        return;
+      }
+      const parsed = (await response.json()) as { edges?: unknown };
+      if (parsed.edges !== null && typeof parsed.edges === 'object') {
+        stageEdges.value = parsed.edges as Record<string, string[]>;
+      }
+    } catch {
+      // Transient network hiccup — stageEdges stays whatever it was (null
+      // before the first success), and moveOptionsFor's null-case handles it.
+    }
+  }
+
   // The three task WRITES. All three are plain same-origin POSTs that return the
   // daemon's STATUS AND BODY VERBATIM to the caller — they classify nothing.
   //
@@ -513,6 +541,10 @@ export const useVimesStore = defineStore('vimes', () => {
     tasksLoading.value = tasksProjectionBody.value === null;
     subscribe(TASKS_STREAM);
     void fetchTasks();
+    // S8: the legal-edge table the move sheet filters against. Fetched
+    // alongside the tasks projection rather than gated behind opening a card,
+    // so the sheet has it ready the first time an operator taps a card.
+    void fetchStageEdges();
   }
 
   // ── Git review fetches (mirror fetchTerminals: plain REST, same-origin creds,
@@ -1320,8 +1352,10 @@ export const useVimesStore = defineStore('vimes', () => {
     // dispatch. Nothing here writes task state locally.
     tasksProjectionBody,
     tasksLoading,
+    stageEdges,
     watchTasks,
     fetchTasks,
+    fetchStageEdges,
     createTask,
     proposeTaskTransition,
     dispatchTask,
