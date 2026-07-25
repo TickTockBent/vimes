@@ -12,6 +12,7 @@ import {
 } from './lib/panelStack.js';
 import { panelLinkClick } from './lib/panelLinkClick.js';
 import { useLayoutMode } from './lib/useLayoutMode.js';
+import ThemePicker from './components/ThemePicker.vue';
 
 const store = useVimesStore();
 
@@ -329,7 +330,7 @@ const bannerText = computed(() => {
            plus onPanelClick so an in-app hash link inside it pushes a panel rather
            than hard-navigating the browser. -->
       <div
-        class="w-80 shrink-0 overflow-y-auto border-r border-slate-200 dark:border-slate-800"
+        class="flex w-80 shrink-0 flex-col overflow-y-auto border-r border-slate-200 dark:border-slate-800"
         @click="onPanelClick($event, 0)"
       >
         <PanelHost
@@ -347,6 +348,14 @@ const bannerText = computed(() => {
           @open-editor="openEditorPanel"
           @back="backFrom"
         />
+        <!-- Theme picker (unit 6b·2) rides at the foot of the desktop sidebar —
+             the shell chrome where nav/meters already live. The persistent top
+             bar (and the mobile home for this control) is a LATER unit; @click
+             above is on the sidebar wrapper, so mousedown/onPanelClick don't
+             fire a navigation for taps on the picker. -->
+        <div class="mt-auto shrink-0 border-t border-line px-3 py-2" @click.stop>
+          <ThemePicker />
+        </div>
       </div>
 
       <!-- The content area: the trailing content panels beside the sidebar, each

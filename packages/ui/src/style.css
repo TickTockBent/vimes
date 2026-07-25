@@ -1,7 +1,128 @@
 @import "tailwindcss";
 
+/* ============================================================================
+   VIMES design system — token foundation (unit 6b·2)
+   Identity: precision instrument panel / mission-control readout.
+   Approved: styleguide artifact ddb2f26f (scratchpad/vimes-styleguide.html +
+   vimes-styleguide-TOKENS.md). This unit lands the tokens + fonts + a working
+   light/dark/auto picker as INFRASTRUCTURE — it does NOT re-skin the 9 views.
+   ============================================================================ */
+
+/* ── Runtime theme tokens ───────────────────────────────────────────────────
+   Plain CSS custom properties so the picker can swap them at runtime. Robust
+   pattern: LIGHT is the default; OS-dark applies ONLY when the user has made no
+   explicit choice (`:root:not([data-theme])`); an explicit `[data-theme]` wins
+   in BOTH directions (a user on an OS-dark box can force light and vice-versa).
+   The exact hexes are the signed-off values from vimes-styleguide-TOKENS.md. */
+:root {
+  --ground: #f7f8fa;
+  --panel: #ffffff;
+  --panel-sunken: #eef1f5;
+  --ink: #0d1117;
+  --ink-dim: #5b6673;
+  --line: #e3e7ec;
+  --accent: #0891b2;
+  --accent-fg: #ffffff;
+  --track: #e3e7ec;
+  --ok: #16a34a;
+  --warn: #d97706;
+  --crit: #dc2626;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    --ground: #0a0e14;
+    --panel: #10151d;
+    --panel-sunken: #0d131b;
+    --ink: #e6edf3;
+    --ink-dim: #8b98a8;
+    --line: #1c2530;
+    --accent: #22d3ee;
+    --accent-fg: #04121c;
+    --track: #1c2530;
+    --ok: #22c55e;
+    --warn: #f59e0b;
+    --crit: #f87171;
+  }
+}
+
+:root[data-theme="light"] {
+  --ground: #f7f8fa;
+  --panel: #ffffff;
+  --panel-sunken: #eef1f5;
+  --ink: #0d1117;
+  --ink-dim: #5b6673;
+  --line: #e3e7ec;
+  --accent: #0891b2;
+  --accent-fg: #ffffff;
+  --track: #e3e7ec;
+  --ok: #16a34a;
+  --warn: #d97706;
+  --crit: #dc2626;
+}
+
+:root[data-theme="dark"] {
+  --ground: #0a0e14;
+  --panel: #10151d;
+  --panel-sunken: #0d131b;
+  --ink: #e6edf3;
+  --ink-dim: #8b98a8;
+  --line: #1c2530;
+  --accent: #22d3ee;
+  --accent-fg: #04121c;
+  --track: #1c2530;
+  --ok: #22c55e;
+  --warn: #f59e0b;
+  --crit: #f87171;
+}
+
+/* ── Tailwind v4 @theme inline — token-backed utilities ──────────────────────
+   `inline` is load-bearing: it makes `bg-panel` / `text-ink` / `border-line` /
+   `font-mono` etc. emit `var(--…)` verbatim rather than resolving the variable
+   at build time. That indirection is exactly what lets the picker swap the
+   underlying custom property and re-theme the app at runtime.
+   Utilities minted here: bg/text/border/etc. for ground, panel, panel-sunken,
+   ink, ink-dim, line, accent, accent-fg, track, ok, warn, crit — plus font-mono
+   and font-sans. */
+@theme inline {
+  --color-ground: var(--ground);
+  --color-panel: var(--panel);
+  --color-panel-sunken: var(--panel-sunken);
+  --color-ink: var(--ink);
+  --color-ink-dim: var(--ink-dim);
+  --color-line: var(--line);
+  --color-accent: var(--accent);
+  --color-accent-fg: var(--accent-fg);
+  --color-track: var(--track);
+  --color-ok: var(--ok);
+  --color-warn: var(--warn);
+  --color-crit: var(--crit);
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  --font-sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+/* ── Manual-picker dark variant ──────────────────────────────────────────────
+   `dark:` must mirror the token four-way pattern EXACTLY, or the two disagree
+   during the transition (the views still use `dark:`; only the tokens are
+   swapped so far). It fires when EITHER the user explicitly chose dark
+   (`[data-theme=dark]`) OR they made no choice and the OS is dark
+   (`:root:not([data-theme])` under prefers-color-scheme) — the same two branches
+   the token blocks above use. A single `[data-theme=dark]`-only variant would
+   drop dark styling for the DEFAULT auto mode on an OS-dark box (auto removes
+   the attribute), flipping every un-reskinned view to light. */
+@custom-variant dark {
+  &:where([data-theme="dark"], [data-theme="dark"] *) {
+    @slot;
+  }
+  @media (prefers-color-scheme: dark) {
+    &:where(:root:not([data-theme]), :root:not([data-theme]) *) {
+      @slot;
+    }
+  }
+}
+
 /* Mobile-first baseline: no horizontal scroll, dark-scheme friendly via
-   Tailwind's dark: variant (prefers-color-scheme by default in v4). */
+   Tailwind's dark: variant (now picker-driven per @custom-variant above). */
 html,
 body {
   overscroll-behavior-y: contain;
@@ -9,6 +130,20 @@ body {
 
 body {
   overflow-x: hidden;
+  /* Base UI prose is IBM Plex Sans (falls back to the system stack until the
+     self-hosted faces load, and permanently if they ever fail). */
+  font-family: var(--font-sans);
+}
+
+/* Headings default to IBM Plex Mono — the instrument-panel voice for titles and
+   readouts (vimes-styleguide-TOKENS.md typography). Views may still override. */
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  font-family: var(--font-mono);
 }
 
 /* Defect 1 fallback (mobile ergonomics): --keyboard-offset is written from
