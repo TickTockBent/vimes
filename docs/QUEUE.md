@@ -16,8 +16,9 @@ dark; picker Auto/Light/Dark; active usage gauge in the top bar.
 
 **After 6b closes → SLICE 7 (the task model)** — the thing 6b cleared the runway for.
 Designed in `slice-7.md`; decisions **D43/D44/D46**. Gate-1 first unit: **S7·1 reserve
-schemas**. Parked odds: **T6** CLI pin bump (batch into next deploy), **D45** slug fix,
-liveness-table dedup (new tech-debt), the plan-mode A/B spike.
+schemas**. Parked odds: **D45** slug fix, liveness-table dedup (new tech-debt).
+(**T6** pin — DONE/applied 2026-07-25; **plan-mode A/B spike S7·0** — DONE 2026-07-25,
+native plan mode viable, see `slice-7.md` + `evidence-spike-s7-0-planmode.md`.)
 
 --- (historical, slice 6 close, 2026-07-24) ---
 
@@ -32,9 +33,11 @@ where the workflow is **spec-and-verify** — see **open-questions D43** (eviden
 plan-as-artifact handoff, and the orchestrator role** — *not* "add a description field."
 
 **Loose ends (not slice-6 blockers):**
-1. **T6 — DONE (2026-07-25).** Verify spike ran (`spike-t6-cli-2.1.220-FINDINGS.md`),
-   orchestrator-verified. Two outcomes: (a) pin bump 2.1.217→2.1.220 is SAFE (warn-only) —
-   **batch it into the next real deploy** (root env edit + restart, not worth a dedicated one);
+1. **T6 — DONE + PIN APPLIED (2026-07-25).** Verify spike ran
+   (`spike-t6-cli-2.1.220-FINDINGS.md`), orchestrator-verified. Two outcomes: (a) pin bump
+   2.1.217→2.1.220 is SAFE (warn-only) — **APPLIED**: `/etc/vimes/env`
+   `VIMES_EXPECTED_CLI_VERSION=2.1.220` (bumped alongside the S7·2a deploy), daemon restarted,
+   boot line confirmed drift-warning-free (`pty=2.1.220 sdk=2.1.207`, `auth=configured`);
    (b) the slug check surfaced a real rule-0.1 finding → **D45** below, queued as its own unit.
 1b. **Slug fix (D45) — QUEUED, dispatch-ready.** `encodeCwdForProjects` is wrong: the CLI folds
    `_`→`-` (verified: cwd `space_industry` → dir `space-industry`), so transcript tailing +
