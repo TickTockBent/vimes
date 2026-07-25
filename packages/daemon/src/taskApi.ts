@@ -74,6 +74,18 @@ export interface DispatchResponse {
 export interface StageEdgesResponse {
   edges: Record<TaskStage, TaskStage[]>;
 }
+// S7·3: the work-order authoring descriptor, served for the SAME reason the
+// legal-edge table is (Wes, 2026-07-25) — the board's create sheet must render
+// the four authored work-order fields, but `packages/ui` cannot import the zod
+// that defines them (`@vimes/core` is a deliberate non-dependency of the UI, and
+// `createTaskBodySchema` lives here). So the daemon owns the field shape once (in
+// `createTaskBodySchema`, S7·2a) and serves a descriptor derived from the SAME
+// cap constants; the UI reflects it without a second hand-mirrored field list.
+// The descriptor↔schema drift test in taskApi.test.ts is what keeps the two
+// halves honest, exactly as `exhaustiveVocabulary` guards the re-declared enums.
+export interface WorkOrderSchemaResponse {
+  fields: readonly WorkOrderFieldDescriptor[];
+}
 
 // ── the boundary vocabularies ────────────────────────────────────────────────
 //
@@ -193,7 +205,10 @@ const MAX_WORK_ORDER_TEXT = 8000;
 const MAX_WORK_ORDER_LINE = 2000;
 const MAX_LIST_ITEMS = 100;
 
-const createTaskBodySchema = z.object({
+// Exported for the S7·3 drift guard ONLY (taskApi.test.ts), which binds
+// `WORK_ORDER_FIELD_DESCRIPTORS` to this schema's shape, optionality, and caps so
+// the served descriptor can never drift from what the route actually validates.
+export const createTaskBodySchema = z.object({
   projectRoot: z.string(),
   // Over the cap → the whole body fails to parse → 400 with **NO EVENT**, the
   // same idiom every other malformed proposal follows (a proposal that was never
@@ -220,6 +235,69 @@ const createTaskBodySchema = z.object({
     .optional(),
   killCriterion: z.string().min(1).max(MAX_WORK_ORDER_TEXT).optional(),
 });
+
+// ── S7·3: the work-order authoring descriptor (SINGLE SOURCE, served) ─────────
+//
+// The board's create sheet renders the four authored work-order fields from THIS
+// descriptor rather than a hand-mirrored field list in the UI — see
+// `WorkOrderSchemaResponse` above for why it is served and not imported. The
+// point of the exercise is ONE definition: every cap here is the SAME const
+// `createTaskBodySchema` validates against (MAX_WORK_ORDER_TEXT / _LINE /
+// MAX_LIST_ITEMS), so a future cap change touches one place, and the drift test
+// in taskApi.test.ts binds this array to the schema (same keys, same optionality,
+// same caps) so the two cannot diverge unnoticed.
+//
+// The `kind` tells the form HOW to render:
+//   • longtext      → a <textarea> (the prose fields, scope / killCriterion).
+//   • list          → repeatable plain-string rows (explicitlyOut lines).
+//   • criteria-list → repeatable rows, each ONE criterion's TEXT. The id is
+//     minted server-side in TaskWriter.createTask; the form sends `{ text }`
+//     only (S7·2a), which is why this is a distinct kind from `list`.
+export interface WorkOrderFieldDescriptor {
+  key: 'scope' | 'explicitlyOut' | 'acceptanceCriteria' | 'killCriterion';
+  kind: 'longtext' | 'list' | 'criteria-list';
+  label: string;
+  // One-line authoring guidance shown under the field. This is REAL UX (D43): a
+  // work-order authored on the board is the schema's first ergonomic test, and
+  // this copy is the scaffolding that makes it bearable.
+  help: string;
+  maxLength?: number; // longtext → MAX_WORK_ORDER_TEXT
+  maxItems?: number; // list / criteria-list → MAX_LIST_ITEMS
+  itemMaxLength?: number; // list item / criterion text → MAX_WORK_ORDER_LINE
+}
+
+export const WORK_ORDER_FIELD_DESCRIPTORS: readonly WorkOrderFieldDescriptor[] = [
+  {
+    key: 'scope',
+    kind: 'longtext',
+    label: 'Scope',
+    help: 'What this task builds — the vertical slice in a sentence or two. Concrete beats grand.',
+    maxLength: MAX_WORK_ORDER_TEXT,
+  },
+  {
+    key: 'explicitlyOut',
+    kind: 'list',
+    label: 'Explicitly out',
+    help: 'One exclusion per line. Naming what you are NOT doing makes scope creep a diff against a list.',
+    maxItems: MAX_LIST_ITEMS,
+    itemMaxLength: MAX_WORK_ORDER_LINE,
+  },
+  {
+    key: 'acceptanceCriteria',
+    kind: 'criteria-list',
+    label: 'Acceptance criteria',
+    help: 'One checkable outcome per line — the reviewer passes or fails each. Write what "done" looks like.',
+    maxItems: MAX_LIST_ITEMS,
+    itemMaxLength: MAX_WORK_ORDER_LINE,
+  },
+  {
+    key: 'killCriterion',
+    kind: 'longtext',
+    label: 'Kill criterion',
+    help: 'The observation that means stop and write a decision record — not push through. When is this task a mistake?',
+    maxLength: MAX_WORK_ORDER_TEXT,
+  },
+];
 
 // POST /api/tasks/:taskId/transitions body.
 //
@@ -404,6 +482,19 @@ export function registerTaskApi(app: Hono, deps: TaskApiDeps): void {
   // This route serves the TRANSITION RULES, a fact nothing else exposes.
   app.get('/api/tasks/stage-edges', (context) => {
     const response: StageEdgesResponse = { edges: taskStageEdgesRecord() };
+    return context.json(response);
+  });
+
+  // ── GET /api/tasks/work-order-schema — the authoring descriptor (S7·3) ──────
+  //
+  // The exact sibling of `stage-edges`: static, read-only, events nothing, behind
+  // the same auth wall. The board's create sheet fetches this and renders the
+  // four authored work-order fields from it, so the UI reflects the field shape
+  // without a second copy of it (principle 9). The descriptor is derived from the
+  // SAME caps `createTaskBodySchema` validates against; the drift test in
+  // taskApi.test.ts is the guard that they never fall out of step.
+  app.get('/api/tasks/work-order-schema', (context) => {
+    const response: WorkOrderSchemaResponse = { fields: WORK_ORDER_FIELD_DESCRIPTORS };
     return context.json(response);
   });
 

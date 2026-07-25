@@ -8,6 +8,7 @@ import type { CacheObservabilityRecord } from '../lib/cacheBadge.js';
 import type { DerivedUsageBody, UsageRefreshOutcome, UsageSnapshot } from '../lib/meterDisplay.js';
 import type { CostLedgerBody } from '../lib/costDisplay.js';
 import type { TaskApiAnswer } from '../lib/taskBoard.js';
+import type { WorkOrderBody, WorkOrderFieldDescriptor } from '../lib/workOrderForm.js';
 import { sessionToSubscribeAfterDispatch } from '../lib/dispatchFollow.js';
 import type { GitStatus, GitFileDiff, GitRepoEntry, GitDiffContext } from '../lib/gitReview.js';
 import type { EventRecord, SessionRecord } from '../lib/types.js';
@@ -186,6 +187,12 @@ export const useVimesStore = defineStore('vimes', () => {
   // yet" and offers nothing (a safe empty, never all-stages). This is the SERVED
   // form of core's TASK_STAGE_EDGES; the value is never re-derived here.
   const stageEdges = ref<Record<string, string[]> | null>(null);
+  // S7·3: the work-order authoring descriptor, fetched from
+  // GET /api/tasks/work-order-schema. Null until the first fetch lands — the
+  // create sheet renders nothing until then (never a hard-coded field list). This
+  // is the SERVED shape of the daemon's WORK_ORDER_FIELD_DESCRIPTORS; the value is
+  // never re-derived here (the UI cannot import the zod that defines it).
+  const workOrderSchema = ref<WorkOrderFieldDescriptor[] | null>(null);
   // ── Git review (slice 4 step 3) — the primary-human-job surface (spec §3.4) ──
   // Plain REST-into-ref, mirroring fetchTerminals: fetch, credentials
   // same-origin, tolerant of transient failure. The daemon's /api/git/* endpoints
@@ -464,6 +471,28 @@ export const useVimesStore = defineStore('vimes', () => {
     }
   }
 
+  // GET /api/tasks/work-order-schema (S7·3) — the authoring descriptor, the exact
+  // sibling of fetchStageEdges: same-origin fetch, tolerant of a transient failure
+  // or a malformed body, leaving `workOrderSchema` at its previous value (null
+  // before the first success) rather than throwing. The create sheet treats null
+  // as "not loaded" and renders no work-order fields. Static data (the descriptor
+  // never changes at runtime), so this is called where the board mounts, not polled.
+  async function fetchWorkOrderSchema(): Promise<void> {
+    try {
+      const response = await fetch('/api/tasks/work-order-schema', { credentials: 'same-origin' });
+      if (!response.ok) {
+        return;
+      }
+      const parsed = (await response.json()) as { fields?: unknown };
+      if (Array.isArray(parsed.fields)) {
+        workOrderSchema.value = parsed.fields as WorkOrderFieldDescriptor[];
+      }
+    } catch {
+      // Transient network hiccup — workOrderSchema stays whatever it was (null
+      // before the first success), and the sheet's null-case renders no fields.
+    }
+  }
+
   // The three task WRITES. All three are plain same-origin POSTs that return the
   // daemon's STATUS AND BODY VERBATIM to the caller — they classify nothing.
   //
@@ -498,11 +527,26 @@ export const useVimesStore = defineStore('vimes', () => {
     }
   }
 
-  function createTask(input: { projectRoot: string; title?: string }): Promise<TaskApiAnswer> {
+  // S7·3 widened create with the four authored work-order fields. Each is
+  // OPTIONAL and spread only when present, the same absent-omit idiom as `title` —
+  // an EMPTY scope must NOT be sent as `scope: ''` (the sheet enforces this via
+  // `buildWorkOrderBody`, which omits empties before they ever reach here, so an
+  // unauthored create is byte-identical to the pre-S7·3 title-only POST).
+  // `acceptanceCriteria` is the `{ text }[]` INPUT shape — no id, which the writer
+  // mints server-side.
+  function createTask(
+    input: { projectRoot: string; title?: string } & WorkOrderBody,
+  ): Promise<TaskApiAnswer> {
     return postTaskApi('/api/tasks', {
       projectRoot: input.projectRoot,
       createdBy: 'human',
       ...(input.title === undefined ? {} : { title: input.title }),
+      ...(input.scope === undefined ? {} : { scope: input.scope }),
+      ...(input.explicitlyOut === undefined ? {} : { explicitlyOut: input.explicitlyOut }),
+      ...(input.acceptanceCriteria === undefined
+        ? {}
+        : { acceptanceCriteria: input.acceptanceCriteria }),
+      ...(input.killCriterion === undefined ? {} : { killCriterion: input.killCriterion }),
     });
   }
 
@@ -545,6 +589,9 @@ export const useVimesStore = defineStore('vimes', () => {
     // alongside the tasks projection rather than gated behind opening a card,
     // so the sheet has it ready the first time an operator taps a card.
     void fetchStageEdges();
+    // S7·3: the work-order authoring descriptor, fetched the same way, so the
+    // create sheet has its field list ready when an operator opens New Task.
+    void fetchWorkOrderSchema();
   }
 
   // ── Git review fetches (mirror fetchTerminals: plain REST, same-origin creds,
@@ -1353,9 +1400,11 @@ export const useVimesStore = defineStore('vimes', () => {
     tasksProjectionBody,
     tasksLoading,
     stageEdges,
+    workOrderSchema,
     watchTasks,
     fetchTasks,
     fetchStageEdges,
+    fetchWorkOrderSchema,
     createTask,
     proposeTaskTransition,
     dispatchTask,

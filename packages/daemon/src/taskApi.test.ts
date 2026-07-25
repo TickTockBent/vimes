@@ -23,11 +23,15 @@ import { createAccessAuthMiddleware, type AccessVerifier } from './auth.js';
 import { createDaemon, NO_OBSERVATION_IS_FRESH_STALE_BAND_MS, type Daemon, type DaemonDeps } from './app.js';
 import type { DaemonConfig } from './config.js';
 import {
+  createTaskBodySchema,
   registerTaskApi,
+  WORK_ORDER_FIELD_DESCRIPTORS,
   type CreateTaskResponse,
   type DispatchResponse,
   type ProposeTransitionResponse,
   type StageEdgesResponse,
+  type WorkOrderFieldDescriptor,
+  type WorkOrderSchemaResponse,
 } from './taskApi.js';
 import { TaskWriter } from './taskWriter.js';
 import { TaskDispatcher } from './taskDispatcher.js';
@@ -923,6 +927,181 @@ describe('GET /api/tasks/stage-edges — the legal-edge table the move sheet fil
     const headBefore = harness.tasksHead();
 
     await harness.request('/api/tasks/stage-edges', { headers: authHeaders() });
+
+    expect(harness.tasksHead()).toBe(headBefore);
+  });
+});
+
+// ── S7·3: the work-order authoring descriptor + its drift guard ──────────────
+//
+// This is the "one definition" insurance the S7·3 unit exists to test. The board
+// renders the four authored work-order fields from the SERVED descriptor
+// (`GET /api/tasks/work-order-schema`), and the descriptor is derived from the
+// SAME caps `createTaskBodySchema` validates against. These tests bind the two
+// together so they can never drift silently: same keys, same optionality, same
+// caps — a change to one place that is not mirrored in the other reddens here.
+
+describe('WORK_ORDER_FIELD_DESCRIPTORS — bound to createTaskBodySchema (no drift)', () => {
+  // The four AUTHORED work-order fields, enumerated. Deliberately NOT derived from
+  // the descriptor or the schema — this hard-coded set is the third witness, so a
+  // field silently added to (or dropped from) EITHER side is caught rather than
+  // agreeing with itself.
+  const EXPECTED_WORK_ORDER_KEYS = [
+    'scope',
+    'explicitlyOut',
+    'acceptanceCriteria',
+    'killCriterion',
+  ] as const;
+
+  // A minimal body that parses, so a single field under test can be swapped in and
+  // its cap probed against the schema the route actually uses. projectRoot is only
+  // shape-checked here (the allowlist wall is the route's job, not the schema's).
+  function baseBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return { projectRoot: '/tmp', createdBy: 'human', ...overrides };
+  }
+
+  const descriptorByKey = new Map<string, WorkOrderFieldDescriptor>(
+    WORK_ORDER_FIELD_DESCRIPTORS.map((descriptor) => [descriptor.key, descriptor]),
+  );
+
+  it('covers exactly the four authored fields — set-equality both directions', () => {
+    const descriptorKeys = WORK_ORDER_FIELD_DESCRIPTORS.map((descriptor) => descriptor.key);
+    // No duplicate keys in the descriptor.
+    expect(new Set(descriptorKeys).size).toBe(descriptorKeys.length);
+    // Descriptor keys === the expected four (order-independent).
+    expect(new Set(descriptorKeys)).toEqual(new Set(EXPECTED_WORK_ORDER_KEYS));
+  });
+
+  it('every descriptor key exists in createTaskBodySchema.shape AND is optional there', () => {
+    for (const descriptor of WORK_ORDER_FIELD_DESCRIPTORS) {
+      const shapeField = createTaskBodySchema.shape[descriptor.key as keyof typeof createTaskBodySchema.shape];
+      expect(shapeField, `${descriptor.key} exists in the schema`).toBeDefined();
+      // Optional: an unauthored creation must still parse (the widening is
+      // optional-only), so a descriptor field that became required in the schema
+      // would break the byte-identical title-only POST — caught here.
+      expect(shapeField.isOptional(), `${descriptor.key} is optional`).toBe(true);
+    }
+  });
+
+  it('each longtext descriptor cap AT the schema cap parses, one OVER fails', () => {
+    for (const descriptor of WORK_ORDER_FIELD_DESCRIPTORS) {
+      if (descriptor.kind !== 'longtext') {
+        continue;
+      }
+      const cap = descriptor.maxLength!;
+      expect(cap, `${descriptor.key} declares a maxLength`).toBeGreaterThan(0);
+      // AT the descriptor's declared cap → the schema accepts it.
+      expect(
+        createTaskBodySchema.safeParse(baseBody({ [descriptor.key]: 'x'.repeat(cap) })).success,
+        `${descriptor.key} at cap parses`,
+      ).toBe(true);
+      // One character OVER → the schema rejects the whole body. This is what binds
+      // the descriptor's advertised cap to what the route enforces.
+      expect(
+        createTaskBodySchema.safeParse(baseBody({ [descriptor.key]: 'x'.repeat(cap + 1) })).success,
+        `${descriptor.key} over cap fails`,
+      ).toBe(false);
+    }
+  });
+
+  it('the explicitlyOut list caps (item count AND item length) match the schema', () => {
+    const descriptor = descriptorByKey.get('explicitlyOut')!;
+    const maxItems = descriptor.maxItems!;
+    const itemMaxLength = descriptor.itemMaxLength!;
+
+    const atItemCap = Array.from({ length: maxItems }, () => 'row');
+    expect(createTaskBodySchema.safeParse(baseBody({ explicitlyOut: atItemCap })).success).toBe(true);
+
+    const overItemCap = Array.from({ length: maxItems + 1 }, () => 'row');
+    expect(createTaskBodySchema.safeParse(baseBody({ explicitlyOut: overItemCap })).success).toBe(
+      false,
+    );
+
+    // A single line AT its length cap parses; one over fails.
+    expect(
+      createTaskBodySchema.safeParse(baseBody({ explicitlyOut: ['x'.repeat(itemMaxLength)] }))
+        .success,
+    ).toBe(true);
+    expect(
+      createTaskBodySchema.safeParse(baseBody({ explicitlyOut: ['x'.repeat(itemMaxLength + 1)] }))
+        .success,
+    ).toBe(false);
+  });
+
+  it('the acceptanceCriteria list caps match the schema, and its item shape is { text }', () => {
+    const descriptor = descriptorByKey.get('acceptanceCriteria')!;
+    expect(descriptor.kind).toBe('criteria-list');
+    const maxItems = descriptor.maxItems!;
+    const itemMaxLength = descriptor.itemMaxLength!;
+
+    const atItemCap = Array.from({ length: maxItems }, () => ({ text: 'ok' }));
+    expect(createTaskBodySchema.safeParse(baseBody({ acceptanceCriteria: atItemCap })).success).toBe(
+      true,
+    );
+
+    const overItemCap = Array.from({ length: maxItems + 1 }, () => ({ text: 'ok' }));
+    expect(
+      createTaskBodySchema.safeParse(baseBody({ acceptanceCriteria: overItemCap })).success,
+    ).toBe(false);
+
+    // One criterion's TEXT at its length cap parses; one over fails.
+    expect(
+      createTaskBodySchema.safeParse(
+        baseBody({ acceptanceCriteria: [{ text: 'x'.repeat(itemMaxLength) }] }),
+      ).success,
+    ).toBe(true);
+    expect(
+      createTaskBodySchema.safeParse(
+        baseBody({ acceptanceCriteria: [{ text: 'x'.repeat(itemMaxLength + 1) }] }),
+      ).success,
+    ).toBe(false);
+
+    // The INPUT shape carries no id — the writer mints it (S7·2a). A criterion sent
+    // with an id must not become part of the advertised contract.
+    expect(
+      createTaskBodySchema.safeParse(baseBody({ acceptanceCriteria: [{ text: 'ok' }] })).success,
+    ).toBe(true);
+  });
+});
+
+describe('GET /api/tasks/work-order-schema — the served authoring descriptor', () => {
+  it('serves WORK_ORDER_FIELD_DESCRIPTORS verbatim behind the same auth wall', async () => {
+    const harness = buildApiHarness();
+    const response = await harness.request('/api/tasks/work-order-schema', {
+      headers: authHeaders(),
+    });
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as WorkOrderSchemaResponse;
+    expect(body).toEqual({ fields: WORK_ORDER_FIELD_DESCRIPTORS });
+    // The four keys are present and in the authored order.
+    expect(body.fields.map((field) => field.key)).toEqual([
+      'scope',
+      'explicitlyOut',
+      'acceptanceCriteria',
+      'killCriterion',
+    ]);
+  });
+
+  it('NO token → 401 (I14), and a genuinely empty token is refused the same way', async () => {
+    const harness = buildApiHarness();
+
+    const noToken = await harness.request('/api/tasks/work-order-schema', {
+      headers: authHeaders(null),
+    });
+    expect(noToken.status).toBe(401);
+
+    const emptyToken = await harness.request('/api/tasks/work-order-schema', {
+      headers: authHeaders(''),
+    });
+    expect(emptyToken.status).toBe(401);
+  });
+
+  it('is read-only: fetching it writes nothing to the tasks stream', async () => {
+    const harness = buildApiHarness();
+    const headBefore = harness.tasksHead();
+
+    await harness.request('/api/tasks/work-order-schema', { headers: authHeaders() });
 
     expect(harness.tasksHead()).toBe(headBefore);
   });
