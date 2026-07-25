@@ -240,7 +240,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="flex min-h-screen flex-col bg-slate-950">
+  <div class="flex h-full flex-col overflow-hidden bg-slate-950">
     <header class="sticky top-0 z-20 flex items-center gap-2 border-b border-slate-800 bg-slate-950 px-3 py-2">
       <button
         type="button"
@@ -269,7 +269,7 @@ onBeforeUnmount(() => {
 
     <!-- Landing: the live terminals list + a New-shell flow. Persistent shells
          appear here so they can be re-entered, kept (resilient), or killed. -->
-    <div v-if="!started" class="min-h-0 flex-1 overflow-y-auto p-4">
+    <div v-if="!started" class="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4">
       <section v-if="terminalRows.length > 0" class="mx-auto flex max-w-2xl flex-col gap-2">
         <h2 class="px-1 text-xs font-semibold uppercase tracking-wide text-slate-500">Running shells</h2>
         <ul class="flex flex-col gap-2">

@@ -66,7 +66,7 @@ function preview(submatches: Array<{ text: string }>): string {
 </script>
 
 <template>
-  <div class="flex min-h-screen flex-col">
+  <div class="flex h-full flex-col overflow-hidden">
     <header class="sticky top-0 z-20 flex items-center gap-2 border-b border-slate-200 bg-white px-3 py-2 dark:border-slate-800 dark:bg-slate-950">
       <button
         type="button"
@@ -111,7 +111,7 @@ function preview(submatches: Array<{ text: string }>): string {
       </label>
     </form>
 
-    <div class="flex-1 overflow-auto">
+    <div class="min-h-0 flex-1 overflow-auto overscroll-contain">
       <p v-if="store.searchStatus === 'running'" class="px-3 py-3 text-sm text-slate-500 dark:text-slate-400">
         Searching…
         <button type="button" class="ml-2 underline" @click="store.cancelSearch()">cancel</button>

@@ -391,7 +391,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="mx-auto flex max-w-lg flex-col gap-4 p-4">
+  <div class="mx-auto flex h-full max-w-lg flex-col gap-4 overflow-y-auto overscroll-contain p-4">
     <div class="flex items-center justify-between gap-2">
       <h1 class="text-lg font-semibold">Sessions</h1>
       <div class="flex flex-wrap items-center gap-x-2 gap-y-2">

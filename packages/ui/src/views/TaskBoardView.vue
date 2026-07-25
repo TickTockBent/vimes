@@ -242,7 +242,7 @@ function livenessClass(liveness: string): string {
 </script>
 
 <template>
-  <div class="mx-auto flex max-w-lg flex-col gap-4 p-4">
+  <div class="mx-auto flex h-full max-w-lg flex-col gap-4 overflow-y-auto overscroll-contain p-4">
     <div class="flex items-center justify-between gap-2">
       <div class="flex items-center gap-2">
         <button

@@ -296,7 +296,7 @@ const bannerText = computed(() => {
 </script>
 
 <template>
-  <div class="flex min-h-screen flex-col">
+  <div class="flex h-[100dvh] flex-col overflow-hidden">
     <!-- Persistent chrome above the panel row — unchanged from today. -->
     <div v-if="bannerText" class="sticky top-0 z-30 bg-amber-500 px-4 py-2 text-center text-sm font-medium text-white">
       {{ bannerText }}

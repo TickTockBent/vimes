@@ -173,7 +173,7 @@ const fileName = () => props.path.slice(props.path.lastIndexOf('/') + 1);
 </script>
 
 <template>
-  <div class="flex min-h-screen flex-col">
+  <div class="flex h-full flex-col overflow-hidden">
     <header class="sticky top-0 z-20 flex items-center gap-2 border-b border-slate-200 bg-white px-3 py-2 dark:border-slate-800 dark:bg-slate-950">
       <button
         type="button"
@@ -248,7 +248,7 @@ const fileName = () => props.path.slice(props.path.lastIndexOf('/') + 1);
 
     <!-- The CM6 mount target; kept present (v-show) so the mounted view is never
          re-parented. The editor fills the space between header and toolbar. -->
-    <div v-show="loadState === 'ready'" ref="editorHost" class="min-h-0 flex-1 overflow-auto text-sm"></div>
+    <div v-show="loadState === 'ready'" ref="editorHost" class="min-h-0 flex-1 overflow-auto overscroll-contain text-sm"></div>
 
     <!-- Mobile keyboard toolbar (44px+ targets). Sits above the on-screen
          keyboard; the buttons dispatch CM6 commands. -->
