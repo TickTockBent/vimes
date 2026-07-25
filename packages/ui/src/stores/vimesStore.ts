@@ -8,6 +8,7 @@ import type { CacheObservabilityRecord } from '../lib/cacheBadge.js';
 import type { DerivedUsageBody, UsageRefreshOutcome, UsageSnapshot } from '../lib/meterDisplay.js';
 import type { CostLedgerBody } from '../lib/costDisplay.js';
 import type { TaskApiAnswer } from '../lib/taskBoard.js';
+import { sessionToSubscribeAfterDispatch } from '../lib/dispatchFollow.js';
 import type { GitStatus, GitFileDiff, GitRepoEntry, GitDiffContext } from '../lib/gitReview.js';
 import type { EventRecord, SessionRecord } from '../lib/types.js';
 import { derivePushState, type PushUiState } from '../lib/pushState.js';
@@ -486,8 +487,23 @@ export const useVimesStore = defineStore('vimes', () => {
   }
 
   // ONE explicit dispatch attempt — no retry, no loop, mirroring the route.
-  function dispatchTask(taskId: string): Promise<TaskApiAnswer> {
-    return postTaskApi(`/api/tasks/${encodeURIComponent(taskId)}/dispatch`, {});
+  //
+  // A `spawned` outcome mints a BRAND NEW session, and the client only
+  // receives live events for streams it is subscribed to — without this, the
+  // resulting `session_created` lands on an unsubscribed stream and stays
+  // invisible until a manual reload (the same gap the WS `'discovered'`
+  // handler closes for scan-mirrored sessions, via `scheduleSessionsRefresh`).
+  // `sessionToSubscribeAfterDispatch` makes the strict spawned+id decision;
+  // this glue only acts on it. The returned `TaskApiAnswer` is UNCHANGED —
+  // this adds a side effect, it does not reinterpret what the caller renders.
+  async function dispatchTask(taskId: string): Promise<TaskApiAnswer> {
+    const answer = await postTaskApi(`/api/tasks/${encodeURIComponent(taskId)}/dispatch`, {});
+    const spawnedSessionId = sessionToSubscribeAfterDispatch(answer.status, answer.body);
+    if (spawnedSessionId !== null) {
+      subscribe(spawnedSessionId);
+      scheduleSessionsRefresh();
+    }
+    return answer;
   }
 
   // Subscribe the board to the 'tasks' stream and take a first read. Idempotent:

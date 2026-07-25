@@ -12,6 +12,8 @@ import {
   type MoveOption,
   type TaskCard,
 } from '../lib/taskBoard.js';
+import { sessionToSubscribeAfterDispatch } from '../lib/dispatchFollow.js';
+import { buildHash } from '../lib/route.js';
 
 // ─── slice 6 step 9 — THE TASK BOARD, MOBILE ────────────────────────────────
 //
@@ -79,6 +81,12 @@ const dispatchInFlight = ref(false);
 // is never swallowed and never collapsed into "failed".
 const moveNotice = ref<{ tone: 'accepted' | 'rejected' | 'error'; sentence: string } | null>(null);
 const dispatchNotice = ref<DispatchReport | null>(null);
+// The appSessionId a `spawned` dispatch just started, or null. Reuses the
+// SAME strict guard the store calls to decide whether to subscribe+refresh
+// (S9) — so the link below only ever appears for a genuine spawn with a real
+// id, and `describeDispatchResponse`'s shape stays untouched (it reads the
+// raw answer body directly, not the report).
+const dispatchedSessionId = ref<string | null>(null);
 
 const moveOptions = computed<readonly MoveOption[]>(() =>
   openCard.value === null ? [] : moveOptionsFor(openCard.value.stage),
@@ -88,6 +96,7 @@ function openSheet(card: TaskCard): void {
   openCard.value = card;
   moveNotice.value = null;
   dispatchNotice.value = null;
+  dispatchedSessionId.value = null;
 }
 function closeSheet(): void {
   openCard.value = null;
@@ -122,10 +131,23 @@ async function dispatch(): Promise<void> {
   try {
     const answer = await store.dispatchTask(card.taskId);
     dispatchNotice.value = describeDispatchResponse(answer.status, answer.body);
+    dispatchedSessionId.value = sessionToSubscribeAfterDispatch(answer.status, answer.body);
   } finally {
     dispatchInFlight.value = false;
   }
 }
+
+// The dispatched session's panel link, or null when there is none (deferred/
+// refused/failed notices stay plain text). `buildHash` owns the encoding —
+// nothing here hand-crafts the `#/session/…` shape.
+const dispatchedSessionHref = computed(() =>
+  dispatchedSessionId.value === null
+    ? null
+    // `buildHash` already returns the full hash (leading `#` included) — do NOT
+    // prepend another, or the href becomes `##/session/…` and degrades to the
+    // fallback route instead of opening the session.
+    : buildHash({ view: 'stream', appSessionId: dispatchedSessionId.value }),
+);
 
 // ── The create sheet ────────────────────────────────────────────────────────
 // The board has to be able to get its first card without leaving the phone.
@@ -517,6 +539,15 @@ function livenessClass(liveness: string): string {
           <p class="font-semibold">{{ dispatchNotice.headline }}</p>
           <p v-if="dispatchNotice.detail !== null" class="mt-1 break-words font-mono text-[11px]">
             {{ dispatchNotice.detail }}
+          </p>
+          <!-- Only a genuine spawn (dispatchedSessionHref !== null) gets a link — a
+               deferred/refused/failed notice stays plain text. In-app hash links are
+               handled globally by lib/panelLinkClick.ts; a plain <a href> is the
+               established pattern, no click handler needed here. -->
+          <p v-if="dispatchedSessionHref !== null" class="mt-1 break-words text-[11px]">
+            <a :href="dispatchedSessionHref" class="font-mono underline decoration-dotted break-all">
+              Open session {{ dispatchedSessionId }}
+            </a>
           </p>
           <p v-if="dispatchNotice.idleNote !== null" class="mt-2 text-xs">{{ dispatchNotice.idleNote }}</p>
         </div>
