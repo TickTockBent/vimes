@@ -67,7 +67,12 @@ const STALE_AFTER_MS = 90_000;
 // the real class is never constructed and never imported at runtime (the result-type
 // imports above are type-only).
 class RecordingSessionHost {
-  readonly spawnCalls: Array<{ channel: 'sdk' | 'pty'; cwd: string; name?: string }> = [];
+  readonly spawnCalls: Array<{
+    channel: 'sdk' | 'pty';
+    cwd: string;
+    name?: string;
+    permissionMode?: 'plan';
+  }> = [];
   // Step 7's instruments. `resumeCalls` is what proves a fix went to the hot
   // author; `spawnCalls.length === 0` alongside it is what proves no stranger was
   // hired as well — and on the review path the two swap roles.
@@ -81,7 +86,12 @@ class RecordingSessionHost {
   private sendThrows: Error | null = null;
   private readonly liveSessionIds = new Set<string>();
 
-  spawnSession(options: { channel: 'sdk' | 'pty'; cwd: string; name?: string }): SpawnResult {
+  spawnSession(options: {
+    channel: 'sdk' | 'pty';
+    cwd: string;
+    name?: string;
+    permissionMode?: 'plan';
+  }): SpawnResult {
     this.spawnCalls.push(options);
     if (this.spawnThrows !== null) {
       throw this.spawnThrows;
@@ -1554,6 +1564,39 @@ describe('TaskDispatcher — assertion 13: I10 still holds through the ASYNC pat
       return { result: await harness.dispatcher.dispatchTask(TASK_ID), emitted: harness.emitted };
     };
     expect(JSON.stringify(await buildAndDispatch())).toBe(JSON.stringify(await buildAndDispatch()));
+  });
+});
+
+// ─── S7·5b-ii — the planning stage spawns in permissionMode 'plan' (D48) ──────
+//
+// The dispatcher's ONLY plan-mode behaviour: a `planning`-stage spawn asks the
+// session host for plan mode; every other stage spawns exactly as before. The
+// `spawnCalls` spy is the instrument — the presence/absence of `permissionMode`
+// on the recorded options is the whole assertion.
+
+describe('TaskDispatcher — planning spawns in plan mode (D48)', () => {
+  it('a planning-stage dispatch passes permissionMode plan to spawnSession', async () => {
+    const harness = buildHarness({ tasks: [taskRecord({ stage: 'planning' })] });
+
+    const result = await harness.dispatcher.dispatchTask(TASK_ID);
+
+    expect(result).toMatchObject({ outcome: 'spawned', stage: 'planning' });
+    expect(harness.sessionHost.spawnCalls).toEqual([
+      { channel: 'sdk', cwd: PROJECT_ROOT, permissionMode: 'plan' },
+    ]);
+  });
+
+  it('implementing / review dispatches do NOT set permissionMode (byte-identical spawn options)', async () => {
+    for (const stage of ['implementing', 'review'] as const) {
+      const harness = buildHarness({ tasks: [taskRecord({ stage })] });
+
+      const result = await harness.dispatcher.dispatchTask(TASK_ID);
+
+      expect(result).toMatchObject({ outcome: 'spawned', stage });
+      // The key is ABSENT, not `permissionMode: undefined` — the same options object
+      // step 4a produced, so every prior assertion and the dispatch envelope hold.
+      expect(harness.sessionHost.spawnCalls).toEqual([{ channel: 'sdk', cwd: PROJECT_ROOT }]);
+    }
   });
 });
 

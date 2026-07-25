@@ -95,6 +95,9 @@ interface Harness {
 function makeHarness(deps: {
   sdkQueryFactory?: SdkQueryFactory;
   ptySpawnFactory?: PtySpawnFactory;
+  // D48: the plan-capture callback the SDK adapter proposes plans through. Unset
+  // in most cases (the no-op path), injected by the plan-capture tests.
+  onPlanCaptured?: (appSessionId: string, planText: string) => void;
 }): Harness {
   const clock = new SteppingClock('2026-01-01T00:00:00.000Z', 1000);
   const ids = new CountingIdSource();
@@ -109,6 +112,7 @@ function makeHarness(deps: {
     sdkQueryFactory: deps.sdkQueryFactory,
     ptySpawnFactory: deps.ptySpawnFactory,
     projectsRoot: '/fake-projects',
+    onPlanCaptured: deps.onPlanCaptured,
   });
   return { host, store, router };
 }
@@ -431,6 +435,141 @@ describe('SessionHost — SDK channel', () => {
       });
     } finally {
       barrier.release();
+      host.stop();
+    }
+  });
+});
+
+// ── native plan capture (D48, S7·5b-ii) ──────────────────────────────────────
+
+describe('SessionHost — plan capture (D48)', () => {
+  it('ExitPlanMode in a plan-mode session denies cleanly, fires onPlanCaptured with the plan ONLY, emits no gate', async () => {
+    const permissionResults: unknown[] = [];
+    const captured: Array<{ appSessionId: string; planText: string }> = [];
+    const { factory } = makeSdkFactory(async function* ({ options }) {
+      yield { type: 'system', subtype: 'init', session_id: 'claude-1' };
+      const result = await options.canUseTool(
+        'ExitPlanMode',
+        // The shape is pinned by fixtures/plan-mode/exitplanmode.jsonl: `plan` is
+        // the content, `planFilePath` a machine-local path we must NOT propagate.
+        { plan: 'THE PLAN', planFilePath: '/home/wes/.claude/plans/x.md' },
+        { requestId: 'req-plan' },
+      );
+      permissionResults.push(result);
+      yield { type: 'result', subtype: 'success' };
+    });
+    const { host, store } = makeHarness({
+      sdkQueryFactory: factory,
+      onPlanCaptured: (appSessionId, planText) => captured.push({ appSessionId, planText }),
+    });
+    try {
+      const spawn = host.spawnSession({ channel: 'sdk', cwd: '/p', permissionMode: 'plan' });
+      const appSessionId = 'appSessionId' in spawn ? spawn.appSessionId : '';
+      await waitFor(() => permissionResults.length === 1);
+
+      // Deny stops the run cleanly (the spike's clean stop — no pending gate).
+      expect(permissionResults[0]).toEqual({
+        behavior: 'deny',
+        message: 'VIMES stops at the plan boundary',
+      });
+      // onPlanCaptured got the plan text ONLY — planFilePath is nowhere in it (R-b).
+      expect(captured).toEqual([{ appSessionId, planText: 'THE PLAN' }]);
+      // NO human gate for ExitPlanMode: the interception ran before the gate logic.
+      await waitFor(() => types(store, appSessionId).includes('run_completed'));
+      expect(types(store, appSessionId)).not.toContain('gate_fired');
+    } finally {
+      host.stop();
+    }
+  });
+
+  it('is ExitPlanMode-only: another tool in a plan-mode session still fires the normal gate', async () => {
+    const captured: Array<{ appSessionId: string; planText: string }> = [];
+    const { factory } = makeSdkFactory(async function* ({ options }) {
+      yield { type: 'system', subtype: 'init', session_id: 'claude-1' };
+      void options.canUseTool('Write', { file_path: '/a.txt', content: 'x' }, { requestId: 'req-w' });
+    });
+    const { host, store } = makeHarness({
+      sdkQueryFactory: factory,
+      onPlanCaptured: (appSessionId, planText) => captured.push({ appSessionId, planText }),
+    });
+    try {
+      const spawn = host.spawnSession({ channel: 'sdk', cwd: '/p', permissionMode: 'plan' });
+      const appSessionId = 'appSessionId' in spawn ? spawn.appSessionId : '';
+      await waitFor(() => types(store, appSessionId).includes('gate_fired'));
+
+      const gate = records(store, appSessionId).find((record) => record.type === 'gate_fired')!;
+      expect((gate.payload as { toolName: string }).toolName).toBe('Write');
+      expect(captured).toEqual([]);
+    } finally {
+      host.stop();
+    }
+  });
+
+  it('is gated on the plan-capture marker: ExitPlanMode in a DEFAULT session falls through to the gate', async () => {
+    // ⚠ VERIFY-BY-BREAKING anchor. Drop the `planCaptureSessions.has(...)` guard in
+    // handleGate (intercept ANY ExitPlanMode) and THIS case reddens: onPlanCaptured
+    // would fire and no gate_fired would be emitted. The interception must key on
+    // the marker, not the tool name alone.
+    const captured: Array<{ appSessionId: string; planText: string }> = [];
+    const { factory } = makeSdkFactory(async function* ({ options }) {
+      yield { type: 'system', subtype: 'init', session_id: 'claude-1' };
+      void options.canUseTool('ExitPlanMode', { plan: 'ignored here' }, { requestId: 'req-e' });
+    });
+    const { host, store } = makeHarness({
+      sdkQueryFactory: factory,
+      onPlanCaptured: (appSessionId, planText) => captured.push({ appSessionId, planText }),
+    });
+    try {
+      // NO permissionMode — an ordinary session, not a plan-capture one.
+      const spawn = host.spawnSession({ channel: 'sdk', cwd: '/p' });
+      const appSessionId = 'appSessionId' in spawn ? spawn.appSessionId : '';
+      await waitFor(() => types(store, appSessionId).includes('gate_fired'));
+
+      const gate = records(store, appSessionId).find((record) => record.type === 'gate_fired')!;
+      expect((gate.payload as { toolName: string }).toolName).toBe('ExitPlanMode');
+      expect(captured).toEqual([]);
+    } finally {
+      host.stop();
+    }
+  });
+
+  it('spawn options: permissionMode plan is set for a plan spawn and ABSENT for a default spawn', async () => {
+    const { factory, calls } = makeSdkFactory(async function* () {
+      yield { type: 'system', subtype: 'init', session_id: 'claude-1' };
+      yield { type: 'result', subtype: 'success' };
+    });
+    const { host } = makeHarness({ sdkQueryFactory: factory });
+    try {
+      host.spawnSession({ channel: 'sdk', cwd: '/p', permissionMode: 'plan' });
+      host.spawnSession({ channel: 'sdk', cwd: '/p' });
+      await waitFor(() => calls.length === 2);
+
+      expect(calls[0]!.permissionMode).toBe('plan');
+      // The no-plan path is byte-identical: the key is ABSENT, not undefined.
+      expect('permissionMode' in calls[1]!).toBe(false);
+    } finally {
+      host.stop();
+    }
+  });
+
+  it('onPlanCaptured unset: the interception still denies cleanly and does not throw', async () => {
+    const permissionResults: unknown[] = [];
+    const { factory } = makeSdkFactory(async function* ({ options }) {
+      yield { type: 'system', subtype: 'init', session_id: 'claude-1' };
+      const result = await options.canUseTool('ExitPlanMode', { plan: 'P' }, { requestId: 'req-p' });
+      permissionResults.push(result);
+      yield { type: 'result', subtype: 'success' };
+    });
+    // No onPlanCaptured injected → the host's no-op callback path.
+    const { host } = makeHarness({ sdkQueryFactory: factory });
+    try {
+      host.spawnSession({ channel: 'sdk', cwd: '/p', permissionMode: 'plan' });
+      await waitFor(() => permissionResults.length === 1);
+      expect(permissionResults[0]).toEqual({
+        behavior: 'deny',
+        message: 'VIMES stops at the plan boundary',
+      });
+    } finally {
       host.stop();
     }
   });

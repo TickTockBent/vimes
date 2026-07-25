@@ -96,6 +96,10 @@ export interface SdkQueryOptions {
   env?: Record<string, string | undefined>;
   settingSources: string[];
   canUseTool: SdkCanUseTool;
+  // D48 native plan capture: the planning stage spawns write-blocked in plan
+  // mode. Absent (the common case) leaves the SDK on its default mode exactly as
+  // before; only a plan-capture spawn sets it. See ClaudeSdkAdapter.spawn.
+  permissionMode?: 'plan';
 }
 
 export interface SdkQueryHandle extends AsyncIterable<SdkStreamMessage> {
@@ -181,6 +185,10 @@ interface AdapterSpawnContext {
   // variable that makes them authenticate (see mintHookChannel). `undefined`
   // means no relays at all for this spawn, not unauthenticated relays.
   hookChannel: HookChannel | undefined;
+  // D48: 'plan' spawns the SDK session write-blocked for native plan capture;
+  // absent = today's behaviour exactly. The PTY adapter ignores it (plan mode is
+  // an SDK concern).
+  permissionMode?: 'plan';
 }
 
 export type InteractionAck = { ok: true; appSessionId: string } | { refused: true; reason: string };
@@ -213,6 +221,11 @@ interface AdapterServices {
   driveToDormant(appSessionId: string, cause: string): void;
   releaseLiveProcess(live: LiveProcess): void;
   isStopping(): boolean;
+  // D48 native plan capture (I10): the SDK adapter OBSERVES a plan-mode planner's
+  // ExitPlanMode and PROPOSES the plan text back through here; the host forwards it
+  // to the dispatcher, which owns task state. The adapter never touches task state
+  // or the artifact store itself.
+  onPlanCaptured(appSessionId: string, planText: string): void;
 }
 
 interface LiveProcess {
@@ -257,6 +270,11 @@ export interface SessionHostDeps {
   // subscription for the new session (the router fans out per stream). A pure
   // notification seam — the host owns nothing of the pipeline.
   onSessionCreated?: (appSessionId: string) => void;
+  // D48 native plan capture (I10): invoked when a plan-capture session's
+  // ExitPlanMode is intercepted, carrying the captured plan text. app.ts wires it
+  // to `taskDispatcher.recordPlan` (the state-owning half, S7·5b-i). Unset = no-op:
+  // the interception still denies cleanly and the plan is simply not recorded.
+  onPlanCaptured?: (appSessionId: string, planText: string) => void;
 }
 
 // Delete every CLAUDE* key (covers CLAUDECODE) from a copy of the parent env; keep
@@ -327,6 +345,12 @@ const PREFLIGHT_CACHE_TTL_MS = 5_000;
 class ClaudeSdkAdapter implements SessionAdapter {
   readonly capabilities = CLAUDE_SDK_CAPABILITIES;
   private readonly pendingGates = new Map<string, PendingGate>();
+  // D48: appSessionIds spawned in plan mode. handleGate consults this to know
+  // WHICH sessions capture their ExitPlanMode (interception is gated on the marker
+  // AND the tool name, never the tool name alone). An entry is added on a plan-mode
+  // spawn and removed on process exit (windDown) — mirroring how pendingGates is
+  // cleared, per-session state that must not outlive the process.
+  private readonly planCaptureSessions = new Set<string>();
 
   constructor(
     private readonly factory: SdkQueryFactory,
@@ -352,8 +376,16 @@ class ClaudeSdkAdapter implements SessionAdapter {
         settingSources: this.services.config.sdkSettingSources,
         canUseTool: (toolName, toolInput, options) =>
           this.handleGate(context.appSessionId, toolName, toolInput, options),
+        // D48: set the key ONLY for a plan-capture spawn. Absent leaves the
+        // no-plan-mode options object byte-identical to before this unit.
+        ...(context.permissionMode === undefined
+          ? {}
+          : { permissionMode: context.permissionMode }),
       },
     });
+    if (context.permissionMode === 'plan') {
+      this.planCaptureSessions.add(context.appSessionId);
+    }
     return {
       appSessionId: context.appSessionId,
       channel: 'sdk',
@@ -397,9 +429,10 @@ class ClaudeSdkAdapter implements SessionAdapter {
     }
   }
 
-  // Clear any unresolved gate promises (daemon shutdown).
+  // Clear any unresolved gate promises + plan-capture markers (daemon shutdown).
   reset(): void {
     this.pendingGates.clear();
+    this.planCaptureSessions.clear();
   }
 
   private async consumeSdk(live: LiveProcess): Promise<void> {
@@ -465,6 +498,10 @@ class ClaudeSdkAdapter implements SessionAdapter {
   }
 
   private windDown(live: LiveProcess): void {
+    // D48: drop the plan-capture marker as the process exits (the single exit
+    // choke point — kill() closes the handle, which ends consumeSdk and lands
+    // here via its finally). No-op for a non-plan-capture session.
+    this.planCaptureSessions.delete(live.appSessionId);
     this.services.releaseLiveProcess(live);
     if (!this.services.isStopping() && live.sawResult !== true) {
       // Stream ended without a result — reconcile liveness to dormant.
@@ -484,6 +521,23 @@ class ClaudeSdkAdapter implements SessionAdapter {
     input: Record<string, unknown>,
     options: { requestId: string; title?: string },
   ): Promise<SdkPermissionResult> {
+    // ── FRAGILE-ADAPTER (rule 0.6): native plan capture (D48, S7·5b-ii) ────────
+    // A plan-capture session (spawned permissionMode:'plan') that reaches
+    // ExitPlanMode has produced its plan. Intercept HERE, before the generic gate:
+    // hand the plan text to the dispatcher (observe + propose only — I10; the
+    // adapter never touches task state or the artifact store) and DENY, which stops
+    // the run cleanly (the S7·0 spike observed deny → result:success, no hang) with
+    // NO pending gate registered and NO gate_fired emitted. Every other tool, and
+    // every non-plan-capture session, falls through to the gate logic unchanged.
+    //
+    // The ExitPlanMode input shape is pinned by fixtures/plan-mode/exitplanmode.jsonl;
+    // consume `input.plan` ONLY — `planFilePath` is a machine-local path we never
+    // read or propagate (R-b).
+    if (this.planCaptureSessions.has(appSessionId) && toolName === 'ExitPlanMode') {
+      const planText = typeof input.plan === 'string' ? input.plan : '';
+      this.services.onPlanCaptured(appSessionId, planText);
+      return Promise.resolve({ behavior: 'deny', message: 'VIMES stops at the plan boundary' });
+    }
     const requestId = options.requestId;
     // Richer gate prompt: prefer the SDK-provided title; when absent fall back to
     // the tool name plus its input JSON, truncated to 160 chars with an ellipsis.
@@ -582,6 +636,7 @@ export class SessionHost implements HookHost {
   private readonly projectsRoot: string;
   private readonly preflightProbe: PreflightProbe;
   private readonly onSessionCreated: ((appSessionId: string) => void) | undefined;
+  private readonly onPlanCaptured: ((appSessionId: string, planText: string) => void) | undefined;
 
   private readonly sdkAdapter: ClaudeSdkAdapter;
   private readonly ptyAdapter: ClaudePtyAdapter;
@@ -612,6 +667,7 @@ export class SessionHost implements HookHost {
     this.projectsRoot = deps.projectsRoot ?? defaultProjectsRoot();
     this.preflightProbe = deps.preflightProbe ?? (() => ({ ok: true }));
     this.onSessionCreated = deps.onSessionCreated;
+    this.onPlanCaptured = deps.onPlanCaptured;
 
     const services: AdapterServices = {
       emit: (events) => this.router.emit(events),
@@ -626,6 +682,9 @@ export class SessionHost implements HookHost {
       driveToDormant: (appSessionId, cause) => this.driveToDormant(appSessionId, cause),
       releaseLiveProcess: (live) => this.releaseLiveProcess(live),
       isStopping: () => this.stopping,
+      // Injected callback (no-op when unset) — the host owns none of recordPlan's
+      // logic; it only forwards the adapter's observation to the dispatcher.
+      onPlanCaptured: (appSessionId, planText) => this.onPlanCaptured?.(appSessionId, planText),
     };
     this.sdkAdapter = new ClaudeSdkAdapter(deps.sdkQueryFactory ?? defaultSdkQueryFactory, services);
     this.ptyAdapter = new ClaudePtyAdapter(deps.ptySpawnFactory ?? defaultPtySpawnFactory, services);
@@ -699,7 +758,14 @@ export class SessionHost implements HookHost {
   }
 
   // ── spawn ────────────────────────────────────────────────────────────────
-  spawnSession(options: { channel: 'sdk' | 'pty'; cwd: string; name?: string }): SpawnResult {
+  spawnSession(options: {
+    channel: 'sdk' | 'pty';
+    cwd: string;
+    name?: string;
+    // D48: the dispatcher passes 'plan' for the planning stage only; absent
+    // everywhere else, which is today's behaviour exactly.
+    permissionMode?: 'plan';
+  }): SpawnResult {
     const appSessionId = this.ids.uuid();
     const preflight = this.checkPreflight();
     if (!preflight.ok) {
@@ -727,7 +793,7 @@ export class SessionHost implements HookHost {
       }),
     ]);
     this.onSessionCreated?.(appSessionId);
-    this.startProcess(appSessionId, options.channel, options.cwd, undefined);
+    this.startProcess(appSessionId, options.channel, options.cwd, undefined, options.permissionMode);
     return { appSessionId };
   }
 
@@ -1002,11 +1068,14 @@ export class SessionHost implements HookHost {
     channel: 'sdk' | 'pty',
     cwd: string,
     resume: string | undefined,
+    // D48: only the planning-stage spawn passes 'plan'; resume never does (a
+    // resumed session keeps its recorded mode, and planning never resumes).
+    permissionMode?: 'plan',
   ): void {
     const adapter: SessionAdapter = channel === 'sdk' ? this.sdkAdapter : this.ptyAdapter;
     const hookChannel = this.prepareHookChannel(appSessionId);
     const cause = resume === undefined ? 'spawn' : 'resume';
-    const live = adapter.spawn({ appSessionId, cwd, resume, hookChannel });
+    const live = adapter.spawn({ appSessionId, cwd, resume, hookChannel, permissionMode });
     live.settingsPath = hookChannel?.settingsPath;
     this.liveProcesses.set(appSessionId, live);
     this.emitGuardedLiveness(appSessionId, 'running', cause);
@@ -1224,8 +1293,11 @@ const defaultSdkQueryFactory: SdkQueryFactory = ({ prompt, options }) => {
         env: options.env,
         settingSources: options.settingSources,
         canUseTool: options.canUseTool,
-        // Spike (b): canUseTool only fires under permissionMode 'default'.
-        permissionMode: 'default',
+        // Observed truth (rule 0.7, D48 / the S7·0 spike): canUseTool DOES fire for
+        // ExitPlanMode under permissionMode 'plan' — that is the whole native plan
+        // capture mechanism. Default remains 'default'; a plan-capture spawn threads
+        // 'plan' through SdkQueryOptions.permissionMode.
+        permissionMode: options.permissionMode ?? 'default',
       },
     });
     activeQuery = query;
