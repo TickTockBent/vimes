@@ -7,18 +7,26 @@ reason `slice-6-test-plan.md` lives here. Delete an entry when it ships.
 
 ---
 
-## ▶ NEXT SESSION STARTS HERE (updated 2026-07-25 — read `scratchpad/HANDOFF.md` first)
+## ▶ NEXT SESSION STARTS HERE (updated 2026-07-25 eve — read `scratchpad/HANDOFF.md` first)
 
-**SLICE 6b (UI foundation + full re-skin) is CODE-COMPLETE** pending unit 4f (terminal/
-editor themes) + Wes's human exit-gate review — see `slice-6b-ui-foundation.md` (full
-build log) and D47. The whole app is on the instrument-token palette; terminal always
-dark; picker Auto/Light/Dark; active usage gauge in the top bar.
+**SLICE 6b — DONE** (UI foundation + full re-skin; deployed). **SLICE 7 (task model)
+— GATE-1 BUILD SPINE ~COMPLETE, all deployed** (HEAD `6af9ecb`). Built this session:
+S7·0 spike, S7·1, S7·2a, S7·3, S7·4, S7·5a, S7·5b-i, S7·5b-ii — **native plan capture
+is LIVE end-to-end** (plan-mode planning spawn → ExitPlanMode interception → artifact
+store → plan-ready). Gate-D signed off (**D48**: native plan mode adopted, R-a
+accepted).
 
-**After 6b closes → SLICE 7 (the task model)** — the thing 6b cleared the runway for.
-Designed in `slice-7.md`; decisions **D43/D44/D46**. Gate-1 first unit: **S7·1 reserve
-schemas**. Parked odds: **D45** slug fix, liveness-table dedup (new tech-debt).
-(**T6** pin — DONE/applied 2026-07-25; **plan-mode A/B spike S7·0** — DONE 2026-07-25,
-native plan mode viable, see `slice-7.md` + `evidence-spike-s7-0-planmode.md`.)
+**RESUME AT: `S7·7a`** — the fresh-implementer handoff (`composeStageInstruction` for
+`implementing`, seed = work-order + plan-by-hash). It's the LAST Gate-1 build unit;
+then **Wes's human exit gate** (one real work-order end-to-end, zero steers) closes
+Gate 1. Full detail + resume path in `scratchpad/HANDOFF.md`; unit statuses in
+`slice-7.md`. After Gate 1: post-gate units S7·2b / S7·6 / S7·7b / S7·8, then phase
+two (orchestrator, S7·9+).
+
+**Parked odds:** **D45** slug fix; liveness-table dedup (tech-debt); advisory-gate pin
+(brace-expansion, parked); **usage-endpoint 401/429** observed 2026-07-25 (meters may
+read stale — likely a usage-token refresh, ops item). (**T6** pin + **S7·0** spike —
+DONE 2026-07-25.)
 
 --- (historical, slice 6 close, 2026-07-24) ---
 

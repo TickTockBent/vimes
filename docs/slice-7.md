@@ -5,11 +5,17 @@
 > pinned look once, not twice. Slice 7 keeps its number; the `S7·N` unit labels below
 > are unchanged. See `slice-6b-ui-foundation.md`.
 
-**Status: DESIGNED (2026-07-25), signed off by Wes. Not yet skeletoned into build
-units.** The settled calls live in `decisions.md` **D43 / D44 / D46**; this doc is
-the operational compilation (scope, the two internal gates, floor pieces, phase
-pivot, spike scope, reserved shapes). It supersedes the old "add a description
-field" framing.
+**Status: GATE-1 BUILD SPINE ~COMPLETE (2026-07-25).** Built + committed +
+deployed: **S7·0** spike, **S7·1** (schemas), **S7·2a** (work-order on create_task),
+**S7·3** (authoring form), **S7·4** (artifact store), **S7·5a** (plan_submitted event
++ record), **S7·5b-i** (dispatcher recordPlan), **S7·5b-ii** (SDK-adapter plan
+capture — native plan mode LIVE end-to-end). **Gate-D signed off → D48** (native
+plan mode adopted; R-a accepted). **ONLY `S7·7a` (the fresh-implementer handoff)
+remains** before the Gate-1 loop is code-complete; then **Wes's human exit gate**
+(one real work-order end-to-end, zero steers). Settled calls: `decisions.md`
+**D43 / D44 / D46 / D48**. This doc is the operational compilation (the two internal
+gates, floor pieces, phase pivot, reserved shapes); D48 re-scoped S7·5 (see its
+section). Post-Gate-1 (same slice): S7·2b, S7·6, S7·7b, S7·8; then phase two (S7·9+).
 
 ## The finding this slice answers (T7, D43 evidence)
 
