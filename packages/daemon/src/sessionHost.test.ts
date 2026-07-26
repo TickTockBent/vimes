@@ -759,6 +759,93 @@ describe('SessionHost — AskUserQuestion auto-deny for dispatched sessions (D50
   });
 });
 
+// ── auto-footing part a: dispatched non-planning sessions run permissionMode
+// 'auto' (Anthropic's server-side classifier — no per-tool gate). Planning stays
+// 'plan' (D48, unchanged). Mirrors the D48 'plan' threading exactly. ────────────
+
+describe('SessionHost — dispatched auto-footing (spike 2026-07-26)', () => {
+  it('a dispatched spawn with permissionMode "auto" reaches SdkQueryOptions and is forwarded to the factory', async () => {
+    const { factory, calls } = makeSdkFactory(async function* () {
+      yield { type: 'system', subtype: 'init', session_id: 'claude-1' };
+      yield { type: 'result', subtype: 'success' };
+    });
+    const { host } = makeHarness({ sdkQueryFactory: factory });
+    try {
+      host.spawnSession({ channel: 'sdk', cwd: '/p', dispatched: true, permissionMode: 'auto' });
+      await waitFor(() => calls.length === 1);
+      expect(calls[0]!.permissionMode).toBe('auto');
+    } finally {
+      host.stop();
+    }
+  });
+
+  it('a dispatched PLANNING spawn still carries permissionMode "plan" and is registered as a plan-capture session', async () => {
+    const captured: Array<{ appSessionId: string; planText: string }> = [];
+    const { factory, calls } = makeSdkFactory(async function* ({ options }) {
+      yield { type: 'system', subtype: 'init', session_id: 'claude-1' };
+      const result = await options.canUseTool('ExitPlanMode', { plan: 'THE PLAN' }, { requestId: 'req-plan' });
+      void result;
+      yield { type: 'result', subtype: 'success' };
+    });
+    const { host } = makeHarness({
+      sdkQueryFactory: factory,
+      onPlanCaptured: (appSessionId, planText) => captured.push({ appSessionId, planText }),
+    });
+    try {
+      host.spawnSession({ channel: 'sdk', cwd: '/p', dispatched: true, permissionMode: 'plan' });
+      await waitFor(() => calls.length === 1);
+      expect(calls[0]!.permissionMode).toBe('plan');
+      // Plan-capture fired — proves the spawn WAS registered in planCaptureSessions.
+      await waitFor(() => captured.length === 1);
+      expect(captured[0]!.planText).toBe('THE PLAN');
+    } finally {
+      host.stop();
+    }
+  });
+
+  it('an "auto" spawn is NOT a plan-capture session: ExitPlanMode falls through to the normal gate', async () => {
+    // ⚠ VERIFY-BY-BREAKING anchor. Broaden the `planCaptureSessions.add` guard in
+    // ClaudeSdkAdapter.spawn (or the handleGate check) to also accept 'auto' and
+    // THIS case reddens: onPlanCaptured would fire and no gate_fired would be
+    // emitted. The plan-capture marker must stay 'plan'-only.
+    const captured: Array<{ appSessionId: string; planText: string }> = [];
+    const { factory } = makeSdkFactory(async function* ({ options }) {
+      yield { type: 'system', subtype: 'init', session_id: 'claude-1' };
+      void options.canUseTool('ExitPlanMode', { plan: 'ignored here' }, { requestId: 'req-e' });
+    });
+    const { host, store } = makeHarness({
+      sdkQueryFactory: factory,
+      onPlanCaptured: (appSessionId, planText) => captured.push({ appSessionId, planText }),
+    });
+    try {
+      const spawn = host.spawnSession({ channel: 'sdk', cwd: '/p', dispatched: true, permissionMode: 'auto' });
+      const appSessionId = 'appSessionId' in spawn ? spawn.appSessionId : '';
+      await waitFor(() => types(store, appSessionId).includes('gate_fired'));
+
+      const gate = records(store, appSessionId).find((record) => record.type === 'gate_fired')!;
+      expect((gate.payload as { toolName: string }).toolName).toBe('ExitPlanMode');
+      expect(captured).toEqual([]);
+    } finally {
+      host.stop();
+    }
+  });
+
+  it('a non-dispatched / no-mode spawn carries NO permissionMode key (byte-identical to before)', async () => {
+    const { factory, calls } = makeSdkFactory(async function* () {
+      yield { type: 'system', subtype: 'init', session_id: 'claude-1' };
+      yield { type: 'result', subtype: 'success' };
+    });
+    const { host } = makeHarness({ sdkQueryFactory: factory });
+    try {
+      host.spawnSession({ channel: 'sdk', cwd: '/p' });
+      await waitFor(() => calls.length === 1);
+      expect('permissionMode' in calls[0]!).toBe(false);
+    } finally {
+      host.stop();
+    }
+  });
+});
+
 // ── send: echo, auto-resume, refusals ────────────────────────────────────────
 
 describe('SessionHost — send: user echo + auto-resume', () => {

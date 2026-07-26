@@ -71,7 +71,7 @@ class RecordingSessionHost {
     channel: 'sdk' | 'pty';
     cwd: string;
     name?: string;
-    permissionMode?: 'plan';
+    permissionMode?: 'plan' | 'auto';
     dispatched?: boolean;
   }> = [];
   // Step 7's instruments. `resumeCalls` is what proves a fix went to the hot
@@ -91,7 +91,7 @@ class RecordingSessionHost {
     channel: 'sdk' | 'pty';
     cwd: string;
     name?: string;
-    permissionMode?: 'plan';
+    permissionMode?: 'plan' | 'auto';
     dispatched?: boolean;
   }): SpawnResult {
     this.spawnCalls.push(options);
@@ -383,7 +383,9 @@ describe('TaskDispatcher — the spawn path', () => {
     const harness = buildHarness();
     const result = await harness.dispatcher.dispatchTask(TASK_ID);
 
-    expect(harness.sessionHost.spawnCalls).toEqual([{ channel: 'sdk', cwd: PROJECT_ROOT, dispatched: true }]);
+    expect(harness.sessionHost.spawnCalls).toEqual([
+      { channel: 'sdk', cwd: PROJECT_ROOT, dispatched: true, permissionMode: 'auto' },
+    ]);
     expect(harness.emitted).toHaveLength(1);
     const attachEvent = harness.emitted[0]!;
     expect(attachEvent.type).toBe(EVENT_TYPES.taskSessionAttached);
@@ -641,7 +643,9 @@ describe('TaskDispatcher — the isolation scope boundary (D32 vs step 8)', () =
     const harness = buildHarness({ tasks: [worktreeTask] });
     const result = await harness.dispatcher.dispatchTask(TASK_ID);
 
-    expect(harness.sessionHost.spawnCalls).toEqual([{ channel: 'sdk', cwd: PROJECT_ROOT, dispatched: true }]);
+    expect(harness.sessionHost.spawnCalls).toEqual([
+      { channel: 'sdk', cwd: PROJECT_ROOT, dispatched: true, permissionMode: 'auto' },
+    ]);
     expect(result).toMatchObject({ outcome: 'spawned', cwd: PROJECT_ROOT });
   });
 
@@ -672,7 +676,7 @@ describe('TaskDispatcher — the isolation scope boundary (D32 vs step 8)', () =
     expect(resolverCalls).toHaveLength(1);
     expect(resolverCalls[0]!.isolation).toBe('worktree');
     expect(harness.sessionHost.spawnCalls).toEqual([
-      { channel: 'sdk', cwd: `/var/lib/vimes/worktrees/${TASK_ID}`, dispatched: true },
+      { channel: 'sdk', cwd: `/var/lib/vimes/worktrees/${TASK_ID}`, dispatched: true, permissionMode: 'auto' },
     ]);
     expect(result).toMatchObject({ cwd: `/var/lib/vimes/worktrees/${TASK_ID}` });
   });
@@ -806,7 +810,9 @@ describe('TaskDispatcher — the FIX LOOP resumes the hot author', () => {
     });
     const result = await harness.dispatcher.dispatchTask(TASK_ID);
 
-    expect(harness.sessionHost.spawnCalls).toEqual([{ channel: 'sdk', cwd: PROJECT_ROOT, dispatched: true }]);
+    expect(harness.sessionHost.spawnCalls).toEqual([
+      { channel: 'sdk', cwd: PROJECT_ROOT, dispatched: true, permissionMode: 'auto' },
+    ]);
     expect(harness.sessionHost.resumeCalls).toEqual([]);
     expect(result.outcome).toBe('spawned');
   });
@@ -852,7 +858,9 @@ describe('TaskDispatcher — THE INDEPENDENCE RULE, executed', () => {
     });
     const result = await harness.dispatcher.dispatchTask(TASK_ID);
 
-    expect(harness.sessionHost.spawnCalls).toEqual([{ channel: 'sdk', cwd: PROJECT_ROOT, dispatched: true }]);
+    expect(harness.sessionHost.spawnCalls).toEqual([
+      { channel: 'sdk', cwd: PROJECT_ROOT, dispatched: true, permissionMode: 'auto' },
+    ]);
     expect(harness.sessionHost.resumeCalls).toEqual([]);
     expect(result.outcome).toBe('spawned');
 
@@ -1320,7 +1328,9 @@ describe('TaskDispatcher — assertion 8: with the flag OFF, NOTHING changed', (
     });
 
     return harness.dispatcher.dispatchTask(TASK_ID).then((result) => {
-      expect(harness.sessionHost.spawnCalls).toEqual([{ channel: 'sdk', cwd: PROJECT_ROOT, dispatched: true }]);
+      expect(harness.sessionHost.spawnCalls).toEqual([
+        { channel: 'sdk', cwd: PROJECT_ROOT, dispatched: true, permissionMode: 'auto' },
+      ]);
       expect(result).toMatchObject({ outcome: 'spawned', cwd: PROJECT_ROOT });
       expect(harness.worktreeCalls()).toEqual([]);
       expect(harness.gitCalls()).toEqual([]);
@@ -1390,7 +1400,9 @@ describe('TaskDispatcher — assertion 9: flag ON + worktree isolation', () => {
     const result = await harness.dispatcher.dispatchTask(TASK_ID);
 
     // The session runs in the worktree, not the project root.
-    expect(harness.sessionHost.spawnCalls).toEqual([{ channel: 'sdk', cwd: WORKTREE_PATH, dispatched: true }]);
+    expect(harness.sessionHost.spawnCalls).toEqual([
+      { channel: 'sdk', cwd: WORKTREE_PATH, dispatched: true, permissionMode: 'auto' },
+    ]);
     expect(result).toMatchObject({ outcome: 'spawned', cwd: WORKTREE_PATH });
 
     // ⚠ ORDER IS THE ASSERTION, not merely presence. The directory exists before
@@ -1452,7 +1464,9 @@ describe('TaskDispatcher — assertion 10: flag ON + shared-dir is still project
     });
     const result = await harness.dispatcher.dispatchTask(TASK_ID);
 
-    expect(harness.sessionHost.spawnCalls).toEqual([{ channel: 'sdk', cwd: PROJECT_ROOT, dispatched: true }]);
+    expect(harness.sessionHost.spawnCalls).toEqual([
+      { channel: 'sdk', cwd: PROJECT_ROOT, dispatched: true, permissionMode: 'auto' },
+    ]);
     expect(result).toMatchObject({ outcome: 'spawned', cwd: PROJECT_ROOT });
     expect(harness.worktreeCalls()).toEqual([]);
     expect(harness.gitCalls()).toEqual([]);
@@ -1710,16 +1724,16 @@ describe('TaskDispatcher — planning spawns in plan mode (D48)', () => {
     ]);
   });
 
-  it('implementing / review dispatches do NOT set permissionMode (byte-identical spawn options)', async () => {
+  it('implementing / review dispatches set permissionMode "auto" (dispatched classifier footing, spike 2026-07-26)', async () => {
     for (const stage of ['implementing', 'review'] as const) {
       const harness = buildHarness({ tasks: [taskRecord({ stage })] });
 
       const result = await harness.dispatcher.dispatchTask(TASK_ID);
 
       expect(result).toMatchObject({ outcome: 'spawned', stage });
-      // The key is ABSENT, not `permissionMode: undefined` — the same options object
-      // step 4a produced, so every prior assertion and the dispatch envelope hold.
-      expect(harness.sessionHost.spawnCalls).toEqual([{ channel: 'sdk', cwd: PROJECT_ROOT, dispatched: true }]);
+      expect(harness.sessionHost.spawnCalls).toEqual([
+        { channel: 'sdk', cwd: PROJECT_ROOT, dispatched: true, permissionMode: 'auto' },
+      ]);
     }
   });
 });

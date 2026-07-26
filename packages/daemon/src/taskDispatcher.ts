@@ -495,11 +495,14 @@ export class TaskDispatcher {
         // D50: EVERY dispatched task session is `dispatched: true` — the SDK adapter
         // then clamps it to the closed tool allowlist (no sub-agent spawns) and
         // auto-denies AskUserQuestion (no human to answer it). The planning branch
-        // also runs write-blocked in permissionMode 'plan' (D48).
+        // also runs write-blocked in permissionMode 'plan' (D48); every other
+        // dispatched stage runs permissionMode 'auto' (Anthropic's server-side
+        // classifier — no per-tool gate; the PreToolUse hard-deny boundary hook is
+        // a separate follow-up unit, not yet in place).
         const spawnOptions =
           decision.stage === 'planning'
             ? { channel: 'sdk' as const, cwd, dispatched: true as const, permissionMode: 'plan' as const }
-            : { channel: 'sdk' as const, cwd, dispatched: true as const };
+            : { channel: 'sdk' as const, cwd, dispatched: true as const, permissionMode: 'auto' as const };
         let spawnResult;
         try {
           spawnResult = this.deps.sessionHost.spawnSession(spawnOptions);
