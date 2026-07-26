@@ -1762,6 +1762,18 @@ auto-deny for dispatched sessions (the caveat above), scoped to dispatched sessi
 so interactive sessions keep their normal gate. **Reversible:** if Wes wants the
 relay hook, it is a clean follow-up spike + unit on top of this.
 
+**DEFERRED QUESTION RESOLVED (2026-07-26, auto-mode spike — `scratchpad/spike-automode-FINDINGS.md`).**
+The deferred backstop question — "does the SDK honor a deny returned through our
+PreToolUse hook relay's stdout?" — is answered **YES**, verified by side effect
+(the denied `Write`/`Bash` never ran; both landed in `permission_denials`), under
+BOTH `permissionMode:'auto'` and `default`, on our real SDK path (0.3.207). So the
+PreToolUse hard-deny hook IS a viable boundary floor after all — it just wasn't
+NEEDED for D50 (the `tools` clamp already suffices). It becomes load-bearing in the
+NEXT footing change: the `auto`-mode direction for dispatched sessions (QUEUE.md S2,
+SPIKED #3) relies on exactly this hook as the boundary floor Anthropic's classifier
+can't provide. The D50 `disallowedTools` belt stays as-is; the hook arrives with the
+auto-footing build, not as a retrofit here.
+
 **Date:** 2026-07-26. **Status:** decided by Wes at the Gate-1 human exit gate;
 **Path 1 chosen, pending a confirming spike** before it is built on. Moved here from
 `open-questions.md` D50 (the finding).

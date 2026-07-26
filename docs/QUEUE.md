@@ -230,6 +230,48 @@ root/worktree). Auto alone has a hole exactly where a fleet drifts.
 **Folds into the task-model/dispatch design pass** (D43/D44 + S10) — footing is a
 dispatcher concern and the abort-flag pattern is an orchestrator + instruction concern.
 
+### ✅ SPIKED #3 2026-07-26 — EMPIRICALLY CONFIRMED on our SDK path (`scratchpad/spike-automode-FINDINGS.md`)
+
+The settled two-footing direction was grounded on our REAL `@anthropic-ai/claude-agent-sdk`
+`query()` path (0.3.207, isolated sessions, rule 0.7). **Trigger:** the first Gate-1
+implementing run fired **26 permission gates** (~1/tool) — human-per-tool doesn't fit a
+dispatched session. **All load-bearing facts GREEN; no KILL.** Orchestrator RE-VERIFIED
+the three fail-critical ones against raw transcripts (the SDK type, the Q2 deny side-effect,
+the Q3 zero-spawn), not just the agent's summary:
+- **`permissionMode:'auto'` is a first-class value** (`sdk.d.ts:2043`: `…|'plan'|'dontAsk'|
+  'auto'`), reachable + functional on our path.
+- **auto → 0 `canUseTool` gates, tools still execute** (Read/Bash/Edit/Write all ran, 0
+  gates) — the direct fix for the gate spam.
+- **PreToolUse hook FIRES under auto and its stdout-deny HARD-BLOCKS the tool** — verified
+  by SIDE EFFECT (out-of-root `Write` + `FORBIDDEN_MARKER` `Bash` both landed in
+  `permission_denials`, the file never created; the allowed in-root write succeeded). Works
+  under `default` too. **⇒ This ALSO resolves the D50-deferred backstop question: yes, the
+  SDK honors a deny returned via the hook relay's stdout** (see decisions.md D50).
+- **D50 `tools` clamp survives auto** — 0 spawn tool_use under a force-fan-out prompt; auto
+  does not re-widen the toolset.
+- **Observability survives** — full tool-use stream + a hook-fire per tool, 0 approval gates
+  (the whole win over `acceptEdits`).
+- **Q5 SURPRISE (reassuring), overturns a feared failure mode:** `AskUserQuestion` STILL
+  routes through `canUseTool` under auto (ordinary tools do NOT) — so the D50 `canUseTool`
+  AskUserQuestion auto-deny does **not** evaporate under auto; the hook is a redundant second
+  catch.
+- **Q6 (`defer`) RED — non-KILL:** a headless `auto` PreToolUse `defer` silently ends the
+  turn (tool doesn't run, NO `permission_denials`, no resume handle) — NOT a usable
+  escalate-and-resume path. The "VIMES escalate-to-phone on top of the classifier" idea
+  needs a different mechanism.
+- **Build notes:** the **PreToolUse hook is the more universal seam** than `canUseTool`
+  under auto (it fires for every tool; `canUseTool` only for interactive ones) → use the hook
+  for the boundary floor. Dispatched sessions must set `settingSources` deliberately (the
+  default loads ambient `CLAUDE.md` and the model wanders). **Zero** classifier-unavailable
+  failures this run (no backoff needed). Spend ≈ $1.63 (subscription usage).
+
+**READY TO BUILD (pending ⟨Wes⟩ go — a behavior-shaping security change, rule 0):** dispatched
+footing = `permissionMode:'auto'` + a VIMES **PreToolUse hard-deny hook** (`resolveWithinRoots`
+on the task's roots) + KEEP the S7·5c D50 `tools`-clamp + KEEP the D50 `canUseTool`
+AskUserQuestion auto-deny. Auto's no-ask abort is handled by the abort-and-flag instruction
+(worker raises a flag → orchestrator routes it). Human-created sessions keep the
+Default/AllowEdits/Auto dropdown, starting Default.
+
 ## S3 — Markdown TABLES in the message stream (a v1 scope gap, not a regression)
 
 *(Wes, 2026-07-24, viewing session 769d021c: "most of it lands but tables do not

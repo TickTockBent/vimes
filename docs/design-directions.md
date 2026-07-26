@@ -950,6 +950,53 @@ audit --fix` / `doctor` is the reference.
   rides Node 25.9; VIMES keeps its LTS discipline — the self-enforcing *practice*
   is the lift, not the version.)
 
+**Codebase map for dispatched agents — don't start blind (later, project-loop slice).**
+Wes's idea (2026-07-26), evidenced live by the first clean Gate-1 planning run
+(task `1c32e554`, game codebase `~/projects/games/1e9999`): the tools-clamped
+planner spent **~4.8 min** running `ls`/`cat`/`grep` to build "a complete picture"
+of the codebase entirely from scratch. Every dispatched task re-derives that map
+blind — slow, token-heavy, and *inconsistent* (each agent forms its own mental
+model). **Direction:** give the planning (and implementing) briefing a pointer to
+a per-project layout doc — e.g. "start from `codebase_map.md` for the general
+layout, then verify what you actually touch." Composes cleanly with what shipped
+in S7·5c: it is just another conditional block in `composeStageInstruction`
+(present → include the pointer; absent → today's behaviour), same I8 discipline as
+the work-order sections. **Open sub-questions (for the project-loop slice):**
+(a) *static maintained doc* (a human/agent keeps `codebase_map.md` current in the
+target repo — cheapest, but drifts) vs *generated/refreshed* (VIMES regenerates it
+on some cadence — accurate, but who pays the cost and when); (b) does it live IN
+the target repo (versioned with the code, visible to non-VIMES use) or in VIMES
+state; (c) staleness handling — a wrong map is worse than none (observed-truth
+rule 0.7 tension: the map is *declared*, the code is *observed*, so the briefing
+must tell the agent to trust the code over the map on conflict). **Trigger:** the
+shift to the more project-oriented loop. **Lean:** static in-repo `codebase_map.md`
+first (pointer-only, agent told to verify against live code), generation later if
+drift proves painful. Relates to D43 (work-order as the machine-read spec) and the
+S7·7a/S7·5c briefing seam.
+
+**MCP to expose VIMES-native tools to the orchestrator + task layers (later slice).**
+Wes's idea (2026-07-26, at the first end-to-end Gate-1 loop close): rather than
+workers only having the generic built-in toolset, VIMES could run an **MCP server
+that exposes its own tools** to (a) dispatched task/worker sessions and (b) the
+orchestrator layer. Concrete candidates this unlocks: the **abort-and-flag** tool
+the two-footing model needs (`docs/QUEUE.md` — a worker that hits a classifier
+denial "raises a flag" via a tool call the orchestrator picks up), a
+`submit_plan`/`report_review` surface, VIMES-state queries (task/board reads), etc.
+— i.e. VIMES becomes a first-class tool provider to the sessions it drives, not just
+a process host. **⚠ Interacts directly with the S7·5c D50 clamp** (observed-truth
+note for whoever builds this): dispatched sessions run under a CLOSED `tools`
+allowlist that deliberately EXCLUDES `ToolSearch` (the deferred/MCP-tool discovery
+surface) and every spawn surface. MCP tools are typically surfaced via that deferred
+mechanism, so exposing VIMES MCP tools to a clamped session will require explicitly
+threading the MCP tool names into the allowlist (and characterising — rule 0.7 —
+whether the SDK's MCP exposure honors or bypasses the `tools` allowlist, and whether
+`ToolSearch` must be re-admitted, which would need its own re-clamp so it can't
+become a spawn escape hatch). **Trigger:** the orchestrator-role / project-oriented
+loop buildout (the abort-and-flag tool is the first genuine need). **Lean:** hold
+until a concrete tool needs exposing (define-at-first-instance); the abort-and-flag
+tool is the likely first customer. Relates to D50 (the clamp), the QUEUE two-footing
+model, and D43/D44 (the work-order/plan seam).
+
 **Skip, confirmed:** the harness itself (VIMES drives Claude Code, doesn't replace
 it), the relay/ticket infra (tunnel + Access already solves single-operator reach),
 channel gateway, browser/SSRF, OS sandbox — all horizon-only. The decomp's skip

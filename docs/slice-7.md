@@ -5,6 +5,13 @@
 > pinned look once, not twice. Slice 7 keeps its number; the `S7·N` unit labels below
 > are unchanged. See `slice-6b-ui-foundation.md`.
 
+**Status: ✅ GATE 1 PASSED (2026-07-26).** The minimal loop ran end-to-end, human-
+driven, with zero mid-turn steers — see the "GATE 1 PASSED" block below. Getting
+there also earned **D50** (dispatched sessions can't spawn sub-agents; fix S7·5c
+built+deployed) and left one open residual (permission-gate spam → the `auto`-mode
+footing spike). **Phase two may begin;** behind-gate machinery (S7·2b/6/7b/8) still
+pending. History of the build spine follows.
+
 **Status: GATE-1 BUILD SPINE ~COMPLETE (2026-07-25).** Built + committed +
 deployed: **S7·0** spike, **S7·1** (schemas), **S7·2a** (work-order on create_task),
 **S7·3** (authoring form), **S7·4** (artifact store), **S7·5a** (plan_submitted event
@@ -326,6 +333,38 @@ verify**, human-driven from the board, **passes once cleanly with ZERO mid-turn
 steers.** *Machine half:* full-loop scenario green + double-run byte-identical.
 *Human half:* Wes runs one real work-order end-to-end and it converges with no steer.
 Only then does phase two begin.
+
+#### ✅ GATE 1 PASSED — 2026-07-26 (human half, first clean end-to-end loop)
+Task `1c32e554` (project `~/projects/games/1e9999`: "surface the income the 255 pin
+is throwing away"), driven manually from the board by Wes, ran the full loop:
+**planning → plan-ready → implementing → review (human)**, converging with **zero
+mid-turn steers** inside either dispatched session (the manual board moves between
+stages are by-design for the human-driven Gate 1, not steers).
+- **Planning** (session `c9c40f60`): dispatched in plan mode, ~4.8 min INLINE
+  investigation, **0 sub-agent spawns**, reached `ExitPlanMode` → plan captured
+  (`plan_submitted`, 11.3 KB blob) → `task_transitioned` planning→plan-ready. Clean
+  `run_completed`→dormant.
+- **Implementing** (session `2e462947`): plan handed over INLINE via the S7·7a
+  briefing (work-order + `The approved plan:` verified in the delivered message),
+  **0 sub-agent spawns**, executed the plan faithfully — sim+renderer+tests, 190
+  tests green (185 prior + 5 new), typecheck + determinism clean, no ⟨tune⟩ moved.
+  Did NOT self-advance the board. Code reviewed by Wes: **passes** (minor changes only).
+- **The gate did its job — it surfaced a finding on the FIRST attempt.** The first
+  Gate-1 planning run fanned out async sub-agents and went dormant with no plan →
+  **D50** (decisions.md). Halted, spiked (4 rounds), fixed (S7·5c: planning briefing
+  + `tools` closed-allowlist clamp + `disallowedTools` belt + AskUserQuestion
+  auto-deny), deployed; the clean pass above is the re-run. Rule 0.1 in action.
+- **Residual finding (open):** the implementing run fired **26 permission gates**
+  (~1 per non-read tool call) — human-per-tool approval doesn't fit a *dispatched*
+  session. Traced to the already-settled `auto`-mode + PreToolUse-hard-deny footing
+  (`QUEUE.md` S2); an empirical spike (`scratchpad/wo-spike-automode.md`) is
+  characterising it before build. NOT a Gate-1 blocker — a comfort/scale item.
+- **Observation for later:** the planner spent ~4.8 min mapping the codebase blind →
+  the codebase-map direction (`design-directions.md`). Also noted: an MCP surface to
+  expose VIMES-native tools to workers/orchestrator (`design-directions.md`).
+
+**Phase two may begin.** (Behind-gate machinery — S7·2b, S7·6, S7·7b, S7·8 — still
+pending; the review stage in particular is only half-built, see the note below.)
 
 ### Phase two (post-Gate-1) — the orchestrator, author first
 - **S7·9 — Orchestrator session (author) — `opus`.** `create_task` + comment as
