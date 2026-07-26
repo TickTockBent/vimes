@@ -10,6 +10,7 @@ import {
   type DispatchRefuseReason,
   type EventInput,
   type MetersState,
+  type StageInstructionContext,
   type StageRunnerPlan,
   type TaskRecord,
   type TasksState,
@@ -168,7 +169,18 @@ export interface TaskDispatcherDeps {
   //
   // Returning `null` or an empty string sends nothing. A non-empty string is sent
   // ONCE, through `sessionHost.sendMessage`, after the session exists.
-  composeStageInstruction?: (task: TaskRecord, plan: StageRunnerPlan) => string | null;
+  //
+  // ⚠ S7·7a WIDENS IT WITH AN OPTIONAL 3rd PARAM — the fetched plan blob (and,
+  // later, S7·7b's fix-seed) as a `StageInstructionContext`. Optional so the
+  // default `() => null` and every pre-S7·7a construction stay source-compatible
+  // and byte-identical: a composer that ignores the context is unchanged. The
+  // daemon is the only caller that can supply it, because the blob is IO the pure
+  // composer must not touch — see `deliverStageInstruction` for the fetch.
+  composeStageInstruction?: (
+    task: TaskRecord,
+    plan: StageRunnerPlan,
+    context?: StageInstructionContext,
+  ) => string | null;
 
   // ── S7·5b-i: the native plan-capture seam (D48, I10) ─────────────────────────
   //
@@ -326,6 +338,7 @@ export class TaskDispatcher {
   private readonly composeStageInstruction: (
     task: TaskRecord,
     plan: StageRunnerPlan,
+    context?: StageInstructionContext,
   ) => string | null;
 
   constructor(deps: TaskDispatcherDeps) {
@@ -797,9 +810,35 @@ export class TaskDispatcher {
     plan: StageRunnerPlan,
     appSessionId: string,
   ): StageInstructionDelivery | undefined {
+    // ── S7·7a: fetch the approved plan blob and hand it to the composer ────────
+    //
+    // The composer is PURE (rule 0.3) and must not touch the artifact store, so
+    // the ONE piece of IO the fresh-implementer briefing needs happens HERE, at the
+    // daemon boundary, and is passed IN. The task carries only the plan's content
+    // hash (`planArtifactHash`); the blob lives in the store. This covers BOTH call
+    // sites (spawn and resume) because both route through this method.
+    //
+    // ⚠ NEVER THROWS, NEVER FAILS THE DISPATCH. A store read is IO, so it is inside
+    // the same try/catch discipline the rest of this method keeps: a fetch that
+    // throws, or a present hash whose blob is null (shouldn't happen — the store
+    // wrote it at `recordPlan`), DEGRADES to the no-plan briefing rather than
+    // erroring. Absent hash → no fetch at all (the store is not consulted), so a
+    // task that never planned is byte-identical to before this unit.
+    let planContext: StageInstructionContext | undefined;
+    if (task.planArtifactHash !== undefined) {
+      try {
+        const planBlob = this.deps.artifactStore.getBlob(task.planArtifactHash);
+        planContext = planBlob === null ? undefined : { plan: planBlob };
+      } catch {
+        // A failed blob read is not a failed dispatch — degrade to no plan. The
+        // composer then falls back to its work-order-only (or generic) briefing.
+        planContext = undefined;
+      }
+    }
+
     let instructionText: string | null;
     try {
-      instructionText = this.composeStageInstruction(task, plan);
+      instructionText = this.composeStageInstruction(task, plan, planContext);
     } catch (composeError) {
       return { status: 'not-delivered', reason: `compose-threw:${describeThrown(composeError)}` };
     }

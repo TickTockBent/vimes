@@ -1080,6 +1080,128 @@ describe('TaskDispatcher — the instruction seam (MACHINERY; the words are defe
   });
 });
 
+// ─── S7·7a: the daemon fetches the plan blob and threads it to the composer ────
+//
+// The composer is pure and cannot read the artifact store, so the ONE piece of IO
+// the fresh-implementer briefing needs — the plan blob by `planArtifactHash` —
+// happens in `deliverStageInstruction` and is passed IN as the context. These
+// cases pin exactly that threading, using a composer stub that echoes the context
+// (the core prose itself is pinned in stageInstruction.test.ts; here we only prove
+// the blob reaches the third argument, and never fails the dispatch).
+describe('TaskDispatcher — S7·7a plan-blob fetch and threading', () => {
+  const SENTINEL_PLAN = 'SENTINEL-PLAN-BLOB — the approved plan text';
+  const PLAN_HASH = 'a'.repeat(64);
+
+  // A composer stub that reports what context it received, so the delivered text
+  // proves whether the daemon fetched and threaded the plan.
+  const echoContextComposer: TaskDispatcherDeps['composeStageInstruction'] = (
+    _task,
+    _plan,
+    context,
+  ) => (context?.plan === undefined ? 'NO-PLAN-CONTEXT' : `PLAN:${context.plan}`);
+
+  it('fetches getBlob(planArtifactHash) and threads the blob to the composer (spawn path)', async () => {
+    const harness = buildHarness({
+      tasks: [taskRecord({ stage: 'implementing', planArtifactHash: PLAN_HASH })],
+      composeStageInstruction: echoContextComposer,
+    });
+    const getBlobHashes: string[] = [];
+    harness.artifactStore.getBlob = (hash: string) => {
+      getBlobHashes.push(hash);
+      return SENTINEL_PLAN;
+    };
+
+    const result = await harness.dispatcher.dispatchTask(TASK_ID);
+
+    expect(getBlobHashes).toEqual([PLAN_HASH]);
+    expect(harness.sessionHost.sendCalls).toEqual([
+      { appSessionId: SPAWNED_SESSION_ID, text: `PLAN:${SENTINEL_PLAN}` },
+    ]);
+    expect(result).toMatchObject({ outcome: 'spawned', instructionDelivery: { status: 'sent' } });
+  });
+
+  it('threads the fetched blob on the RESUME path too — both call sites are covered', async () => {
+    const harness = buildHarness({
+      tasks: [
+        taskRecord({
+          stage: 'implementing',
+          planArtifactHash: PLAN_HASH,
+          sessionRefs: [implementingRef(HOT_AUTHOR_SESSION_ID)],
+        }),
+      ],
+      composeStageInstruction: echoContextComposer,
+    });
+    const getBlobHashes: string[] = [];
+    harness.artifactStore.getBlob = (hash: string) => {
+      getBlobHashes.push(hash);
+      return SENTINEL_PLAN;
+    };
+
+    const result = await harness.dispatcher.dispatchTask(TASK_ID);
+
+    expect(getBlobHashes).toEqual([PLAN_HASH]);
+    expect(harness.sessionHost.sendCalls).toEqual([
+      { appSessionId: HOT_AUTHOR_SESSION_ID, text: `PLAN:${SENTINEL_PLAN}` },
+    ]);
+    expect(result).toMatchObject({ outcome: 'resumed', instructionDelivery: { status: 'sent' } });
+  });
+
+  it('does NOT consult the store when the task has no planArtifactHash', async () => {
+    const harness = buildHarness({
+      tasks: [taskRecord({ stage: 'implementing' })],
+      composeStageInstruction: echoContextComposer,
+    });
+    let getBlobCallCount = 0;
+    harness.artifactStore.getBlob = () => {
+      getBlobCallCount += 1;
+      return SENTINEL_PLAN;
+    };
+
+    const result = await harness.dispatcher.dispatchTask(TASK_ID);
+
+    expect(getBlobCallCount).toBe(0);
+    // The composer ran with no plan context — the daemon never fabricated one.
+    expect(harness.sessionHost.sendCalls).toEqual([
+      { appSessionId: SPAWNED_SESSION_ID, text: 'NO-PLAN-CONTEXT' },
+    ]);
+    expect(result.outcome).toBe('spawned');
+  });
+
+  it('a present hash whose blob is NULL degrades to the no-plan briefing, never throws', async () => {
+    const harness = buildHarness({
+      tasks: [taskRecord({ stage: 'implementing', planArtifactHash: PLAN_HASH })],
+      composeStageInstruction: echoContextComposer,
+    });
+    harness.artifactStore.getBlob = () => null;
+
+    const result = await dispatchWithoutRejecting(harness.dispatcher, TASK_ID);
+
+    // getBlob returned null → context is undefined → the briefing degrades, and the
+    // dispatch still succeeds. A null blob is a degrade, not a dispatch failure.
+    expect(harness.sessionHost.sendCalls).toEqual([
+      { appSessionId: SPAWNED_SESSION_ID, text: 'NO-PLAN-CONTEXT' },
+    ]);
+    expect(result.outcome).toBe('spawned');
+  });
+
+  it('a THROWING getBlob cannot fail the dispatch — it degrades to no plan', async () => {
+    const harness = buildHarness({
+      tasks: [taskRecord({ stage: 'implementing', planArtifactHash: PLAN_HASH })],
+      composeStageInstruction: echoContextComposer,
+    });
+    harness.artifactStore.getBlob = () => {
+      throw new Error('store read exploded');
+    };
+
+    const result = await dispatchWithoutRejecting(harness.dispatcher, TASK_ID);
+
+    expect(harness.sessionHost.sendCalls).toEqual([
+      { appSessionId: SPAWNED_SESSION_ID, text: 'NO-PLAN-CONTEXT' },
+    ]);
+    expect(result.outcome).toBe('spawned');
+  });
+});
+
 describe('TaskDispatcher — step 7 changes nothing about WHETHER a stage runs', () => {
   it('I10 STILL HOLDS AGAINST A RESUMABLE TASK: a failed gate reaches neither spawn NOR resume', async () => {
     // Assertion 11, and the one worth stating loudest. The task has a hot author

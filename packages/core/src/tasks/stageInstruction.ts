@@ -8,12 +8,148 @@ import type { StageRunnerPlan } from './stageRunner.js';
 // richer per-stage/spec version deliberately deferred to slice 7. This says only
 // what a worker needs to start ONE piece of real work and be steerable mid-run;
 // it is intentionally stage-GENERIC (does not specialise planning vs implementing
-// vs review — that specialisation is D43/D44).
-export function composeStageInstruction(task: TaskRecord, plan: StageRunnerPlan): string {
+// vs review — that specialisation is D43/D44) EXCEPT for the one specialisation
+// S7·7a adds below: the fresh-implementer handoff.
+
+// ── S7·7a: the OPTIONAL out-of-band context the composer needs but cannot read ─
+//
+// The composer stays PURE (rule 0.3): it never touches the artifact store, the
+// clock, or the disk. But the fresh-implementer briefing must carry the APPROVED
+// PLAN, and the plan BLOB is content-addressed IO that lives daemon-side
+// (`task.planArtifactHash` → blob in the SQLite artifact store). Approach (a),
+// signed off in the WO: the daemon fetches the blob and passes it IN here, so the
+// only IO stays at the daemon boundary and this function remains golden-string
+// testable.
+//
+// ⚠ RESERVED TO GROW. S7·7b's fix-seed (D46: prior diff / review feedback /
+// worklog for a resume-after-review) lands here as further optional fields. For
+// S7·7a it carries exactly one — the resolved plan text — and every field is
+// optional so an ABSENT context is byte-identical to no context at all.
+export interface StageInstructionContext {
+  // The plan text the daemon already fetched by hash. Absent when the task has no
+  // `planArtifactHash`, or when the store returned null for one (a degrade, not an
+  // error — see the dispatcher). Absent (or empty) → the plan section is omitted.
+  readonly plan?: string;
+}
+
+// The stable OPENING paragraph of the implementing briefing — a byte-stable
+// constant with no task-specific values, so it is a common PREFIX across every
+// implementing handoff (the cache-read discipline from the slice-7
+// "composeStageInstruction" doc: a fixed prefix lets the model's prompt cache hit
+// across dispatches). Perturbing a work-order field must never disturb it; the
+// cache-prefix test verifies exactly that.
+const IMPLEMENTING_BRIEFING_OPENING =
+  `You are a worker session that VIMES dispatched to implement one task. This is
+real work. The plan below has already been reviewed and approved — carry it out;
+do not re-plan it.`;
+
+// The stable CLOSING two paragraphs — the mid-run-steering + don't-advance
+// contract, lifted VERBATIM from the generic spawn text below (only the leading
+// "Implement the plan, staying within scope. " differs, and it re-wraps the first
+// paragraph). Every worker, generic or implementing, gets the identical contract,
+// and this is the byte-stable SUFFIX of the briefing.
+const IMPLEMENTING_BRIEFING_CLOSING =
+  `Implement the plan, staying within scope. If a message arrives while you're
+working, it's a human steering you mid-run — read it and adjust. It's a
+correction to THIS task, not a new task.
+
+When you believe the stage is done, briefly summarize what you did and what (if
+anything) remains, then stop. You do not advance the task yourself — a human
+reviews and moves it forward on the board.`;
+
+// The third param is OPTIONAL → ABSENT-STAYS-ABSENT: called with no context (the
+// default composer wiring, and every pre-S7·7a caller), the output is
+// byte-identical to what this function produced before S7·7a. Only a `spawn` into
+// the `implementing` stage that ALSO has work-order/plan content to carry takes
+// the new branch; everything else falls through to the unchanged text.
+export function composeStageInstruction(
+  task: TaskRecord,
+  plan: StageRunnerPlan,
+  context?: StageInstructionContext,
+): string {
   // ⚠ ABSENT vs EMPTY (the `title?` distinction the schema comment draws): a
   // title of `''` is a title someone chose and is used as-is; only an ABSENT
   // title (never created with one) falls back to the untitled label.
   const label = task.title ?? `untitled (${task.taskId})`;
+
+  // ── S7·7a: the FRESH-IMPLEMENTER handoff (D44) ─────────────────────────────
+  //
+  // A fresh session spawned into the `implementing` stage is a stranger to the
+  // work: it did not write the plan and has none of the reviewer's context. So
+  // when there is a work-order and/or an approved plan to hand it, we compose the
+  // richer briefing below rather than the stage-generic text. A RESUMED author
+  // (the fix loop) already has all of this in its own history and takes the resume
+  // branch above/below instead — this specialisation is spawn-only.
+  //
+  // Every work-order section is CONDITIONAL on presence (I8 totality): an ABSENT
+  // field — or an empty string / empty array, which carries no content — omits its
+  // whole section rather than rendering an empty one. The plan comes from
+  // `context.plan` (the blob the daemon fetched), not from the task.
+  if (plan.mode === 'spawn' && task.stage === 'implementing') {
+    const hasScope = typeof task.scope === 'string' && task.scope.length > 0;
+    const hasExplicitlyOut = Array.isArray(task.explicitlyOut) && task.explicitlyOut.length > 0;
+    const hasAcceptanceCriteria =
+      Array.isArray(task.acceptanceCriteria) && task.acceptanceCriteria.length > 0;
+    const hasKillCriterion =
+      typeof task.killCriterion === 'string' && task.killCriterion.length > 0;
+    const hasPlan = typeof context?.plan === 'string' && context.plan.length > 0;
+
+    // DEGRADE RULE: a bare implementing task dispatched with none of the five
+    // carries nothing the generic text does not already say, so it falls THROUGH
+    // to the generic spawn wording below — byte-identical to today. The rich
+    // briefing only earns its extra prose when it has content to add.
+    if (hasScope || hasExplicitlyOut || hasAcceptanceCriteria || hasKillCriterion || hasPlan) {
+      // Compose as an ordered list of BLOCKS joined by a single blank line. This
+      // keeps the spacing deterministic and clean no matter which conditional
+      // sections are present: no block carries a leading/trailing blank line, and
+      // the join owns every gap between them. The stable opening + Task/Stage/
+      // Directory block leads; the stable closing trails; the variable work-order
+      // and plan blocks sit between, so the fixed framing stays a common prefix
+      // and suffix across tasks (cache discipline).
+      const briefingBlocks: string[] = [];
+
+      // ⚠ The `Directory:` line states `task.projectRoot`, correct under the
+      // current default `VIMES_WORKTREE_ISOLATION=off` (worker cwd == projectRoot)
+      // — the same caveat the generic spawn text carries below. Under isolation the
+      // resolved worktree cwd would need threading in, a follow-up tied to that flip.
+      briefingBlocks.push(
+        `${IMPLEMENTING_BRIEFING_OPENING}
+
+  Task:      ${label}
+  Stage:     implementing
+  Directory: ${task.projectRoot} — work in this directory; do not guess or invent a
+             different path name.`,
+      );
+
+      if (hasScope) {
+        briefingBlocks.push(`Scope — what this task is:\n${task.scope}`);
+      }
+      if (hasExplicitlyOut) {
+        const explicitlyOutBullets = task.explicitlyOut!.map((item) => `  - ${item}`).join('\n');
+        briefingBlocks.push(`Explicitly out of scope — do not do these:\n${explicitlyOutBullets}`);
+      }
+      if (hasAcceptanceCriteria) {
+        // One bullet per criterion's `text`; the stable `id` is for report_review
+        // (S7·6) to key against, not for the worker to read, so it is not shown.
+        const criterionBullets = task.acceptanceCriteria!
+          .map((criterion) => `  - ${criterion.text}`)
+          .join('\n');
+        briefingBlocks.push(`Done when ALL of these are true:\n${criterionBullets}`);
+      }
+      if (hasKillCriterion) {
+        briefingBlocks.push(
+          `Stop and report instead of pushing through if: ${task.killCriterion}`,
+        );
+      }
+      if (hasPlan) {
+        briefingBlocks.push(`The approved plan:\n\n${context!.plan}`);
+      }
+
+      briefingBlocks.push(IMPLEMENTING_BRIEFING_CLOSING);
+
+      return briefingBlocks.join('\n\n');
+    }
+  }
 
   if (plan.mode === 'resume') {
     return `You are resuming your own earlier work on this task (${label} · ${task.stage}). New
