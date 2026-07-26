@@ -68,6 +68,8 @@ function buildConfig(overrides: Partial<DaemonConfig> = {}): DaemonConfig {
     // 0 keeps the background poller from ever firing; the tests that need a
     // staleness band set an explicit positive interval.
     usagePollIntervalMs: 0,
+    usageBackoffMaxIntervalMs: 1_800_000,
+    usageBackoffMultiplier: 2,
     usageBaseUrl: 'http://usage.invalid',
     usageAlertPercents: [],
     usageForcedRefreshMinIntervalMs: 0,

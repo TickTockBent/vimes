@@ -64,6 +64,21 @@ export interface DaemonConfig {
   // entirely (the daemon never creates the timer). VIMES_USAGE_POLL_MS
   // overrides. ⟨tune 5m PREVIEW⟩ — behavior-shaping, NOT pinned (rule 0.2).
   usagePollIntervalMs: number;
+  // B1 — auth-failure backoff (open-questions D49, risk-register "Usage OAuth
+  // token lifecycle"). When the OAuth token expires the endpoint 401s every
+  // poll and escalates 401→429 while spamming the journal; backoff widens the
+  // poll interval on consecutive failures instead of hammering at the fixed
+  // cadence above. The ceiling the backed-off interval may never exceed.
+  // VIMES_USAGE_BACKOFF_MAX_MS overrides. ⟨tune 30m PREVIEW⟩ — behavior-shaping,
+  // NOT pinned (rule 0.2).
+  usageBackoffMaxIntervalMs: number;
+  // B1 — the growth factor applied per consecutive poll failure (see
+  // packages/core/src/usageBackoff.ts for the reducer). A value of 1 or less
+  // DISABLES backoff entirely — every poll waits the fixed
+  // `usagePollIntervalMs`, today's behaviour before this unit.
+  // VIMES_USAGE_BACKOFF_MULTIPLIER overrides. ⟨tune 2 PREVIEW⟩ —
+  // behavior-shaping, NOT pinned (rule 0.2).
+  usageBackoffMultiplier: number;
   // Base URL the usage adapter calls (`<base>/api/oauth/usage`). Overridable so
   // a test can point at a local stub; production leaves it at Anthropic's API.
   // VIMES_USAGE_BASE_URL overrides.
@@ -194,6 +209,13 @@ const DEFAULT_TERMINAL_IDLE_REAP_MS = 3_600_000;
 // ⟨tune 5m PREVIEW⟩ — usage-endpoint poll cadence; behavior-shaping, NOT pinned
 // (rule 0.2). 0 disables the poller.
 const DEFAULT_USAGE_POLL_INTERVAL_MS = 300_000;
+// B1 — auth-failure backoff ceiling and growth factor (see
+// packages/core/src/usageBackoff.ts). ⟨tune 30m PREVIEW⟩ / ⟨tune 2 PREVIEW⟩ —
+// behavior-shaping, NOT pinned (rule 0.2). Backoff is ON by default: a
+// multiplier of 2 and a 30-minute cap mean a dead OAuth token stops being
+// polled every 5 minutes and instead backs off to every 10, 20, then 30 min.
+const DEFAULT_USAGE_BACKOFF_MAX_INTERVAL_MS = 1_800_000;
+const DEFAULT_USAGE_BACKOFF_MULTIPLIER = 2;
 // ⟨tune 80% PREVIEW⟩ — the threshold slice-5 names; behavior-shaping, NOT pinned
 // (rule 0.2). An EMPTY list disables alerting.
 const DEFAULT_USAGE_ALERT_PERCENTS: readonly number[] = [80];
@@ -403,6 +425,14 @@ export function loadConfigFromEnv(env: NodeJS.ProcessEnv = process.env): DaemonC
       env.VIMES_USAGE_POLL_MS === undefined || env.VIMES_USAGE_POLL_MS === ''
         ? DEFAULT_USAGE_POLL_INTERVAL_MS
         : parsePositiveInteger(env.VIMES_USAGE_POLL_MS, 'VIMES_USAGE_POLL_MS'),
+    usageBackoffMaxIntervalMs:
+      env.VIMES_USAGE_BACKOFF_MAX_MS === undefined || env.VIMES_USAGE_BACKOFF_MAX_MS === ''
+        ? DEFAULT_USAGE_BACKOFF_MAX_INTERVAL_MS
+        : parsePositiveInteger(env.VIMES_USAGE_BACKOFF_MAX_MS, 'VIMES_USAGE_BACKOFF_MAX_MS'),
+    usageBackoffMultiplier:
+      env.VIMES_USAGE_BACKOFF_MULTIPLIER === undefined || env.VIMES_USAGE_BACKOFF_MULTIPLIER === ''
+        ? DEFAULT_USAGE_BACKOFF_MULTIPLIER
+        : parsePositiveInteger(env.VIMES_USAGE_BACKOFF_MULTIPLIER, 'VIMES_USAGE_BACKOFF_MULTIPLIER'),
     usageBaseUrl:
       env.VIMES_USAGE_BASE_URL === undefined || env.VIMES_USAGE_BASE_URL === ''
         ? DEFAULT_USAGE_BASE_URL

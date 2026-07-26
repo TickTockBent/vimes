@@ -61,6 +61,8 @@ function buildConfig(projectRoots: string[], overrides: Partial<DaemonConfig> = 
     maxEditBytes: FIVE_MB,
     terminalIdleReapMs: 0,
     usagePollIntervalMs: 0,
+    usageBackoffMaxIntervalMs: 1_800_000,
+    usageBackoffMultiplier: 2,
     usageBaseUrl: 'http://usage.invalid',
     usageAlertPercents: [],
     usageForcedRefreshMinIntervalMs: 0,
