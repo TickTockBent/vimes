@@ -128,6 +128,9 @@ export { resolveStageRunner, type StageRunnerPlan } from './tasks/stageRunner.js
 // reason WHO and WHETHER stay apart: this only composes words from a
 // (task, plan) pair and never decides who runs the stage or whether it runs.
 export { composeStageInstruction } from './tasks/stageInstruction.js';
+// S7·7a — the OPTIONAL out-of-band context the composer needs but cannot read
+// (the daemon-fetched plan blob). Reserved to grow with S7·7b's fix-seed.
+export type { StageInstructionContext } from './tasks/stageInstruction.js';
 // Step 8 — WHERE a stage runs, derived from the taskId alone. Pure and total, and
 // in core (not beside the daemon's manager) because a worktree's identity must be
 // re-derivable by the board, a future GC and any replay without a daemon running.
