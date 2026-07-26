@@ -267,6 +267,26 @@ rollup. This is designed from zero, on raw material none of them had.
      stream's events, because the log has no global ordering column — is recorded
      in architecture.md. Wes approved the recommendation. -->
 
+## D51 — Is the linear task-stage state machine the right model? *(trigger: Wes to revisit deliberately; surfaced 2026-07-26 while probing a review-dispatch — out of scope for now)*
+
+**Flag, not yet a worked question (2026-07-26).** While exploring "what happens if I
+throw a task straight into implementing," the current stage model showed its shape:
+`TASK_STAGE_EDGES` is essentially a linear pipeline (`backlog → planning → plan-ready
+→ implementing → review → done`, plus escape stages), so a direct `backlog →
+implementing` is rejected and the only way to skip planning is to manually walk the
+task through `plan-ready` (arriving with no captured plan). **Wes's instinct: "I
+don't think it's the right model" — but explicitly out of scope right now.** No
+specifics pinned yet; captured so the thread isn't lost.
+
+**What to consider when it's revisited:** whether stages should be a strict linear
+edge set at all vs. a looser "state + allowed operations" model; whether "skip
+planning for a small/well-specified task" is a first-class path (today it degrades to
+the generic implementing briefing with no plan — see S7·7a); how this interacts with
+the work-order-as-spec model (D43) and the plan handoff (D44). **Lean:** none pinned;
+revisit as its own design pass, likely alongside the orchestrator/project-loop work
+(where dispatch paths get exercised for real). Relates to `taskStateMachine.ts`
+(`TASK_STAGE_EDGES`), D43/D44, and the slice-7 loop.
+
 ## D43 — task spec source — ✅ DECIDED 2026-07-25 → decisions.md D43
 A task IS a work-order: structured fields (scope / explicitly-out / acceptance-as-list
 / kill) for what the machine reads, attached artifacts by reference for what only an
