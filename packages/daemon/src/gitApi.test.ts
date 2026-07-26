@@ -59,6 +59,8 @@ function buildConfig(projectRoots: string[]): DaemonConfig {
     maxEditBytes: 5 * 1024 * 1024,
     terminalIdleReapMs: 0,
     usagePollIntervalMs: 0,
+    usageBackoffMaxIntervalMs: 1_800_000,
+    usageBackoffMultiplier: 2,
     usageBaseUrl: 'http://usage.invalid',
     usageAlertPercents: [],
     usageForcedRefreshMinIntervalMs: 0,

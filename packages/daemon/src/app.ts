@@ -19,10 +19,16 @@ import {
   sessionsProjection,
   tasksProjection,
   SYSTEM_STREAM,
+  // B1 — the usage-poller auth-failure backoff DECISION. Pure reducer; this
+  // boundary owns the actual setTimeout that drives it (rule 0.3).
+  nextUsageBackoff,
+  initialUsageBackoffState,
   type Clock,
   type IdSource,
   type MetersState,
   type Projection,
+  type UsageBackoffConfig,
+  type UsageBackoffState,
 } from '@vimes/core';
 import Database from 'better-sqlite3';
 import { SqliteEventStore } from './sqliteEventStore.js';
@@ -976,9 +982,68 @@ export function createDaemon(deps: DaemonDeps): Daemon {
 
   let snapshotTimer: ReturnType<typeof setInterval> | null = null;
   let terminalReapTimer: ReturnType<typeof setInterval> | null = null;
-  let usagePollTimer: ReturnType<typeof setInterval> | null = null;
+  // B1 — the usage poller is now a SELF-RESCHEDULING setTimeout (not a fixed
+  // setInterval): each poll's outcome decides how long the next one waits, via
+  // the pure `nextUsageBackoff` reducer below. `ReturnType<typeof setTimeout>`
+  // replaces the old `setInterval` handle type accordingly.
+  let usagePollTimer: ReturnType<typeof setTimeout> | null = null;
   let costIngestTimer: ReturnType<typeof setInterval> | null = null;
   let taskWatchdogTimer: ReturnType<typeof setInterval> | null = null;
+
+  // B1 — backoff state for the usage poller, folded across polls exactly like
+  // `lastForcedPollAtMs` above: mutable daemon-boundary state feeding a pure
+  // core reducer (rule 0.3). Starts at zero consecutive failures; the config's
+  // three ⟨tune⟩ values are read once here rather than per-poll since none of
+  // them can change without a daemon restart.
+  let usageBackoffState: UsageBackoffState = initialUsageBackoffState;
+  const usageBackoffConfig: UsageBackoffConfig = {
+    baseIntervalMs: config.usagePollIntervalMs,
+    maxIntervalMs: config.usageBackoffMaxIntervalMs,
+    multiplier: config.usageBackoffMultiplier,
+  };
+  // The reschedule-after-stop guard (NEW hazard introduced by moving off
+  // setInterval — see the wiring below). `setInterval` only ever needed
+  // clearing once; a SELF-rescheduling `setTimeout` can resurrect itself if a
+  // poll is in flight when `stop()` runs, because the callback that was
+  // awaiting the poll reaches its `setTimeout(...)` call AFTER `stop()` has
+  // already cleared the handle it knew about. Set `true` at the very top of
+  // `stop()`, checked here before ever scheduling another timeout.
+  let usagePollStopped = false;
+
+  // One poll cycle THEN one reschedule (B1) — the self-rescheduling
+  // replacement for the old `setInterval(pollUsageOnce, usagePollIntervalMs)`.
+  // `runUsagePoll` / `pollUsageOnce` themselves are UNCHANGED (the existing
+  // meterAlerts tests call `pollUsageOnce()` directly and must stay green);
+  // this only wraps the call and decides the NEXT delay.
+  //
+  // Any thrown error is treated as a failed poll — same "never fatal, next
+  // cycle retries" contract every other timer callback in this file already
+  // has — so the reschedule loop itself can never die.
+  const runPollAndReschedule = async (): Promise<void> => {
+    let succeeded: boolean;
+    try {
+      const probeResult = await runUsagePoll();
+      succeeded = probeResult.ok;
+    } catch {
+      succeeded = false;
+    }
+    // The reschedule-after-stop guard: a poll that was already in flight when
+    // stop() ran must not resurrect the timer. Checked AFTER the poll (which
+    // may legitimately still be finishing after shutdown began) and BEFORE
+    // scheduling anything — the one place a `setInterval` never needed a
+    // check like this, because it was cleared once and never re-armed itself.
+    if (usagePollStopped) {
+      return;
+    }
+    const { delayMs, state } = nextUsageBackoff(usageBackoffState, succeeded, usageBackoffConfig);
+    usageBackoffState = state;
+    usagePollTimer = setTimeout(() => {
+      void runPollAndReschedule().catch(() => {
+        // Same belt-and-braces as the initial boot-poll call below.
+      });
+    }, delayMs);
+    usagePollTimer.unref();
+  };
 
   return {
     httpServer,
@@ -1105,28 +1170,24 @@ export function createDaemon(deps: DaemonDeps): Daemon {
         }, TERMINAL_REAP_CHECK_INTERVAL_MS);
         terminalReapTimer.unref();
       }
-      // Usage-endpoint poller (slice 5 step 2). The DAEMON boundary owns the
-      // periodic timer, exactly like the reaper above (rule 0.3) — the adapter
-      // and the parser stay pure/injected. An interval of 0 disables polling
-      // entirely: the timer is never created. unref'd so it never keeps the
-      // process alive, and cleared on stop() so no handle leaks.
+      // Usage-endpoint poller (slice 5 step 2; SELF-RESCHEDULING since B1). The
+      // DAEMON boundary owns the timer, exactly like the reaper above (rule
+      // 0.3) — the adapter and the parser stay pure/injected, and the DELAY
+      // between polls is now decided by the pure `nextUsageBackoff` reducer
+      // (packages/core/src/usageBackoff.ts) rather than a fixed interval. An
+      // interval of 0 disables polling entirely, same as before: the first
+      // cycle is never fired and no timer is ever created.
       if (config.usagePollIntervalMs > 0) {
-        // Fire one poll immediately (fire-and-forget, never awaited) so meters
-        // populate promptly after boot instead of sitting at unknown for a
-        // full interval — setInterval alone doesn't fire until the first
-        // tick elapses. Never fatal, same as the interval callback below: a
-        // failed poll emits nothing and the interval retries on schedule.
-        void pollUsageOnce().catch(() => {
-          // A failed poll emits nothing and is never fatal: the next tick
-          // retries, and the meters degrade to stale in the meantime.
+        // Fire the first cycle immediately (fire-and-forget, never awaited) so
+        // meters populate promptly after boot instead of sitting at unknown for
+        // a full interval — this IS the boot poll (it replaces the old
+        // immediate `pollUsageOnce()` call) and it also performs the first
+        // reschedule, so there is no separate interval-creation step below.
+        void runPollAndReschedule().catch(() => {
+          // Belt-and-braces: runPollAndReschedule already swallows every poll
+          // failure into the backoff reducer and never rejects, but an
+          // unexpected throw here must never become an unhandled rejection.
         });
-        usagePollTimer = setInterval(() => {
-          void pollUsageOnce().catch(() => {
-            // A failed poll emits nothing and is never fatal: the next tick
-            // retries, and the meters degrade to stale in the meantime.
-          });
-        }, config.usagePollIntervalMs);
-        usagePollTimer.unref();
       }
       // Cost-ledger ingester (slice 5b). The DAEMON boundary owns the periodic
       // timer, exactly like the poller above (rule 0.3) — the scan and the store
@@ -1181,6 +1242,13 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     },
 
     async stop(): Promise<void> {
+      // B1 — set FIRST, before anything is cleared: this is the reschedule-
+      // after-stop guard. A poll already in flight when stop() is called will
+      // still finish and reach `runPollAndReschedule`'s check AFTER this flag
+      // is set, so it returns instead of arming a new `setTimeout` — the
+      // clearTimeout below only protects an ALREADY-scheduled timer, not a
+      // poll that hasn't reached its reschedule point yet.
+      usagePollStopped = true;
       if (snapshotTimer !== null) {
         clearInterval(snapshotTimer);
         snapshotTimer = null;
@@ -1190,7 +1258,9 @@ export function createDaemon(deps: DaemonDeps): Daemon {
         terminalReapTimer = null;
       }
       if (usagePollTimer !== null) {
-        clearInterval(usagePollTimer);
+        // clearTimeout, not clearInterval — the poller became a self-
+        // rescheduling setTimeout in B1 (see runPollAndReschedule above).
+        clearTimeout(usagePollTimer);
         usagePollTimer = null;
       }
       // Clear the ingest timer BEFORE the store is disposed below, so no in-flight

@@ -274,4 +274,14 @@ export {
   type PriceStatusCountsView,
 } from './pricing/costLedgerReadModel.js';
 
+// B1 — the usage-poller auth-failure backoff DECISION (pure reducer). The
+// daemon boundary (app.ts) owns the actual setTimeout; this only says how long
+// to wait given the last poll's outcome. Not the token-refresh fix (A / D49).
+export {
+  nextUsageBackoff,
+  initialUsageBackoffState,
+  type UsageBackoffState,
+  type UsageBackoffConfig,
+} from './usageBackoff.js';
+
 export * from './harness/index.js';

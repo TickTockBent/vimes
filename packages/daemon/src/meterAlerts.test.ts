@@ -74,6 +74,8 @@ function buildConfig(dbPath: string, overrides: Partial<DaemonConfig> = {}): Dae
     maxEditBytes: 5 * 1024 * 1024,
     terminalIdleReapMs: 0,
     usagePollIntervalMs: LONG_POLL_INTERVAL_MS,
+    usageBackoffMaxIntervalMs: 1_800_000,
+    usageBackoffMultiplier: 2,
     usageBaseUrl: 'http://usage.invalid',
     usageAlertPercents: [80],
     usageForcedRefreshMinIntervalMs: 0,

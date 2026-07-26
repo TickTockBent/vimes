@@ -1547,6 +1547,8 @@ function buildDaemonConfig(projectRoots: string[]): DaemonConfig {
     // ⚠ THE POLLER IS DISABLED HERE ON PURPOSE — this is the configuration in
     // which `deriveStaleAfterMs` returns null and the degenerate band is used.
     usagePollIntervalMs: 0,
+    usageBackoffMaxIntervalMs: 1_800_000,
+    usageBackoffMultiplier: 2,
     usageBaseUrl: 'http://usage.invalid',
     usageAlertPercents: [],
     usageForcedRefreshMinIntervalMs: 0,
