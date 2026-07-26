@@ -9,6 +9,51 @@ records directly); no separate `Q#` series is minted. Entries marked ⚠ are
 **verify-before-building** — they are spikes, run at the start of the named
 slice, never answered from documentation alone (rule 0.6).
 
+## D49 — Should VIMES self-refresh the usage OAuth token, or keep delegating refresh to the CLI? *(trigger: meter staleness during an UNATTENDED window becomes painful in real use — e.g. driving from the phone and the headroom gauge sits dark because nothing else has run to refresh the token)*
+
+**Finding (2026-07-26, diagnosing the usage-meter 401/429s).** The usage endpoint
+(`GET /api/oauth/usage`, the sole account-wide headroom authority, spike U3) is
+called with the CLI's OAuth **access token, read fresh from
+`~/.claude/.credentials.json` on every poll** (`usageEndpoint.ts`
+`createCredentialsReader`). That access token has an **~8h life** (`expiresAt`,
+confirmed live; the `refreshToken` is ~13-day). **VIMES has no refresh path — it
+only reads the token and delegates renewal to "the CLI"** (`usageEndpoint.ts:15`).
+But the shared credentials file is only re-minted when **some Claude Code process
+makes an inference call** and the SDK auto-refreshes. When VIMES polls in an
+**unattended window** (overnight, between sessions), nothing refreshes the file, so
+VIMES re-reads the dead token and 401s every poll until the next session runs.
+Journal evidence: sustained 401 windows (e.g. Jul 24 16:19→17:14) and a live
+recovery at Jul 26 10:01 when *this session's* inference calls refreshed the file
+one minute after two 401s. The fixed 5-min poll with no backoff also let the
+endpoint escalate **401 → 429**. This is a rule-0.1 finding: a first-class data
+source silently ages out.
+
+**Interim mitigation (B):** **B1 — auth-failure backoff** on the poller (repeated
+failures widen the interval instead of hammering into 429 + journal spam; reset to
+base on success) ships this session. **B2 — surfacing the stale *reason*** in the
+read model + UI is the companion fast-follow (a wider poll interval makes the
+staleness slightly more visible, so the gauge should say *why* it is dark). B makes
+the failure honest and non-escalating; it does **not** keep meters fresh while
+unattended — only A does.
+
+**A — the open question:** should VIMES mint its own access token from the stored
+`refreshToken` (POST the OAuth token endpoint, write the file back), becoming
+independent of other CLI activity?
+
+**Lean (2026-07-26): don't build A yet — spike first, and it may be unnecessary.**
+Three reasons to hold: (1) **security surface (0.6)** — VIMES would start handling
+the long-lived refresh token + the OAuth client/token endpoint, a new
+fragile-adapter boundary with its own risk-register row; (2) **shared-file race** —
+it writes `~/.claude/.credentials.json`, which the CLI also owns, so two refreshers
+last-writer-wins; (3) **observed-truth (0.7)** — the refresh endpoint + client_id
+are undocumented-internal, so it is a spike, never build-against-docs. And the
+case it is *unnecessary*: headroom matters precisely when work is running, and
+**that is exactly when the token gets refreshed anyway** (a live CLI or a
+VIMES-hosted SDK session triggers it); the stale windows are idle stretches where
+headroom is moot. **The one thing to verify before deciding:** whether VIMES's own
+SDK sessions refresh the shared credentials file — if they do, B fully covers the
+windows that matter and A stays parked. See `risk-register.md` (usage-token row).
+
 ## D36 — Should the tailer read SDK transcripts for attachment records only? *(trigger: the first time a correction's clear latency is felt in real use, or any second consumer of a JSONL-only record type)*
 
 Raised by D35 (2026-07-23) and deliberately left out of that fix. On the SDK
