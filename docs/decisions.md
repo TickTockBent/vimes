@@ -1608,3 +1608,211 @@ dispatcher spawning planning in plan mode and transitioning planning→plan-read
 and Gate 1's minimal loop crosses the plan boundary with **zero VIMES-exposed
 tools** — a simplification. The reserved `submitPlanPayloadSchema` (S7·1) is reused
 as the **event** payload VIMES emits, not as a session tool input.
+
+## D50 — NO VIMES-dispatched session may spawn sub-agents, in ANY stage or mode; planning additionally investigates inline and emits its plan via `ExitPlanMode` in one bounded turn
+
+**Scope generalized 2026-07-26 (Wes):** the ban is UNIVERSAL, not planning-only.
+Every dispatched task session (planning, implementing, review — modes `plan` AND
+`default`) fails the SAME way if it fans out: the async `Agent` sub-agents outlive
+the parent turn, the session goes dormant/ends, and their results have nowhere to
+land. So VIMES denies the sub-agent-spawn tool for ALL dispatched sessions.
+**Observed (event log):** the spawn tool is named **`Agent`** (no `Task` seen);
+dispatched sessions run in `default` (implementing/review) and `plan` (planning);
+the PreToolUse hook fires for the parent's `Agent` call in every mode, so a
+mode-independent choke exists. The finding below happened in planning first only
+because planning is the first stage the loop reaches.
+
+**Choke point — SPIKE KILLED the first mechanism (2026-07-26); pivoted to
+`disallowedTools`.** The spike (`scratchpad/spike-path1-findings.md`, SDK 0.3.207,
+3 isolated `query()` runs, ~$1.59) found:
+- **KILL: the `Agent` tool BYPASSES the `canUseTool` seam entirely** — a
+  `canUseTool` deny is never asked and never fires, in `default` mode *or* `plan`
+  mode. Decisive same-mode contrast: in `default` mode the parent's `Bash` DID hit
+  `canUseTool` but `Agent` did NOT. So `canUseTool` (where [[D48]] intercepts
+  `ExitPlanMode`) is the WRONG choke for sub-agents — the force-prompt run spawned
+  2 sub-agents that ran real work with `permission_denials:[]`.
+- **GREEN on the rest of Path 1:** with a plan-directed "sub-agents not authorized"
+  instruction, the planner investigated INLINE (Bash×3, Read×7), never attempted
+  `Agent`, reached `ExitPlanMode` with a real 6111-char plan, and stopped clean
+  (`result:success`). So the instruction half works; only the hard mechanism moved.
+
+**New choke point: `disallowedTools: ['Agent','Task']` at every dispatched-session
+spawn (SDK `Options`).** The shipped SDK types say a `disallowedTools` entry is
+"removed from the model's context and cannot be used, even if they would otherwise
+be allowed" and "also blocks harness-internal direct calls that hold the tool
+object without a name lookup" — i.e. it closes the exact hole that bypassed
+`canUseTool`. A tool that is absent from context cannot be called: no runtime deny
+to bypass, no model retry-storm, mode-independent. Both names listed for
+CLI-version safety (`Agent` observed today; `Task` historically). **The PreToolUse
+hard-deny hook** (S2 footing; `HookPermissionDecision` supports `'deny'`; fires in
+all modes) is the belt-and-suspenders fallback. Plan-directed + "sub-agents not
+authorized" language is still added to the **planning** briefing; the tool removal
+is universal across stages/modes.
+
+**Still to confirm before building (rule 0.7 — `canUseTool` just fooled us, do NOT
+trust the doc comment alone):** a quick spike that `disallowedTools:['Agent','Task']`
+actually removes the tool and a force-to-fan-out prompt CANNOT spawn a sub-agent.
+Then build into the adapter's dispatched-session spawn path.
+
+**SPIKE 2 result — `disallowedTools:['Agent','Task']` is NOT a universal choke
+(RED, 2026-07-26).** It removed `Agent`/`Task` by name (0 `Agent` tool_use — the
+model even noted the tool "is not actually available"), BUT the force-prompted model
+**routed around the block via a DIFFERENT spawn surface, the `Workflow` tool**
+(`ToolSearch`×6 hunting for a spawner, then `Workflow` running
+`parallel([() => agent(...), () => agent(...)])`) and launched 2 real sub-agents
+anyway — `task_started`×1, `task_progress`×26, and the stream hung 74s past
+`result:success` while the background children ran. **The problem is not one tool;
+it is a FAMILY of spawn/orchestration surfaces** (`Agent`, `Task`, `Workflow`, and
+autonomous machinery like `ScheduleWakeup` leaked in too). A name-denylist is
+whack-a-mole and drifts (rule 0.6). Sub-finding pointing at the fix: `Workflow` DID
+pass through `canUseTool` (unlike `Agent`), and the PreToolUse hook sees `Agent`
+(event-log evidence) — so a hook or an allowlist sees more than `canUseTool` alone.
+
+**The real fork (decision pending Wes):**
+- **(a) Closed ALLOWLIST** — give dispatched sessions only the minimal worker
+  toolset (Read/Write/Edit/Bash/Grep/Glob/ExitPlanMode/ToolSearch/Web*), so EVERY
+  orchestration surface — current or future — is excluded by construction, not by
+  name. Robust (default-deny, rule-0.6-aligned), no whack-a-mole, and if it removes
+  tools from context the model can't even hunt for a spawner. **Open question: does
+  the SDK's `allowedTools` RESTRICT availability, or merely pre-approve permissions?
+  — must be spiked** (do not trust the doc).
+- **(b) Enumerated deny at the PreToolUse HOOK** — the hook fires for every tool in
+  every mode (sees `Agent`, which bypasses `canUseTool`), and can return `deny`.
+  Deny the spawn family there. Still a denylist (drifts), and a runtime deny the
+  model sees and hunts around — but it catches surfaces an allowlist might miss and
+  VIMES already runs the hook channel.
+
+Lean: **(a) allowlist**, with **(b) the hook as belt-and-suspenders**.
+
+**DECIDED 2026-07-26 (Wes): BOTH — closed allowlist PRIMARY + PreToolUse-hook
+deny BACKSTOP, plus the "sub-agents not authorized" instruction language.** There
+is no situation in which a VIMES-dispatched task agent should spawn sub-agents, so
+the guarantee is layered: (1) a closed allowlist restricts dispatched sessions to
+the minimal worker toolset (every spawn/orchestration surface excluded by
+construction); (2) the PreToolUse hard-deny hook catches anything the allowlist
+misses (it sees `Agent`, which bypasses `canUseTool`); (3) the initial-message
+language tells the planner not to fan out (proven to earn compliance in spike 1).
+**Next: spike the `allowedTools` semantics** — does it remove non-listed tools from
+context (availability), and with the minimal set + a force-fan-out prompt can the
+model reach a spawner by ANY route (incl. `ToolSearch`→load), while the allowed
+worker tools + `ExitPlanMode` still function? Then build. (Spend is subscription
+usage, capped by the plan — not gated on dollar estimates.)
+
+**SPIKE 3 result — the primary choke is the `tools` option, NOT `allowedTools`
+(2026-07-26).** Observed-truth caught a third wrong assumption: **`allowedTools` is
+a PRE-APPROVAL (auto-allow) list, not an availability restriction** — with the
+worker set in `allowedTools`, the unlisted `Agent` still spawned 2 sub-agents in
+both modes. The SDK doc confirms: `allowedTools` = "auto-allowed without
+prompting… **To restrict which tools are available, use the `tools` option
+instead.**" **CORRECTIVE run (GREEN): `tools: [worker set]`** (Agent/Task/Workflow/
+ScheduleWakeup/ToolSearch all excluded) → only `Bash`/`Read` callable, **0** spawns
+by any route, **0** `task_*` lifecycle, and the model adapted cleanly ("I don't
+actually have an Agent… my available tools are Bash, Edit, Glob, Grep, Read, Write,
+WebFetch, WebSearch, NotebookEdit, ExitPlanMode"), investigated inline, `result:
+success`. **The three SDK options, disambiguated:** `allowedTools` = pre-approve
+(not a choke); `disallowedTools` = removes NAMED tools (brittle whack-a-mole —
+`Workflow` escaped it); **`tools` = closed allowlist, base available set, everything
+else removed from context = the PRIMARY choke.** PreToolUse hook remains the
+backstop. **Final residual confirm before building:** `tools`-restricted + plan
+mode + a PLAN-DIRECTED prompt → does `ExitPlanMode` still fire cleanly under the
+restriction (it is in the worker set; spike 1 showed it fires with a plan-directed
+prompt, corrective showed `tools` works — this confirms the exact combination).
+
+**MECHANISM CONFIRMED — READY TO BUILD (2026-07-26, final spike GREEN).** Plan mode
++ `tools:[worker set]` + a plan-directed prompt → `ExitPlanMode` fired with a real
+5933-char plan, **0 spawns by any route** (Agent/Task/Workflow/ToolSearch/
+ScheduleWakeup all 0, 0 `task_*` lifecycle), only worker tools callable, clean
+deny-to-stop (`result:success`, no hang). With the default-mode corrective, `tools`
+is confirmed for BOTH planning and implementing. Spike series complete
+(`scratchpad/spike-path1-findings.md`, 4 rounds). **The build:**
+1. **Primary choke:** set `tools: [<worker set>]` on every dispatched-session spawn
+   (SDK adapter) — Read/Write/Edit/Bash/Grep/Glob/ExitPlanMode/WebFetch/WebSearch/
+   NotebookEdit/TodoWrite (exact set a build-time design detail; every spawn/
+   orchestration surface excluded by construction).
+2. **Instruction language (load-bearing):** the planning stage briefing must
+   explicitly request an approvable plan via exit-plan-mode + state sub-agent use is
+   not authorized (spike 3 proved a non-plan-directed prompt makes the model skip
+   `ExitPlanMode`). This is the planning analogue of S7·7a's implementing briefing.
+3. **Backstop:** PreToolUse hard-deny hook on the spawn family (defence in depth).
+
+**Build caveats surfaced by the spikes:**
+- **`AskUserQuestion` still injects in plan mode despite `tools`** — it is an
+  interactive dialog (not a spawner), fails headless, and the model self-recovers,
+  but it briefly stalls the turn. The dispatcher should auto-handle it (deny/answer)
+  so a dispatched turn is never blocked on a human dialog. Minor robustness item.
+- **Plan-draft `~/.claude/plans/` write persists** (ungated, outside project) —
+  already `risk-register.md` R-a (accepted).
+
+**BUILD-TIME REFINEMENT (2026-07-26, S7·5c — orchestrator, pending Wes review).**
+The build ships items 1 + 2 as specified. Item 3, the backstop, is **refined**:
+the originally-sketched *PreToolUse hard-deny hook* would have to return its deny
+decision back to the SDK through the existing `curl` hook-relay's stdout — an
+**unverified** SDK path (does 0.3.207 parse a PreToolUse deny returned that way?
+which JSON shape?). Building against it now would violate rule 0.6 (no reliance on
+an unspiked external surface), and the `tools` closed allowlist is already
+spike-proven airtight (0 spawns by any route, both modes). So the shipped backstop
+is **`disallowedTools: ['Agent','Task','Workflow','ScheduleWakeup']`** on every
+dispatched spawn — an *in-SDK, verified* mechanism (round-2 spike observed it
+removes named tools; the four names cover every spawn surface the spikes found).
+It is redundant with `tools` today but gives rule-0.6 drift resistance if a future
+SDK reinterprets `tools`. **The PreToolUse-relay hard-deny hook is DEFERRED to its
+own spike** (would it even fire before the model, and does the relay carry a deny?)
+and is not needed while the primary choke holds. Also shipped: the AskUserQuestion
+auto-deny for dispatched sessions (the caveat above), scoped to dispatched sessions
+so interactive sessions keep their normal gate. **Reversible:** if Wes wants the
+relay hook, it is a clean follow-up spike + unit on top of this.
+
+**Date:** 2026-07-26. **Status:** decided by Wes at the Gate-1 human exit gate;
+**Path 1 chosen, pending a confirming spike** before it is built on. Moved here from
+`open-questions.md` D50 (the finding).
+
+**The finding (first real run of the Gate-1 loop — task `347c4cc8`, project
+`1e9999`, session `4a1ef2ee`, observed from the event log).** A planning session
+spawned in `permissionMode:'plan'` launched **3 async `Explore` sub-agents** via the
+Agent/Task tool, ended its turn with *"I'll wait for the exploration agents to
+report back,"* and went **dormant** — a sub-agent's `Read` fired ~2s AFTER the
+parent went dormant, proving the async children outlived the parent turn.
+**`ExitPlanMode` was never called** (0 times), no plan was captured, and the task is
+stuck in `planning`. Root cause is two-part: (1) the planning stage still gets the
+GENERIC spawn instruction — it is never told to produce and submit a plan; and
+(2) a VIMES-dispatched SDK session that completes its turn goes dormant with no live
+turn for the async sub-agents' notifications to land in, and nothing resumes it, so
+`ExitPlanMode` is never reached. No orphaned OS processes (the session ended); the
+failure is convergence, not resource. This is independent of [[D48]]'s capture
+machinery (which is correct) — it lives in the *assumption* that the planner reaches
+`ExitPlanMode`.
+
+**The two paths considered (both recorded per Wes):**
+- **Path 1 (CHOSEN) — deny sub-agents in dispatched planning.** Intercept the
+  Agent/Task tool at the SDK-adapter `canUseTool` seam (the same seam [[D48]] uses
+  for `ExitPlanMode`) and deny it, AND add language to the planning-stage
+  instruction that sub-agent use is not authorized. The planner investigates inline
+  within one bounded turn, then emits its plan via `ExitPlanMode`.
+- **Path 2 (REJECTED) — persist the session until sub-agents report.** Keep the
+  session alive until its async sub-agents check in, then resume it to assemble the
+  plan and emit `ExitPlanMode`.
+
+**Why Path 1.** Path of least resistance and the right fit for the dispatch model.
+Path 2 means patching a headless SDK query to stay live for background-agent
+check-ins — which (a) may not even be possible headless (the notification-resume
+mechanism is an interactive-REPL affordance; feasibility is unknown, rule 0.7),
+(b) requires a sub-agent-lifecycle liveness model VIMES does not have (liveness
+tracks sessions; sub-agents are invisible below that line — a new stateful surface
+over an uncontrolled SDK behavior, rule 0.6), and (c) reintroduces the open-ended
+liveness (a hung sub-agent holds the session open) that [[D48]]'s clean
+deny-to-stop boundary was designed to avoid. Sub-agent fan-out is an interactive
+affordance that does not fit fire-and-capture dispatch. If planning quality on large
+codebases ever proves inadequate under the inline constraint, THAT is the trigger to
+revisit Path 2 — and only after a spike proves headless resume-on-notification works
+at all.
+
+**Open sub-choice for the spike:** deny **all** Agent/Task fan-out in planning
+(simplest, safest — the chosen default) vs. deny only **async/background** sub-agents
+(a synchronous sub-agent completes within the parent turn and would not orphan). Lean
+deny-all; the spike confirms the deny mechanics and whether the distinction is even
+detectable at the `canUseTool` gate.
+
+**Next:** a confirming spike (isolated SDK sessions, never prod `vimes.service`,
+rule 0.7) — does denying the Agent/Task tool at `canUseTool` + a plan-directed
+instruction make the planner investigate inline and reach `ExitPlanMode` cleanly?
+Findings + fixture bank like S7·0 before this is built into the dispatcher/adapter.

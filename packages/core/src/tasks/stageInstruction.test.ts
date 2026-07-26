@@ -338,14 +338,15 @@ reviews and moves it forward on the board.`;
     expect(composeStageInstruction(bare, SPAWN, { plan: '' })).toBe(generic);
   });
 
-  it('does NOT take the rich branch for a non-implementing stage even with a plan', () => {
+  it('does NOT take the IMPLEMENTING rich branch for a planning stage even with a plan', () => {
+    // S7·5c (D50): a planning-stage spawn now takes its OWN briefing branch, so it
+    // must NOT be the implementing opening AND must NOT carry an approved-plan blob
+    // (planning PRODUCES the plan — it never receives one).
     const planningTask = populatedImplementingTask({ stage: 'planning' });
     const instruction = composeStageInstruction(planningTask, SPAWN, { plan: PLAN_BLOB });
-    // Generic spawn framing, not the implementer opening.
+    // Not the implementer opening — it took the planning branch instead.
     expect(instruction.startsWith(STABLE_OPENING)).toBe(false);
-    expect(instruction).toContain(
-      'You are a worker session that VIMES dispatched to make progress on one task.',
-    );
+    expect(instruction).toContain('to PLAN one task');
     expect(instruction).not.toContain('The approved plan:');
   });
 });
@@ -388,6 +389,187 @@ describe('composeStageInstruction — implementing determinism (rule 0.3)', () =
     const first = composeStageInstruction(task, SPAWN, { plan: PLAN_BLOB });
     const second = composeStageInstruction(task, SPAWN, { plan: PLAN_BLOB });
     expect(first).toBe(second);
+  });
+});
+
+// ─── S7·5c: the planning briefing (D50) ───────────────────────────────────────
+//
+// A spawn into the `planning` stage gets the plan-directed briefing. Unlike the
+// implementing branch there is NO degrade-to-generic — even a bare planning task
+// returns this briefing, because the plan-directed + no-sub-agent framing is
+// always load-bearing for planning (the tools-restriction choke is the primary
+// block; this prose is the belt). The tests pin the signed-off prose (rule 0.2),
+// prove every section is conditional (I8), pin the stable framing as a cache
+// prefix, and prove NO degrade.
+
+// The stable OPENING paragraph — mirrored here from stageInstruction.ts (a
+// deliberate copy, not an import: this test is the pin, so it must fail loudly if
+// the source constant drifts).
+const STABLE_PLANNING_OPENING =
+  `You are a worker session that VIMES dispatched to PLAN one task. You are in plan
+mode: investigate directly and produce a plan — do not implement anything yet.`;
+
+// A fully-populated planning task — every work-order field present. There is no
+// plan blob for planning (planning PRODUCES the plan).
+function populatedPlanningTask(overrides: Partial<TaskRecord> = {}): TaskRecord {
+  return taskRecord({
+    title: 'Fix the widget',
+    stage: 'planning',
+    projectRoot: '/home/foo',
+    scope: 'Make the widget do the thing.',
+    explicitlyOut: ['Do not touch the gadget.', 'Do not refactor unrelated code.'],
+    acceptanceCriteria: [
+      { id: 'ac-1', text: 'The widget works.' },
+      { id: 'ac-2', text: 'Tests pass.' },
+    ],
+    killCriterion: 'the build cannot be made green without a schema change.',
+    ...overrides,
+  });
+}
+
+describe('composeStageInstruction — planning briefing (S7·5c)', () => {
+  it('is byte-identical, in full, to the signed-off planning briefing (all four fields)', () => {
+    const instruction = composeStageInstruction(populatedPlanningTask(), SPAWN);
+    expect(instruction).toBe(
+      `You are a worker session that VIMES dispatched to PLAN one task. You are in plan
+mode: investigate directly and produce a plan — do not implement anything yet.
+
+  Task:      Fix the widget
+  Stage:     planning
+  Directory: /home/foo — work in this directory; do not guess or invent a
+             different path name.
+
+Scope — what this task is:
+Make the widget do the thing.
+
+Explicitly out of scope — do not plan for these:
+  - Do not touch the gadget.
+  - Do not refactor unrelated code.
+
+Acceptance criteria — your plan must make ALL of these achievable:
+  - The widget works.
+  - Tests pass.
+
+Stop and report instead of planning if: the build cannot be made green without a schema change.
+
+Investigate the codebase directly with your own tools — read files, search, run
+read-only commands. Sub-agents are NOT authorized for this task; do the
+exploration yourself. Do not wait for anything or anyone.
+
+When you have a plan, present it by exiting plan mode — that is how you finish.
+The plan is your ENTIRE deliverable: VIMES captures it and hands it to a fresh
+session that will implement it without your context, so make it complete and
+self-contained enough for a stranger to execute.`,
+    );
+  });
+
+  it('NO degrade-to-generic: a bare planning task (none of the four fields) still returns THIS briefing', () => {
+    const bare = taskRecord({ title: 'Bare plan task', stage: 'planning', projectRoot: '/home/foo' });
+    const instruction = composeStageInstruction(bare, SPAWN);
+    expect(instruction).toBe(
+      `You are a worker session that VIMES dispatched to PLAN one task. You are in plan
+mode: investigate directly and produce a plan — do not implement anything yet.
+
+  Task:      Bare plan task
+  Stage:     planning
+  Directory: /home/foo — work in this directory; do not guess or invent a
+             different path name.
+
+Investigate the codebase directly with your own tools — read files, search, run
+read-only commands. Sub-agents are NOT authorized for this task; do the
+exploration yourself. Do not wait for anything or anyone.
+
+When you have a plan, present it by exiting plan mode — that is how you finish.
+The plan is your ENTIRE deliverable: VIMES captures it and hands it to a fresh
+session that will implement it without your context, so make it complete and
+self-contained enough for a stranger to execute.`,
+    );
+    // It must NOT be the generic spawn text (that is the whole point of no-degrade).
+    expect(instruction).not.toContain(
+      'You are a worker session that VIMES dispatched to make progress on one task.',
+    );
+  });
+
+  it('sanity: carries the load-bearing lines and the planning stage header', () => {
+    const instruction = composeStageInstruction(populatedPlanningTask(), SPAWN);
+    expect(instruction).toContain('exiting plan mode');
+    expect(instruction).toContain('Sub-agents are NOT authorized');
+    expect(instruction).toContain('  Stage:     planning');
+  });
+});
+
+describe('composeStageInstruction — planning conditional sections (I8)', () => {
+  it('renders ONLY the opening/Task block + closing when no work-order fields are present', () => {
+    const bare = taskRecord({ title: 'Bare', stage: 'planning', projectRoot: '/p' });
+    const instruction = composeStageInstruction(bare, SPAWN);
+    expect(instruction).not.toContain('Scope — what this task is:');
+    expect(instruction).not.toContain('Explicitly out of scope');
+    expect(instruction).not.toContain('Acceptance criteria — your plan');
+    expect(instruction).not.toContain('Stop and report instead of planning if:');
+    expect(instruction.startsWith(STABLE_PLANNING_OPENING)).toBe(true);
+  });
+
+  it('omits scope when it is the EMPTY STRING; other sections still render', () => {
+    const task = populatedPlanningTask({ scope: '' });
+    const instruction = composeStageInstruction(task, SPAWN);
+    expect(instruction).not.toContain('Scope — what this task is:');
+    expect(instruction).toContain('Explicitly out of scope — do not plan for these:');
+  });
+
+  it('omits explicitlyOut when the array is EMPTY', () => {
+    const task = populatedPlanningTask({ explicitlyOut: [] });
+    const instruction = composeStageInstruction(task, SPAWN);
+    expect(instruction).not.toContain('Explicitly out of scope');
+    expect(instruction).toContain('Scope — what this task is:');
+  });
+
+  it('omits acceptanceCriteria when the array is EMPTY', () => {
+    const task = populatedPlanningTask({ acceptanceCriteria: [] });
+    const instruction = composeStageInstruction(task, SPAWN);
+    expect(instruction).not.toContain('Acceptance criteria — your plan');
+  });
+
+  it('omits killCriterion when it is the EMPTY STRING', () => {
+    const task = populatedPlanningTask({ killCriterion: '' });
+    const instruction = composeStageInstruction(task, SPAWN);
+    expect(instruction).not.toContain('Stop and report instead of planning if:');
+  });
+
+  it('never carries an approved-plan section (planning produces the plan, never receives one)', () => {
+    // Even if a caller mistakenly passes a plan blob, the planning branch ignores it.
+    const instruction = composeStageInstruction(populatedPlanningTask(), SPAWN, { plan: PLAN_BLOB });
+    expect(instruction).not.toContain('The approved plan:');
+  });
+});
+
+describe('composeStageInstruction — planning cache prefix + determinism', () => {
+  it('the stable opening is a common PREFIX across two DIFFERENT planning tasks', () => {
+    const first = composeStageInstruction(
+      populatedPlanningTask({ title: 'Task A', scope: 'scope A' }),
+      SPAWN,
+    );
+    const second = composeStageInstruction(
+      populatedPlanningTask({ title: 'Task B', scope: 'a completely different scope' }),
+      SPAWN,
+    );
+    expect(first.startsWith(STABLE_PLANNING_OPENING)).toBe(true);
+    expect(second.startsWith(STABLE_PLANNING_OPENING)).toBe(true);
+  });
+
+  it('perturbing a work-order field leaves the framing prefix byte-unchanged', () => {
+    const base = populatedPlanningTask({ scope: 'the original scope' });
+    const perturbed = populatedPlanningTask({ scope: 'a perturbed scope, longer than before' });
+    const commonPrefix = longestCommonPrefix(
+      composeStageInstruction(base, SPAWN),
+      composeStageInstruction(perturbed, SPAWN),
+    );
+    expect(commonPrefix.startsWith(STABLE_PLANNING_OPENING)).toBe(true);
+    expect(commonPrefix).toContain('Directory: /home/foo — work in this directory');
+  });
+
+  it('same (task, plan) in → byte-identical string out, twice', () => {
+    const task = populatedPlanningTask();
+    expect(composeStageInstruction(task, SPAWN)).toBe(composeStageInstruction(task, SPAWN));
   });
 });
 

@@ -492,10 +492,14 @@ export class TaskDispatcher {
         // intercepts its ExitPlanMode and hands the plan to `recordPlan` (S7·5b-ii).
         // Every other stage spawns in the default mode — the key is added ONLY for
         // planning, keeping the non-planning spawn options byte-identical.
+        // D50: EVERY dispatched task session is `dispatched: true` — the SDK adapter
+        // then clamps it to the closed tool allowlist (no sub-agent spawns) and
+        // auto-denies AskUserQuestion (no human to answer it). The planning branch
+        // also runs write-blocked in permissionMode 'plan' (D48).
         const spawnOptions =
           decision.stage === 'planning'
-            ? { channel: 'sdk' as const, cwd, permissionMode: 'plan' as const }
-            : { channel: 'sdk' as const, cwd };
+            ? { channel: 'sdk' as const, cwd, dispatched: true as const, permissionMode: 'plan' as const }
+            : { channel: 'sdk' as const, cwd, dispatched: true as const };
         let spawnResult;
         try {
           spawnResult = this.deps.sessionHost.spawnSession(spawnOptions);
