@@ -99,7 +99,9 @@ export interface SdkQueryOptions {
   // D48 native plan capture: the planning stage spawns write-blocked in plan
   // mode. Absent (the common case) leaves the SDK on its default mode exactly as
   // before; only a plan-capture spawn sets it. See ClaudeSdkAdapter.spawn.
-  permissionMode?: 'plan';
+  // 'plan' = plan-capture (D48); 'auto' = dispatched classifier footing (spike
+  // 2026-07-26); absent = SDK default, unchanged.
+  permissionMode?: 'plan' | 'auto';
   // D50: the closed tool allowlist for a dispatched session (SDK `tools` option).
   // Absent = the SDK's default tool set, byte-identical to a non-dispatched spawn.
   tools?: string[];
@@ -210,7 +212,9 @@ interface AdapterSpawnContext {
   // D48: 'plan' spawns the SDK session write-blocked for native plan capture;
   // absent = today's behaviour exactly. The PTY adapter ignores it (plan mode is
   // an SDK concern).
-  permissionMode?: 'plan';
+  // 'plan' = plan-capture (D48); 'auto' = dispatched classifier footing (spike
+  // 2026-07-26); absent = SDK default, unchanged.
+  permissionMode?: 'plan' | 'auto';
   // D50: `true` marks a session VIMES dispatched unattended — the SDK adapter then
   // clamps it to the closed tool allowlist + spawn-family denylist so it cannot fan
   // out sub-agents. Absent/false = today's behaviour. The PTY adapter ignores it.
@@ -820,7 +824,9 @@ export class SessionHost implements HookHost {
     name?: string;
     // D48: the dispatcher passes 'plan' for the planning stage only; absent
     // everywhere else, which is today's behaviour exactly.
-    permissionMode?: 'plan';
+    // 'plan' = plan-capture (D48); 'auto' = dispatched classifier footing (spike
+    // 2026-07-26); absent = SDK default, unchanged.
+    permissionMode?: 'plan' | 'auto';
     // D50: the dispatcher passes `true` for every dispatched task session; absent
     // for interactive spawns, which is today's behaviour exactly.
     dispatched?: boolean;
@@ -1136,7 +1142,9 @@ export class SessionHost implements HookHost {
     resume: string | undefined,
     // D48: only the planning-stage spawn passes 'plan'; resume never does (a
     // resumed session keeps its recorded mode, and planning never resumes).
-    permissionMode?: 'plan',
+    // 'plan' = plan-capture (D48); 'auto' = dispatched classifier footing (spike
+    // 2026-07-26); absent = SDK default, unchanged.
+    permissionMode?: 'plan' | 'auto',
     // D50: only a fresh dispatched spawn passes `true`; resume never does (the
     // marker is per-live-process state that a resumed session re-establishes only
     // if the dispatcher re-dispatches — resume today never sets it).
