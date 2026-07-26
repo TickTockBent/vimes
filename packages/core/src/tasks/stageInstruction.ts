@@ -57,6 +57,28 @@ When you believe the stage is done, briefly summarize what you did and what (if
 anything) remains, then stop. You do not advance the task yourself — a human
 reviews and moves it forward on the board.`;
 
+// The stable OPENING paragraph of the PLANNING briefing — byte-stable prefix
+// (cache discipline, same rationale as IMPLEMENTING_BRIEFING_OPENING). Plan-
+// directed: it tells the worker it is in plan mode and must produce a plan.
+const PLANNING_BRIEFING_OPENING =
+  `You are a worker session that VIMES dispatched to PLAN one task. You are in plan
+mode: investigate directly and produce a plan — do not implement anything yet.`;
+
+// The stable CLOSING two paragraphs — the investigate-directly + no-sub-agents
+// contract, and the present-via-exit-plan-mode contract. Byte-stable SUFFIX.
+// Load-bearing (spike-proven): the "sub-agents NOT authorized" line is belt to
+// the tools-restriction choke, and "present it by exiting plan mode" is what
+// makes the planner call ExitPlanMode instead of writing a plan file and stopping.
+const PLANNING_BRIEFING_CLOSING =
+  `Investigate the codebase directly with your own tools — read files, search, run
+read-only commands. Sub-agents are NOT authorized for this task; do the
+exploration yourself. Do not wait for anything or anyone.
+
+When you have a plan, present it by exiting plan mode — that is how you finish.
+The plan is your ENTIRE deliverable: VIMES captures it and hands it to a fresh
+session that will implement it without your context, so make it complete and
+self-contained enough for a stranger to execute.`;
+
 // The third param is OPTIONAL → ABSENT-STAYS-ABSENT: called with no context (the
 // default composer wiring, and every pre-S7·7a caller), the output is
 // byte-identical to what this function produced before S7·7a. Only a `spawn` into
@@ -149,6 +171,59 @@ export function composeStageInstruction(
 
       return briefingBlocks.join('\n\n');
     }
+  }
+
+  // ── S7·5c: the PLANNING briefing (D50) ─────────────────────────────────────
+  //
+  // A dispatched planning session must produce an approvable plan via ExitPlanMode
+  // and must NOT fan out sub-agents (the tools-restriction choke enforces the
+  // latter; this prose is the belt + the plan-directed instruction the choke does
+  // not provide). Work-order sections are conditional on presence (I8 totality),
+  // exactly like the implementing branch.
+  //
+  // ⚠ DIFFERS FROM IMPLEMENTING ON PURPOSE — NO DEGRADE-TO-GENERIC. Even a bare
+  // planning task (none of the four work-order fields) returns THIS briefing, not
+  // the generic spawn text: the plan-directed + no-sub-agent framing is ALWAYS
+  // load-bearing for planning. So this branch always returns.
+  if (plan.mode === 'spawn' && task.stage === 'planning') {
+    const hasScope = typeof task.scope === 'string' && task.scope.length > 0;
+    const hasExplicitlyOut = Array.isArray(task.explicitlyOut) && task.explicitlyOut.length > 0;
+    const hasAcceptanceCriteria =
+      Array.isArray(task.acceptanceCriteria) && task.acceptanceCriteria.length > 0;
+    const hasKillCriterion =
+      typeof task.killCriterion === 'string' && task.killCriterion.length > 0;
+
+    const briefingBlocks: string[] = [];
+
+    briefingBlocks.push(
+      `${PLANNING_BRIEFING_OPENING}
+
+  Task:      ${label}
+  Stage:     planning
+  Directory: ${task.projectRoot} — work in this directory; do not guess or invent a
+             different path name.`,
+    );
+
+    if (hasScope) {
+      briefingBlocks.push(`Scope — what this task is:\n${task.scope}`);
+    }
+    if (hasExplicitlyOut) {
+      const explicitlyOutBullets = task.explicitlyOut!.map((item) => `  - ${item}`).join('\n');
+      briefingBlocks.push(`Explicitly out of scope — do not plan for these:\n${explicitlyOutBullets}`);
+    }
+    if (hasAcceptanceCriteria) {
+      const criterionBullets = task.acceptanceCriteria!
+        .map((criterion) => `  - ${criterion.text}`)
+        .join('\n');
+      briefingBlocks.push(`Acceptance criteria — your plan must make ALL of these achievable:\n${criterionBullets}`);
+    }
+    if (hasKillCriterion) {
+      briefingBlocks.push(`Stop and report instead of planning if: ${task.killCriterion}`);
+    }
+
+    briefingBlocks.push(PLANNING_BRIEFING_CLOSING);
+
+    return briefingBlocks.join('\n\n');
   }
 
   if (plan.mode === 'resume') {

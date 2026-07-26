@@ -65,6 +65,8 @@ function buildConfig(overrides: Partial<DaemonConfig> = {}): DaemonConfig {
     maxEditBytes: 5 * 1024 * 1024,
     terminalIdleReapMs: 0,
     usagePollIntervalMs: 0,
+    usageBackoffMaxIntervalMs: 1_800_000,
+    usageBackoffMultiplier: 2,
     usageBaseUrl: 'http://usage.invalid',
     usageAlertPercents: [],
     usageForcedRefreshMinIntervalMs: 0,
@@ -569,6 +571,188 @@ describe('SessionHost — plan capture (D48)', () => {
         behavior: 'deny',
         message: 'VIMES stops at the plan boundary',
       });
+    } finally {
+      host.stop();
+    }
+  });
+});
+
+// ── D50: dispatched session tool clamp + AskUserQuestion auto-deny ────────────
+
+// The signed-off sets, copied here deliberately (not imported) so this test is
+// the pin: if the source constants drift, these goldens fail loudly.
+const EXPECTED_DISPATCHED_TOOLS = [
+  'Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob',
+  'ExitPlanMode', 'WebFetch', 'WebSearch', 'NotebookEdit', 'TodoWrite',
+];
+const EXPECTED_SUBAGENT_SPAWN_TOOLS = ['Agent', 'Task', 'Workflow', 'ScheduleWakeup'];
+
+describe('SessionHost — dispatched tool clamp (D50)', () => {
+  it('a dispatched spawn carries the closed tool allowlist AND the spawn-family denylist', async () => {
+    const { factory, calls } = makeSdkFactory(async function* () {
+      yield { type: 'system', subtype: 'init', session_id: 'claude-1' };
+      yield { type: 'result', subtype: 'success' };
+    });
+    const { host } = makeHarness({ sdkQueryFactory: factory });
+    try {
+      host.spawnSession({ channel: 'sdk', cwd: '/p', dispatched: true });
+      await waitFor(() => calls.length === 1);
+      expect(calls[0]!.tools).toEqual(EXPECTED_DISPATCHED_TOOLS);
+      expect(calls[0]!.disallowedTools).toEqual(EXPECTED_SUBAGENT_SPAWN_TOOLS);
+    } finally {
+      host.stop();
+    }
+  });
+
+  it('a NON-dispatched spawn carries NEITHER key (byte-identical options)', async () => {
+    const { factory, calls } = makeSdkFactory(async function* () {
+      yield { type: 'system', subtype: 'init', session_id: 'claude-1' };
+      yield { type: 'result', subtype: 'success' };
+    });
+    const { host } = makeHarness({ sdkQueryFactory: factory });
+    try {
+      host.spawnSession({ channel: 'sdk', cwd: '/p' });
+      await waitFor(() => calls.length === 1);
+      // Absent, not undefined — the same options object as before this unit.
+      expect('tools' in calls[0]!).toBe(false);
+      expect('disallowedTools' in calls[0]!).toBe(false);
+    } finally {
+      host.stop();
+    }
+  });
+
+  it('a dispatched PLANNING spawn carries plan mode AND the tool clamp together', async () => {
+    const { factory, calls } = makeSdkFactory(async function* () {
+      yield { type: 'system', subtype: 'init', session_id: 'claude-1' };
+      yield { type: 'result', subtype: 'success' };
+    });
+    const { host } = makeHarness({ sdkQueryFactory: factory });
+    try {
+      host.spawnSession({ channel: 'sdk', cwd: '/p', dispatched: true, permissionMode: 'plan' });
+      await waitFor(() => calls.length === 1);
+      expect(calls[0]!.permissionMode).toBe('plan');
+      expect(calls[0]!.tools).toEqual(EXPECTED_DISPATCHED_TOOLS);
+      expect(calls[0]!.disallowedTools).toEqual(EXPECTED_SUBAGENT_SPAWN_TOOLS);
+    } finally {
+      host.stop();
+    }
+  });
+});
+
+describe('SessionHost — AskUserQuestion auto-deny for dispatched sessions (D50)', () => {
+  it('a dispatched session denies AskUserQuestion cleanly: no gate_fired, no pending gate', async () => {
+    // ⚠ VERIFY-BY-BREAKING anchor. Comment out the AskUserQuestion deny branch in
+    // handleGate and THIS case reddens: a gate_fired would be emitted and the
+    // promise would never resolve (a pending gate would stall the headless turn).
+    const permissionResults: unknown[] = [];
+    const { factory } = makeSdkFactory(async function* ({ options }) {
+      yield { type: 'system', subtype: 'init', session_id: 'claude-1' };
+      const result = await options.canUseTool(
+        'AskUserQuestion',
+        { question: 'which one?' },
+        { requestId: 'req-ask' },
+      );
+      permissionResults.push(result);
+      yield { type: 'result', subtype: 'success' };
+    });
+    const { host, store } = makeHarness({ sdkQueryFactory: factory });
+    try {
+      const spawn = host.spawnSession({ channel: 'sdk', cwd: '/p', dispatched: true });
+      const appSessionId = 'appSessionId' in spawn ? spawn.appSessionId : '';
+      await waitFor(() => permissionResults.length === 1);
+
+      // Resolved to deny WITHOUT any human answer → no pending gate was registered.
+      expect(permissionResults[0]).toEqual({
+        behavior: 'deny',
+        message:
+          'No human is available — this is an unattended VIMES task session. Do not ask; ' +
+          'proceed using your best judgment and record the question and the assumption you made in your output.',
+      });
+      // No pending gate: answering the request id is refused as unknown.
+      expect(host.answerGate(appSessionId, 'req-ask', 'allow')).toEqual({
+        refused: true,
+        reason: 'unknown-gate',
+      });
+      await waitFor(() => types(store, appSessionId).includes('run_completed'));
+      expect(types(store, appSessionId)).not.toContain('gate_fired');
+    } finally {
+      host.stop();
+    }
+  });
+
+  it('a NON-dispatched session sends AskUserQuestion to the normal gate (scoped to dispatched)', async () => {
+    const { factory } = makeSdkFactory(async function* ({ options }) {
+      yield { type: 'system', subtype: 'init', session_id: 'claude-1' };
+      void options.canUseTool('AskUserQuestion', { question: 'which one?' }, { requestId: 'req-ask' });
+    });
+    const { host, store } = makeHarness({ sdkQueryFactory: factory });
+    try {
+      const spawn = host.spawnSession({ channel: 'sdk', cwd: '/p' });
+      const appSessionId = 'appSessionId' in spawn ? spawn.appSessionId : '';
+      await waitFor(() => types(store, appSessionId).includes('gate_fired'));
+
+      const gate = records(store, appSessionId).find((record) => record.type === 'gate_fired')!;
+      expect((gate.payload as { toolName: string }).toolName).toBe('AskUserQuestion');
+    } finally {
+      host.stop();
+    }
+  });
+
+  it('windDown clears the dispatched marker: after the process exits the id no longer auto-denies', async () => {
+    // Reuse ONE appSessionId across a process boundary via a fixed id source for the
+    // host (the store keeps its own counting source so eventIds stay unique). The
+    // first (dispatched) run auto-denies AskUserQuestion; after it winds down the
+    // marker must be gone, so the second (non-dispatched) run on the SAME id sends
+    // AskUserQuestion to the normal gate. Drop the windDown delete and this reddens.
+    const REUSED_ID = 'reused-session-d50';
+    const clock = new SteppingClock('2026-01-01T00:00:00.000Z', 1000);
+    const store = new MemoryEventStore({ clock, ids: new CountingIdSource() });
+    const router = new EventRouter(store);
+    const fixedIds = { uuid: () => REUSED_ID };
+
+    let phase = 0;
+    const askResults: unknown[] = [];
+    const factory: SdkQueryFactory = ({ options }) => {
+      const generator = (async function* (): AsyncGenerator<SdkStreamMessage> {
+        yield { type: 'system', subtype: 'init', session_id: 'claude-1' };
+        if (phase === 0) {
+          const result = await options.canUseTool(
+            'AskUserQuestion',
+            { question: 'q1' },
+            { requestId: 'req-1' },
+          );
+          askResults.push(result);
+          yield { type: 'result', subtype: 'success' };
+        } else {
+          void options.canUseTool('AskUserQuestion', { question: 'q2' }, { requestId: 'req-2' });
+        }
+      })();
+      return Object.assign(generator, {
+        close(): void {
+          void generator.return(undefined);
+        },
+      });
+    };
+    const host = new SessionHost({ store, router, clock, ids: fixedIds, config: buildConfig(), sdkQueryFactory: factory });
+    try {
+      // First run: dispatched → auto-deny, then the stream ends → windDown.
+      host.spawnSession({ channel: 'sdk', cwd: '/p', dispatched: true });
+      await waitFor(() => askResults.length === 1);
+      expect((askResults[0] as { behavior: string }).behavior).toBe('deny');
+      await waitFor(() => types(store, REUSED_ID).includes('run_completed'));
+      await waitFor(() => !host.isLive(REUSED_ID));
+
+      // Second run: SAME id, NOT dispatched → the marker is gone, so AskUserQuestion
+      // reaches the normal gate.
+      phase = 1;
+      host.spawnSession({ channel: 'sdk', cwd: '/p' });
+      await waitFor(() =>
+        records(store, REUSED_ID).some(
+          (record) =>
+            record.type === 'gate_fired' &&
+            (record.payload as { toolName?: string }).toolName === 'AskUserQuestion',
+        ),
+      );
     } finally {
       host.stop();
     }

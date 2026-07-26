@@ -100,6 +100,12 @@ export interface SdkQueryOptions {
   // mode. Absent (the common case) leaves the SDK on its default mode exactly as
   // before; only a plan-capture spawn sets it. See ClaudeSdkAdapter.spawn.
   permissionMode?: 'plan';
+  // D50: the closed tool allowlist for a dispatched session (SDK `tools` option).
+  // Absent = the SDK's default tool set, byte-identical to a non-dispatched spawn.
+  tools?: string[];
+  // D50: named sub-agent spawn surfaces removed from context (SDK `disallowedTools`
+  // belt). Set together with `tools` on a dispatched spawn, or absent entirely.
+  disallowedTools?: string[];
 }
 
 export interface SdkQueryHandle extends AsyncIterable<SdkStreamMessage> {
@@ -176,6 +182,22 @@ export const CLAUDE_PTY_CAPABILITIES: AdapterCapabilities = {
 // the composition point — nothing downstream names a provider's concepts).
 const CLAUDE_PROVIDER = 'claude-code';
 
+// D50: the closed tool allowlist for every DISPATCHED task session. Passed as the
+// SDK `tools` option (a closed allowlist — everything not listed is removed from
+// the model's context). Spike-proven (spike-path1-findings round 3/4): with all
+// spawn surfaces omitted, a dispatched session spawns ZERO sub-agents by any route
+// AND the model adapts to inline work. Wes-approved set (2026-07-26).
+const DISPATCHED_SESSION_TOOLS = [
+  'Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob',
+  'ExitPlanMode', 'WebFetch', 'WebSearch', 'NotebookEdit', 'TodoWrite',
+] as const;
+
+// D50 belt (defense-in-depth, rule 0.6 drift resistance): also name-deny every
+// known sub-agent spawn surface via `disallowedTools`. Redundant with the closed
+// `tools` allowlist today, but survives a future SDK reinterpretation of `tools`.
+// Round-2 spike proved Workflow escapes an [Agent,Task]-only denylist — hence all four.
+const SUBAGENT_SPAWN_TOOLS = ['Agent', 'Task', 'Workflow', 'ScheduleWakeup'] as const;
+
 interface AdapterSpawnContext {
   appSessionId: string;
   cwd: string;
@@ -189,6 +211,10 @@ interface AdapterSpawnContext {
   // absent = today's behaviour exactly. The PTY adapter ignores it (plan mode is
   // an SDK concern).
   permissionMode?: 'plan';
+  // D50: `true` marks a session VIMES dispatched unattended — the SDK adapter then
+  // clamps it to the closed tool allowlist + spawn-family denylist so it cannot fan
+  // out sub-agents. Absent/false = today's behaviour. The PTY adapter ignores it.
+  dispatched?: boolean;
 }
 
 export type InteractionAck = { ok: true; appSessionId: string } | { refused: true; reason: string };
@@ -351,6 +377,10 @@ class ClaudeSdkAdapter implements SessionAdapter {
   // spawn and removed on process exit (windDown) — mirroring how pendingGates is
   // cleared, per-session state that must not outlive the process.
   private readonly planCaptureSessions = new Set<string>();
+  // D50: appSessionIds VIMES dispatched unattended. handleGate consults this to
+  // auto-deny AskUserQuestion (no human to answer it). Added on a dispatched spawn,
+  // removed on process exit (windDown) — same lifecycle as planCaptureSessions.
+  private readonly dispatchedSessions = new Set<string>();
 
   constructor(
     private readonly factory: SdkQueryFactory,
@@ -381,10 +411,19 @@ class ClaudeSdkAdapter implements SessionAdapter {
         ...(context.permissionMode === undefined
           ? {}
           : { permissionMode: context.permissionMode }),
+        // D50: set the closed allowlist + spawn-family denylist ONLY for a
+        // dispatched spawn. Absent leaves a non-dispatched options object
+        // byte-identical to before this unit (same spread idiom as permissionMode).
+        ...(context.dispatched === true
+          ? { tools: [...DISPATCHED_SESSION_TOOLS], disallowedTools: [...SUBAGENT_SPAWN_TOOLS] }
+          : {}),
       },
     });
     if (context.permissionMode === 'plan') {
       this.planCaptureSessions.add(context.appSessionId);
+    }
+    if (context.dispatched === true) {
+      this.dispatchedSessions.add(context.appSessionId);
     }
     return {
       appSessionId: context.appSessionId,
@@ -433,6 +472,7 @@ class ClaudeSdkAdapter implements SessionAdapter {
   reset(): void {
     this.pendingGates.clear();
     this.planCaptureSessions.clear();
+    this.dispatchedSessions.clear();
   }
 
   private async consumeSdk(live: LiveProcess): Promise<void> {
@@ -502,6 +542,9 @@ class ClaudeSdkAdapter implements SessionAdapter {
     // choke point — kill() closes the handle, which ends consumeSdk and lands
     // here via its finally). No-op for a non-plan-capture session.
     this.planCaptureSessions.delete(live.appSessionId);
+    // D50: drop the dispatched marker on the same exit choke point. No-op for a
+    // non-dispatched session.
+    this.dispatchedSessions.delete(live.appSessionId);
     this.services.releaseLiveProcess(live);
     if (!this.services.isStopping() && live.sawResult !== true) {
       // Stream ended without a result — reconcile liveness to dormant.
@@ -537,6 +580,19 @@ class ClaudeSdkAdapter implements SessionAdapter {
       const planText = typeof input.plan === 'string' ? input.plan : '';
       this.services.onPlanCaptured(appSessionId, planText);
       return Promise.resolve({ behavior: 'deny', message: 'VIMES stops at the plan boundary' });
+    }
+    // D50: a dispatched (unattended) session has no human to answer an
+    // AskUserQuestion — plan mode injects it even under the `tools` restriction
+    // (spike round 4), and left to the generic gate it would register a pending
+    // gate and STALL the headless turn. Auto-deny with proceed-headless guidance,
+    // exactly like the ExitPlanMode branch: no gate registered, no gate_fired.
+    if (this.dispatchedSessions.has(appSessionId) && toolName === 'AskUserQuestion') {
+      return Promise.resolve({
+        behavior: 'deny',
+        message:
+          'No human is available — this is an unattended VIMES task session. Do not ask; ' +
+          'proceed using your best judgment and record the question and the assumption you made in your output.',
+      });
     }
     const requestId = options.requestId;
     // Richer gate prompt: prefer the SDK-provided title; when absent fall back to
@@ -765,6 +821,9 @@ export class SessionHost implements HookHost {
     // D48: the dispatcher passes 'plan' for the planning stage only; absent
     // everywhere else, which is today's behaviour exactly.
     permissionMode?: 'plan';
+    // D50: the dispatcher passes `true` for every dispatched task session; absent
+    // for interactive spawns, which is today's behaviour exactly.
+    dispatched?: boolean;
   }): SpawnResult {
     const appSessionId = this.ids.uuid();
     const preflight = this.checkPreflight();
@@ -793,7 +852,14 @@ export class SessionHost implements HookHost {
       }),
     ]);
     this.onSessionCreated?.(appSessionId);
-    this.startProcess(appSessionId, options.channel, options.cwd, undefined, options.permissionMode);
+    this.startProcess(
+      appSessionId,
+      options.channel,
+      options.cwd,
+      undefined,
+      options.permissionMode,
+      options.dispatched,
+    );
     return { appSessionId };
   }
 
@@ -1071,11 +1137,15 @@ export class SessionHost implements HookHost {
     // D48: only the planning-stage spawn passes 'plan'; resume never does (a
     // resumed session keeps its recorded mode, and planning never resumes).
     permissionMode?: 'plan',
+    // D50: only a fresh dispatched spawn passes `true`; resume never does (the
+    // marker is per-live-process state that a resumed session re-establishes only
+    // if the dispatcher re-dispatches — resume today never sets it).
+    dispatched?: boolean,
   ): void {
     const adapter: SessionAdapter = channel === 'sdk' ? this.sdkAdapter : this.ptyAdapter;
     const hookChannel = this.prepareHookChannel(appSessionId);
     const cause = resume === undefined ? 'spawn' : 'resume';
-    const live = adapter.spawn({ appSessionId, cwd, resume, hookChannel, permissionMode });
+    const live = adapter.spawn({ appSessionId, cwd, resume, hookChannel, permissionMode, dispatched });
     live.settingsPath = hookChannel?.settingsPath;
     this.liveProcesses.set(appSessionId, live);
     this.emitGuardedLiveness(appSessionId, 'running', cause);
@@ -1298,6 +1368,11 @@ const defaultSdkQueryFactory: SdkQueryFactory = ({ prompt, options }) => {
         // capture mechanism. Default remains 'default'; a plan-capture spawn threads
         // 'plan' through SdkQueryOptions.permissionMode.
         permissionMode: options.permissionMode ?? 'default',
+        // D50: pass the closed allowlist + spawn-family denylist through to the SDK
+        // ONLY when set (a dispatched spawn). Absent → the SDK's default tool set,
+        // keeping a non-dispatched query byte-identical to before this unit.
+        ...(options.tools === undefined ? {} : { tools: options.tools }),
+        ...(options.disallowedTools === undefined ? {} : { disallowedTools: options.disallowedTools }),
       },
     });
     activeQuery = query;
