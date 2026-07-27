@@ -1,4 +1,5 @@
 import {
+  completionReported,
   decideDispatch,
   deriveReviewOutcome,
   dispatchRefused,
@@ -12,6 +13,7 @@ import {
   type DispatchRefuseReason,
   type EventInput,
   type MetersState,
+  type ReportCompletionPayload,
   type ReportReviewPayload,
   type StageInstructionContext,
   type StageRunnerPlan,
@@ -94,15 +96,20 @@ export interface TaskDispatcherDeps {
   // i.e. this exact consumer, and it is the SAME liveness the rest of the daemon
   // reads, so there is no second definition of "alive" (slice-6 architecture).
   //
-  // ⚠ STEP 7 WIDENS IT BY TWO MORE, each earning its place:
-  //   • `resumeSession` — the fix loop's whole point. `resolveStageRunner` can now
-  //     answer "resume the hot author", and no other method can carry that out.
+  // ⚠ STEP 7 WIDENED IT BY TWO MORE, and **S7·7b TOOK ONE BACK (D46)**:
+  //   • `resumeSession` — WAS the fix loop's whole point, and is GONE from this
+  //     Pick. `resolveStageRunner` no longer answers "resume the hot author", so
+  //     the dispatcher no longer needs the method that carried that out. ⚠ The
+  //     method still EXISTS on `SessionHost` and is still wired to the human's own
+  //     resume (wsHub.ts / app.ts) — D46 rider 2 scopes the reversal to stage runs.
+  //     Narrowing the Pick is the assertable form of "the dispatcher cannot resume
+  //     anything any more": re-adding a resume would first have to re-widen this.
   //   • `sendMessage` — the session host's EXISTING message path, used by the
   //     instruction seam below. It is the same path a human turn takes; the
   //     dispatcher does not get a private one (principle 9 — one way in).
   // No further methods: a dispatcher that can kill, rename or answer gates is a
   // second session authority, and this module deliberately is not one.
-  sessionHost: Pick<SessionHost, 'spawnSession' | 'isLive' | 'resumeSession' | 'sendMessage'>;
+  sessionHost: Pick<SessionHost, 'spawnSession' | 'isLive' | 'sendMessage'>;
   // The router's emit. Every event this module writes goes through it.
   emit: (events: EventInput[]) => void;
   // Projection reads, called fresh on every attempt — never cached in a field.
@@ -121,12 +128,9 @@ export interface TaskDispatcherDeps {
   // or the task asked for `shared-dir`. The default is `projectRootWorkingDirectory`
   // and it is the whole of the flag-off behaviour.
   //
-  // ⚠ CONSULTED ON THE SPAWN PATH ONLY. A RESUMED session keeps the cwd it was
-  // created with — `SessionHost.resumeSession` takes no cwd and resumes "from the
-  // RECORDED cwd" (I3) — and that is correct, not an omission: the hot author's
-  // cache is scoped to machine+directory (D6), so moving it would throw away the
-  // exact thing the resume exists to keep. Under isolation the resumed session is
-  // already sitting IN its worktree, because that is where it was spawned.
+  // (Pre-S7·7b this comment went on to explain why the RESUME path did not consult
+  // this seam. D46 removed that path; there is now only the spawn path, so the
+  // caveat has nothing left to except.)
   resolveWorkingDirectory?: (task: TaskRecord) => string;
 
   // ── ISOLATION (step 8) — the two deps that make D32 real, and the flag ───────
@@ -165,10 +169,12 @@ export interface TaskDispatcherDeps {
   // exists so the machinery is complete and testable now and the words can land
   // later without reshaping anything.
   //
-  // It receives the `StageRunnerPlan` as well as the task because the two stages
-  // want opposite briefings — a fresh reviewer needs orientation it does not have,
-  // a resumed author needs only the flaw — and a composer cannot tell them apart
-  // from the task alone.
+  // It receives the `StageRunnerPlan` as well as the task because spawn and resume
+  // wanted opposite briefings. ⚠ S7·7b: D46 left `StageRunnerPlan` with ONE mode,
+  // so the argument is now constant — it is KEPT because the parameter is part of
+  // the pure composer's signature in core, and because a second mode would restore
+  // the need for it. What actually distinguishes a fix from a first pass is the
+  // CONTEXT's fix-seed, not the plan.
   //
   // Returning `null` or an empty string sends nothing. A non-empty string is sent
   // ONCE, through `sessionHost.sendMessage`, after the session exists.
@@ -234,14 +240,32 @@ export type StageInstructionDelivery =
 // records — and the log would then claim the dispatcher refused work it actually
 // attempted.
 //
-// ⚠ STEP 7 ADDS TWO EXECUTION OUTCOMES, `resumed` and `resume-failed`, as SIBLINGS
+// ⚠ STEP 7 ADDED TWO EXECUTION OUTCOMES, `resumed` and `resume-failed`, as SIBLINGS
 // of `spawned` / `spawn-failed` rather than as a flag on them. A caller reading the
 // log or the API envelope must be able to tell "a fresh stranger started this
-// stage" from "the hot author picked it back up" without decoding a boolean —
-// they are different events in the world, and the independence rule is about
-// exactly that difference. Both additions are PURELY ADDITIVE: the existing
-// variants are unchanged field-for-field, which is why every step-4a/4b assertion
-// still holds verbatim.
+// stage" from "the hot author picked it back up" without decoding a boolean.
+//
+// ⚠⚠ **AS OF S7·7b (D46) NOTHING PRODUCES EITHER OF THEM. THEY ARE DECLARED-BUT-
+// UNREACHABLE, AND THAT IS A DELIBERATE, RECORDED PAUSE — NOT AN OVERSIGHT.**
+// D46 removed the dispatcher's resume path (`resumeStageRun`, below the spawn
+// path, is gone), so no code in this class can return these two variants any more.
+// They were NOT deleted with it, because they are consumed OUTSIDE this module and
+// outside its tests, by surfaces this unit was scoped away from:
+//
+//   • `packages/ui/src/lib/taskBoard.ts` — `case 'resumed':` and
+//     `case 'resume-failed':` in `describeDispatchResponse`, each with its own
+//     operator-facing headline;
+//   • `packages/ui/src/lib/dispatchFollow.ts` — `sessionToSubscribeAfterDispatch`
+//     documents `resumed` as the one outcome that carries an appSessionId WITHOUT
+//     being a new session, which is why it is excluded there;
+//   • the tests of both.
+//
+// Those consumers read the outcome as an UNTYPED STRING off the HTTP envelope, so
+// deleting the variants here would NOT redden the build — it would silently leave
+// the board carrying two branches that can never fire. Removing them is therefore a
+// UI unit with its own diff, not a side effect of this one. Until that lands, the
+// honest state is: the API can no longer emit these, the board can still describe
+// them, and this comment is the bridge between those two facts.
 export type DispatchAttemptResult =
   | {
       readonly outcome: 'spawned';
@@ -257,6 +281,7 @@ export type DispatchAttemptResult =
       // the work, not by a new one. No `cwd` field, deliberately — the resumed
       // session keeps its own recorded working directory and the dispatcher never
       // chose one, so reporting a resolved path here would be a fabricated fact.
+      // ⚠ UNREACHABLE SINCE D46 — see the note above the union.
       readonly outcome: 'resumed';
       readonly taskId: string;
       readonly stage: string;
@@ -288,6 +313,7 @@ export type DispatchAttemptResult =
       // `dispatch_refused` claim the dispatcher refused work it actually attempted.
       // Its own outcome rather than a shared `spawn-failed` so a reader can see
       // WHICH call failed; the two are not interchangeable in a post-mortem.
+      // ⚠ UNREACHABLE SINCE D46 — see the note above the union.
       readonly outcome: 'resume-failed';
       readonly taskId: string;
       // Which session we tried to bring back — the missing half of a bare reason.
@@ -360,18 +386,15 @@ export class TaskDispatcher {
    *
    * What gets written, and what deliberately does not:
    *
-   *   • `spawn`  → `resolveStageRunner` (step 7) says WHO runs the stage, and the
-   *     answer is one of two:
-   *       – `mode: 'spawn'`  → the session host spawns an SDK session in the
-   *         resolved cwd, then ONE `task_session_attached` records the link.
-   *         Emitted only AFTER a real `appSessionId` comes back, so the board
-   *         never shows a ref to a session that does not exist. **A `review` stage
-   *         ALWAYS lands here — see the independence rule in stageRunner.ts.**
-   *       – `mode: 'resume'` → THE FIX LOOP: the session that authored the work is
-   *         resumed instead, and the same `task_session_attached` records that it
-   *         is now running this stage too.
-   *     Either way an optional composed instruction is sent afterwards; the
-   *     default composer sends nothing, which is today's behaviour exactly.
+   *   • `spawn`  → `resolveStageRunner` (step 7) says WHO runs the stage, and since
+   *     D46 the answer is always the same one: the session host spawns an SDK
+   *     session in the resolved cwd, then ONE `task_session_attached` records the
+   *     link. Emitted only AFTER a real `appSessionId` comes back, so the board
+   *     never shows a ref to a session that does not exist. **A `review` stage AND
+   *     a fix both land here** — see stageRunner.ts for the independence rule and
+   *     for D46's reversal of the old `mode: 'resume'` fix branch. An optional
+   *     composed instruction is sent afterwards, carrying the FIX-SEED when the
+   *     record has one (`deliverStageInstruction`).
    *
    *   • `refuse` → ONE `dispatch_refused { taskId, reason }`. **THIS IS I10.**
    *     The invariant is not satisfied by refusing; it is satisfied by refusing
@@ -448,13 +471,15 @@ export class TaskDispatcher {
         // Note the shape: `decideDispatch` never sees this, and `resolveStageRunner`
         // never sees the meters. Neither can drift into the other's job, and I10
         // stays assertable against the decision function alone.
+        //
+        // ⚠ S7·7b DELETED THE `mode === 'resume'` BRANCH THAT STOOD HERE (D46 — a
+        // recorded reversal). It read "THE FIX LOOP. The task came back down
+        // `review → implementing`, so the work has an author and the author is
+        // cache-warm" and routed to `resumeStageRun`. `resolveStageRunner` no longer
+        // has a second mode to return, so there is nothing left to branch on and the
+        // spawn path below is the whole of the answer. A fix carries its context in
+        // the FIX-SEED instead (see `deliverStageInstruction`).
         const runnerPlan = resolveStageRunner(task);
-        if (runnerPlan.mode === 'resume') {
-          // THE FIX LOOP. The task came back down `review → implementing`, so the
-          // work has an author and the author is cache-warm (D6: prompt cache is
-          // scoped to machine+directory, and a resume lands in the same directory).
-          return this.resumeStageRun(task, decision.stage, runnerPlan);
-        }
         // WHERE it runs. Under the flag this may create a git worktree, which is
         // why the whole method is async.
         const workingDirectory = await this.resolveSpawnWorkingDirectory(task);
@@ -729,6 +754,99 @@ export class TaskDispatcher {
   }
 
   /**
+   * Record a reported completion — the DETERMINISTIC I10 core of the FIX side
+   * (S7·7b), the exact mirror of `recordReview`. Called with the implementer's
+   * app-session id and the worklog a dispatched implementing session reported
+   * through the `report_completion` tool (S7·7b's SDK-adapter trigger).
+   *
+   * Two writes, IN THIS ORDER, and the order is the contract (recordReview's, and
+   * recordPlan's before it): emit `completion_reported` (the durable record, and
+   * the source of the `lastCompletion` fold that seeds the NEXT attempt's briefing)
+   * → propose the transition through `taskWriter.proposeTaskTransition`. Record the
+   * FACT before the CONSEQUENCE. No artifact store: the worklog is small structured
+   * data carried inline, like the review verdict and unlike a plan.
+   *
+   * ⚠ **THE TRANSITION IS `implementing → review`, AND THAT IS D53's OUTCOME RULE
+   * MADE REAL.** D53's taxonomy: promotions are DECISIONS (a human/orchestrator
+   * call), reports are OUTCOMES — the work reporting its own state — and this is
+   * the second outcome edge, alongside `planning → plan-ready` on plan capture and
+   * `review → done/implementing` on the verdict. There is deliberately NO CHAINING:
+   * `review` is a HOLDING PEN, not an active stage, so landing there dispatches
+   * NOTHING. Whether an independent reviewer is spawned, or the task is bounced
+   * straight back with specific fixes, is the orchestrator's judgement — and if a
+   * future unit makes this auto-dispatch a reviewer, it has reversed D53 and needs
+   * its own decision record.
+   *
+   * TOTAL and NEVER THROWS on its own paths — like `recordReview`, it is called from
+   * an adapter and a method that throws is a capture that silently stopped. One path
+   * is a deliberate NO-OP:
+   *
+   *   • UNKNOWN / NON-IMPLEMENTING SESSION → nothing. If no task carries a
+   *     `{ stage: 'implementing', appSessionId }` ref for this author, there is no
+   *     task to record against. THIS GUARD IS WHY EXPOSING `report_completion` TO
+   *     EVERY DISPATCHED SESSION IS SAFE: a review session that never calls it is a
+   *     no-op, and one that spuriously calls it is guarded here.
+   *
+   * ⚠ NEVER a `task_transitioned` this module emits — same I7 contract as its two
+   * siblings. The writer adjudicates; a task that has already left `implementing`
+   * gets the writer's EVENTED REJECTION, not a throw and not a silent success.
+   */
+  recordCompletion(
+    implementerAppSessionId: string,
+    worklog: ReportCompletionPayload['worklog'],
+  ): void {
+    // 1. REVERSE-LOOKUP the owning task from its OWN implementing refs (recordPlan
+    // keys on 'planning', recordReview on 'review'; this keys on 'implementing').
+    // Fresh read, like every other read here. No task claims this author with an
+    // implementing ref → NO-OP (the safety guard above).
+    const owningTask = Object.values(this.deps.readTasks().tasks).find((task) =>
+      task.sessionRefs.some(
+        (sessionRef) =>
+          sessionRef.stage === 'implementing' &&
+          sessionRef.appSessionId === implementerAppSessionId,
+      ),
+    );
+    if (owningTask === undefined) {
+      return;
+    }
+
+    // 2. IDENTITY (mirrors recordReview). `attempt` = count of this task's
+    // implementing refs (≥1, we just matched one) — and since D46 every fix SPAWNS
+    // a fresh session, that count is exactly the number of implementation attempts
+    // rather than an approximation of it. `workOrderRev` defaults to 0 until the
+    // first amendment, matching the record's absent-until-amended field.
+    const implementingAttempt = owningTask.sessionRefs.filter(
+      (sessionRef) => sessionRef.stage === 'implementing',
+    ).length;
+    const workOrderRev = owningTask.workOrderRev ?? 0;
+
+    // 3. EMIT `completion_reported` (S7·7b-core) — the durable record, FIRST, so the
+    // fact is written before the consequence is proposed. The fold puts the whole
+    // payload on `TaskRecord.lastCompletion` (latest-wins), which is what
+    // `deliverStageInstruction` reads back as the next attempt's fix-seed.
+    this.deps.emit([
+      completionReported({
+        taskId: owningTask.taskId,
+        stage: 'implementing',
+        attempt: implementingAttempt,
+        workOrderRev,
+        worklog,
+      }),
+    ]);
+
+    // 4. PROPOSE `implementing → review` through I7's choke point — LAST, and never
+    // a hand-rolled emit. Unlike recordReview there is NOTHING TO DERIVE: a reported
+    // completion has exactly one meaning (D53), so there is no `deriveCompletion-
+    // Outcome` and no pure function to call. If a rule ever makes the target depend
+    // on the worklog's content, THAT is when a pure deriver earns its place in core
+    // — not before.
+    this.deps.taskWriter.proposeTaskTransition(owningTask.taskId, {
+      toStage: 'review',
+      proposedBy: 'dispatcher',
+    });
+  }
+
+  /**
    * WHERE this stage run executes — the whole of step 8's decision, in one place.
    *
    * Three worlds, and the first two are the same world:
@@ -794,93 +912,24 @@ export class TaskDispatcher {
     };
   }
 
-  /**
-   * Resume the hot author for a fix. The `spawn` path's mirror image, and it
-   * differs in exactly three ways — each one deliberate:
-   *
-   *   1. No cwd is resolved. The session comes back in its OWN recorded directory
-   *      (I3), which is the directory its prompt cache is scoped to (D6).
-   *   2. The `appSessionId` is not new. `resumeSession` returns the SAME id, so
-   *      this is the same session running a second stage for this task — which is
-   *      the point of the fix loop, not an accident to be defended against.
-   *   3. A failure is `resume-failed`, not `spawn-failed`.
-   *
-   * ⚠ **THE I11 INTERACTION, stated where it happens.** `SessionHost.resumeSession`
-   * REFUSES a session that already has a live process ("a live session is never
-   * re-spawned"), and `decideDispatch` has already refused `already-running` before
-   * control reaches here. THE TWO GUARDS AGREE, AND THEY ARE INDEPENDENT. The
-   * dispatcher's guard reads the task's refs against `isLive` at decision time; the
-   * host's reads its own live-process registry at the instant of the call. This one
-   * is the BACKSTOP: it does not depend on the dispatcher's view of liveness being
-   * current, so a race between the liveness read and the resume — the exact window
-   * a scheduling loop will widen — ends in a refusal rather than a double-run. Do
-   * not "simplify" by trusting the earlier check; the earlier check is the
-   * optimisation and this one is the guarantee.
-   */
-  private resumeStageRun(
-    task: TaskRecord,
-    stage: string,
-    plan: Extract<StageRunnerPlan, { mode: 'resume' }>,
-  ): DispatchAttemptResult {
-    let resumeResult;
-    try {
-      resumeResult = this.deps.sessionHost.resumeSession(plan.appSessionId);
-    } catch (resumeError) {
-      // Same contract as the spawn path: the host's job is to refuse rather than
-      // throw, and a dispatcher must survive its adapters regardless.
-      return {
-        outcome: 'resume-failed',
-        taskId: task.taskId,
-        appSessionId: plan.appSessionId,
-        reason: `resume-threw:${describeThrown(resumeError)}`,
-      };
-    }
-    if ('refused' in resumeResult) {
-      // NO `task_session_attached` — the ref would claim a stage run that is not
-      // running. NO `dispatch_refused` either, on the same two counts as a failed
-      // spawn: this was an execution failure rather than a decision, and the host
-      // already evented its own refusal (I11's `transition_rejected`, or a
-      // preflight rejection). Recording it again would double-count one failure.
-      return {
-        outcome: 'resume-failed',
-        taskId: task.taskId,
-        appSessionId: plan.appSessionId,
-        reason: resumeResult.reason,
-      };
-    }
-
-    // The link, recorded for the CURRENT stage. The id is the host's, never one
-    // the dispatcher invented — `resumeSession` hands back the same session id.
-    //
-    // ⚠ WHAT THE PROJECTION DOES WITH THIS REPEAT, verified against the real fold
-    // rather than assumed: `projections/tasks.ts` dedupes `task_session_attached`
-    // ON `appSessionId` ALONE, so a second attach for a session already on the
-    // task is a NO-OP and the existing ref KEEPS ITS ORIGINAL STAGE. Today that is
-    // lossless, because the only resume `resolveStageRunner` can produce is an
-    // `implementing` ref for an `implementing` stage — both fields already match,
-    // and the event is an exact duplicate whose whole content is already in state.
-    // It is still emitted: the log records what happened, and a projection's
-    // idempotence is the projection's business (I6 replays either way).
-    // IF A FUTURE RULE EVER RESUMES ACROSS STAGES, the board would under-report —
-    // the ref would still read `implementing` while the session ran `review`. That
-    // would be a PROJECTION decision (key on stage+session, or a new event), never
-    // a workaround here.
-    this.deps.emit([
-      taskSessionAttached({
-        taskId: task.taskId,
-        stage,
-        appSessionId: resumeResult.appSessionId,
-      }),
-    ]);
-    const instructionDelivery = this.deliverStageInstruction(task, plan, resumeResult.appSessionId);
-    return {
-      outcome: 'resumed',
-      taskId: task.taskId,
-      stage,
-      appSessionId: resumeResult.appSessionId,
-      ...(instructionDelivery === undefined ? {} : { instructionDelivery }),
-    };
-  }
+  // ⚠ **`resumeStageRun` STOOD HERE AND WAS DELETED BY S7·7b (D46) — A RECORDED
+  // REVERSAL.** It was the `spawn` path's mirror image for the fix loop: it called
+  // `sessionHost.resumeSession(plan.appSessionId)`, emitted the same
+  // `task_session_attached`, and returned `resumed` / `resume-failed`. It resolved
+  // no cwd (I3: a resumed session comes back in its OWN recorded directory, which
+  // is what D6's machine+directory prompt cache is scoped to) and it carried a long
+  // note on the I11 backstop — `resumeSession` refuses a session that already has a
+  // live process, INDEPENDENTLY of `decideDispatch`'s `already-running` refusal.
+  //
+  // None of that reasoning was wrong; D46 removed the thing it was reasoning about.
+  // A fix now SPAWNS (stageRunner.ts has the two arguments), so there is no second
+  // execution path in this class at all.
+  //
+  // ⚠ **`SessionHost.resumeSession` IS ALIVE AND MUST STAY** — D46 rider 2 scopes
+  // the reversal to STAGE RUNS. `wsHub.ts` and `app.ts` still route the human's own
+  // resume through it; what died is the DISPATCHER's use, which is why the
+  // `sessionHost` dep `Pick` below no longer names it. The I11 backstop still
+  // guards that human path, inside the host where it always lived.
 
   /**
    * Compose and send this stage run's instruction, if there is one.
@@ -904,8 +953,10 @@ export class TaskDispatcher {
     // The composer is PURE (rule 0.3) and must not touch the artifact store, so
     // the ONE piece of IO the fresh-implementer briefing needs happens HERE, at the
     // daemon boundary, and is passed IN. The task carries only the plan's content
-    // hash (`planArtifactHash`); the blob lives in the store. This covers BOTH call
-    // sites (spawn and resume) because both route through this method.
+    // hash (`planArtifactHash`); the blob lives in the store.
+    //
+    // (S7·7b: "BOTH call sites (spawn and resume)" used to be true of this method.
+    // D46 removed the resume path entirely — there is now exactly ONE call site.)
     //
     // ⚠ NEVER THROWS, NEVER FAILS THE DISPATCH. A store read is IO, so it is inside
     // the same try/catch discipline the rest of this method keeps: a fetch that
@@ -913,17 +964,55 @@ export class TaskDispatcher {
     // wrote it at `recordPlan`), DEGRADES to the no-plan briefing rather than
     // erroring. Absent hash → no fetch at all (the store is not consulted), so a
     // task that never planned is byte-identical to before this unit.
-    let planContext: StageInstructionContext | undefined;
+    let planBlobText: string | undefined;
     if (task.planArtifactHash !== undefined) {
       try {
         const planBlob = this.deps.artifactStore.getBlob(task.planArtifactHash);
-        planContext = planBlob === null ? undefined : { plan: planBlob };
+        planBlobText = planBlob === null ? undefined : planBlob;
       } catch {
         // A failed blob read is not a failed dispatch — degrade to no plan. The
         // composer then falls back to its work-order-only (or generic) briefing.
-        planContext = undefined;
+        planBlobText = undefined;
       }
     }
+
+    // ── S7·7b: the FIX-SEED (D46), read straight off the task record ───────────
+    //
+    // NO IO AT ALL, in deliberate contrast to the plan above: `lastReview` and
+    // `lastCompletion` are FOLDED FIELDS (S7·7b-core's projection folds of
+    // `review_reported` / `completion_reported`), so the seed is already in the
+    // record this method was handed. That is the whole reason the payloads are
+    // carried inline on their events rather than stored as blobs — a fix-seed that
+    // needed a fetch would need a degrade path, and this one cannot fail.
+    //
+    // ⚠ **LATEST-WINS, AND STALE-REV FEEDBACK CAN RIDE ALONG. ACCEPTED FOR NOW.**
+    // Both fields keep only the NEWEST report (see taskRecordSchema). After an
+    // AMENDMENT (a new `workOrderRev`, D46's second correction door) the newest
+    // review may have judged the OLD work-order, and it will still be rendered into
+    // the new revision's briefing. The payloads each carry their own `workOrderRev`,
+    // so a filter — "drop a seed whose rev is behind the task's" — is a few lines
+    // away; it is deliberately NOT built in this unit, because which side of that
+    // choice is right (drop it, or show it labelled as stale) is a product call
+    // nobody has made. If you are here because a fixer acted on obsolete feedback,
+    // this is the note you were looking for.
+    //
+    // ABSENT STAYS ABSENT: each key is spread in only when its source is present,
+    // never set to `undefined`. A present-but-undefined key is NOT the same as an
+    // absent one — `composeStageInstruction`'s contract is that an empty context
+    // composes byte-identically to no context, and `'reviewFeedback' in context`
+    // must stay false on a first pass.
+    const reviewFeedback = task.lastReview?.criteria;
+    const worklog = task.lastCompletion?.worklog;
+    const instructionContext: StageInstructionContext = {
+      ...(planBlobText === undefined ? {} : { plan: planBlobText }),
+      ...(reviewFeedback === undefined ? {} : { reviewFeedback }),
+      ...(worklog === undefined ? {} : { worklog }),
+    };
+    // An EMPTY context is passed as `undefined`, not as `{}` — that is what keeps a
+    // first-pass dispatch byte-identical to the pre-S7·7a call, where the third
+    // argument did not exist at all.
+    const planContext: StageInstructionContext | undefined =
+      Object.keys(instructionContext).length === 0 ? undefined : instructionContext;
 
     let instructionText: string | null;
     try {

@@ -29,6 +29,7 @@ import {
   type EventStore,
   type IdSource,
   type Liveness,
+  type ReportCompletionPayload,
   type ReportReviewPayload,
   type SessionRecord,
 } from '@vimes/core';
@@ -102,6 +103,23 @@ export interface SdkReportToolSpec {
   description: string;
   inputSchema: z.ZodRawShape;
   handler: (input: unknown) => Promise<{ ok: boolean }>;
+  // ⚠ S7·7b ADDED THIS, and the reason is that there are now TWO tools on one
+  // server. The factory's wrap-up `CallToolResult` used to hard-code "Review
+  // verdict recorded." — correct while `report_review` was the only customer, and
+  // a LIE to the model the moment `report_completion` rides the same wrapper. The
+  // acknowledgement therefore belongs to the SPEC, not to the factory. Both
+  // strings are stated per-tool so a reader can see exactly what each tool says
+  // back; `report_review`'s two are its pre-S7·7b strings VERBATIM, so the review
+  // path's model-facing bytes are unchanged (the review path is out of scope for
+  // S7·7b — this is an additive field, not a behaviour change).
+  acknowledgement: {
+    // Returned when `handler` resolved `{ ok: true }`.
+    readonly recorded: string;
+    // Returned when it resolved `{ ok: false }`. No handler produces that today;
+    // the string exists because the `{ ok: boolean }` contract permits it and a
+    // silent success message on a failure would be the worst possible answer.
+    readonly notRecorded: string;
+  };
 }
 
 export interface SdkQueryOptions {
@@ -130,9 +148,10 @@ export interface SdkQueryOptions {
   // D50: named sub-agent spawn surfaces removed from context (SDK `disallowedTools`
   // belt). Set together with `tools` on a dispatched spawn, or absent entirely.
   disallowedTools?: string[];
-  // S7·6b: in-process report tools exposed to this session (today: `report_review`
-  // for dispatched sessions). The factory wraps them into `mcpServers`. Absent (the
-  // common case) = no custom tools, options byte-identical to before this unit.
+  // S7·6b: in-process report tools exposed to this session — as of S7·7b BOTH
+  // `report_review` and `report_completion`, for every dispatched session. The
+  // factory wraps them into ONE `mcpServers` entry. Absent (the common case) = no
+  // custom tools, options byte-identical to before S7·6b.
   reportTools?: SdkReportToolSpec[];
 }
 
@@ -289,6 +308,14 @@ interface AdapterServices {
   // which owns task state. The adapter never touches task state itself. Mirrors
   // `onPlanCaptured` exactly.
   onReviewReported(appSessionId: string, criteria: ReportReviewPayload['criteria']): void;
+  // S7·7b completion capture (I10): the mirror of `onReviewReported` for the OTHER
+  // half of the loop. The SDK adapter OBSERVES a dispatched implementing session's
+  // `report_completion` tool call (same handler-not-canUseTool reasoning) and
+  // PROPOSES the worklog back through here; the host forwards it to the
+  // dispatcher's `recordCompletion`, which owns task state and — D53 — proposes the
+  // `implementing → review` OUTCOME transition. The adapter never touches task
+  // state itself.
+  onCompletionReported(appSessionId: string, worklog: ReportCompletionPayload['worklog']): void;
 }
 
 interface LiveProcess {
@@ -343,6 +370,15 @@ export interface SessionHostDeps {
   // to `taskDispatcher.recordReview` (the state-owning half). Unset = no-op: the tool
   // handler still returns cleanly and the verdict is simply not recorded.
   onReviewReported?: (appSessionId: string, criteria: ReportReviewPayload['criteria']) => void;
+  // S7·7b completion capture (I10): invoked when a dispatched implementing session
+  // calls the `report_completion` tool, carrying the author's worklog. app.ts wires
+  // it to `taskDispatcher.recordCompletion` (the state-owning half). Unset = no-op:
+  // the tool handler still returns cleanly and the completion is simply not
+  // recorded — which also means the `implementing → review` outcome does not fire.
+  onCompletionReported?: (
+    appSessionId: string,
+    worklog: ReportCompletionPayload['worklog'],
+  ) => void;
 }
 
 // Delete every CLAUDE* key (covers CLAUDECODE) from a copy of the parent env; keep
@@ -445,6 +481,49 @@ const REVIEW_TOOL_DESCRIPTION =
   'Report your independent review verdict: one entry per acceptance criterion ' +
   '(its id, pass or fail, an optional note).';
 
+// ── S7·7b: the `report_completion` tool's input shape ────────────────────────
+//
+// The exact mirror of the review shape above, and it carries the SAME zod v3/v4
+// FINDING verbatim — `reportCompletionPayloadSchema` is core's zod v3 object and
+// cannot be reused here, so the shape is RESTATED in the daemon's v4 zod and BOUND
+// to core at the TYPE level below. Do not "simplify" this into an import; that is
+// the failure the S7·6b finding recorded (D52).
+//
+// WORKLOG-ONLY, exactly as review is criteria-only: `taskId` / `stage` / `attempt`
+// / `workOrderRev` are VIMES's to supply (`recordCompletion` derives them from the
+// task record), never the session's to assert. A session that could name its own
+// taskId could report a completion against a task it never ran.
+//
+// Both arrays are REQUIRED and may be EMPTY — `reportCompletionPayloadSchema.worklog`
+// makes them `z.array(z.string())` with no `.optional()`, and matching that exactly
+// is what the two-way bind below enforces. An attempt that genuinely rejected no
+// paths reports `pathsRejected: []` rather than omitting the key, which keeps the
+// stored payload one shape instead of two.
+const completionWorklogSchema = z.object({
+  decisionsMade: z.array(z.string()),
+  pathsRejected: z.array(z.string()),
+});
+const COMPLETION_REPORT_INPUT_SHAPE = { worklog: completionWorklogSchema } satisfies z.ZodRawShape;
+type CompletionReportWorklog = z.infer<typeof completionWorklogSchema>;
+// Drift bind (both directions = structural equivalence with core), the same
+// guarantee the review pair above gives: if `reportCompletionPayloadSchema.worklog`
+// gains, loses or renames a field, ONE of these two stops compiling and the build
+// fails. Verified by breaking (rename a field in the restated shape → both red).
+const _completionWorklogMatchesCore =
+  {} as CompletionReportWorklog satisfies ReportCompletionPayload['worklog'];
+const _coreMatchesCompletionWorklog =
+  {} as ReportCompletionPayload['worklog'] satisfies CompletionReportWorklog;
+void _completionWorklogMatchesCore;
+void _coreMatchesCompletionWorklog;
+
+// ⚠ LOAD-BEARING PROSE, and it must AGREE WITH THE BRIEFING. The implementing
+// briefing's closing (core `IMPLEMENTING_BRIEFING_CLOSING`, S7·7b) names this tool
+// and these two field names verbatim; if either drifts, the model is told to call
+// something that is not here. The field names are the tool's own input keys.
+const COMPLETION_TOOL_DESCRIPTION =
+  'Report your completed work: a worklog of decisionsMade (calls you made and why) ' +
+  'and pathsRejected (dead ends tried or considered and abandoned).';
+
 // ── ClaudeSdkAdapter ─────────────────────────────────────────────────────────
 class ClaudeSdkAdapter implements SessionAdapter {
   readonly capabilities = CLAUDE_SDK_CAPABILITIES;
@@ -495,14 +574,25 @@ class ClaudeSdkAdapter implements SessionAdapter {
         ...(context.dispatched === true
           ? { tools: [...DISPATCHED_SESSION_TOOLS], disallowedTools: [...SUBAGENT_SPAWN_TOOLS] }
           : {}),
-        // S7·6b: expose the `report_review` in-process tool to EVERY dispatched
+        // S7·6b/S7·7b: expose the in-process report tools to EVERY dispatched
         // session (the spike proved `mcpServers` is orthogonal to the D50 `tools`
-        // clamp — no allowlist entry needed, no spawn hole). Exposing it broadly is
-        // safe because `recordReview` no-ops for a non-review/unknown session (the
-        // guard). The handler closes over this session's id + the services callback,
-        // and only OBSERVES + PROPOSES (I10) — it never touches task state. Set via
-        // the same spread idiom, so a non-dispatched spawn stays byte-identical.
-        ...(context.dispatched === true ? { reportTools: [this.buildReviewSpec(context.appSessionId)] } : {}),
+        // clamp — no allowlist entry needed, no spawn hole; D52). BOTH tools go to
+        // EVERY dispatched session rather than one per stage, and that is deliberate
+        // rather than lazy: the guard lives in the DISPATCHER, where the task record
+        // is (`recordReview` no-ops without a `review` sessionRef, `recordCompletion`
+        // without an `implementing` one), so a stage-conditional exposure here would
+        // be a SECOND, weaker copy of a rule that is already enforced against real
+        // state. The handlers close over this session's id + the services callbacks
+        // and only OBSERVE + PROPOSE (I10) — they never touch task state. Set via the
+        // same spread idiom, so a non-dispatched spawn stays byte-identical.
+        ...(context.dispatched === true
+          ? {
+              reportTools: [
+                this.buildReviewSpec(context.appSessionId),
+                this.buildCompletionSpec(context.appSessionId),
+              ],
+            }
+          : {}),
       },
     });
     if (context.permissionMode === 'plan') {
@@ -536,6 +626,44 @@ class ClaudeSdkAdapter implements SessionAdapter {
         const criteria = (input as { criteria?: ReportReviewPayload['criteria'] }).criteria ?? [];
         this.services.onReviewReported(appSessionId, criteria);
         return { ok: true };
+      },
+      acknowledgement: {
+        // ⚠ PRE-S7·7b STRINGS, VERBATIM. They used to be hard-coded in the factory's
+        // wrap; moving them here changed no model-facing byte. Do not reword.
+        recorded: 'Review verdict recorded.',
+        notRecorded: 'Review verdict not recorded.',
+      },
+    };
+  }
+
+  // S7·7b: the SDK-agnostic `report_completion` spec for this session — the exact
+  // mirror of `buildReviewSpec`. The handler closes over `appSessionId` +
+  // `this.services` and forwards the author's worklog to the dispatcher via
+  // `onCompletionReported` (observe + propose only — I10). The dispatcher, not this
+  // handler, decides that the completion means `implementing → review` (D53).
+  private buildCompletionSpec(appSessionId: string): SdkReportToolSpec {
+    return {
+      name: 'report_completion',
+      description: COMPLETION_TOOL_DESCRIPTION,
+      inputSchema: COMPLETION_REPORT_INPUT_SHAPE,
+      handler: async (input) => {
+        // TOTAL, like the review handler: a missing/`undefined` worklog degrades to
+        // the EMPTY worklog rather than throwing out of an SDK tool call. The empty
+        // shape is a real, valid `ReportCompletionPayload['worklog']` — not a
+        // sentinel — so nothing downstream has to special-case it.
+        const worklog = (input as { worklog?: ReportCompletionPayload['worklog'] }).worklog ?? {
+          decisionsMade: [],
+          pathsRejected: [],
+        };
+        this.services.onCompletionReported(appSessionId, worklog);
+        return { ok: true };
+      },
+      acknowledgement: {
+        // The briefing tells the implementer that this report IS how it finishes and
+        // that VIMES moves the task to review — so the acknowledgement says the same
+        // thing back rather than a bare "recorded", closing the loop the words opened.
+        recorded: 'Completion recorded. The task has been moved to review.',
+        notRecorded: 'Completion not recorded.',
       },
     };
   }
@@ -800,6 +928,9 @@ export class SessionHost implements HookHost {
   private readonly onReviewReported:
     | ((appSessionId: string, criteria: ReportReviewPayload['criteria']) => void)
     | undefined;
+  private readonly onCompletionReported:
+    | ((appSessionId: string, worklog: ReportCompletionPayload['worklog']) => void)
+    | undefined;
 
   private readonly sdkAdapter: ClaudeSdkAdapter;
   private readonly ptyAdapter: ClaudePtyAdapter;
@@ -832,6 +963,7 @@ export class SessionHost implements HookHost {
     this.onSessionCreated = deps.onSessionCreated;
     this.onPlanCaptured = deps.onPlanCaptured;
     this.onReviewReported = deps.onReviewReported;
+    this.onCompletionReported = deps.onCompletionReported;
 
     const services: AdapterServices = {
       emit: (events) => this.router.emit(events),
@@ -852,6 +984,10 @@ export class SessionHost implements HookHost {
       // Injected callback (no-op when unset) — the host forwards the adapter's
       // observation to the dispatcher's recordReview; it owns none of that logic.
       onReviewReported: (appSessionId, criteria) => this.onReviewReported?.(appSessionId, criteria),
+      // Same shape again for the completion half (S7·7b) — forwarded to the
+      // dispatcher's recordCompletion, no logic owned here.
+      onCompletionReported: (appSessionId, worklog) =>
+        this.onCompletionReported?.(appSessionId, worklog),
     };
     this.sdkAdapter = new ClaudeSdkAdapter(deps.sdkQueryFactory ?? defaultSdkQueryFactory, services);
     this.ptyAdapter = new ClaudePtyAdapter(deps.ptySpawnFactory ?? defaultPtySpawnFactory, services);
@@ -1506,17 +1642,29 @@ export function buildReportMcpServers(
       // search (sdk.d.ts:480-487) — the spike relied on this to keep report_review
       // reachable under the D50 clamp.
       alwaysLoad: true,
+      // ⚠ ONE SERVER, N TOOLS — S7·7b is the first caller to pass more than one
+      // (`report_review` + `report_completion`), and this `.map` already handled it:
+      // `createSdkMcpServer`'s `tools` is an ARRAY (sdk.d.ts:467), so the two tools
+      // mount side by side under the single `vimes_report` name and the model sees
+      // `mcp__vimes_report__report_review` and `mcp__vimes_report__report_completion`.
+      // Nothing here is per-tool except the spec's own fields.
       tools: reportTools.map((spec) =>
         sdk.tool(spec.name, spec.description, spec.inputSchema, async (args) => {
           // Wrap the SDK-agnostic `{ ok }` return into a success CallToolResult. The
-          // observation (onReviewReported) already happened inside spec.handler,
-          // BEFORE this wrap-up result is returned to the model.
+          // observation (onReviewReported / onCompletionReported) already happened
+          // inside spec.handler, BEFORE this wrap-up result is returned to the model.
+          //
+          // ⚠ The acknowledgement text comes FROM THE SPEC as of S7·7b. It used to be
+          // the hard-coded "Review verdict recorded." here, which was true while
+          // review was the only tool and became a lie the moment a second one shared
+          // this wrapper. This function is now tool-agnostic, which is what lets a
+          // third report tool land without touching it.
           const result = await spec.handler(args);
           return {
             content: [
               {
                 type: 'text',
-                text: result.ok ? 'Review verdict recorded.' : 'Review verdict not recorded.',
+                text: result.ok ? spec.acknowledgement.recorded : spec.acknowledgement.notRecorded,
               },
             ],
           };

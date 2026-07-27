@@ -105,6 +105,8 @@ function makeHarness(deps: {
   onPlanCaptured?: (appSessionId: string, planText: string) => void;
   // S7·6b: the review-capture callback the SDK adapter proposes verdicts through.
   onReviewReported?: (appSessionId: string, criteria: unknown) => void;
+  // S7·7b: the completion-capture callback, the same seam for the worklog.
+  onCompletionReported?: (appSessionId: string, worklog: unknown) => void;
 }): Harness {
   const clock = new SteppingClock('2026-01-01T00:00:00.000Z', 1000);
   const ids = new CountingIdSource();
@@ -121,6 +123,7 @@ function makeHarness(deps: {
     projectsRoot: '/fake-projects',
     onPlanCaptured: deps.onPlanCaptured,
     onReviewReported: deps.onReviewReported,
+    onCompletionReported: deps.onCompletionReported,
   });
   return { host, store, router };
 }
@@ -1698,15 +1701,18 @@ describe('SessionHost — custody refusals, adoption, session ops (D10 / v0.2)',
   });
 });
 
-// ── S7·6b: report_review tool exposure + handler + the SDK-boundary wrap ───────
+// ── S7·6b/S7·7b: report tool exposure + handlers + the SDK-boundary wrap ──────
 //
-// The adapter exposes an SDK-agnostic `report_review` spec to EVERY dispatched
-// session (safe: recordReview no-ops for a non-review session). The factory wraps
-// specs into `mcpServers` via the SDK — tested here through `buildReportMcpServers`
-// with a FAKE surface, so CI never loads the real SDK (the SDK-boundary rule).
+// The adapter exposes SDK-agnostic specs — `report_review` (S7·6b) and
+// `report_completion` (S7·7b) — to EVERY dispatched session. Safe because the
+// GUARD LIVES IN THE DISPATCHER: recordReview no-ops without a `review` sessionRef
+// and recordCompletion without an `implementing` one, both against real task state.
+// The factory wraps specs into `mcpServers` via the SDK — tested here through
+// `buildReportMcpServers` with a FAKE surface, so CI never loads the real SDK (the
+// SDK-boundary rule).
 
-describe('SessionHost — report_review tool exposure (S7·6b)', () => {
-  it('a dispatched spawn carries the report_review spec in reportTools (criteria-only schema)', async () => {
+describe('SessionHost — report tool exposure (S7·6b + S7·7b)', () => {
+  it('a dispatched spawn carries BOTH specs in reportTools, each with its minimal schema', async () => {
     const { factory, calls } = makeSdkFactory(async function* () {
       yield { type: 'system', subtype: 'init', session_id: 'claude-1' };
       yield { type: 'result', subtype: 'success' };
@@ -1716,11 +1722,18 @@ describe('SessionHost — report_review tool exposure (S7·6b)', () => {
       host.spawnSession({ channel: 'sdk', cwd: '/p', dispatched: true });
       await waitFor(() => calls.length === 1);
       const specs = calls[0]!.reportTools;
-      expect(specs).toHaveLength(1);
-      expect(specs![0]!.name).toBe('report_review');
-      expect(typeof specs![0]!.handler).toBe('function');
-      // The tool schema is criteria-ONLY — VIMES supplies taskId/stage/attempt/rev.
+      // ⚠ S7·7b widened this from ONE spec to TWO. Order is asserted because the
+      // array order is the order the tools mount on the single `vimes_report`
+      // server, and a stable order keeps the prompt prefix stable (cache discipline).
+      expect(specs).toHaveLength(2);
+      expect(specs!.map((spec) => spec.name)).toEqual(['report_review', 'report_completion']);
+      for (const spec of specs!) {
+        expect(typeof spec.handler).toBe('function');
+      }
+      // Each schema is MINIMAL — VIMES supplies taskId/stage/attempt/rev for both,
+      // so neither tool lets a session name the task it is reporting against.
       expect(Object.keys(specs![0]!.inputSchema)).toEqual(['criteria']);
+      expect(Object.keys(specs![1]!.inputSchema)).toEqual(['worklog']);
     } finally {
       host.stop();
     }
@@ -1762,6 +1775,56 @@ describe('SessionHost — report_review tool exposure (S7·6b)', () => {
       // The handler closes over THIS session's id and forwards to the callback.
       expect(result).toEqual({ ok: true });
       expect(captured).toEqual([{ appSessionId, criteria }]);
+    } finally {
+      host.stop();
+    }
+  });
+
+  it('invoking the completion spec handler fires onCompletionReported(appSessionId, worklog) and returns {ok:true}', async () => {
+    // S7·7b, the exact mirror of the review case above.
+    const captured: Array<{ appSessionId: string; worklog: unknown }> = [];
+    const { factory, calls } = makeSdkFactory(async function* () {
+      yield { type: 'system', subtype: 'init', session_id: 'claude-1' };
+      yield { type: 'result', subtype: 'success' };
+    });
+    const { host } = makeHarness({
+      sdkQueryFactory: factory,
+      onCompletionReported: (appSessionId, worklog) => captured.push({ appSessionId, worklog }),
+    });
+    try {
+      const spawn = host.spawnSession({ channel: 'sdk', cwd: '/p', dispatched: true });
+      const appSessionId = 'appSessionId' in spawn ? spawn.appSessionId : '';
+      await waitFor(() => calls.length === 1);
+      const spec = calls[0]!.reportTools![1]!;
+      expect(spec.name).toBe('report_completion');
+      const worklog = { decisionsMade: ['chose X over Y'], pathsRejected: ['tried Z, it deadlocks'] };
+      const result = await spec.handler({ worklog });
+      // The handler closes over THIS session's id and forwards to the callback.
+      expect(result).toEqual({ ok: true });
+      expect(captured).toEqual([{ appSessionId, worklog }]);
+    } finally {
+      host.stop();
+    }
+  });
+
+  it('a completion call with NO worklog degrades to the empty worklog rather than throwing (I8)', async () => {
+    // A tool handler that throws is a capture that silently stopped — and the empty
+    // worklog is a real, valid payload shape, not a sentinel.
+    const captured: unknown[] = [];
+    const { factory, calls } = makeSdkFactory(async function* () {
+      yield { type: 'system', subtype: 'init', session_id: 'claude-1' };
+      yield { type: 'result', subtype: 'success' };
+    });
+    const { host } = makeHarness({
+      sdkQueryFactory: factory,
+      onCompletionReported: (_appSessionId, worklog) => captured.push(worklog),
+    });
+    try {
+      host.spawnSession({ channel: 'sdk', cwd: '/p', dispatched: true });
+      await waitFor(() => calls.length === 1);
+      const spec = calls[0]!.reportTools![1]!;
+      await expect(spec.handler({})).resolves.toEqual({ ok: true });
+      expect(captured).toEqual([{ decisionsMade: [], pathsRejected: [] }]);
     } finally {
       host.stop();
     }
@@ -1810,6 +1873,10 @@ describe('buildReportMcpServers — the SDK-boundary wrap (S7·6b)', () => {
     description: 'desc',
     inputSchema: { criteria: z.array(z.object({ criterionId: z.string(), verdict: z.enum(['pass', 'fail']) })) },
     handler: async () => ({ ok: true }),
+    // S7·7b: the acknowledgement moved from the factory into the spec (two tools now
+    // share the wrapper, so a hard-coded "Review verdict recorded." was a lie for one
+    // of them). These are report_review's real strings, unchanged.
+    acknowledgement: { recorded: 'Review verdict recorded.', notRecorded: 'Review verdict not recorded.' },
   };
 
   it('given specs, mounts them under mcpServers.vimes_report with alwaysLoad', () => {
@@ -1853,5 +1920,75 @@ describe('buildReportMcpServers — the SDK-boundary wrap (S7·6b)', () => {
     const { surface } = fakeSurface();
     expect(buildReportMcpServers(undefined, surface)).toBeUndefined();
     expect(buildReportMcpServers([], surface)).toBeUndefined();
+  });
+
+  // ── S7·7b: TWO tools, ONE server ────────────────────────────────────────────
+  //
+  // The shape S7·7b actually ships. `createSdkMcpServer`'s `tools` is an array
+  // (sdk.d.ts:467), so a second tool needs no new server and no second mcpServers
+  // key — the model sees `mcp__vimes_report__report_review` and
+  // `mcp__vimes_report__report_completion` side by side.
+  const completionSpec: SdkReportToolSpec = {
+    name: 'report_completion',
+    description: 'completion desc',
+    inputSchema: {
+      worklog: z.object({ decisionsMade: z.array(z.string()), pathsRejected: z.array(z.string()) }),
+    },
+    handler: async () => ({ ok: true }),
+    acknowledgement: {
+      recorded: 'Completion recorded. The task has been moved to review.',
+      notRecorded: 'Completion not recorded.',
+    },
+  };
+
+  it('TWO specs mount as TWO tools on ONE vimes_report server', () => {
+    const { surface, toolCalls, serverCalls } = fakeSurface();
+    const servers = buildReportMcpServers([spec, completionSpec], surface);
+
+    // ⚠ ONE key, not two. A second server would be a second MCP mount point and a
+    // second name the briefing prose would have to know about.
+    expect(Object.keys(servers!)).toEqual(['vimes_report']);
+    expect(serverCalls).toEqual([
+      { name: 'vimes_report', version: '0.0.1', alwaysLoad: true, toolCount: 2 },
+    ]);
+    expect(toolCalls.map((call) => call.name)).toEqual(['report_review', 'report_completion']);
+    // Each spec's raw shape reaches tool() untouched — same objects, no merging.
+    expect(toolCalls[0]!.inputSchema).toBe(spec.inputSchema);
+    expect(toolCalls[1]!.inputSchema).toBe(completionSpec.inputSchema);
+  });
+
+  it('each tool returns ITS OWN acknowledgement — the wrapper is tool-agnostic', async () => {
+    // ⚠ THE REASON THE ACKNOWLEDGEMENT MOVED ONTO THE SPEC IN S7·7b. It was
+    // hard-coded as "Review verdict recorded." in the wrapper; with two tools on one
+    // wrapper that string is a lie for one of them, and lying to the model about
+    // what VIMES just did is the exact failure the report channel exists to avoid.
+    const { surface } = fakeSurface();
+    const servers = buildReportMcpServers([spec, completionSpec], surface)!;
+    const server = servers.vimes_report as {
+      tools: Array<{
+        handler: (args: unknown, extra: unknown) => Promise<{ content: Array<{ type: 'text'; text: string }> }>;
+      }>;
+    };
+
+    await expect(server.tools[0]!.handler({}, undefined)).resolves.toEqual({
+      content: [{ type: 'text', text: 'Review verdict recorded.' }],
+    });
+    await expect(server.tools[1]!.handler({}, undefined)).resolves.toEqual({
+      content: [{ type: 'text', text: 'Completion recorded. The task has been moved to review.' }],
+    });
+  });
+
+  it('an ok:false handler returns the spec’s notRecorded text', async () => {
+    const { surface } = fakeSurface();
+    const failingSpec: SdkReportToolSpec = { ...completionSpec, handler: async () => ({ ok: false }) };
+    const servers = buildReportMcpServers([failingSpec], surface)!;
+    const server = servers.vimes_report as {
+      tools: Array<{
+        handler: (args: unknown, extra: unknown) => Promise<{ content: Array<{ type: 'text'; text: string }> }>;
+      }>;
+    };
+    await expect(server.tools[0]!.handler({}, undefined)).resolves.toEqual({
+      content: [{ type: 'text', text: 'Completion not recorded.' }],
+    });
   });
 });

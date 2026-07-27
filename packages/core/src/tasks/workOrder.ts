@@ -9,13 +9,32 @@
 // the later units need no migration, exactly the way `dispatch_refused` was
 // reserved (slice 0) ahead of its emitter (slice 6).
 //
-// Direction: workOrder.ts → { schemas.ts, taskStateMachine.ts }. Both of those
-// are leaves relative to this module (neither imports from `tasks/workOrder.js`),
-// so this dependency introduces no cycle.
+// Direction: workOrder.ts → schemas.ts, and NOTHING else. S7·7b (D52 finding 1)
+// hoisted `taskStageSchema` and the two REPORT payload schemas into `schemas.ts`,
+// which made that module the true leaf and removed this module's dependency on
+// `taskStateMachine.ts` entirely. `schemas.ts` imports nothing but zod, so there
+// is no cycle in either direction.
+//
+// ⚠ THE TWO REPORT PAYLOADS ARE RE-EXPORTED, NOT DECLARED, HERE. They had to move
+// because `taskRecordSchema.lastReview`/`.lastCompletion` are typed by them and a
+// leaf cannot import from a module that imports it. The re-export below is what
+// keeps every existing `from '../tasks/workOrder.js'` import path valid — do not
+// remove it without fixing events.ts, tasks/reviewOutcome.ts, the package index
+// and their tests. (`projections/tasks.ts` reaches for the report schemas at their
+// new home, since S7·7b wrote its fold; it still imports `submitPlanPayloadSchema`
+// from here.)
 
 import { z } from 'zod';
-import { acceptanceCriterionSchema } from '../schemas.js';
-import { taskStageSchema } from './taskStateMachine.js';
+import {
+  reportCompletionPayloadSchema,
+  reportReviewPayloadSchema,
+  taskStageSchema,
+  type ReportCompletionPayload,
+  type ReportReviewPayload,
+} from '../schemas.js';
+
+export { reportReviewPayloadSchema, reportCompletionPayloadSchema };
+export type { ReportReviewPayload, ReportCompletionPayload };
 
 // ── 1. stageRunIdentitySchema — D46's stage-run identity tuple ────────────────
 //
@@ -77,53 +96,14 @@ export const submitPlanPayloadSchema = z.object({
 });
 export type SubmitPlanPayload = z.infer<typeof submitPlanPayloadSchema>;
 
-// ── 4. reportReviewPayloadSchema — per-criterion pass/fail (S7·6) ─────────────
+// ── 4/5. reportReviewPayloadSchema + reportCompletionPayloadSchema ────────────
 //
-// This is what makes acceptance-as-a-list (D43) earn its structure rather than
-// being decorative: the reviewer reports AGAINST the list, one verdict per
-// criterion, keyed by `criterionId` back to `acceptanceCriterionSchema.id` on
-// the task record. A review that could only say "pass" or "fail" for the whole
-// task would make the list's individual addressability pointless. Consumer:
-// S7·6.
-export const reportReviewPayloadSchema = z.object({
-  taskId: z.string(),
-  stage: taskStageSchema,
-  attempt: z.number().int().positive(),
-  workOrderRev: z.number().int().nonnegative(),
-  criteria: z.array(
-    z.object({
-      // Keys to `acceptanceCriterionSchema.id` on the task record. DERIVED
-      // rather than re-typed as `z.string()`, so the two can never drift apart
-      // (principle 9, the same reason `taskCreatedPayloadSchema.title` derives
-      // from `taskRecordSchema.shape.title` rather than restating it).
-      criterionId: acceptanceCriterionSchema.shape.id,
-      verdict: z.enum(['pass', 'fail']),
-      note: z.string().optional(),
-    }),
-  ),
-});
-export type ReportReviewPayload = z.infer<typeof reportReviewPayloadSchema>;
-
-// ── 5. reportCompletionPayloadSchema — the worklog fix-seed (D46) ─────────────
-//
-// D46: because every stage run spawns fresh, a fixer handed a failed review
-// starts with NO memory of what the previous attempt already tried and
-// rejected. What it loses is the DEAD ENDS, not the code (the code is on disk,
-// in the worktree, in the diff) — so the worklog is the FIX-SEED that carries
-// those dead ends forward, on purpose, so a fresh fixer does not re-explore
-// paths already rejected on our tokens. Consumer: S7·6 (the report tool that
-// writes it) and S7·7b (the fix-seed composition that reads it back).
-export const reportCompletionPayloadSchema = z.object({
-  taskId: z.string(),
-  stage: taskStageSchema,
-  attempt: z.number().int().positive(),
-  workOrderRev: z.number().int().nonnegative(),
-  worklog: z.object({
-    decisionsMade: z.array(z.string()),
-    pathsRejected: z.array(z.string()),
-  }),
-});
-export type ReportCompletionPayload = z.infer<typeof reportCompletionPayloadSchema>;
+// MOVED TO `schemas.ts` BY S7·7b (D52 finding 1) and RE-EXPORTED at the top of
+// this file, so this module's public surface is unchanged. They are declared
+// beside `taskRecordSchema` now because they are the TYPES OF TWO OF ITS FIELDS
+// (`lastReview` / `lastCompletion`); read them, and the reasoning for the move,
+// there. The numbering below keeps its original position so the section numbers
+// in this file do not renumber under anyone's cross-reference.
 
 // ── 6. scopedTokenBindingSchema — what a per-role credential is bound to ──────
 //

@@ -8,6 +8,14 @@ import {
   stageRunIdentitySchema,
   submitPlanPayloadSchema,
 } from './workOrder.js';
+// S7·7b: the same three shapes, imported from where they now LIVE, so the
+// re-export shims can be pinned by identity (see the last describe in this file).
+import {
+  reportCompletionPayloadSchema as schemasReportCompletionPayloadSchema,
+  reportReviewPayloadSchema as schemasReportReviewPayloadSchema,
+  taskStageSchema as schemasTaskStageSchema,
+} from '../schemas.js';
+import { taskStageSchema as machineTaskStageSchema } from './taskStateMachine.js';
 
 // ─── S7·1 — the reserved shapes have NO consumer yet ─────────────────────────
 //
@@ -210,5 +218,37 @@ describe('scopedTokenBindingSchema (what a per-role credential is bound to)', ()
 
   it('rejects attempt: -1', () => {
     expect(scopedTokenBindingSchema.safeParse({ ...validBinding, attempt: -1 }).success).toBe(false);
+  });
+});
+
+// ─── S7·7b — the hoist shims (D52 finding 1) ──────────────────────────────────
+//
+// `taskStageSchema` and the two report payload schemas now LIVE in `schemas.ts`
+// (they type `taskRecordSchema.stage`/`.lastReview`/`.lastCompletion`, and a leaf
+// cannot import from a module that imports it). Both old import paths survive as
+// re-exports, and these tests are the pin on that: IDENTITY (`toBe`), not mere
+// structural equivalence, because the whole point of one-source-of-record is that
+// there is exactly ONE schema object, reachable by several names.
+describe('S7·7b hoist — the old import paths still resolve to the SAME objects', () => {
+  it('workOrder.ts re-exports the schemas.ts report payloads by identity', () => {
+    expect(reportReviewPayloadSchema).toBe(schemasReportReviewPayloadSchema);
+    expect(reportCompletionPayloadSchema).toBe(schemasReportCompletionPayloadSchema);
+  });
+
+  it('taskStateMachine.ts re-exports the schemas.ts stage enum by identity', () => {
+    expect(machineTaskStageSchema).toBe(schemasTaskStageSchema);
+  });
+
+  it('the report payloads validate their stage against that very enum', () => {
+    // The reason the hoist was needed at all: stage → report payload → task record
+    // → stage was a cycle. Asserted as behaviour, not structure: a stage outside
+    // the enum must still be rejected after the move.
+    expect(reportReviewPayloadSchema.safeParse({
+      taskId: 'task-aaaa-0001',
+      stage: 'not-a-stage',
+      attempt: 1,
+      workOrderRev: 0,
+      criteria: [],
+    }).success).toBe(false);
   });
 });

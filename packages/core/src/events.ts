@@ -14,13 +14,18 @@ import {
 // payload (D48) rather than re-declaring a shape that would inevitably drift
 // from it — one source of record per fact (principle 9), the same discipline
 // the header comment above documents for the state-machine imports. Direction
-// is events.ts -> tasks/workOrder.ts -> { schemas.ts, taskStateMachine.ts}; that
-// module imports nothing from here, so there is no cycle.
+// is events.ts -> tasks/workOrder.ts -> schemas.ts; that module imports nothing
+// from here, so there is no cycle.
 import { submitPlanPayloadSchema, type SubmitPlanPayload } from './tasks/workOrder.js';
 // S7·6a: `review_reported`'s payload REUSES the reserved `report_review` MCP tool
 // payload (D43) and `completion_reported`'s the reserved `report_completion` payload,
 // exactly as `plan_submitted` reuses `submit_plan` — one source of record per fact
-// (principle 9). Same import direction (events.ts -> tasks/workOrder.ts), no cycle.
+// (principle 9).
+//
+// ⚠ Both schemas LIVE IN `schemas.ts` as of S7·7b (D52 finding 1 — they type
+// `taskRecordSchema.lastReview`/`.lastCompletion`, so the leaf had to own them);
+// `tasks/workOrder.ts` re-exports them, and this import path is deliberately
+// unchanged so the hoist stayed invisible to every consumer.
 import {
   reportReviewPayloadSchema,
   type ReportReviewPayload,
@@ -202,18 +207,17 @@ export const EVENT_TYPES = {
   // move is a SEPARATE `task_transitioned` the dispatcher emits (S7·6b) after
   // deriving the target via `deriveReviewOutcome` (tasks/reviewOutcome.ts) directly
   // from this event's payload. Folding a stage change in here too would give the
-  // record two authorities over its own stage (principle 9). NOTE (finding
-  // 2026-07-26): unlike `plan_submitted`, this does NOT fold anything onto the task
-  // record in S7·6a — the `lastReview` fix-seed field is DEFERRED to S7·7b (its only
-  // consumer), which also resolves the schemas.ts leaf-vs-workOrder cycle at that
-  // point. So there is no projection fold for this event yet, and that is deliberate.
+  // record two authorities over its own stage (principle 9). It DOES fold as of
+  // S7·7b: `projections/tasks.ts` writes the payload onto `TaskRecord.lastReview`
+  // (latest-wins), which is the fix-seed the next implementer's briefing renders.
   reviewReported: 'review_reported',
-  // Slice-7 S7·7b: the worklog FIX-SEED (D46). RESERVED, NO EMITTER YET — and no
-  // fold either: S7·7b is BOTH the writer (the `report_completion` tool) and the
-  // reader (the fix-seed composition). Reserved now, alongside `review_reported`, so
-  // the report pair is schema-complete and S7·7b needs no migration — the same
-  // no-emitter posture as `work_order_amended`. If you are grepping for the code
-  // path that emits a completion, there isn't one yet, and that is deliberate.
+  // Slice-7 S7·7b: the worklog FIX-SEED (D46). Folds onto `TaskRecord.lastCompletion`
+  // (latest-wins), the sibling of `lastReview` above — together they are the two
+  // halves of what a FRESH fixer needs that the diff on disk cannot give it (D53's
+  // rider: the diff is read from disk, the feedback and the dead ends are carried).
+  // ⚠ STILL NO EMITTER as of S7·7b-core: the `report_completion` tool that writes
+  // one is 7b-daemon's job, and `implementing → review` on capture is D53's outcome
+  // rule. The constructor below is real; the caller is the next unit.
   completionReported: 'completion_reported',
 } as const;
 
@@ -1009,17 +1013,22 @@ export function planSubmitted(payload: SubmitPlanPayload): EventInput {
 // after capturing a `report_review` tool call) is the emitter. It is the durable
 // record of the verdict and is not a stage transition; the dispatcher's own
 // `task_transitioned` handles review -> done / review -> implementing separately,
-// deriving the target via `deriveReviewOutcome` from this payload. No projection
-// fold in S7·6a — the `lastReview` fix-seed field is deferred to S7·7b (finding
-// 2026-07-26; sidesteps the schemas.ts leaf/workOrder cycle until its consumer).
+// deriving the target via `deriveReviewOutcome` from this payload. S7·7b added the
+// projection fold: the payload lands on `TaskRecord.lastReview` (latest-wins).
 export function reviewReported(payload: ReportReviewPayload): EventInput {
   return { stream: 'tasks', type: EVENT_TYPES.reviewReported, payload };
 }
-// completion_reported (S7·7b, RESERVED — see EVENT_TYPES.completionReported above).
-// Same 'tasks' stream and same free-standing reasoning as its siblings. NO CALLER
-// INVOKES THIS YET and NO PROJECTION FOLDS IT: S7·7b consumes; no emitter until
-// then. It exists so the report pair (review + completion) is schema-complete and
-// S7·7b needs no migration when it lands both the writer and the fix-seed reader.
+// completion_reported (S7·7b — see EVENT_TYPES.completionReported above). Same
+// 'tasks' stream and same free-standing reasoning as its siblings; the mirror of
+// `reviewReported` for the FIX side. It AUGMENTS the task record (folds
+// `lastCompletion` — see projections/tasks.ts) and is not a stage transition; the
+// implementing -> review move D53 makes an OUTCOME is a separate `task_transitioned`
+// the dispatcher proposes through the I7 choke.
+//
+// ⚠ NO CALLER INVOKES THIS YET. The emitter is S7·7b-DAEMON: the daemon's SDK
+// adapter exposes the `report_completion` tool (D52's channel), captures the
+// worklog in the tool handler, and calls this. The constructor and the fold are
+// real as of S7·7b-core; only the writer is still missing.
 export function completionReported(payload: ReportCompletionPayload): EventInput {
   return { stream: 'tasks', type: EVENT_TYPES.completionReported, payload };
 }

@@ -1,5 +1,10 @@
 import { canonicalJson } from '../canonicalJson.js';
 import type { EventRecord, TaskRecord } from '../schemas.js';
+// S7·7b: `review_reported` / `completion_reported` carry the two REPORT payloads,
+// which live in `schemas.ts` because they type `taskRecordSchema.lastReview` and
+// `.lastCompletion` (D52 finding 1, resolved by the S7·7b hoist). Imported from
+// their owning module rather than restated — one source of record per fact.
+import { reportCompletionPayloadSchema, reportReviewPayloadSchema } from '../schemas.js';
 import type { Projection } from './projection.js';
 import {
   EVENT_TYPES,
@@ -231,6 +236,47 @@ export const tasksProjection: Projection<TasksState> = {
           // source of the same facts.
           planArtifactHash: payload.planArtifactHash,
         }));
+      }
+
+      // ── S7·7b: the two FIX-SEED folds (D46) ────────────────────────────────
+      //
+      // Both AUGMENT the record exactly as `plan_submitted` does above — they
+      // record a fact ABOUT the task (the verdict that judged it / the worklog of
+      // the attempt that just ended) without moving `stage`. The stage moves are
+      // SEPARATE `task_transitioned` events the dispatcher emits after deriving
+      // the target (`deriveReviewOutcome` for a review; `implementing → review`
+      // for a completion, D53); folding a stage change in here too would give the
+      // record two authorities over its own stage (principle 9).
+      //
+      // LATEST-WINS, like `planArtifactHash`: the LOG keeps every report ever
+      // made — that is the audit trail and the per-attempt cost story D46 relies
+      // on — while the RECORD keeps only the newest, because the fix-seed a fresh
+      // implementer needs is the review that just failed it, never a history of
+      // every lap. Naturally idempotent for the same reason `plan_submitted` is:
+      // overwriting a value with itself leaves no accumulating trace, so neither
+      // case needs the dedicated dedup guard `task_session_attached` carries.
+      //
+      // The WHOLE payload is stored, not just `criteria`/`worklog` — see the
+      // field comments in schemas.ts: the `(taskId, stage, attempt, workOrderRev)`
+      // prefix is what makes a stored report attributable to a specific run.
+      case EVENT_TYPES.reviewReported: {
+        const parsed = reportReviewPayloadSchema.safeParse(event.payload);
+        if (!parsed.success) {
+          return state;
+        }
+        const payload = parsed.data;
+        // Unknown task → no-op (I8 totality), exactly like every case above: a
+        // report for a task we never saw created must never fabricate a record.
+        return withTask(state, payload.taskId, (task) => ({ ...task, lastReview: payload }));
+      }
+
+      case EVENT_TYPES.completionReported: {
+        const parsed = reportCompletionPayloadSchema.safeParse(event.payload);
+        if (!parsed.success) {
+          return state;
+        }
+        const payload = parsed.data;
+        return withTask(state, payload.taskId, (task) => ({ ...task, lastCompletion: payload }));
       }
 
       // ── deliberately NOT folded ────────────────────────────────────────────

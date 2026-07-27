@@ -181,6 +181,102 @@ export const acceptanceCriterionSchema = z.object({
 });
 export type AcceptanceCriterion = z.infer<typeof acceptanceCriterionSchema>;
 
+// ── the stage vocabulary — HOISTED HERE BY S7·7b (D52 finding 1) ─────────────
+//
+// It lived in `tasks/taskStateMachine.ts` and was DERIVED from
+// `taskRecordSchema.shape.stage`. That direction became impossible the moment
+// `taskRecordSchema` gained `lastReview`/`lastCompletion`: those fields are typed
+// by the report payload schemas, the report payloads are keyed by stage, and the
+// stage came back off the record — a cycle inside one file, and a cycle between
+// `schemas.ts` and `tasks/` across files (D52 finding 1, deferred from S7·6a to
+// here precisely so it could be resolved with its consumer).
+//
+// The resolution is to make `schemas.ts` the TRUE LEAF: the enum is declared here
+// once, `taskRecordSchema.stage` consumes it, and everything downstream — the
+// state machine, the work-order payloads, the event payloads — imports it from
+// here. The one-source-of-record rule (principle 9) is unchanged; only the
+// direction of derivation flipped, from record → enum to enum → record.
+//
+// ⚠ `tasks/taskStateMachine.ts` RE-EXPORTS `taskStageSchema`/`TaskStage`, so every
+// pre-S7·7b import path (`from './taskStateMachine.js'`, and the package index)
+// still resolves. Do not "clean that up" without checking the consumers.
+export const taskStageSchema = z.enum([
+  'backlog',
+  'planning',
+  'plan-ready',
+  'implementing',
+  'review',
+  'done',
+  'blocked-external',
+  'quarantined',
+  'cancelled',
+]);
+export type TaskStage = z.infer<typeof taskStageSchema>;
+
+// ── the two REPORT payloads — HOISTED HERE BY S7·7b (D52 finding 1) ──────────
+//
+// Both lived in `tasks/workOrder.ts`. They move here for one reason: they are the
+// TYPES OF TWO TASK-RECORD FIELDS (`lastReview` / `lastCompletion`, below), and a
+// leaf module cannot import from a module that imports it. `workOrder.ts`
+// RE-EXPORTS both, so `events.ts`, `tasks/reviewOutcome.ts`, the package index and
+// every test keep their existing import paths.
+//
+// Everything ELSE in `workOrder.ts` (`submitPlanPayloadSchema`,
+// `stageRunIdentitySchema`, `artifactEnvelopeSchema`, `scopedTokenBindingSchema`)
+// deliberately STAYED there: nothing in this file consumes them, and hoisting a
+// shape with no leaf-side consumer would be moving code for symmetry's sake.
+
+// ── reportReviewPayloadSchema — per-criterion pass/fail (S7·6) ────────────────
+//
+// This is what makes acceptance-as-a-list (D43) earn its structure rather than
+// being decorative: the reviewer reports AGAINST the list, one verdict per
+// criterion, keyed by `criterionId` back to `acceptanceCriterionSchema.id` on
+// the task record. A review that could only say "pass" or "fail" for the whole
+// task would make the list's individual addressability pointless. Consumers:
+// S7·6 (`review_reported` + `deriveReviewOutcome` + the daemon's `report_review`
+// tool) and S7·7b (`lastReview` below + the fix-seed briefing).
+export const reportReviewPayloadSchema = z.object({
+  taskId: z.string(),
+  stage: taskStageSchema,
+  attempt: z.number().int().positive(),
+  workOrderRev: z.number().int().nonnegative(),
+  criteria: z.array(
+    z.object({
+      // Keys to `acceptanceCriterionSchema.id` on the task record. DERIVED
+      // rather than re-typed as `z.string()`, so the two can never drift apart
+      // (principle 9, the same reason `taskCreatedPayloadSchema.title` derives
+      // from `taskRecordSchema.shape.title` rather than restating it).
+      criterionId: acceptanceCriterionSchema.shape.id,
+      verdict: z.enum(['pass', 'fail']),
+      note: z.string().optional(),
+    }),
+  ),
+});
+export type ReportReviewPayload = z.infer<typeof reportReviewPayloadSchema>;
+
+// ── reportCompletionPayloadSchema — the worklog fix-seed (D46) ────────────────
+//
+// D46: because every stage run spawns fresh, a fixer handed a failed review
+// starts with NO memory of what the previous attempt already tried and
+// rejected. What it loses is the DEAD ENDS, not the code (the code is on disk,
+// in the worktree, in the diff — D53's rider has the fixer read it with
+// `git diff` rather than the dispatcher inlining it) — so the worklog is the
+// FIX-SEED that carries those dead ends forward, on purpose, so a fresh fixer
+// does not re-explore paths already rejected on our tokens. Consumers: S7·7b
+// (`lastCompletion` below + the fix-seed briefing) and S7·7b-daemon (the
+// `report_completion` tool that writes it).
+export const reportCompletionPayloadSchema = z.object({
+  taskId: z.string(),
+  stage: taskStageSchema,
+  attempt: z.number().int().positive(),
+  workOrderRev: z.number().int().nonnegative(),
+  worklog: z.object({
+    decisionsMade: z.array(z.string()),
+    pathsRejected: z.array(z.string()),
+  }),
+});
+export type ReportCompletionPayload = z.infer<typeof reportCompletionPayloadSchema>;
+
 export const taskRecordSchema = z.object({
   taskId: z.string(),
   projectRoot: z.string(),
@@ -235,17 +331,34 @@ export const taskRecordSchema = z.object({
   // every pre-S7·5a task_created folds byte-identically. LATEST-WINS: a re-plan
   // overwrites it (see the fold). Consumer: S7·7a (handoff) + the board.
   planArtifactHash: z.string().optional(),
-  stage: z.enum([
-    'backlog',
-    'planning',
-    'plan-ready',
-    'implementing',
-    'review',
-    'done',
-    'blocked-external',
-    'quarantined',
-    'cancelled',
-  ]),
+  // ── S7·7b: the FIX-SEED fields (D46) — the review that sent this task back,
+  // and the worklog of the attempt it sent back ────────────────────────────────
+  //
+  // Both are OPTIONAL-only widenings, same I6 discipline as `planArtifactHash`
+  // above and the S7·1 work-order fields: nothing validates a snapshot's records
+  // against this schema on load, so a task that has never been reviewed and never
+  // reported a completion folds to a record with NEITHER key present —
+  // byte-identical to what it folded to before this widening landed. **ABSENT
+  // STAYS ABSENT**; the projection does not default either one, and an
+  // `undefined`-but-present key would change the serialized bytes.
+  //
+  // LATEST-WINS, like `planArtifactHash` and unlike `sessionRefs`' accumulation:
+  // the LOG keeps every report ever made (that is the audit trail), the RECORD
+  // keeps only the newest, because the fix-seed the next implementer needs is the
+  // review that just failed it and the worklog of the attempt that just ended —
+  // never a history of every lap round the loop.
+  //
+  // ⚠ These carry the report payload WHOLE (not just `criteria`/`worklog`): the
+  // `(taskId, stage, attempt, workOrderRev)` prefix is what makes a stored report
+  // attributable to a specific run (D46's identity tuple), and dropping it here
+  // would leave the board unable to say WHICH attempt a piece of feedback judged.
+  // Consumer: `composeStageInstruction`'s fix-seed branch (S7·7b) via the daemon.
+  lastReview: reportReviewPayloadSchema.optional(),
+  lastCompletion: reportCompletionPayloadSchema.optional(),
+  // The stage enum itself is declared ABOVE as `taskStageSchema` and consumed
+  // here, rather than declared inline and derived back out — see the hoist note
+  // on `taskStageSchema` for why that direction had to flip in S7·7b.
+  stage: taskStageSchema,
   manualReviewRequired: z.boolean(),
   isolation: z.enum(['shared-dir', 'worktree']),
   gates: z.object({

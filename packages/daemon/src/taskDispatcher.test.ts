@@ -63,9 +63,15 @@ const WORKTREE_SETUP_STEP_MS = 250;
 const STALE_AFTER_MS = 90_000;
 
 // A session host that RECORDS instead of spawning. Structurally satisfies
-// `Pick<SessionHost, 'spawnSession' | 'isLive' | 'resumeSession' | 'sendMessage'>`;
-// the real class is never constructed and never imported at runtime (the result-type
-// imports above are type-only).
+// `Pick<SessionHost, 'spawnSession' | 'isLive' | 'sendMessage'>`; the real class is
+// never constructed and never imported at runtime (the result-type imports above
+// are type-only).
+//
+// ⚠ S7·7b (D46): the dispatcher's Pick no longer includes `resumeSession`, but this
+// fake DELIBERATELY STILL IMPLEMENTS IT. It is now a TRIPWIRE rather than a
+// collaborator: an extra method is harmless structurally, and `resumeCalls` staying
+// empty across the whole suite is the assertable form of "the dispatcher cannot
+// resume anything". Delete it and the inversion stops being provable.
 class RecordingSessionHost {
   readonly spawnCalls: Array<{
     channel: 'sdk' | 'pty';
@@ -74,9 +80,9 @@ class RecordingSessionHost {
     permissionMode?: 'plan' | 'auto';
     dispatched?: boolean;
   }> = [];
-  // Step 7's instruments. `resumeCalls` is what proves a fix went to the hot
-  // author; `spawnCalls.length === 0` alongside it is what proves no stranger was
-  // hired as well — and on the review path the two swap roles.
+  // Step 7's instruments, INVERTED BY D46. `resumeCalls` used to prove a fix went
+  // to the hot author; it now proves the opposite — it must stay EMPTY on every
+  // path, forever.
   readonly resumeCalls: string[] = [];
   readonly sendCalls: Array<{ appSessionId: string; text: string }> = [];
   private nextSpawnResult: SpawnResult = { appSessionId: SPAWNED_SESSION_ID };
@@ -739,12 +745,20 @@ function implementingRef(appSessionId: string): TaskRecord['sessionRefs'][number
   return { stage: 'implementing', appSessionId };
 }
 
-describe('TaskDispatcher — the FIX LOOP resumes the hot author', () => {
-  it('resumes the author, calls spawnSession ZERO times, and attaches the session to the new stage', async () => {
-    // Assertion 7. The task went implementing → review → implementing, so the
-    // work already has an author; resuming it avoids the new-agent cache miss
-    // (D6: the prompt cache is scoped to machine+directory, and a resume lands in
-    // the same directory).
+// ⚠ **D46 INVERSION (S7·7b) — THIS WHOLE DESCRIBE IS A RECORDED REVERSAL.** It was
+// `TaskDispatcher — the FIX LOOP resumes the hot author`, and every case below
+// asserted a resume. D46 killed `mode:'resume'` for stage runs on two independent
+// grounds (one transcript must never straddle two attempts; an author resumed with
+// its own review feedback defends its original approach) — so a fix now SPAWNS a
+// stranger, exactly like a first pass, and carries its context in the FIX-SEED
+// instead. The cases are KEPT IN PLACE with their setups unchanged and their
+// expectations flipped, so the reversal reads as a reversal in the diff rather than
+// disappearing with a deleted block. See stageRunner.ts for D46's own argument.
+describe('TaskDispatcher — D46 INVERSION: the FIX LOOP spawns FRESH (was: resumes the hot author)', () => {
+  it('spawns a FRESH session, calls resumeSession ZERO times, and attaches the NEW session', async () => {
+    // Assertion 7, inverted. The task went implementing → review → implementing, so
+    // the work already HAS an author and that author is cache-warm — and D46 says
+    // that is exactly the session which must not do the fix.
     const harness = buildHarness({
       tasks: [
         taskRecord({
@@ -755,31 +769,35 @@ describe('TaskDispatcher — the FIX LOOP resumes the hot author', () => {
     });
     const result = await harness.dispatcher.dispatchTask(TASK_ID);
 
-    expect(harness.sessionHost.resumeCalls).toEqual([HOT_AUTHOR_SESSION_ID]);
-    // ⚠ THE OTHER HALF OF THE CLAIM. A dispatcher that resumed the author AND
-    // spawned a fresh session would pass the line above while paying for exactly
-    // the cache miss the fix loop exists to avoid — and would leave two agents on
-    // one task.
-    expect(harness.sessionHost.spawnCalls).toHaveLength(0);
+    // ⚠ THE LOAD-BEARING LINE. The hot author is never touched.
+    expect(harness.sessionHost.resumeCalls).toEqual([]);
+    expect(harness.sessionHost.spawnCalls).toEqual([
+      { channel: 'sdk', cwd: PROJECT_ROOT, dispatched: true, permissionMode: 'auto' },
+    ]);
 
+    // The attach names the NEW session, not the author — this is what makes the
+    // next attempt's `attempt` count (recordCompletion) a true count of attempts.
     expect(harness.emitted).toHaveLength(1);
     expect(harness.emitted[0]!.type).toBe(EVENT_TYPES.taskSessionAttached);
     expect(harness.emitted[0]!.stream).toBe('tasks');
     expect(harness.emitted[0]!.payload).toEqual({
       taskId: TASK_ID,
       stage: 'implementing',
-      // The id the HOST returned from the resume — the same session, not a new one.
-      appSessionId: HOT_AUTHOR_SESSION_ID,
+      appSessionId: SPAWNED_SESSION_ID,
     });
+    // A SPAWN result, which — unlike the old `resumed` — carries a resolved `cwd`.
     expect(result).toEqual({
-      outcome: 'resumed',
+      outcome: 'spawned',
       taskId: TASK_ID,
       stage: 'implementing',
-      appSessionId: HOT_AUTHOR_SESSION_ID,
+      appSessionId: SPAWNED_SESSION_ID,
+      cwd: PROJECT_ROOT,
     });
   });
 
-  it('resumes the MOST RECENT author when the task has been round the loop twice', async () => {
+  it('round the loop TWICE still spawns — the most-recent author is not special either', async () => {
+    // Was: "resumes the MOST RECENT author when the task has been round the loop
+    // twice". The setup is untouched; the ref trail is simply no longer consulted.
     const harness = buildHarness({
       tasks: [
         taskRecord({
@@ -793,13 +811,15 @@ describe('TaskDispatcher — the FIX LOOP resumes the hot author', () => {
       ],
     });
     await harness.dispatcher.dispatchTask(TASK_ID);
-    expect(harness.sessionHost.resumeCalls).toEqual([SECOND_HOT_AUTHOR_SESSION_ID]);
-    expect(harness.sessionHost.spawnCalls).toHaveLength(0);
+    expect(harness.sessionHost.resumeCalls).toEqual([]);
+    expect(harness.sessionHost.spawnCalls).toHaveLength(1);
   });
 
-  it('a FIRST-PASS implementing task still spawns — the resume is not unconditional', async () => {
-    // The other direction, so the fix loop cannot degrade into "implementing never
-    // spawns". A planning ref is not an author.
+  it('a FIRST-PASS implementing task spawns too — the two are now INDISTINGUISHABLE', async () => {
+    // This case survives D46 unflipped, and its meaning changed: it used to prove
+    // "the resume is not unconditional", and now it proves that a first pass and a
+    // fix produce the SAME dispatch. What separates them is the fix-seed in the
+    // briefing, not the session decision.
     const harness = buildHarness({
       tasks: [
         taskRecord({
@@ -817,10 +837,12 @@ describe('TaskDispatcher — the FIX LOOP resumes the hot author', () => {
     expect(result.outcome).toBe('spawned');
   });
 
-  it('does NOT resolve a working directory for a resume — the author keeps its own cwd', async () => {
-    // `resumeSession` takes no cwd (I3 resumes from the RECORDED one), and that is
-    // the directory the author's prompt cache is scoped to (D6). A resolver that
-    // ran here would imply a move the host cannot perform.
+  it('DOES resolve a working directory for a fix — cwd resolution is no longer skipped', async () => {
+    // Was: "does NOT resolve a working directory for a resume — the author keeps
+    // its own cwd". That was true because `resumeSession` takes no cwd (I3). A fix
+    // now spawns, so it goes through the SAME `resolveWorkingDirectory` seam as any
+    // other spawn — and the result carries the resolved `cwd` the old `resumed`
+    // outcome deliberately omitted.
     const resolverCalls: TaskRecord[] = [];
     const harness = buildHarness({
       tasks: [
@@ -828,13 +850,15 @@ describe('TaskDispatcher — the FIX LOOP resumes the hot author', () => {
       ],
       resolveWorkingDirectory: (task) => {
         resolverCalls.push(task);
-        return '/var/lib/vimes/worktrees/should-not-be-used';
+        return '/var/lib/vimes/worktrees/task-under-fix';
       },
     });
     const result = await harness.dispatcher.dispatchTask(TASK_ID);
 
-    expect(resolverCalls).toEqual([]);
-    expect(result).not.toHaveProperty('cwd');
+    expect(resolverCalls).toHaveLength(1);
+    expect(resolverCalls[0]!.taskId).toBe(TASK_ID);
+    expect(result).toHaveProperty('cwd', '/var/lib/vimes/worktrees/task-under-fix');
+    expect(harness.sessionHost.spawnCalls[0]!.cwd).toBe('/var/lib/vimes/worktrees/task-under-fix');
   });
 });
 
@@ -894,68 +918,80 @@ describe('TaskDispatcher — THE INDEPENDENCE RULE, executed', () => {
   });
 });
 
-describe('TaskDispatcher — a refused resume is an EXECUTION outcome, not a decision', () => {
+// ⚠ **D46 INVERSION (S7·7b).** Was `a refused resume is an EXECUTION outcome, not a
+// decision` — assertion 9, the `resume-failed` mirror of `spawn-failed`. The
+// dispatcher has no resume path left, so a FIX that fails to start fails the way
+// every other dispatch fails: `spawn-failed`. The three scenarios are kept because
+// what they really guard is FIX-PATH specific and still true — a failed fix must
+// not fall back, must not event, and must not touch the prior author.
+describe('TaskDispatcher — a fix that cannot start is a spawn-failure (D46 inversion)', () => {
   it('emits no task_session_attached, does not throw, and reports the host reason', async () => {
-    // Assertion 9, the mirror of the `spawn-failed` case. The host already evented
-    // its own refusal (I11's transition_rejected, or a preflight rejection), so
-    // nothing is double-recorded — and no `dispatch_refused` is invented, because
+    // The host already evented its own refusal (a preflight rejection, typically),
+    // so nothing is double-recorded — and no `dispatch_refused` is invented, because
     // that enum is the DECISION vocabulary and this decision was to run the stage.
     const harness = buildHarness({
       tasks: [
         taskRecord({ stage: 'implementing', sessionRefs: [implementingRef(HOT_AUTHOR_SESSION_ID)] }),
       ],
     });
-    harness.sessionHost.refuseNextResume('session already has a live process');
+    harness.sessionHost.refuseNextSpawn('no credentials');
 
     const result = await dispatchWithoutRejecting(harness.dispatcher, TASK_ID);
 
-    expect(harness.sessionHost.resumeCalls).toEqual([HOT_AUTHOR_SESSION_ID]);
-    // No fallback spawn. A refused resume must not silently become "hire a
-    // stranger instead": the caller decides what to do about it.
-    expect(harness.sessionHost.spawnCalls).toHaveLength(0);
+    // ⚠ NO FALLBACK TO THE AUTHOR. A failed fix spawn must not silently become
+    // "resume the person who wrote it after all" — that would reinstate D46's
+    // reversal through the error path, which is the quietest way to lose a decision.
+    expect(harness.sessionHost.resumeCalls).toEqual([]);
+    expect(harness.sessionHost.spawnCalls).toHaveLength(1);
     expect(harness.emitted).toEqual([]);
     expect(result).toEqual({
-      outcome: 'resume-failed',
+      outcome: 'spawn-failed',
       taskId: TASK_ID,
-      appSessionId: HOT_AUTHOR_SESSION_ID,
-      reason: 'session already has a live process',
+      reason: 'no credentials',
     });
   });
 
-  it('I11 IS THE BACKSTOP: a host that refuses a live session is honoured even if the decision missed it', async () => {
-    // The two guards agree but are INDEPENDENT. `decideDispatch` refuses
-    // `already-running` from the dispatcher's view of liveness; `resumeSession`
-    // refuses from the host's own registry at the instant of the call. This case
-    // is the race the second guard exists for — the dispatcher believed the author
-    // was dormant, the host knew better — and the outcome is a refusal, never a
-    // second live run.
+  it('a task whose AUTHOR IS LIVE is refused at decision time — the one remaining guard', async () => {
+    // ⚠ WAS "I11 IS THE BACKSTOP". Pre-D46 there were TWO independent guards on a
+    // fix: `decideDispatch`'s `already-running` (the dispatcher's view of liveness)
+    // and `SessionHost.resumeSession`'s own I11 refusal at the instant of the call.
+    // **D46 REMOVED THE SECOND ONE FROM THIS PATH** — a fresh spawn has no existing
+    // session to collide with, so there is nothing for I11 to refuse, and the
+    // `already-running` decision is now the ONLY thing standing between a live
+    // implementer and a second concurrent one. That is a real reduction in
+    // defence-in-depth, recorded here rather than left to be rediscovered; it is not
+    // a regression D46 overlooked, because the hazard changed shape (double-resume
+    // of one session → two sessions on one task) and only a lock fully closes the
+    // new one. There is still no scheduler and no lock (see `dispatchTask`'s note).
     const harness = buildHarness({
       tasks: [
         taskRecord({ stage: 'implementing', sessionRefs: [implementingRef(HOT_AUTHOR_SESSION_ID)] }),
       ],
     });
-    harness.sessionHost.refuseNextResume('session already has a live process');
+    harness.sessionHost.markLive(HOT_AUTHOR_SESSION_ID);
+
     const result = await harness.dispatcher.dispatchTask(TASK_ID);
 
-    expect(result.outcome).toBe('resume-failed');
-    expect(harness.emitted).toEqual([]);
+    expect(result).toMatchObject({ outcome: 'refused', reason: 'already-running' });
+    expect(harness.sessionHost.spawnCalls).toHaveLength(0);
+    expect(harness.sessionHost.resumeCalls).toEqual([]);
   });
 
-  it('survives a session host that THROWS on resume', async () => {
+  it('resumeSession is UNREACHABLE — a fix runs clean even with the resume rigged to throw', async () => {
+    // Was "survives a session host that THROWS on resume". The strongest available
+    // form of the inversion: the fake's resume is armed with a bomb, and the
+    // dispatch succeeds — which can only happen if nothing on this path calls it.
     const harness = buildHarness({
       tasks: [
         taskRecord({ stage: 'implementing', sessionRefs: [implementingRef(HOT_AUTHOR_SESSION_ID)] }),
       ],
     });
-    harness.sessionHost.throwOnResume(new Error('adapter exploded'));
+    harness.sessionHost.throwOnResume(new Error('this must never be reached'));
 
     const result = await dispatchWithoutRejecting(harness.dispatcher, TASK_ID);
 
-    expect(harness.emitted).toEqual([]);
-    expect(result).toMatchObject({
-      outcome: 'resume-failed',
-      reason: 'resume-threw:adapter exploded',
-    });
+    expect(result).toMatchObject({ outcome: 'spawned', appSessionId: SPAWNED_SESSION_ID });
+    expect(harness.sessionHost.resumeCalls).toEqual([]);
   });
 });
 
@@ -966,19 +1002,22 @@ describe('TaskDispatcher — the instruction seam (MACHINERY; the words are defe
   // verbatim, once, and that the DEFAULT is silence.
   const STUB_INSTRUCTION = 'test-only instruction text — not a product prompt';
 
-  it('the DEFAULT composer sends nothing at all, on both the spawn and the resume path', async () => {
-    // Assertion 10, first half — and this is the whole of today's behaviour.
-    const spawnHarness = buildHarness();
-    await spawnHarness.dispatcher.dispatchTask(TASK_ID);
-    expect(spawnHarness.sessionHost.sendCalls).toEqual([]);
+  it('the DEFAULT composer sends nothing at all, on a first pass and on a fix alike', async () => {
+    // Assertion 10, first half — and this is the whole of the default behaviour.
+    // (D46: the second harness was "the resume path"; it is a fix, and a fix is a
+    // spawn now. The case is kept because the two dispatches still differ — one has
+    // a prior author on the record — and both must stay silent by default.)
+    const firstPassHarness = buildHarness();
+    await firstPassHarness.dispatcher.dispatchTask(TASK_ID);
+    expect(firstPassHarness.sessionHost.sendCalls).toEqual([]);
 
-    const resumeHarness = buildHarness({
+    const fixHarness = buildHarness({
       tasks: [
         taskRecord({ stage: 'implementing', sessionRefs: [implementingRef(HOT_AUTHOR_SESSION_ID)] }),
       ],
     });
-    await resumeHarness.dispatcher.dispatchTask(TASK_ID);
-    expect(resumeHarness.sessionHost.sendCalls).toEqual([]);
+    await fixHarness.dispatcher.dispatchTask(TASK_ID);
+    expect(fixHarness.sessionHost.sendCalls).toEqual([]);
   });
 
   it('sends the composed string EXACTLY ONCE to the spawned session', async () => {
@@ -999,26 +1038,33 @@ describe('TaskDispatcher — the instruction seam (MACHINERY; the words are defe
     expect(result).toMatchObject({ outcome: 'spawned', instructionDelivery: { status: 'sent' } });
   });
 
-  it('sends the composed string EXACTLY ONCE to the RESUMED session', async () => {
-    // Assertion 10's other path. The composer sees `mode: 'resume'` — the only way
-    // it can brief a returning author differently from a fresh one.
+  it('sends the composed string EXACTLY ONCE to the FIX session — the NEW one, not the author', async () => {
+    // ⚠ D46 INVERSION. Was "sends the composed string EXACTLY ONCE to the RESUMED
+    // session", and it asserted `mode: 'resume'` + `appSessionId` == the hot author,
+    // on the grounds that `plan.mode` was "the only way the composer can brief a
+    // returning author differently from a fresh one". There is no returning author;
+    // the composer sees `spawn` for a fix exactly as for a first pass, and the brief
+    // is sent to the FRESH session. What distinguishes a fix now is the fix-seed in
+    // the CONTEXT (asserted in the S7·7b block below), not the plan mode.
     const composerCalls: string[] = [];
     const harness = buildHarness({
       tasks: [
         taskRecord({ stage: 'implementing', sessionRefs: [implementingRef(HOT_AUTHOR_SESSION_ID)] }),
       ],
       composeStageInstruction: (_task, plan) => {
-        composerCalls.push(plan.mode === 'resume' ? `resume:${plan.appSessionId}` : 'spawn');
+        composerCalls.push(plan.mode);
         return STUB_INSTRUCTION;
       },
     });
     const result = await harness.dispatcher.dispatchTask(TASK_ID);
 
-    expect(composerCalls).toEqual([`resume:${HOT_AUTHOR_SESSION_ID}`]);
+    expect(composerCalls).toEqual(['spawn']);
+    // The brief goes to the session that will do the work. Sending it to
+    // HOT_AUTHOR_SESSION_ID would be briefing a session nobody dispatched.
     expect(harness.sessionHost.sendCalls).toEqual([
-      { appSessionId: HOT_AUTHOR_SESSION_ID, text: STUB_INSTRUCTION },
+      { appSessionId: SPAWNED_SESSION_ID, text: STUB_INSTRUCTION },
     ]);
-    expect(result).toMatchObject({ outcome: 'resumed', instructionDelivery: { status: 'sent' } });
+    expect(result).toMatchObject({ outcome: 'spawned', instructionDelivery: { status: 'sent' } });
   });
 
   it('sends NOTHING when the composer returns null or an empty string', async () => {
@@ -1130,7 +1176,12 @@ describe('TaskDispatcher — S7·7a plan-blob fetch and threading', () => {
     expect(result).toMatchObject({ outcome: 'spawned', instructionDelivery: { status: 'sent' } });
   });
 
-  it('threads the fetched blob on the RESUME path too — both call sites are covered', async () => {
+  it('threads the fetched blob on a FIX dispatch too — the store is consulted once per run', async () => {
+    // ⚠ D46 INVERSION. Was "threads the fetched blob on the RESUME path too — both
+    // call sites are covered". There is ONE call site now (`deliverStageInstruction`
+    // is only reached from the spawn path), so what this case still earns is the
+    // fix-specific setup: a task carrying a prior author's ref must fetch and thread
+    // its plan exactly like a virgin one, and must do it for the NEW session.
     const harness = buildHarness({
       tasks: [
         taskRecord({
@@ -1151,9 +1202,9 @@ describe('TaskDispatcher — S7·7a plan-blob fetch and threading', () => {
 
     expect(getBlobHashes).toEqual([PLAN_HASH]);
     expect(harness.sessionHost.sendCalls).toEqual([
-      { appSessionId: HOT_AUTHOR_SESSION_ID, text: `PLAN:${SENTINEL_PLAN}` },
+      { appSessionId: SPAWNED_SESSION_ID, text: `PLAN:${SENTINEL_PLAN}` },
     ]);
-    expect(result).toMatchObject({ outcome: 'resumed', instructionDelivery: { status: 'sent' } });
+    expect(result).toMatchObject({ outcome: 'spawned', instructionDelivery: { status: 'sent' } });
   });
 
   it('does NOT consult the store when the task has no planArtifactHash', async () => {
@@ -1213,11 +1264,12 @@ describe('TaskDispatcher — S7·7a plan-blob fetch and threading', () => {
 });
 
 describe('TaskDispatcher — step 7 changes nothing about WHETHER a stage runs', () => {
-  it('I10 STILL HOLDS AGAINST A RESUMABLE TASK: a failed gate reaches neither spawn NOR resume', async () => {
-    // Assertion 11, and the one worth stating loudest. The task has a hot author
-    // sitting right there, which is exactly the shape a "just resume it, it is
-    // cheap" shortcut would wave through — a resume is not free, it runs a real
+  it('I10 STILL HOLDS AGAINST A TASK UNDER FIX: a failed gate reaches neither spawn NOR resume', async () => {
+    // Assertion 11, and the one worth stating loudest. The task has a prior author
+    // sitting right there, which is exactly the shape a "just pick it back up, it is
+    // cheap" shortcut would wave through — no continuation is free, it runs a real
     // agent against a real budget. The headroom refusal must precede the runner.
+    // (D46 made this MORE true, not less: a fix now pays a full cold spawn.)
     const harness = buildHarness({
       tasks: [
         taskRecord({
@@ -1237,10 +1289,12 @@ describe('TaskDispatcher — step 7 changes nothing about WHETHER a stage runs',
     expect(result).toEqual({ outcome: 'refused', taskId: TASK_ID, reason: 'headroom-insufficient' });
   });
 
-  it('already-running still refuses a task whose author is LIVE — before any resume is attempted', async () => {
-    // `decideDispatch`'s guard, unchanged: a live author is not a resume candidate,
-    // it is an in-flight run. The host's I11 refusal would also catch this; the
-    // point is that we never get that far.
+  it('already-running still refuses a task whose author is LIVE — before anything is attempted', async () => {
+    // `decideDispatch`'s guard, unchanged by D46: a live author means an in-flight
+    // run, and the refusal precedes the runner. ⚠ The old comment went on to say
+    // "the host's I11 refusal would also catch this" — post-D46 it would NOT, because
+    // a spawn creates a new session rather than reviving that one. This guard is now
+    // load-bearing on its own; see the inversion note in the spawn-failure block.
     const harness = buildHarness({
       tasks: [
         taskRecord({ stage: 'implementing', sessionRefs: [implementingRef(HOT_AUTHOR_SESSION_ID)] }),
@@ -1286,7 +1340,9 @@ describe('TaskDispatcher — step 7 changes nothing about WHETHER a stage runs',
     expect(result).toEqual({ outcome: 'refused', taskId: TASK_ID, reason: 'stage-not-dispatchable' });
   });
 
-  it('the resume path is deterministic too — identical inputs, identical results and events', async () => {
+  it('the FIX path is deterministic too — identical inputs, identical results and events', async () => {
+    // (Was "the resume path is deterministic too". Same setup, same guarantee — the
+    // path underneath it changed, D46.)
     const buildAndDispatch = async (): Promise<{ result: unknown; emitted: EventInput[] }> => {
       const harness = buildHarness({
         tasks: [
@@ -1429,10 +1485,15 @@ describe('TaskDispatcher — assertion 9: flag ON + worktree isolation', () => {
     ]);
   });
 
-  it('a RESUME still keeps the author’s own cwd — no worktree is resolved', async () => {
-    // I3/D6, unchanged by isolation: `resumeSession` takes no cwd, and the author is
-    // already sitting IN its worktree because that is where it was spawned. Resolving
-    // one here would imply a move the host cannot perform.
+  it('a FIX under isolation goes through the worktree like any other spawn (D46 inversion)', async () => {
+    // ⚠ WAS "a RESUME still keeps the author's own cwd — no worktree is resolved",
+    // on the I3/D6 grounds that `resumeSession` takes no cwd and the author is
+    // already sitting IN its worktree. D46 removed the resume, so a fix spawns — and
+    // a spawn under isolation resolves the worktree. `ensureWorktree` is IDEMPOTENT,
+    // so the fix lands in the SAME directory the prior attempt used and REUSES it
+    // (no creation event); that reuse is what keeps D53's "read the prior attempt's
+    // diff off disk" true for an isolated task — the diff is only there if the fixer
+    // is in the same worktree.
     const harness = buildHarness({
       tasks: [
         taskRecord({
@@ -1446,10 +1507,10 @@ describe('TaskDispatcher — assertion 9: flag ON + worktree isolation', () => {
     });
     const result = await harness.dispatcher.dispatchTask(TASK_ID);
 
-    expect(result).toMatchObject({ outcome: 'resumed' });
-    expect(result).not.toHaveProperty('cwd');
-    expect(harness.worktreeCalls()).toEqual([]);
-    expect(harness.gitCalls()).toEqual([]);
+    expect(result).toMatchObject({ outcome: 'spawned', cwd: WORKTREE_PATH });
+    expect(harness.sessionHost.spawnCalls[0]!.cwd).toBe(WORKTREE_PATH);
+    expect(harness.sessionHost.resumeCalls).toEqual([]);
+    expect(harness.worktreeCalls()).toHaveLength(1);
   });
 });
 
@@ -2167,5 +2228,372 @@ describe('TaskDispatcher — recordReview: the review path seam (S7·6b)', () =>
       replayFromEmpty(tasksProjection, readAllStreamsGrouped(store)),
     );
     expect(secondSerialization).toBe(firstSerialization);
+  });
+});
+
+// ─── S7·7b — recordCompletion: the DETERMINISTIC I10 core of the FIX side ─────
+//
+// recordCompletion mirrors recordReview exactly. The SDK adapter only OBSERVES a
+// dispatched implementing session's `report_completion` call and PROPOSES the
+// worklog back through a callback; THIS method does the writing — emit
+// `completion_reported`, then propose `implementing → review` THROUGH the task
+// writer (I7's choke point). No artifact store: the worklog is small structured
+// data carried inline.
+//
+// ⚠ **`implementing → review` IS AN OUTCOME, NOT A PROMOTION (D53).** The work
+// reports its own state; the orchestrator's judgement comes AFTER, when it decides
+// reviewer-vs-bounce. `review` is a HOLDING PEN, so nothing auto-dispatches from
+// it — a completion report never chains into a reviewer spawn, and the assertion
+// below that the session host is never touched is what pins that.
+//
+// Instruments: `harness.emitted` (exactly one `completion_reported` with the built
+// payload, and — the I10 point — NO hand-rolled `task_transitioned`), and
+// `harness.taskWriter` (`proposeTransitionCalls` proves the transition went through
+// the writer, `emittedCountBefore` proves it went AFTER the emit).
+
+const IMPLEMENTER_SESSION_ID = 'cccccccc-0000-4000-8000-000000000007';
+
+const SAMPLE_WORKLOG = {
+  decisionsMade: ['kept the existing schema and widened it', 'named the flag after the D-number'],
+  pathsRejected: ['a second projection — it would double-write task state'],
+};
+
+// A task whose implementing stage is being run by IMPLEMENTER_SESSION_ID — the
+// record recordCompletion reverse-looks-up.
+function implementingTask(overrides: Partial<TaskRecord> = {}): TaskRecord {
+  return taskRecord({
+    stage: 'implementing',
+    sessionRefs: [{ stage: 'implementing', appSessionId: IMPLEMENTER_SESSION_ID }],
+    ...overrides,
+  });
+}
+
+describe('TaskDispatcher — recordCompletion: the completion path seam (S7·7b)', () => {
+  it('emits ONE completion_reported then proposes implementing→review — in that order', () => {
+    const harness = buildHarness({ tasks: [implementingTask()] });
+
+    harness.dispatcher.recordCompletion(IMPLEMENTER_SESSION_ID, SAMPLE_WORKLOG);
+
+    // Exactly one event, and it is completion_reported with the FULL payload — the
+    // identity tuple VIMES supplied plus the worklog the session reported.
+    expect(harness.emitted).toHaveLength(1);
+    const event = harness.emitted[0]!;
+    expect(event.type).toBe(EVENT_TYPES.completionReported);
+    expect(event.stream).toBe('tasks');
+    expect(event.payload).toEqual({
+      taskId: TASK_ID,
+      stage: 'implementing',
+      attempt: 1,
+      workOrderRev: 0,
+      worklog: SAMPLE_WORKLOG,
+    });
+
+    // The transition went through the writer's choke point (I7), once, to `review`,
+    // and AFTER the emit (`emittedCountBefore === 1` is the ordering proof — record
+    // the FACT before the CONSEQUENCE).
+    expect(harness.taskWriter.proposeTransitionCalls).toEqual([
+      {
+        taskId: TASK_ID,
+        proposal: { toStage: 'review', proposedBy: 'dispatcher' },
+        emittedCountBefore: 1,
+      },
+    ]);
+  });
+
+  it('D53 NO CHAINING: landing in review dispatches NOTHING', () => {
+    // `review` is a holding pen, not an active stage. A completion report must not
+    // spawn a reviewer — that call is the orchestrator's, and an auto-dispatch here
+    // would reverse D53 silently.
+    const harness = buildHarness({ tasks: [implementingTask()] });
+    harness.dispatcher.recordCompletion(IMPLEMENTER_SESSION_ID, SAMPLE_WORKLOG);
+    expect(harness.sessionHost.spawnCalls).toEqual([]);
+    expect(harness.sessionHost.sendCalls).toEqual([]);
+  });
+
+  it('I7: the transition goes through the writer, NOT a hand-rolled task_transitioned emit', () => {
+    const harness = buildHarness({ tasks: [implementingTask()] });
+    harness.dispatcher.recordCompletion(IMPLEMENTER_SESSION_ID, SAMPLE_WORKLOG);
+    // The ONLY event the dispatcher emits is completion_reported. If this is
+    // "simplified" to emit task_transitioned itself, a second event type appears
+    // AND the writer call vanishes — the two halves of I10/I7.
+    expect(eventTypes(harness.emitted)).toEqual([EVENT_TYPES.completionReported]);
+    expect(harness.emitted.some((event) => event.type === EVENT_TYPES.taskTransitioned)).toBe(false);
+    expect(harness.taskWriter.proposeTransitionCalls).toHaveLength(1);
+  });
+
+  it('unknown / non-implementing session → total no-op: no event, no proposal', () => {
+    const harness = buildHarness({ tasks: [implementingTask()] });
+    expect(() =>
+      harness.dispatcher.recordCompletion('cccccccc-0000-4000-8000-00000000dead', SAMPLE_WORKLOG),
+    ).not.toThrow();
+    expect(harness.emitted).toEqual([]);
+    expect(harness.taskWriter.proposeTransitionCalls).toEqual([]);
+  });
+
+  it('a ref that matches the session but NOT the implementing stage → no-op', () => {
+    // The reverse-lookup keys on BOTH {stage:'implementing', appSessionId}: a
+    // session that authored a REVIEW ref for this task never implemented it. THIS
+    // GUARD is what makes exposing report_completion to every dispatched session
+    // safe — a reviewer that spuriously calls the tool is stopped right here.
+    const harness = buildHarness({
+      tasks: [
+        taskRecord({
+          stage: 'review',
+          sessionRefs: [{ stage: 'review', appSessionId: IMPLEMENTER_SESSION_ID }],
+        }),
+      ],
+    });
+    harness.dispatcher.recordCompletion(IMPLEMENTER_SESSION_ID, SAMPLE_WORKLOG);
+    expect(harness.emitted).toEqual([]);
+    expect(harness.taskWriter.proposeTransitionCalls).toEqual([]);
+  });
+
+  it('attempt counts the IMPLEMENTING refs — two prior implementing runs → attempt 2', () => {
+    const harness = buildHarness({
+      tasks: [
+        implementingTask({
+          sessionRefs: [
+            { stage: 'implementing', appSessionId: 'cccccccc-0000-4000-8000-0000000000aa' },
+            { stage: 'review', appSessionId: 'cccccccc-0000-4000-8000-0000000000bb' },
+            { stage: 'implementing', appSessionId: IMPLEMENTER_SESSION_ID },
+          ],
+        }),
+      ],
+    });
+    harness.dispatcher.recordCompletion(IMPLEMENTER_SESSION_ID, SAMPLE_WORKLOG);
+    const payload = harness.emitted[0]!.payload as { attempt: number };
+    // Two implementing refs → this is the 2nd implementation attempt (D46 makes
+    // that an exact count: every fix spawns, so refs and attempts are 1:1). The
+    // review ref does not count.
+    expect(payload.attempt).toBe(2);
+  });
+
+  it('workOrderRev is read from the task and defaults to 0 when absent', () => {
+    const withoutRev = buildHarness({ tasks: [implementingTask()] });
+    withoutRev.dispatcher.recordCompletion(IMPLEMENTER_SESSION_ID, SAMPLE_WORKLOG);
+    expect((withoutRev.emitted[0]!.payload as { workOrderRev: number }).workOrderRev).toBe(0);
+
+    const withRev = buildHarness({ tasks: [implementingTask({ workOrderRev: 3 })] });
+    withRev.dispatcher.recordCompletion(IMPLEMENTER_SESSION_ID, SAMPLE_WORKLOG);
+    expect((withRev.emitted[0]!.payload as { workOrderRev: number }).workOrderRev).toBe(3);
+  });
+
+  it('an EMPTY worklog is recorded, not dropped — it is a real report', () => {
+    // An attempt that genuinely rejected no paths still reported. Silently dropping
+    // it would lose the `implementing → review` outcome along with it.
+    const harness = buildHarness({ tasks: [implementingTask()] });
+    harness.dispatcher.recordCompletion(IMPLEMENTER_SESSION_ID, {
+      decisionsMade: [],
+      pathsRejected: [],
+    });
+    expect(harness.emitted).toHaveLength(1);
+    expect((harness.emitted[0]!.payload as { worklog: unknown }).worklog).toEqual({
+      decisionsMade: [],
+      pathsRejected: [],
+    });
+    expect(harness.taskWriter.proposeTransitionCalls).toHaveLength(1);
+  });
+
+  it('I6 replay: an emitted completion_reported folds lastCompletion deterministically', () => {
+    // End-to-end against the REAL tasks projection over a real MemoryEventStore.
+    // S7·7b-core added the `lastCompletion` fold, so unlike the S7·6b review case
+    // this event DOES change the record — and the change must be replay-stable.
+    const store = new MemoryEventStore({
+      clock: new SteppingClock(FIXED_NOW, 1000),
+      ids: new CountingIdSource(),
+    });
+    store.append([
+      taskCreated({
+        taskId: TASK_ID,
+        projectRoot: PROJECT_ROOT,
+        createdBy: 'human',
+        isolation: 'shared-dir',
+        stage: 'implementing',
+      }),
+      taskSessionAttached({
+        taskId: TASK_ID,
+        stage: 'implementing',
+        appSessionId: IMPLEMENTER_SESSION_ID,
+      }),
+    ]);
+    const readTasks = (): TasksState => replayFromEmpty(tasksProjection, readAllStreamsGrouped(store));
+
+    const dispatcher = new TaskDispatcher({
+      sessionHost: new RecordingSessionHost(),
+      emit: (events) => {
+        store.append(events);
+      },
+      readTasks,
+      readMeters: () => ({ meters: {}, history: {} }),
+      nowIso: () => FIXED_NOW,
+      staleAfterMs: STALE_AFTER_MS,
+      artifactStore: new MemoryArtifactStore(),
+      taskWriter: new RecordingTaskWriter(),
+    });
+
+    dispatcher.recordCompletion(IMPLEMENTER_SESSION_ID, SAMPLE_WORKLOG);
+
+    const folded = readTasks().tasks[TASK_ID]!;
+    // The fake writer does not emit, so the stage stays put; the fold is the point.
+    expect(folded.stage).toBe('implementing');
+    expect(folded.lastCompletion).toEqual({
+      taskId: TASK_ID,
+      stage: 'implementing',
+      attempt: 1,
+      workOrderRev: 0,
+      worklog: SAMPLE_WORKLOG,
+    });
+
+    // Double-fold identical (I6): the same log serializes to the same bytes.
+    const firstSerialization = tasksProjection.serialize(readTasks());
+    const secondSerialization = tasksProjection.serialize(
+      replayFromEmpty(tasksProjection, readAllStreamsGrouped(store)),
+    );
+    expect(secondSerialization).toBe(firstSerialization);
+  });
+});
+
+// ─── S7·7b — the FIX-SEED reaches the composer (D46) ──────────────────────────
+//
+// The dispatcher's half of the fix-seed: `lastReview.criteria` and
+// `lastCompletion.worklog` are read straight off the task record (folded fields —
+// NO IO, unlike the plan blob) and threaded into `StageInstructionContext`. The
+// WORDS are core's job and are pinned in stageInstruction.test.ts; these cases
+// prove only that the two values arrive, and that their ABSENCE is byte-identical
+// to before this unit.
+
+describe('TaskDispatcher — S7·7b fix-seed threading', () => {
+  const SEEDED_REVIEW = {
+    taskId: TASK_ID,
+    stage: 'review' as const,
+    attempt: 1,
+    workOrderRev: 0,
+    criteria: [{ criterionId: 'c1', verdict: 'fail' as const, note: 'the guard never fires' }],
+  };
+  const SEEDED_COMPLETION = {
+    taskId: TASK_ID,
+    stage: 'implementing' as const,
+    attempt: 1,
+    workOrderRev: 0,
+    worklog: SAMPLE_WORKLOG,
+  };
+
+  // Captures the context object BY REFERENCE so a case can assert on key PRESENCE,
+  // which is the discipline under test — `'reviewFeedback' in context` is a
+  // different fact from `context.reviewFeedback === undefined`.
+  function captureContext(): {
+    composer: TaskDispatcherDeps['composeStageInstruction'];
+    contexts: Array<Record<string, unknown> | undefined>;
+  } {
+    const contexts: Array<Record<string, unknown> | undefined> = [];
+    return {
+      contexts,
+      composer: (_task, _plan, context) => {
+        contexts.push(context as Record<string, unknown> | undefined);
+        return 'stub instruction';
+      },
+    };
+  }
+
+  it('a bounced task carries BOTH halves of the seed to the composer', async () => {
+    const { composer, contexts } = captureContext();
+    const harness = buildHarness({
+      tasks: [
+        taskRecord({
+          stage: 'implementing',
+          sessionRefs: [implementingRef(HOT_AUTHOR_SESSION_ID)],
+          lastReview: SEEDED_REVIEW,
+          lastCompletion: SEEDED_COMPLETION,
+        }),
+      ],
+      composeStageInstruction: composer,
+    });
+    await harness.dispatcher.dispatchTask(TASK_ID);
+
+    expect(contexts).toHaveLength(1);
+    // The CRITERIA and the WORKLOG, unwrapped from their payloads — the composer
+    // gets the content, not the envelope.
+    expect(contexts[0]).toEqual({
+      reviewFeedback: SEEDED_REVIEW.criteria,
+      worklog: SEEDED_COMPLETION.worklog,
+    });
+  });
+
+  it('a FIRST PASS carries NO fix-seed keys at all — absent stays absent', async () => {
+    // ⚠ THE BYTE-IDENTICAL CLAIM. A task that has never been reviewed and never
+    // reported must produce the SAME call the pre-S7·7b dispatcher produced: a
+    // third argument of `undefined`, not `{}` and not `{reviewFeedback: undefined}`.
+    const { composer, contexts } = captureContext();
+    const harness = buildHarness({
+      tasks: [taskRecord({ stage: 'implementing' })],
+      composeStageInstruction: composer,
+    });
+    await harness.dispatcher.dispatchTask(TASK_ID);
+
+    expect(contexts).toEqual([undefined]);
+  });
+
+  it('review feedback WITHOUT a worklog threads only the key it has', async () => {
+    // A real, expected state (D46): a task bounced by hand, or reviewed against work
+    // whose author never reported. The absent half must not appear as a present
+    // undefined — see the composer's own asymmetry note in stageInstruction.ts.
+    const { composer, contexts } = captureContext();
+    const harness = buildHarness({
+      tasks: [taskRecord({ stage: 'implementing', lastReview: SEEDED_REVIEW })],
+      composeStageInstruction: composer,
+    });
+    await harness.dispatcher.dispatchTask(TASK_ID);
+
+    expect(Object.keys(contexts[0]!)).toEqual(['reviewFeedback']);
+    expect('worklog' in contexts[0]!).toBe(false);
+  });
+
+  it('the fix-seed rides ALONGSIDE the fetched plan, all three keys at once', async () => {
+    const PLAN_HASH_FOR_FIX = 'b'.repeat(64);
+    const { composer, contexts } = captureContext();
+    const harness = buildHarness({
+      tasks: [
+        taskRecord({
+          stage: 'implementing',
+          planArtifactHash: PLAN_HASH_FOR_FIX,
+          lastReview: SEEDED_REVIEW,
+          lastCompletion: SEEDED_COMPLETION,
+        }),
+      ],
+      composeStageInstruction: composer,
+    });
+    harness.artifactStore.getBlob = () => 'the approved plan';
+    await harness.dispatcher.dispatchTask(TASK_ID);
+
+    expect(contexts[0]).toEqual({
+      plan: 'the approved plan',
+      reviewFeedback: SEEDED_REVIEW.criteria,
+      worklog: SEEDED_COMPLETION.worklog,
+    });
+  });
+
+  it('reads the seed WITHOUT touching the artifact store — the folds are already in the record', async () => {
+    // The plan needs IO; the fix-seed does not. A store read here would mean the
+    // payloads had been moved to blobs, which would need a degrade path this
+    // method deliberately does not have for the seed.
+    const { composer } = captureContext();
+    const getBlobCalls: string[] = [];
+    const harness = buildHarness({
+      tasks: [
+        taskRecord({
+          stage: 'implementing',
+          lastReview: SEEDED_REVIEW,
+          lastCompletion: SEEDED_COMPLETION,
+        }),
+      ],
+      composeStageInstruction: composer,
+    });
+    harness.artifactStore.getBlob = (hash: string) => {
+      getBlobCalls.push(hash);
+      return null;
+    };
+    await harness.dispatcher.dispatchTask(TASK_ID);
+
+    expect(getBlobCalls).toEqual([]);
   });
 });
