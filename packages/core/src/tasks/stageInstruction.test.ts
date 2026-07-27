@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { TaskRecord } from '../schemas.js';
 import type { StageRunnerPlan } from './stageRunner.js';
-import { composeStageInstruction } from './stageInstruction.js';
+import { composeStageInstruction, type StageInstructionContext } from './stageInstruction.js';
 
 // ─── the dispatcher's instruction seam — the WORDS ────────────────────────────
 //
@@ -32,7 +32,10 @@ function taskRecord(overrides: Partial<TaskRecord> = {}): TaskRecord {
 }
 
 const SPAWN: StageRunnerPlan = { mode: 'spawn' };
-const RESUME: StageRunnerPlan = { mode: 'resume', appSessionId: 'app-resume-0001' };
+// ⚠ `const RESUME: StageRunnerPlan = { mode: 'resume', appSessionId: … }` stood
+// here until S7·7b-daemon. D46 deleted the variant from the union and the branch
+// from the composer, so it no longer type-checks — see the two describe blocks
+// below that lost their resume halves, and stageRunner.ts for the reversal itself.
 
 describe('composeStageInstruction — spawn wording', () => {
   it('contains the exact Task:/Stage:/Directory: lines with the task\'s values', () => {
@@ -102,31 +105,24 @@ describe('composeStageInstruction — untitled task', () => {
   });
 });
 
-describe('composeStageInstruction — resume wording', () => {
-  it('is the shorter resume text, containing "{label} · {stage}" and "resuming your own earlier work"', () => {
-    const task = taskRecord({ title: 'Fix the widget', stage: 'implementing' });
-    const instruction = composeStageInstruction(task, RESUME);
-    expect(instruction).toContain('resuming your own earlier work');
-    expect(instruction).toContain('(Fix the widget · implementing)');
-  });
-
-  it('is byte-identical, in full, to the signed-off resume wording', () => {
-    const task = taskRecord({ title: 'Fix the widget', stage: 'implementing' });
-    const instruction = composeStageInstruction(task, RESUME);
-    expect(instruction).toBe(
-      `You are resuming your own earlier work on this task (Fix the widget · implementing). New
-guidance has arrived — a human correction, or feedback from an independent
-review. Read the latest messages, address them, and continue in the same
-directory and scope. When done, summarize and stop; a human advances it.`,
-    );
-  });
-});
+// ⚠ **`describe('composeStageInstruction — resume wording')` WAS DELETED HERE BY
+// S7·7b-daemon (D46) — A RECORDED REVERSAL, NOT A DROPPED TEST.** Its two cases
+// pinned the resume briefing ("You are resuming your own earlier work on this
+// task (…)"), including a full byte-identical golden. That text is gone with the
+// branch that produced it: `resolveStageRunner` cannot return `mode:'resume'`, the
+// dispatcher cannot route to one, and `StageRunnerPlan` no longer carries the
+// variant, so there is nothing left to call the composer with.
+//
+// The coverage did not vanish — it MOVED. What a fix now receives is the
+// implementing briefing plus the fix-seed, and that is pinned (golden and all) by
+// the S7·7b fix-seed block near the end of this file.
 
 describe('composeStageInstruction — determinism (rule 0.3)', () => {
-  it('same (task, plan) in → byte-identical string out, spawn and resume', () => {
+  it('same (task, plan) in → byte-identical string out', () => {
+    // The `spawn and resume` half of this case's old name went with D46: `spawn`
+    // is the only mode there is.
     const task = taskRecord();
     expect(composeStageInstruction(task, SPAWN)).toBe(composeStageInstruction(task, SPAWN));
-    expect(composeStageInstruction(task, RESUME)).toBe(composeStageInstruction(task, RESUME));
   });
 });
 
@@ -146,7 +142,7 @@ describe('composeStageInstruction — totality (I8)', () => {
     const task = taskRecord();
     delete (task as { title?: string }).title;
     expect(() => composeStageInstruction(task, SPAWN)).not.toThrow();
-    expect(() => composeStageInstruction(task, RESUME)).not.toThrow();
+    // (The `RESUME` half of this assertion went with D46 — see the note above.)
   });
 });
 
@@ -223,22 +219,63 @@ Implement the plan, staying within scope. If a message arrives while you're
 working, it's a human steering you mid-run — read it and adjust. It's a
 correction to THIS task, not a new task.
 
-When you believe the stage is done, briefly summarize what you did and what (if
-anything) remains, then stop. You do not advance the task yourself — a human
-reviews and moves it forward on the board.`,
+When the work is done, report it using the report_completion tool — a worklog with
+decisionsMade (the calls you made and why) and pathsRejected (dead ends you tried
+or considered and abandoned; the next attempt must not re-explore them). That
+report is how you finish and is your ENTIRE deliverable: VIMES records it and moves
+the task to review. You do not advance the task yourself.`,
     );
   });
 
-  it('reuses the SAME closing two paragraphs as the generic spawn text (verbatim contract)', () => {
+  it('keeps the mid-run steering paragraph verbatim from the generic spawn text', () => {
+    // ⚠ S7·7b DELIBERATE GOLDEN CHURN. This test used to assert the OTHER half of
+    // the closing too — "reuses the SAME closing two paragraphs as the generic
+    // spawn text". D53 broke that shared contract on purpose: the implementer now
+    // finishes by REPORTING (an outcome the work states for itself), while the
+    // generic worker still finishes by stopping for a human. Only the steering
+    // paragraph is still shared, and it is still shared verbatim.
     const implementing = composeStageInstruction(populatedImplementingTask(), SPAWN, {
       plan: PLAN_BLOB,
     });
-    // The don't-advance sentence is byte-identical across both briefings.
     expect(implementing).toContain(
+      "If a message arrives while you're\nworking, it's a human steering you mid-run — read it and adjust. It's a\n" +
+        'correction to THIS task, not a new task.',
+    );
+    // And the superseded sentence is GONE from this briefing — the pin on the
+    // reversal, not merely on the new text.
+    expect(implementing).not.toContain('a human\nreviews and moves it forward on the board.');
+  });
+
+  it('names the report_completion tool and its two worklog fields (the exact names 7b-daemon registers)', () => {
+    // Load-bearing prose, exactly like planning's ExitPlanMode line and review's
+    // report_review line: this is HOW the run ends, and `decisionsMade` /
+    // `pathsRejected` are the tool's own input keys
+    // (`reportCompletionPayloadSchema.worklog`).
+    const implementing = composeStageInstruction(populatedImplementingTask(), SPAWN, {
+      plan: PLAN_BLOB,
+    });
+    expect(implementing).toContain('report it using the report_completion tool');
+    expect(implementing).toContain('decisionsMade');
+    expect(implementing).toContain('pathsRejected');
+  });
+
+  it('leaves the GENERIC, planning and review closings untouched by the S7·7b change', () => {
+    // Green-stays-green, stated as its own case: the report_completion contract is
+    // the IMPLEMENTING briefing's alone. The generic spawn text still ends with the
+    // summarize-and-stop wording, and neither of the other two stage briefings has
+    // learned about report_completion.
+    const genericTask = taskRecord({ title: 'Bare task', stage: 'implementing' });
+    const generic = composeStageInstruction(genericTask, SPAWN);
+    expect(generic).toContain(
       'When you believe the stage is done, briefly summarize what you did and what (if\n' +
         'anything) remains, then stop. You do not advance the task yourself — a human\n' +
         'reviews and moves it forward on the board.',
     );
+    expect(generic).not.toContain('report_completion');
+    expect(composeStageInstruction(populatedPlanningTask(), SPAWN)).not.toContain(
+      'report_completion',
+    );
+    expect(composeStageInstruction(populatedReviewTask(), SPAWN)).not.toContain('report_completion');
   });
 });
 
@@ -753,6 +790,275 @@ describe('composeStageInstruction — review cache prefix + determinism', () => 
   it('same (task, plan) in → byte-identical string out, twice', () => {
     const task = populatedReviewTask();
     expect(composeStageInstruction(task, SPAWN)).toBe(composeStageInstruction(task, SPAWN));
+  });
+});
+
+// ─── S7·7b: the FIX-SEED (D46 + D53's on-disk-diff rider) ─────────────────────
+//
+// D46 killed the resume, so a fix after a failed review arrives at the SAME
+// implementing-spawn branch a first pass does. The only difference is the context:
+// review feedback + the prior attempt's worklog. The tests below pin the prose,
+// prove the seed is strictly additive (absent → byte-identical to S7·7a), prove
+// feedback-without-worklog composes cleanly (the real case: a bounce before any
+// completion was reported), and pin the framing prefix as still stable.
+
+const FIX_FEEDBACK: NonNullable<StageInstructionContext['reviewFeedback']> = [
+  { criterionId: 'ac-1', verdict: 'pass', note: 'the widget works now' },
+  { criterionId: 'ac-2', verdict: 'fail', note: 'two tests still red' },
+  { criterionId: 'ac-3', verdict: 'fail' },
+];
+
+const FIX_WORKLOG: NonNullable<StageInstructionContext['worklog']> = {
+  decisionsMade: ['reused the existing helper rather than a new one'],
+  pathsRejected: ['a bespoke parser — too slow', 'patching the caller — wrong layer'],
+};
+
+describe('composeStageInstruction — fix-seed (S7·7b)', () => {
+  it('is byte-identical, in full, to the signed-off FIX briefing (feedback + worklog)', () => {
+    const instruction = composeStageInstruction(populatedImplementingTask(), SPAWN, {
+      plan: PLAN_BLOB,
+      reviewFeedback: FIX_FEEDBACK,
+      worklog: FIX_WORKLOG,
+    });
+    expect(instruction).toBe(
+      `You are a worker session that VIMES dispatched to implement one task. This is
+real work. The plan below has already been reviewed and approved — carry it out;
+do not re-plan it.
+
+  Task:      Fix the widget
+  Stage:     implementing
+  Directory: /home/foo — work in this directory; do not guess or invent a
+             different path name.
+
+Scope — what this task is:
+Make the widget do the thing.
+
+Explicitly out of scope — do not do these:
+  - Do not touch the gadget.
+  - Do not refactor unrelated code.
+
+Done when ALL of these are true:
+  - The widget works.
+  - Tests pass.
+
+Stop and report instead of pushing through if: the build cannot be made green without a schema change.
+
+The approved plan:
+
+Step 1. Do the thing.
+Step 2. Verify.
+
+This is a FIX. A previous attempt at this task was implemented and then FAILED an
+independent review. You did not write that attempt — but its changes are ALREADY
+ON DISK in the directory above. Read them first (\`git diff\`, and \`git status\` for
+new files) so you are correcting existing work rather than starting over on top of
+it.
+
+The review's verdict on that attempt — every FAIL is your job:
+  - [ac-2] FAIL — two tests still red
+  - [ac-3] FAIL
+  - [ac-1] PASS — the widget works now
+
+The previous attempt's own worklog — do NOT re-explore what it already
+rejected. If you think a rejected path is right after all, say so in your report
+rather than quietly retrying it.
+
+Decisions made:
+  - reused the existing helper rather than a new one
+
+Paths rejected:
+  - a bespoke parser — too slow
+  - patching the caller — wrong layer
+
+Implement the plan, staying within scope. If a message arrives while you're
+working, it's a human steering you mid-run — read it and adjust. It's a
+correction to THIS task, not a new task.
+
+When the work is done, report it using the report_completion tool — a worklog with
+decisionsMade (the calls you made and why) and pathsRejected (dead ends you tried
+or considered and abandoned; the next attempt must not re-explore them). That
+report is how you finish and is your ENTIRE deliverable: VIMES records it and moves
+the task to review. You do not advance the task yourself.`,
+    );
+  });
+
+  it('points at the diff ON DISK and never inlines one (D53 rider)', () => {
+    const instruction = composeStageInstruction(populatedImplementingTask(), SPAWN, {
+      plan: PLAN_BLOB,
+      reviewFeedback: FIX_FEEDBACK,
+    });
+    expect(instruction).toContain('its changes are ALREADY\nON DISK in the directory above');
+    expect(instruction).toContain('`git diff`');
+    // The refinement, stated negatively: no diff SECTION exists to inline into.
+    expect(instruction).not.toContain('The previous diff:');
+    expect(instruction).not.toContain('diff --git');
+  });
+
+  it('renders FAILS FIRST, then passes, both with their [id]', () => {
+    // Fails first because they are the work; passes rendered at all because a fixer
+    // needs to know what NOT to break reaching for a failure.
+    const instruction = composeStageInstruction(populatedImplementingTask(), SPAWN, {
+      reviewFeedback: FIX_FEEDBACK,
+    });
+    const firstFail = instruction.indexOf('  - [ac-2] FAIL');
+    const secondFail = instruction.indexOf('  - [ac-3] FAIL');
+    const onlyPass = instruction.indexOf('  - [ac-1] PASS');
+    expect(firstFail).toBeGreaterThan(-1);
+    expect(secondFail).toBeGreaterThan(firstFail);
+    expect(onlyPass).toBeGreaterThan(secondFail);
+  });
+
+  it('omits the "— note" tail for a criterion with no note (never a dangling dash)', () => {
+    const instruction = composeStageInstruction(populatedImplementingTask(), SPAWN, {
+      reviewFeedback: [{ criterionId: 'ac-3', verdict: 'fail' }],
+    });
+    expect(instruction).toContain('  - [ac-3] FAIL\n');
+    expect(instruction).not.toContain('[ac-3] FAIL —');
+  });
+
+  it('FEEDBACK WITHOUT WORKLOG composes cleanly — the real pre-first-report case', () => {
+    // A fix can be dispatched before any `report_completion` exists (a bounce the
+    // orchestrator made by hand, or an attempt whose author never reported). The
+    // preamble and the verdict render; the worklog heading must NOT appear at all.
+    const instruction = composeStageInstruction(populatedImplementingTask(), SPAWN, {
+      plan: PLAN_BLOB,
+      reviewFeedback: FIX_FEEDBACK,
+    });
+    expect(instruction).toContain('This is a FIX.');
+    expect(instruction).toContain("The review's verdict on that attempt");
+    expect(instruction).not.toContain("The previous attempt's own worklog");
+    expect(instruction).not.toContain('Decisions made:');
+    expect(instruction).not.toContain('Paths rejected:');
+  });
+
+  it('WORKLOG WITHOUT FEEDBACK still earns the preamble, and omits the verdict block', () => {
+    const instruction = composeStageInstruction(populatedImplementingTask(), SPAWN, {
+      worklog: FIX_WORKLOG,
+    });
+    expect(instruction).toContain('This is a FIX.');
+    expect(instruction).not.toContain("The review's verdict on that attempt");
+    expect(instruction).toContain('Decisions made:');
+  });
+
+  it('renders each worklog sub-list independently (one present, one empty)', () => {
+    const decisionsOnly = composeStageInstruction(populatedImplementingTask(), SPAWN, {
+      worklog: { decisionsMade: ['kept the helper'], pathsRejected: [] },
+    });
+    expect(decisionsOnly).toContain('Decisions made:\n  - kept the helper');
+    expect(decisionsOnly).not.toContain('Paths rejected:');
+
+    const rejectedOnly = composeStageInstruction(populatedImplementingTask(), SPAWN, {
+      worklog: { decisionsMade: [], pathsRejected: ['the bespoke parser'] },
+    });
+    expect(rejectedOnly).toContain('Paths rejected:\n  - the bespoke parser');
+    expect(rejectedOnly).not.toContain('Decisions made:');
+  });
+
+  it('a fix-seed-ONLY task does not degrade to the generic text (the seed would be lost)', () => {
+    // Reachable: a hand-created task with no work-order fields and no plan, bounced
+    // out of review. Degrading here would silently drop the one thing the fix loop
+    // cannot afford to lose.
+    const bare = taskRecord({ title: 'Bare task', stage: 'implementing', projectRoot: '/home/foo' });
+    const instruction = composeStageInstruction(bare, SPAWN, { reviewFeedback: FIX_FEEDBACK });
+    expect(instruction.startsWith(STABLE_OPENING)).toBe(true);
+    expect(instruction).toContain('  - [ac-2] FAIL — two tests still red');
+    expect(instruction).not.toContain(
+      'You are a worker session that VIMES dispatched to make progress on one task.',
+    );
+  });
+});
+
+describe('composeStageInstruction — fix-seed absent-stays-absent (S7·7a discipline)', () => {
+  it('an absent seed is byte-identical to the S7·7a output', () => {
+    const task = populatedImplementingTask();
+    const noSeed = composeStageInstruction(task, SPAWN, { plan: PLAN_BLOB });
+    // Every shape of "nothing to say" must produce the same bytes: no fields at
+    // all, explicitly-undefined fields, and empty collections.
+    expect(
+      composeStageInstruction(task, SPAWN, {
+        plan: PLAN_BLOB,
+        reviewFeedback: [],
+        worklog: { decisionsMade: [], pathsRejected: [] },
+      }),
+    ).toBe(noSeed);
+    expect(
+      composeStageInstruction(task, SPAWN, {
+        plan: PLAN_BLOB,
+        reviewFeedback: undefined,
+        worklog: undefined,
+      }),
+    ).toBe(noSeed);
+    // And the no-seed output really carries none of the fix prose.
+    expect(noSeed).not.toContain('This is a FIX.');
+    expect(noSeed).not.toContain("The review's verdict");
+    expect(noSeed).not.toContain("The previous attempt's own worklog");
+  });
+
+  it('a bare task with an EMPTY seed still degrades to the generic spawn text', () => {
+    // The degrade rule survives the widening: an empty seed carries no content, so
+    // it must not be what tips a bare task into the rich briefing.
+    const bare = taskRecord({ title: 'Bare task', stage: 'implementing', projectRoot: '/home/foo' });
+    const generic = composeStageInstruction(bare, SPAWN);
+    expect(
+      composeStageInstruction(bare, SPAWN, {
+        reviewFeedback: [],
+        worklog: { decisionsMade: [], pathsRejected: [] },
+      }),
+    ).toBe(generic);
+  });
+});
+
+describe('composeStageInstruction — fix-seed prefix stability + determinism (rule 0.3)', () => {
+  it('the stable opening is still a common PREFIX with and without a fix-seed', () => {
+    const withoutSeed = composeStageInstruction(populatedImplementingTask(), SPAWN, {
+      plan: PLAN_BLOB,
+    });
+    const withSeed = composeStageInstruction(populatedImplementingTask(), SPAWN, {
+      plan: PLAN_BLOB,
+      reviewFeedback: FIX_FEEDBACK,
+      worklog: FIX_WORKLOG,
+    });
+    expect(withSeed.startsWith(STABLE_OPENING)).toBe(true);
+    const commonPrefix = longestCommonPrefix(withoutSeed, withSeed);
+    expect(commonPrefix.startsWith(STABLE_OPENING)).toBe(true);
+    // The seed is appended AFTER the plan, so the shared prefix reaches all the way
+    // through the plan block — a fix dispatch re-reads the first pass's whole
+    // briefing at cache-read rates.
+    expect(commonPrefix).toContain('The approved plan:');
+    expect(commonPrefix).toContain('Step 2. Verify.');
+  });
+
+  it('same (task, plan, fix-seed) in → byte-identical string out, twice', () => {
+    const task = populatedImplementingTask();
+    const context = { plan: PLAN_BLOB, reviewFeedback: FIX_FEEDBACK, worklog: FIX_WORKLOG };
+    expect(composeStageInstruction(task, SPAWN, context)).toBe(
+      composeStageInstruction(task, SPAWN, context),
+    );
+  });
+
+  it('never throws on a malformed seed (I8 — the context crosses a replay boundary)', () => {
+    // `lastReview`/`lastCompletion` come off a REPLAYED record, so a partially
+    // written or hand-edited one must degrade to "section omitted", never throw.
+    const malformedContexts: unknown[] = [
+      { reviewFeedback: null },
+      { reviewFeedback: 'not-an-array' },
+      { reviewFeedback: [{}] },
+      { worklog: null },
+      { worklog: {} },
+      { worklog: { decisionsMade: 'nope', pathsRejected: 7 } },
+      { worklog: { decisionsMade: null, pathsRejected: null } },
+    ];
+    for (const malformedContext of malformedContexts) {
+      expect(
+        () =>
+          composeStageInstruction(
+            populatedImplementingTask(),
+            SPAWN,
+            malformedContext as StageInstructionContext,
+          ),
+        JSON.stringify(malformedContext),
+      ).not.toThrow();
+    }
   });
 });
 

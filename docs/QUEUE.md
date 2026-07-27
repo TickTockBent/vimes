@@ -20,6 +20,80 @@ list a reactive derivation of the current `task.stage` (from `TASK_STAGE_EDGES` 
 whatever the UI mirror is), not a value captured at open. UI-only (`packages/ui`),
 no daemon change → ships on the next ci-gate, no restart. Small.
 
+## CLEANUP — UI dead branches: `resumed`/`resume-failed` dispatch outcomes (post-D46)
+
+*(S7·7b-daemon finding, 2026-07-27.)* D46 removed the resume path; the daemon can no
+longer produce the `resumed`/`resume-failed` dispatch outcomes. The UI still handles
+them: `taskBoard.ts:682,723` (+ docs at :638, `dispatchFollow.ts:23`, and their
+tests). They read the outcome as an untyped string off the HTTP envelope, so nothing
+reds — they're just dead. The daemon-side union variants are kept declared, marked
+`⚠ UNREACHABLE SINCE D46`, with a comment naming these consumers; **remove the UI
+branches and THEN the union variants in one small UI-inclusive unit.** Sonnet-
+mechanical. Not scheduled.
+
+## UNIT — dispatch-on-promotion for ACTIVE stages (after S7·7b; decisions.md D53)
+
+*(Wes, 2026-07-27: "The promotion should be the decision. No task moves to an active
+stage unless it's ready to begin.")* Entering **planning** or **implementing** via a
+promotion triggers the stage dispatch automatically (today: promote + dispatch are two
+separate manual clicks). **Review is explicitly excluded** — it's a holding pen (D53):
+entering it dispatches nothing; reviewer-vs-bounce stays a decision. Dispatcher-layer
+wiring: observe `task_transitioned` into an active stage → run the existing dispatch
+path (decideDispatch still guards). Sequenced AFTER S7·7b (touches the same dispatcher).
+
+## POLISH — briefing prose pass: unwrap mid-sentence newlines + degenerate-criteria clause (one golden refresh)
+
+*(Wes, 2026-07-27, after the first full live loop.)* Two prose defects in the
+`stageInstruction.ts` briefing constants, one small unit, ONE deliberate golden refresh:
+
+1. **Odd mid-sentence newlines in every briefing.** The constants are template literals
+   hard-wrapped at ~80 cols for source readability — template literals preserve those
+   newlines verbatim, so prompts ship with wraps like "report_review\ntool" mid-sentence.
+   (Orchestrator's own authoring artifact, S7·5c/6a.) Harmless to the model —
+   live-proven 2026-07-27 — but reads badly to any human inspecting a prompt. Fix:
+   unwrap to real paragraphs (constants stay constants; NO runtime join-transform).
+2. **Degenerate-criteria clause (low-priority, observed coping fine).** A task with no
+   `acceptanceCriteria` renders no criteria section, but the byte-stable closing still
+   says "one entry per criterion (its id…)". The 2026-07-27 live run showed a capable
+   model derives its own criteria from scope without floundering — so this is polish,
+   not a must-fix. Add one conditional line for the no-criteria case: "no enumerated
+   criteria — derive your own from the scope and report each."
+
+⚠ These constants are pinned by golden-string tests AND serve as byte-stable
+cache-prefix material — the unit refreshes the goldens **deliberately** (call it out in
+the diff) and keeps prefix-stability discipline (stable opening/closing, per-task
+middle). Sonnet-mechanical once scoped. Not scheduled.
+
+## ENHANCEMENT — surface a task's dispatched sessions, with click-to-open links (spike-worthy)
+
+*(Wes, 2026-07-27, planning the S7·6 live-test: "it would be good if we kept a list of
+each associated session dispatched from a task with easy links in the task itself.
+Might be a later enhancement, worth spiking.")*
+
+**The data already exists — this is surfacing + linking, not new capture.** Tasks already
+carry **`sessionRefs`** (stage + appSessionId per dispatched session) — that is the exact
+record `recordPlan`/`recordReview` reverse-lookup to find a task's owning session by
+appSessionId+stage. So the association is durable already; what's missing is a **read-model
+surface + a UI affordance** that lists a task's sessions (by stage/attempt) and links each to
+its stream/panel (the same click-to-open S9 wired for the dispatch notice —
+`vimesStore.ts` dispatch response → route to the session's stream view).
+
+**Why it's still spike-worthy (small design questions before scoping UI):**
+- Are `sessionRefs` already in the **tasks read model** the UI consumes, or only in the
+  daemon-side task record? If not exposed, surfacing them is a read-model addition (daemon
+  change → restart), additive (rule 0.5).
+- **Shape:** multiple attempts per stage (a failed review sends it back to implementing → a
+  2nd implementing session, then a 2nd review). The list wants to show stage + attempt +
+  outcome, not just a flat id soup — so it reads as the task's *history*, not a bag of links.
+- **Link target:** today = route to the stream view; under the panel model = open the session
+  panel. Same affordance S9 built.
+- Overlaps the **session-links** half of Q2/S9 and the eventual project-history read-model —
+  worth checking whether this is one surface with those rather than a standalone.
+
+**Deliverable of the spike:** where `sessionRefs` live vs. what the UI is served, the
+per-stage/attempt shape, the link-target call, and whether it folds into an existing surface.
+Then a small unit surfaces it. **Not scheduled** — a later enhancement, captured now.
+
 ## ▶ NEXT SESSION STARTS HERE (updated 2026-07-25 eve — read `scratchpad/HANDOFF.md` first)
 
 **SLICE 6b — DONE** (UI foundation + full re-skin; deployed). **SLICE 7 (task model)

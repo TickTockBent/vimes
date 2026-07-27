@@ -4,8 +4,10 @@ import { MemoryEventStore } from '../memoryEventStore.js';
 import type { EventInput, EventRecord, TaskRecord } from '../schemas.js';
 import { taskRecordSchema } from '../schemas.js';
 import {
+  completionReported,
   dispatchRefused,
   planSubmitted,
+  reviewReported,
   taskCreated,
   taskQuarantined,
   taskSessionAttached,
@@ -790,6 +792,238 @@ describe('tasks projection — plan_submitted', () => {
     }).not.toThrow();
     expect(after).toBe(before);
     expect(tasksProjection.serialize(before)).toBe(serializedBefore);
+  });
+});
+
+// ── S7·7b — the two FIX-SEED folds (D46): review_reported → lastReview,
+// completion_reported → lastCompletion ───────────────────────────────────────
+//
+// Both AUGMENT the record exactly like `plan_submitted` above and never touch
+// `stage` (the moves are separate `task_transitioned` events — D53's taxonomy:
+// reports are OUTCOMES, the transition they imply is proposed through the I7
+// choke). The cases below mirror the plan_submitted block one for one: folds,
+// latest-wins, unknown-task ignored, absent-stays-absent, replay-equivalence,
+// idempotence, malformed-is-a-no-op.
+//
+// ⚠ Until S7·6a these two events had NO fold at all (the deferral is recorded in
+// D52 finding 1 — `lastReview` could not be typed without the schemas.ts hoist).
+// The `three deliberately NON-folded events` describe above is unaffected: it
+// covers `task_transition_rejected`, `dispatch_refused` and `task_quarantined`,
+// none of which changed.
+function reportReviewForTaskA(
+  criteria: Array<{ criterionId: string; verdict: 'pass' | 'fail'; note?: string }>,
+): EventInput {
+  return reviewReported({
+    taskId: TASK_A,
+    stage: 'review',
+    attempt: 1,
+    workOrderRev: 0,
+    criteria,
+  });
+}
+
+function reportCompletionForTaskA(decisionsMade: string[], pathsRejected: string[]): EventInput {
+  return completionReported({
+    taskId: TASK_A,
+    stage: 'implementing',
+    attempt: 1,
+    workOrderRev: 0,
+    worklog: { decisionsMade, pathsRejected },
+  });
+}
+
+describe('tasks projection — review_reported → lastReview (S7·7b)', () => {
+  it('folds the WHOLE payload onto an existing task', () => {
+    const state = stateFromLog([
+      [createTaskA()],
+      [reportReviewForTaskA([{ criterionId: 'ac-1', verdict: 'fail', note: 'still stalls' }])],
+    ]);
+    // The whole payload, not just `criteria`: the (taskId, stage, attempt,
+    // workOrderRev) prefix is what makes the feedback attributable to a run.
+    expect(state.tasks[TASK_A]!.lastReview).toEqual({
+      taskId: TASK_A,
+      stage: 'review',
+      attempt: 1,
+      workOrderRev: 0,
+      criteria: [{ criterionId: 'ac-1', verdict: 'fail', note: 'still stalls' }],
+    });
+    expect(taskRecordSchema.safeParse(state.tasks[TASK_A]).success).toBe(true);
+    // AUGMENT, not a transition — the stage is untouched by the report itself.
+    expect(state.tasks[TASK_A]!.stage).toBe('backlog');
+  });
+
+  it('LATEST-WINS: a second review_reported overwrites the first', () => {
+    // The log keeps both (that is the audit trail); the RECORD keeps the newest,
+    // because the fix-seed a fresh implementer needs is the review that JUST
+    // failed it, never a history of every lap round the loop.
+    const state = stateFromLog([
+      [createTaskA()],
+      [reportReviewForTaskA([{ criterionId: 'ac-1', verdict: 'fail', note: 'first' }])],
+      [reportReviewForTaskA([{ criterionId: 'ac-1', verdict: 'pass', note: 'second' }])],
+    ]);
+    expect(state.tasks[TASK_A]!.lastReview!.criteria).toEqual([
+      { criterionId: 'ac-1', verdict: 'pass', note: 'second' },
+    ]);
+  });
+
+  it('ignores a review_reported for an unknown task — it never fabricates a record (I8)', () => {
+    const state = stateFromLog([
+      [createTaskA()],
+      [
+        reviewReported({
+          taskId: TASK_B,
+          stage: 'review',
+          attempt: 1,
+          workOrderRev: 0,
+          criteria: [{ criterionId: 'ac-1', verdict: 'pass' }],
+        }),
+      ],
+    ]);
+    expect(state.tasks[TASK_B]).toBeUndefined();
+    expect('lastReview' in state.tasks[TASK_A]!).toBe(false);
+  });
+
+  it('is idempotent: folding the SAME review_reported twice leaves one value', () => {
+    const state = stateFromLog([
+      [createTaskA()],
+      [reportReviewForTaskA([{ criterionId: 'ac-1', verdict: 'pass' }])],
+      [reportReviewForTaskA([{ criterionId: 'ac-1', verdict: 'pass' }])],
+    ]);
+    expect(state.tasks[TASK_A]!.lastReview!.criteria).toHaveLength(1);
+  });
+
+  it('a malformed review_reported payload is a no-op and never throws', () => {
+    const before = stateFromLog([[createTaskA()]]);
+    const serializedBefore = tasksProjection.serialize(before);
+    const malformedRecord = {
+      ...recordOf(reportReviewForTaskA([])),
+      payload: { taskId: TASK_A, criteria: 'not-an-array' },
+    } as unknown as EventRecord;
+    let after: TasksState | undefined;
+    expect(() => {
+      after = tasksProjection.apply(before, malformedRecord);
+    }).not.toThrow();
+    expect(after).toBe(before);
+    expect(tasksProjection.serialize(before)).toBe(serializedBefore);
+  });
+});
+
+describe('tasks projection — completion_reported → lastCompletion (S7·7b)', () => {
+  it('folds the WHOLE payload onto an existing task', () => {
+    const state = stateFromLog([
+      [createTaskA()],
+      [reportCompletionForTaskA(['used the existing helper'], ['a bespoke parser — too slow'])],
+    ]);
+    expect(state.tasks[TASK_A]!.lastCompletion).toEqual({
+      taskId: TASK_A,
+      stage: 'implementing',
+      attempt: 1,
+      workOrderRev: 0,
+      worklog: {
+        decisionsMade: ['used the existing helper'],
+        pathsRejected: ['a bespoke parser — too slow'],
+      },
+    });
+    expect(taskRecordSchema.safeParse(state.tasks[TASK_A]).success).toBe(true);
+    // D53: the implementing -> review move is a SEPARATE task_transitioned; the
+    // report itself never moves the stage.
+    expect(state.tasks[TASK_A]!.stage).toBe('backlog');
+  });
+
+  it('LATEST-WINS: a second completion_reported overwrites the first', () => {
+    const state = stateFromLog([
+      [createTaskA()],
+      [reportCompletionForTaskA(['first decision'], ['first dead end'])],
+      [reportCompletionForTaskA(['second decision'], ['second dead end'])],
+    ]);
+    expect(state.tasks[TASK_A]!.lastCompletion!.worklog).toEqual({
+      decisionsMade: ['second decision'],
+      pathsRejected: ['second dead end'],
+    });
+  });
+
+  it('ignores a completion_reported for an unknown task — it never fabricates a record (I8)', () => {
+    const state = stateFromLog([
+      [createTaskA()],
+      [
+        completionReported({
+          taskId: TASK_B,
+          stage: 'implementing',
+          attempt: 1,
+          workOrderRev: 0,
+          worklog: { decisionsMade: [], pathsRejected: [] },
+        }),
+      ],
+    ]);
+    expect(state.tasks[TASK_B]).toBeUndefined();
+    expect('lastCompletion' in state.tasks[TASK_A]!).toBe(false);
+  });
+
+  it('a malformed completion_reported payload is a no-op and never throws', () => {
+    const before = stateFromLog([[createTaskA()]]);
+    const serializedBefore = tasksProjection.serialize(before);
+    const malformedRecord = {
+      ...recordOf(reportCompletionForTaskA([], [])),
+      payload: { taskId: TASK_A, worklog: { decisionsMade: 'nope' } },
+    } as unknown as EventRecord;
+    let after: TasksState | undefined;
+    expect(() => {
+      after = tasksProjection.apply(before, malformedRecord);
+    }).not.toThrow();
+    expect(after).toBe(before);
+    expect(tasksProjection.serialize(before)).toBe(serializedBefore);
+  });
+});
+
+describe('tasks projection — S7·7b I6: the fix-seed widening is invisible when unused', () => {
+  // The load-bearing I6 case for this unit, and the one the verify-by-breaking
+  // step targets: a log with NEITHER report folds to a record carrying NEITHER
+  // key — never `undefined`-present, which would change the serialized bytes of
+  // every task_created already on disk. (The hand-enumerated key-set assertion in
+  // the S7·1 describe above is the second, independent guard on the same fact.)
+  it('a task with no review/completion report has NEITHER key present', () => {
+    const state = stateFromLog([[createTaskA()]]);
+    const bornTask = state.tasks[TASK_A]!;
+    expect('lastReview' in bornTask).toBe(false);
+    expect('lastCompletion' in bornTask).toBe(false);
+  });
+
+  it('a no-report log serializes byte-identically to a hand-built pre-S7·7b record', () => {
+    // Byte-identity against an INDEPENDENTLY constructed expectation, not against
+    // another run of the same code: a default sneaking into the fold would show up
+    // here even if both sides changed together.
+    const state = stateFromLog([[createTaskA()]]);
+    const preS7bShape: TasksState = {
+      tasks: {
+        [TASK_A]: {
+          taskId: TASK_A,
+          projectRoot: '/home/user/projects/vimes',
+          stage: 'backlog',
+          manualReviewRequired: false,
+          isolation: 'worktree',
+          gates: {},
+          sessionRefs: [],
+          createdBy: 'human',
+          lastHeartbeatAt: null,
+          staleRetries: 0,
+        },
+      },
+    };
+    expect(tasksProjection.serialize(state)).toBe(tasksProjection.serialize(preS7bShape));
+  });
+
+  it('I6 replay-equivalence: folding a carrying-log twice is byte-identical', () => {
+    const log = [
+      [createTaskA()],
+      [reportReviewForTaskA([{ criterionId: 'ac-1', verdict: 'fail', note: 'n' }])],
+      [reportCompletionForTaskA(['d'], ['p'])],
+    ];
+    const firstFold = stateFromLog(log);
+    const secondFold = stateFromLog(log);
+    expect(tasksProjection.serialize(secondFold)).toBe(tasksProjection.serialize(firstFold));
+    // And the fold really did carry both — a vacuous double-run would pass above.
+    expect(firstFold.tasks[TASK_A]!.lastReview).toBeDefined();
+    expect(firstFold.tasks[TASK_A]!.lastCompletion).toBeDefined();
   });
 });
 

@@ -296,3 +296,21 @@ agent reads. Revisioned, not mutated. Full record + rationale: **decisions.md D4
 ## D44 — plan→implement handoff — ✅ DECIDED 2026-07-25 → decisions.md D44
 The plan crosses via a `submit_plan` tool call, validated in-run (retry locality);
 native plan mode lives below the claude-adapter line. Full record: **decisions.md D44**.
+
+## D54 — Concurrent-implementer hazard: `already-running` is now the ONLY double-dispatch guard *(trigger: dispatch-on-promotion unit, or the S7·9 orchestrator — whichever first makes dispatch machine-initiated)*
+
+*(S7·7b-daemon finding, 2026-07-27.)* Pre-D46 the fix path had two independent
+double-run guards: `decideDispatch`'s `already-running` refusal AND
+`SessionHost.resumeSession`'s I11 call-time refusal. A fresh spawn has no existing
+session to collide with, so I11 now guards nothing on this path — and the hazard
+changed shape: not "double-resume of one session" but **two live sessions on one
+task**, which only a per-task dispatch lock fully closes. There is no scheduler and
+no lock today. Tolerable while dispatch is human-clicked (a human double-click is
+rare and visible); it sharpens the moment dispatch becomes machine-initiated
+(dispatch-on-promotion, or the orchestrator). Recorded in the rewritten "author is
+LIVE" test in `taskDispatcher.test.ts`.
+
+**Lean:** a per-task dispatch lock (or an `already-attached-live-session` check in
+`decideDispatch` keyed on the task's OWN refs, which is nearly the same thing),
+built INTO the dispatch-on-promotion unit — the same unit that creates the sharper
+exposure should carry the guard.

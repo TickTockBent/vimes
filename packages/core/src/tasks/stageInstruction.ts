@@ -1,4 +1,8 @@
-import type { TaskRecord } from '../schemas.js';
+import type {
+  ReportCompletionPayload,
+  ReportReviewPayload,
+  TaskRecord,
+} from '../schemas.js';
 import type { StageRunnerPlan } from './stageRunner.js';
 
 // ─── the dispatcher's instruction seam — the WORDS (pure, packages/core) ──────
@@ -21,15 +25,40 @@ import type { StageRunnerPlan } from './stageRunner.js';
 // only IO stays at the daemon boundary and this function remains golden-string
 // testable.
 //
-// ⚠ RESERVED TO GROW. S7·7b's fix-seed (D46: prior diff / review feedback /
-// worklog for a resume-after-review) lands here as further optional fields. For
-// S7·7a it carries exactly one — the resolved plan text — and every field is
-// optional so an ABSENT context is byte-identical to no context at all.
+// S7·7b GREW IT, exactly as reserved: the fix-seed (D46) lands here as two further
+// optional fields. Every field is optional so an ABSENT context is byte-identical
+// to no context at all — the S7·7a discipline, now carrying three things.
 export interface StageInstructionContext {
   // The plan text the daemon already fetched by hash. Absent when the task has no
   // `planArtifactHash`, or when the store returned null for one (a degrade, not an
   // error — see the dispatcher). Absent (or empty) → the plan section is omitted.
   readonly plan?: string;
+  // ── S7·7b: THE FIX-SEED (D46) ──────────────────────────────────────────────
+  //
+  // D46 killed the resume: a fix is a FRESH implementer, never the hot author (see
+  // stageRunner.ts for the two arguments). What a fresh fixer loses is not the
+  // code — the prior attempt's changes are ON DISK and D53's rider has the fixer
+  // read them with `git diff` rather than the dispatcher inlining a diff into the
+  // prompt (zero prompt bytes, never truncated, never stale). What it loses is the
+  // FEEDBACK and the DEAD ENDS, neither of which has an on-disk home. So exactly
+  // those two ride in here, as small structured data.
+  //
+  // Sourced by the daemon from `TaskRecord.lastReview` / `.lastCompletion` (the
+  // S7·7b projection folds). Threaded in rather than read here for the same reason
+  // `plan` is: rule 0.3 keeps this function pure and golden-string testable.
+
+  // The per-criterion verdicts of the review that FAILED this attempt. Absent (or
+  // empty) → the whole feedback block is omitted.
+  readonly reviewFeedback?: ReportReviewPayload['criteria'];
+  // The PRIOR attempt's worklog — its own account of what it decided and what it
+  // tried and abandoned. Absent (or carrying two empty lists) → the whole worklog
+  // block is omitted.
+  //
+  // ⚠ ABSENT IS A REAL, EXPECTED STATE, not an error: a fix can be dispatched
+  // before any `report_completion` exists for the task (a review that ran against
+  // work whose author never reported, or a bounce the orchestrator made by hand).
+  // Feedback-without-worklog must compose cleanly — there is a test for it.
+  readonly worklog?: ReportCompletionPayload['worklog'];
 }
 
 // The stable OPENING paragraph of the implementing briefing — a byte-stable
@@ -43,19 +72,60 @@ const IMPLEMENTING_BRIEFING_OPENING =
 real work. The plan below has already been reviewed and approved — carry it out;
 do not re-plan it.`;
 
-// The stable CLOSING two paragraphs — the mid-run-steering + don't-advance
-// contract, lifted VERBATIM from the generic spawn text below (only the leading
-// "Implement the plan, staying within scope. " differs, and it re-wraps the first
-// paragraph). Every worker, generic or implementing, gets the identical contract,
-// and this is the byte-stable SUFFIX of the briefing.
+// The stable CLOSING two paragraphs — the mid-run-steering contract, then the
+// FINISH contract. Byte-stable SUFFIX of the implementing briefing.
+//
+// ⚠ **THE SECOND PARAGRAPH WAS REPLACED IN S7·7b (D53, D46) — DELIBERATE GOLDEN
+// CHURN.** It used to be lifted verbatim from the generic spawn text below
+// ("briefly summarize what you did … a human reviews and moves it forward on the
+// board"), i.e. the implementer finished by STOPPING and a human moved the card.
+// D53 makes `implementing → review` an OUTCOME the work reports for itself, and
+// D46 makes the worklog the fix-seed a fresh fixer needs, so the implementer now
+// finishes by CALLING A TOOL and the report is the deliverable. The first
+// paragraph (mid-run steering) is untouched; the generic, planning and review
+// briefings are untouched.
+//
+// ⚠ The tool name `report_completion` here MUST match the tool 7b-daemon registers
+// (SDK MCP server `vimes_report`, alongside `report_review`; model-facing name
+// `mcp__vimes_report__report_completion`, which the model resolves from this plain
+// name). Load-bearing prose, exactly like planning's ExitPlanMode line and
+// review's `report_review` line — it is HOW the run ends. The field names
+// `decisionsMade`/`pathsRejected` are stated verbatim because they are the tool's
+// own input keys (`reportCompletionPayloadSchema.worklog`).
+//
+// ⚠ NOTE THE ORDER OF UNITS. As of S7·7b-core the tool does not exist yet; the
+// emitter is 7b-daemon. This prose ships in the same commit-lineage but the
+// briefing is only true once that unit lands — which is why the two are sequenced
+// back to back and not separated by a deploy.
 const IMPLEMENTING_BRIEFING_CLOSING =
   `Implement the plan, staying within scope. If a message arrives while you're
 working, it's a human steering you mid-run — read it and adjust. It's a
 correction to THIS task, not a new task.
 
-When you believe the stage is done, briefly summarize what you did and what (if
-anything) remains, then stop. You do not advance the task yourself — a human
-reviews and moves it forward on the board.`;
+When the work is done, report it using the report_completion tool — a worklog with
+decisionsMade (the calls you made and why) and pathsRejected (dead ends you tried
+or considered and abandoned; the next attempt must not re-explore them). That
+report is how you finish and is your ENTIRE deliverable: VIMES records it and moves
+the task to review. You do not advance the task yourself.`;
+
+// ── S7·7b: the FIX-SEED preamble (D46 + D53's on-disk-diff rider) ─────────────
+//
+// A byte-stable constant with no task-specific values, rendered only when the
+// briefing carries a fix-seed. Two things it must say and one it must NOT:
+//   • this is a FIX of a prior attempt that failed review — so the fixer knows the
+//     work-order is not virgin ground and the failures below are the job;
+//   • the prior attempt's changes are ALREADY ON DISK — read them with `git diff`.
+//     D53's rider: the dispatcher does NOT inline diff text (zero prompt bytes,
+//     never truncated, never stale), so the briefing must point at the diff or the
+//     fixer will start from scratch on top of half-finished work;
+//   • it must NOT say "you wrote this" — the fixer is a stranger to the code, and
+//     D46's anchoring argument is the whole reason it is a stranger.
+const FIX_ATTEMPT_PREAMBLE =
+  `This is a FIX. A previous attempt at this task was implemented and then FAILED an
+independent review. You did not write that attempt — but its changes are ALREADY
+ON DISK in the directory above. Read them first (\`git diff\`, and \`git status\` for
+new files) so you are correcting existing work rather than starting over on top of
+it.`;
 
 // The stable OPENING paragraph of the PLANNING briefing — byte-stable prefix
 // (cache discipline, same rationale as IMPLEMENTING_BRIEFING_OPENING). Plan-
@@ -126,14 +196,21 @@ export function composeStageInstruction(
   // A fresh session spawned into the `implementing` stage is a stranger to the
   // work: it did not write the plan and has none of the reviewer's context. So
   // when there is a work-order and/or an approved plan to hand it, we compose the
-  // richer briefing below rather than the stage-generic text. A RESUMED author
-  // (the fix loop) already has all of this in its own history and takes the resume
-  // branch above/below instead — this specialisation is spawn-only.
+  // richer briefing below rather than the stage-generic text.
+  //
+  // ⚠ S7·7b: **THIS IS ALSO THE FIX BRANCH NOW.** D46 killed the resume, so a fix
+  // after a failed review arrives here too — same stage, same spawn, a stranger
+  // again. The difference is entirely in what the context carries: a fix-seed
+  // (review feedback + the prior attempt's worklog) that a first pass does not
+  // have. There is deliberately no separate "fix" branch and no `isFix` flag; the
+  // presence of the seed IS the distinction, which keeps the first-pass output
+  // byte-identical when it is absent.
   //
   // Every work-order section is CONDITIONAL on presence (I8 totality): an ABSENT
   // field — or an empty string / empty array, which carries no content — omits its
   // whole section rather than rendering an empty one. The plan comes from
-  // `context.plan` (the blob the daemon fetched), not from the task.
+  // `context.plan` (the blob the daemon fetched), not from the task, and so does
+  // the fix-seed.
   if (plan.mode === 'spawn' && task.stage === 'implementing') {
     const hasScope = typeof task.scope === 'string' && task.scope.length > 0;
     const hasExplicitlyOut = Array.isArray(task.explicitlyOut) && task.explicitlyOut.length > 0;
@@ -143,11 +220,45 @@ export function composeStageInstruction(
       typeof task.killCriterion === 'string' && task.killCriterion.length > 0;
     const hasPlan = typeof context?.plan === 'string' && context.plan.length > 0;
 
-    // DEGRADE RULE: a bare implementing task dispatched with none of the five
-    // carries nothing the generic text does not already say, so it falls THROUGH
-    // to the generic spawn wording below — byte-identical to today. The rich
-    // briefing only earns its extra prose when it has content to add.
-    if (hasScope || hasExplicitlyOut || hasAcceptanceCriteria || hasKillCriterion || hasPlan) {
+    // ── the fix-seed's presence tests (S7·7b) ───────────────────────────────
+    //
+    // `Array.isArray` / per-field re-checks rather than trusting the types: this
+    // context crosses the daemon boundary from a REPLAYED record (`lastReview` /
+    // `lastCompletion` off the projection), and a partially-written or
+    // hand-edited record must degrade to "section omitted", never throw (I8).
+    const reviewFeedback = context?.reviewFeedback;
+    const hasReviewFeedback = Array.isArray(reviewFeedback) && reviewFeedback.length > 0;
+    const decisionsMade = context?.worklog?.decisionsMade;
+    const pathsRejected = context?.worklog?.pathsRejected;
+    const hasDecisionsMade = Array.isArray(decisionsMade) && decisionsMade.length > 0;
+    const hasPathsRejected = Array.isArray(pathsRejected) && pathsRejected.length > 0;
+    // A worklog of two empty lists carries no content — same rule as an empty
+    // `explicitlyOut` array. ASYMMETRIC WITH `hasReviewFeedback` ON PURPOSE: a fix
+    // dispatched before any completion report exists has feedback and NO worklog,
+    // and that must compose cleanly rather than render an empty heading.
+    const hasWorklog = hasDecisionsMade || hasPathsRejected;
+    // The fix preamble is earned by EITHER half of the seed: feedback alone still
+    // means a prior attempt is on disk, which is the thing the preamble exists to
+    // say (D53's rider).
+    const hasFixSeed = hasReviewFeedback || hasWorklog;
+
+    // DEGRADE RULE: a bare implementing task dispatched with none of the five (nor
+    // a fix-seed) carries nothing the generic text does not already say, so it
+    // falls THROUGH to the generic spawn wording below — byte-identical to today.
+    // The rich briefing only earns its extra prose when it has content to add.
+    //
+    // ⚠ S7·7b added `hasFixSeed` to this test. Without it, a task carrying ONLY a
+    // fix-seed (no scope, no plan — reachable: a hand-created task bounced out of
+    // review) would degrade to the generic text and SILENTLY DROP the feedback and
+    // the worklog, which is the one thing the fix loop cannot afford to lose.
+    if (
+      hasScope ||
+      hasExplicitlyOut ||
+      hasAcceptanceCriteria ||
+      hasKillCriterion ||
+      hasPlan ||
+      hasFixSeed
+    ) {
       // Compose as an ordered list of BLOCKS joined by a single blank line. This
       // keeps the spacing deterministic and clean no matter which conditional
       // sections are present: no block carries a leading/trailing blank line, and
@@ -192,6 +303,63 @@ export function composeStageInstruction(
       }
       if (hasPlan) {
         briefingBlocks.push(`The approved plan:\n\n${context!.plan}`);
+      }
+
+      // ── S7·7b: the FIX-SEED blocks (D46) ───────────────────────────────────
+      //
+      // Placed AFTER the plan and BEFORE the closing, in a fixed order — preamble,
+      // then feedback, then worklog — so the briefing reads as "here is the task,
+      // here is the plan, here is what went wrong last time, here is what the last
+      // attempt already ruled out, now go". The order is stable regardless of which
+      // blocks are present, which is what keeps two fix dispatches of the same task
+      // comparable and the framing prefix/suffix intact (cache discipline).
+      if (hasFixSeed) {
+        briefingBlocks.push(FIX_ATTEMPT_PREAMBLE);
+      }
+      if (hasReviewFeedback) {
+        // FAILS FIRST, then passes. Both are rendered: the failures are the work,
+        // and the passes are context a fixer needs in order NOT to break them
+        // reaching for a failure. `filter` is order-preserving, so the reviewer's
+        // own ordering survives inside each group and the output is deterministic.
+        const failedCriteria = reviewFeedback!.filter((criterion) => criterion.verdict === 'fail');
+        const passedCriteria = reviewFeedback!.filter((criterion) => criterion.verdict !== 'fail');
+        const verdictBullets = [...failedCriteria, ...passedCriteria]
+          .map((criterion) => {
+            // Uppercased so the verdict is scannable at a glance in a wall of
+            // prose; the `[id]` is rendered for the same reason the REVIEW briefing
+            // renders it — it is the key the next `report_review` will judge again.
+            const verdictLabel = criterion.verdict === 'fail' ? 'FAIL' : 'PASS';
+            const note =
+              typeof criterion.note === 'string' && criterion.note.length > 0
+                ? ` — ${criterion.note}`
+                : '';
+            return `  - [${criterion.criterionId}] ${verdictLabel}${note}`;
+          })
+          .join('\n');
+        briefingBlocks.push(
+          `The review's verdict on that attempt — every FAIL is your job:\n${verdictBullets}`,
+        );
+      }
+      if (hasWorklog) {
+        // Two sub-lists, each conditional, under one lead-in. Joined internally by
+        // the same blank line the outer join uses, so the spacing is uniform
+        // whether one sub-list is present or both.
+        const worklogParts: string[] = [
+          `The previous attempt's own worklog — do NOT re-explore what it already
+rejected. If you think a rejected path is right after all, say so in your report
+rather than quietly retrying it.`,
+        ];
+        if (hasDecisionsMade) {
+          worklogParts.push(
+            `Decisions made:\n${decisionsMade!.map((entry) => `  - ${entry}`).join('\n')}`,
+          );
+        }
+        if (hasPathsRejected) {
+          worklogParts.push(
+            `Paths rejected:\n${pathsRejected!.map((entry) => `  - ${entry}`).join('\n')}`,
+          );
+        }
+        briefingBlocks.push(worklogParts.join('\n\n'));
       }
 
       briefingBlocks.push(IMPLEMENTING_BRIEFING_CLOSING);
@@ -310,14 +478,23 @@ export function composeStageInstruction(
     return briefingBlocks.join('\n\n');
   }
 
-  if (plan.mode === 'resume') {
-    return `You are resuming your own earlier work on this task (${label} · ${task.stage}). New
-guidance has arrived — a human correction, or feedback from an independent
-review. Read the latest messages, address them, and continue in the same
-directory and scope. When done, summarize and stop; a human advances it.`;
-  }
+  // ⚠ **THE `resume` BRANCH WAS DELETED HERE BY S7·7b-daemon (D46) — A RECORDED
+  // REVERSAL, NOT A TIDY-UP.** It used to sit at exactly this point and returned a
+  // short "You are resuming your own earlier work on this task (…). New guidance
+  // has arrived …" text for the fix loop. `resolveStageRunner` stopped producing
+  // `mode:'resume'` (see stageRunner.ts for D46's two arguments), the daemon's
+  // `resumeStageRun` went with it, and the `StageRunnerPlan` union lost the variant
+  // — so this branch became unreachable AND untypeable in the same step, which is
+  // why the removal happened as one unit rather than three.
+  //
+  // What a fix gets INSTEAD is the implementing branch ABOVE, carrying the fix-seed
+  // (`reviewFeedback` + `worklog` in the context). If you are looking for "where
+  // does the fixer get told what went wrong", it is there, not here.
+  //
+  // Interactive/human resume is untouched (D46 rider 2) — but it never composed a
+  // stage instruction, so it never reached this function.
 
-  // plan.mode === 'spawn'
+  // plan.mode === 'spawn' — the ONLY mode since D46.
   //
   // ⚠ The `Directory:` line states `task.projectRoot`. This is correct under the
   // CURRENT default `VIMES_WORKTREE_ISOLATION=off` (worker cwd == projectRoot).

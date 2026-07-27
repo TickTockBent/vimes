@@ -384,10 +384,11 @@ describe('review_reported (S7·6a — RESERVED, payload REUSED from tasks/workOr
   });
 });
 
-describe('completion_reported (S7·7b — RESERVED, no emitter, payload REUSED)', () => {
-  // A no-emitter reservation exactly like work_order_amended: the pair exists so
-  // S7·7b needs no migration, but NOTHING calls the constructor yet and no
-  // projection folds it.
+describe('completion_reported (S7·7b — payload REUSED, folds, emitter in 7b-daemon)', () => {
+  // The mirror of review_reported above, for the FIX side. As of S7·7b-core the
+  // constructor is real and `projections/tasks.ts` folds it onto
+  // `TaskRecord.lastCompletion`; the EMITTER (the `report_completion` tool) is
+  // 7b-daemon's, so nothing in the tree calls this constructor yet.
   const completionPayload = {
     taskId: 'task-aaaa-0001',
     stage: 'implementing' as const,

@@ -17,14 +17,23 @@
 // proposal) pair, including stages outside the enum, maps to an outcome.
 
 import { z } from 'zod';
-import { taskRecordSchema, type TaskRecord } from '../schemas.js';
+import { taskStageSchema, type TaskRecord, type TaskStage } from '../schemas.js';
 
 // ── the stage vocabulary ─────────────────────────────────────────────────────
-// DERIVED from `taskRecordSchema` rather than re-typed, so the machine and the
-// record can never drift apart. The schema is slice-0 reserved and is NOT
-// reshaped here.
-export const taskStageSchema = taskRecordSchema.shape.stage;
-export type TaskStage = z.infer<typeof taskStageSchema>;
+// ONE SOURCE OF RECORD, still — but it now lives in `schemas.ts` and is consumed
+// BY `taskRecordSchema` rather than derived FROM it. S7·7b flipped that direction
+// (D52 finding 1): the record gained `lastReview`/`lastCompletion`, whose types
+// are the report payloads, which are themselves keyed by stage — so deriving the
+// stage back out of the record closed a cycle. The full reasoning lives beside
+// the declaration in `schemas.ts`.
+//
+// ⚠ RE-EXPORTED FROM HERE ON PURPOSE. Every pre-S7·7b consumer imports
+// `taskStageSchema`/`TaskStage` from this module (events.ts, tasks/workOrder.ts,
+// the package index, the tests), and the hoist is deliberately invisible to them.
+// The machine and the record still cannot drift apart: neither one declares the
+// vocabulary any more.
+export { taskStageSchema };
+export type { TaskStage };
 
 // Every stage, in the schema's own order. Tests enumerate THIS (× itself) to
 // build the full cross product, so an added stage automatically enters the

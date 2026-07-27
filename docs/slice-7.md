@@ -305,6 +305,23 @@ the D50 clamp, capture in the handler; two schema-seam findings resolved). Built
 `report_review` MCP tool + `recordReview` (mirror of `recordPlan`, transition via the
 I7 choke) (6b). Full suite 2525 green; verified + verify-by-broken by the orchestrator.
 The `review→done`/`review→implementing` loop is now real end-to-end.
+
+**✅ LIVE-VERIFIED 2026-07-27 (task `74ba0c2a`, johnny `list()` feature) — the FIRST
+full loop ran end-to-end with both auto-hops firing live:** backlog→planning
+(`798cef89`, plan captured ~2.5min, 13.9KB real plan)→plan-ready→implementing
+(`eb07138b`, 0 gates under auto, 0 spawn attempts, tool mix Bash/Edit/Read only,
+tests+build run, ~6min)→review (`db61cd62`)→**done**. The reviewer called
+`mcp__vimes_report__report_review` exactly once; `review_reported` (seq 40) →
+`task_transitioned` review→done `proposedBy:dispatcher` **4ms later** via the I7
+choke. Human touched only the three dispatch gates. **Degenerate-path observation
+(the task had NO acceptanceCriteria):** the reviewer did not flounder on the
+"one entry per criterion" closing — it derived **9 sensible criteria from the scope**
+(api-surface, mock-parity, tests, docs, …), each with evidence-carrying notes, all
+pass → `deriveReviewOutcome` → done. Exactly the agent-improvises-well case; the
+degenerate-case briefing polish ("no enumerated criteria — derive your own") is
+downgraded to low-priority. Still untested live: the **primary path** (criteria
+listed on the task, reviewer reports by id) and the **fail→implementing bounce** —
+both want a criteria-bearing task.
 - **Scope:** both tools on the S7·5 machinery; `report_review` carries **per-criterion
   pass/fail keyed to the acceptance list**; `report_completion` carries the **worklog**
   (decisions-made, paths-rejected) — D46's fix-seed.
@@ -315,6 +332,23 @@ The `review→done`/`review→implementing` loop is now real end-to-end.
   reconsider acceptance-list identity (D43 feedback).
 
 ### S7·7 — Plan→implement handoff + D46 fix-loop (resume DIES) — `opus` *(dispatcher behavior change + a decided reversal)*
+**S7·7b DONE 2026-07-27 (core + daemon), pending deploy.** The fix loop is real:
+`report_completion` MCP tool (worklog: decisionsMade/pathsRejected) → `recordCompletion`
+(mirror of recordReview) → emit `completion_reported` → propose **implementing→review
+(a D53 OUTCOME)**. D46 flip landed: `resolveStageRunner` always spawns, the resume
+variant + `resumeStageRun` + `resumed`/`resume-failed` production paths deleted
+(union variants kept declared for the UI's dead readers — QUEUE cleanup). Fix-seed
+threading: dispatcher passes `lastReview.criteria` + `lastCompletion.worklog` into
+`composeStageInstruction`; the fix briefing renders FAIL-first verdicts, the worklog,
+and the on-disk `git diff` pointer (D53 rider). Deferred D52 debts landed: schema
+hoist (schemas.ts is the true leaf; `taskStageSchema` derivation direction flipped),
+`lastReview`/`lastCompletion` folds. Implementing closing now directs
+`report_completion` (deliberate golden churn). Suite 2573 green; orchestrator
+verified + verify-by-broke both halves. Findings: D54 (open-questions,
+concurrent-implementer hazard), UI dead-branch cleanup (QUEUE), and an
+orchestrator process error (a `git checkout` restore wiped uncommitted core work
+mid-verification; caught and repaired by the daemon agent — snapshot-restore
+discipline adopted).
 - **Scope:** (a) `composeStageInstruction` for `implementing` seeds the **fresh**
   implementer with work-order(rev) + plan artifact (D44); (b) **D46**: `stageRunner.ts`
   rule 2 flips `resume`→`spawn`; `taskDispatcher` **removes** `resumeSession` + the

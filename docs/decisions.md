@@ -1886,3 +1886,47 @@ boundary**. Worth a deliberate pass someday — align zod versions, or formalise
 **Deferred to S7·7b:** `report_completion` (the worklog fix-seed producer) + the
 `lastReview`/`lastCompletion` folds + the fix-seed composition (the consumer). Only
 the review path shipped here; `report_completion` waits for its consumer (rule 0.5).
+
+## D53 — The movement taxonomy: promotions are DECISIONS, reports are OUTCOMES, dispatch is MECHANICS; review is a holding pen — DECIDED 2026-07-27
+
+*(Wes, planning S7·7b, the morning after the first full live loop. Settles the
+"how much automation" question for the whole task layer, ahead of the
+orchestrator (S7·9).)*
+
+**The frame (Wes).** VIMES is not a conveyor belt — it is a **task-dispatcher
+layer that the orchestrator will use exactly the way the orchestrator's own
+Agent tool is used today**: the mechanism (spawn, capture reports, record) is
+automated; the judgment (what advances, what gets reviewed, what bounces) is
+not. The target loop: orchestrator chats with Wes to create backlog tasks →
+priorities promote into planning → planning dispatches immediately → plan
+reported → plan-ready → orchestrator reviews the plan (consult Wes or promote)
+→ implementing dispatches immediately → completion reported → review →
+orchestrator decides: dispatch an independent reviewer OR bounce to
+implementing with specific fixes → verdict → done → orchestrator tells Wes
+what landed.
+
+**The taxonomy.** Three kinds of stage movement, owned differently:
+1. **Promotions — decisions.** `backlog→planning` (priority) and
+   `plan-ready→implementing` (plan approval). Orchestrator's job (human today).
+2. **Outcomes — reports.** The work reporting its own state:
+   `planning→plan-ready` on plan capture (built, D48),
+   **`implementing→review` on `report_completion` (this decision — S7·7b
+   builds it)**, `review→done/implementing` on the `report_review` verdict
+   (built, D52). Proposed by the dispatcher through the I7 choke, always.
+3. **Dispatch — mechanics.** Entering an ACTIVE stage starts the work:
+   *"Why would you move it to Implementing and NOT want it to begin
+   implementation? The promotion should be the decision. No task moves to an
+   active stage unless it's ready to begin."* So planning and implementing
+   **dispatch-on-promotion** (queued as its own unit, after S7·7b). **Review
+   is deliberately NOT an active stage — it is a holding pen**: entering it
+   auto-dispatches nothing; the orchestrator (human today) chooses reviewer vs
+   bounce. **No chaining**: a completion report never auto-dispatches a
+   reviewer.
+
+**Rider — D46 fix-seed refinement (diff on-disk, not inlined).** D46's fix-seed
+lists "the prior attempt's diff". Decided: the fixer is directed to **read it
+from disk (`git diff` in its own cwd)** rather than the dispatcher inlining
+diff text into the briefing — zero prompt bytes, never truncated, never stale.
+A refinement of D46's carrier, not a reversal of its content: the fixer still
+HAS the diff; the briefing carries review feedback + worklog inline (small
+structured data with no on-disk home) and points at the diff.

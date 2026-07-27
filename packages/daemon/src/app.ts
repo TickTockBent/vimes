@@ -466,10 +466,12 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     sessionHost: {
       spawnSession: (options) => sessionHost.spawnSession(options),
       isLive: (appSessionId) => sessionHost.isLive(appSessionId),
-      // Step 7: the fix loop resumes the hot author instead of spawning a
-      // stranger, and `sendMessage` is the (still-silent by default) instruction
-      // path. Same instance, same live registry — no second session authority.
-      resumeSession: (appSessionId) => sessionHost.resumeSession(appSessionId),
+      // ⚠ S7·7b (D46): `resumeSession` was wired here for step 7's fix loop and is
+      // GONE — the dispatcher no longer accepts it. The host still HAS the method,
+      // and wsHub.ts still calls it for the human's own resume (rider 2); this
+      // composition simply no longer hands it to the dispatcher.
+      // `sendMessage` is the instruction path — same instance, same live registry,
+      // no second session authority.
       sendMessage: (appSessionId, text) => sessionHost.sendMessage(appSessionId, text),
     },
     // The minimal, stage-generic instruction Wes signed off 2026-07-24 (see
@@ -658,6 +660,13 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     // review_reported + propose the review→done/implementing transition via I7).
     // Same wiring shape as onPlanCaptured above.
     onReviewReported: (appSessionId, criteria) => taskDispatcher.recordReview(appSessionId, criteria),
+    // S7·7b completion capture (I10): the SDK adapter observes a dispatched
+    // implementing session's `report_completion` tool call and hands the worklog
+    // here; the dispatcher owns task state and records it (`recordCompletion` —
+    // emit completion_reported + propose the implementing→review OUTCOME via I7,
+    // D53). Same wiring shape as the two above.
+    onCompletionReported: (appSessionId, worklog) =>
+      taskDispatcher.recordCompletion(appSessionId, worklog),
   });
   const tailer = new JsonlTailer({
     router,

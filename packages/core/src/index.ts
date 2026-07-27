@@ -152,6 +152,13 @@ export {
 // `export * from './schemas.js'` above, and `workOrderAmended`/
 // `WorkOrderAmendedPayload` already flow through `export * from './events.js'`
 // below; nothing redundant is re-exported here.
+//
+// ⚠ S7·7b: `reportReviewPayloadSchema` / `reportCompletionPayloadSchema` (and
+// their types) now LIVE in schemas.ts and so ALSO arrive via the star export
+// above. They are kept in this explicit list anyway — an explicit named export
+// wins over `export *`, both names bind the same object, and listing them here is
+// what makes the hoist invisible to `@vimes/core`'s consumers. Same story for
+// `taskStageSchema`/`TaskStage` in the taskStateMachine block above.
 export {
   stageRunIdentitySchema,
   artifactEnvelopeSchema,

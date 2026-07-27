@@ -1,163 +1,114 @@
 // ─── slice 6 step 7 — WHO RUNS THE STAGE (PURE, packages/core) ───────────────
 //
 // `decideDispatch` (step 3) answers **whether** a stage run happens. This module
-// answers the next question and only that one: **which session runs it** — a
-// brand-new one, or the session that already did the work.
+// answers the next question and only that one: **which session runs it.**
 //
 // TWO QUESTIONS, TWO FUNCTIONS, ON PURPOSE. Folding "who runs it" into
-// `decideDispatch` would put a cache-economics judgement inside the function that
-// carries I10, and I10 would stop being assertable on its own. Nothing in this
-// file may ever decide whether to dispatch, and nothing in `dispatchDecision.ts`
-// may ever decide who runs it.
+// `decideDispatch` would put that judgement inside the function that carries I10,
+// and I10 would stop being assertable on its own. Nothing in this file may ever
+// decide whether to dispatch, and nothing in `dispatchDecision.ts` may ever decide
+// who runs it.
 //
-// ── the design (docs/design-directions.md, "The dispatcher's review/fix loop +
-//    cache economics", Wes 2026-07-20) ────────────────────────────────────────
+// ── D46 (2026-07-25) — THE ANSWER IS NOW ALWAYS "A FRESH ONE" ────────────────
 //
-//   "**Review wants independence; fixes want the hot author.** An agent reviewing
-//    its own work shares its own misunderstanding — a real blindspot. So the GATE
-//    review is the orchestrator or a fresh reviewer; self-review is a cheap first
-//    pass, never the gate. Fixes of orchestrator-found flaws go to the original
-//    hot-cache worker (cheap + context-rich)."
+// **This module used to have two rules and now has one.** Until D46 it read the
+// task's `sessionRefs` and, for an `implementing` stage that already had an
+// author, returned `{ mode: 'resume', appSessionId }` — the fix loop went back to
+// the hot, cache-warm session that wrote the work. That was a deliberate design
+// (docs/design-directions.md, "The dispatcher's review/fix loop + cache
+// economics", Wes 2026-07-20: *"Fixes of orchestrator-found flaws go to the
+// original hot-cache worker (cheap + context-rich)"*), and **D46 reversed it.**
 //
-//   "**Cache economics:** resuming the hot worker for fixes avoids the big
-//    cache-miss of a new agent. Prompt cache is scoped to machine+directory (D6):
-//    a worktree worker is cold *relative to shared-dir workers* but hot *within
-//    its own worktree* on resume — so the loop is internally consistent; the miss
-//    avoided is the new-agent spin-up, at the cost of no cross-agent cache sharing
-//    in worktree mode."
+// The two independent arguments, recorded here because this is the file where
+// somebody will one day try to put the optimisation back:
 //
-// The asymmetry is the whole module: **resume is an OPTIMISATION and review is a
-// CORRECTNESS RULE.** They point in opposite directions, and the correctness rule
-// wins wherever they meet.
+//   1. **Identity.** A resumed author makes ONE TRANSCRIPT STRADDLE TWO ATTEMPTS,
+//      which muddies per-attempt usage attribution, replay (I6), and the "are
+//      attempts improving?" comparison, all at once. The
+//      `(taskId, stage, attempt, workOrderRev)` key stays honest only if a session
+//      never spans attempts.
+//   2. **Anchoring** (survives even if you reject #1). An author resumed with its
+//      own review feedback is STRUCTURALLY INVITED TO DEFEND ITS ORIGINAL
+//      APPROACH — it is marinating in its own rationale. A fresh implementer
+//      reading work-order + diff + feedback COLD judges the fix against the
+//      contract. Review-stage independence and fix-stage freshness are the same
+//      principle; the old rule 1 (review always spawns) was always half of this
+//      rule, and D46 simply made it whole.
+//
+// ⚠ **THE COST IS REAL AND WAS ACCEPTED, NOT OVERLOOKED.** A warm resumed author
+// re-reads its context at cache-read rates inside the 1h TTL; a fresh implementer
+// pays cold prefix + re-reads, so a fix cycle is genuinely MORE EXPENSIVE now.
+// D46's standing call is *"revisit if fix-cycle cost proves material"* — and clean
+// attempt identity is exactly what makes that a queryable number. If you are here
+// to reinstate the resume, that revisit is a DECISION RECORD, not an edit.
+//
+// ⚠ **SCOPE.** D46 rider 2: this governs STAGE RUNS ONLY. Interactive free
+// sessions keep `resume` untouched — `SessionHost.resumeSession` is alive and is
+// the human's own door. What died is the DISPATCHER's use of it.
+//
+// What replaced the resume is not nothing: the context a fix used to inherit by
+// being the same session is now handed to the fresh session explicitly — the prior
+// attempt's diff is read off disk (D53's rider), and the review feedback + the
+// prior attempt's worklog ride in the briefing as the FIX-SEED (see
+// `stageInstruction.ts`). That seed is the resume's replacement, and it is why
+// removing the resume did not lose the fixer's context.
 //
 // Rule 0.3: PURE and TOTAL. No clock, no I/O, no randomness, no mutation of the
-// input, no throw — derived from `task.sessionRefs` and `task.stage` alone. Same
-// task in, same plan out, forever.
+// input, no throw.
 
 import type { TaskRecord } from '../schemas.js';
 
-// The stage whose session is never reused, and the stage that reuses one. Named
-// constants rather than inline string literals because both names appear in a
-// load-bearing comparison below, and a typo in either one degrades silently into
-// "always spawn" — which is safe for `review` and WRONG-but-quiet for the fix loop.
+// The stage whose session is never reused. Kept as a named constant even though
+// the function is now constant, because the `review` branch below is still checked
+// explicitly and the name is what says WHY.
 const INDEPENDENT_REVIEW_STAGE = 'review';
-const AUTHORING_STAGE = 'implementing';
 
 export type StageRunnerPlan =
-  // A fresh session. The default, and the only plan `review` can ever get.
-  | { readonly mode: 'spawn' }
-  // Resume THIS existing app session — the hot author of the work under fix.
-  | { readonly mode: 'resume'; readonly appSessionId: string };
+  // A fresh session. Since D46 this is the ONLY variant — the union is kept as a
+  // one-armed union rather than collapsed to a bare object type so that a future
+  // second mode (D46's own "revisit if fix-cycle cost proves material", or an
+  // as-yet-unimagined third door) is an ADDITIVE change to this type and to every
+  // `plan.mode === ...` check downstream, exactly as `resume` once was.
+  { readonly mode: 'spawn' };
 
 /**
- * Decide who runs this task's current stage.
+ * Decide who runs this task's current stage. **Since D46 the answer is always a
+ * fresh session** — see the file header for the reversal and its two arguments.
  *
- * THE RULES, in the order they are checked (the order is load-bearing — see the
- * note on rule 1):
+ * The function is therefore CONSTANT in its input, and this is stated plainly
+ * rather than hidden behind branches: the `review` check below returns the same
+ * value as the fall-through, and it is kept ONLY because it is a load-bearing
+ * correctness rule in its own right.
  *
- *   1. **`review` → ALWAYS `spawn`.** THE INDEPENDENCE RULE. Never resume, and
- *      never reuse an implementing session, whatever the task's refs look like.
- *      Checked FIRST and returned unconditionally so that no ref shape, and no
- *      future rule added below it, can route a review into a resume: the branch
- *      is structurally unreachable-from-elsewhere rather than merely unreached.
+ *   1. **`review` → ALWAYS `spawn`.** THE INDEPENDENCE RULE, and it PREDATES D46.
+ *      An agent reviewing its own work shares its own misunderstanding, so a
+ *      review run in the authoring session cannot see the flaw it created and the
+ *      gate silently degrades into self-approval. Checked FIRST and returned
+ *      unconditionally, so that no future rule added below it can route a review
+ *      into anything else — the branch is structurally unreachable-from-elsewhere
+ *      rather than merely unreached.
  *
- *      ⚠ **THIS IS THE BRANCH A FUTURE OPTIMISATION WILL COME FOR.** It looks
- *      exactly like a missed cache win — the reviewer starts cold, every time, and
- *      a resumed implementer would be free. It is not a missed win; it is the
- *      point. An agent reviewing its own work shares its own misunderstanding, so
- *      a review run in the authoring session cannot see the flaw it created and
- *      the gate silently degrades into self-approval. If you are here to make
- *      review cheaper, make the reviewer's SPAWN cheaper — do not reuse the
- *      author's session. `stageRunner.test.ts` enumerates ref shapes precisely so
- *      this cannot be relaxed by accident.
+ *      ⚠ Do NOT delete this branch as "redundant now". It is redundant only for as
+ *      long as the fall-through also spawns; the whole point of writing it out is
+ *      that the day somebody adds a second mode for `implementing`, review is
+ *      already fenced off from it. `stageRunner.test.ts` asserts the review cases
+ *      separately from the general ones for the same reason.
  *
- *   2. **`implementing` WITH a prior `implementing` ref → `resume` it.** THE FIX
- *      LOOP: the task has been through `review` and come back down the
- *      `review → implementing` edge, so the work already has an author, and that
- *      author is context-rich and cache-warm. Independence was already secured —
- *      by the reviewer that found the flaw — so nothing is lost by going back to
- *      the person who wrote it.
- *
- *   3. **`implementing` with NO prior implementing ref → `spawn`.** First pass;
- *      there is no author yet. A `planning` session is NOT the author: it produced
- *      a plan, not the work under fix, and treating it as one would resume a
- *      session whose context is the wrong artifact.
- *
- *   4. **Any other stage → `spawn`.** `planning` is the live case (the only other
- *      dispatchable stage); everything else — including a stage outside the enum —
- *      lands here too. Fail-safe direction: a fresh session is always correct, and
- *      the resume is only ever an optimisation.
+ *   2. **EVERY OTHER STAGE → `spawn`.** `implementing` (first pass AND fix — D46
+ *      made them indistinguishable to this function), `planning`, and anything
+ *      else including a stage outside the enum. The task's `sessionRefs` are NOT
+ *      CONSULTED AT ALL any more; the count of prior attempts is the dispatcher's
+ *      business (`attempt++`), not this function's.
  */
 export function resolveStageRunner(task: TaskRecord): StageRunnerPlan {
   const stage = task?.stage as string | undefined;
 
-  // 1. THE INDEPENDENCE RULE. Unconditional, and first.
+  // 1. THE INDEPENDENCE RULE. Unconditional, and first. See the note above on why
+  // this stays even though the fall-through is identical.
   if (stage === INDEPENDENT_REVIEW_STAGE) {
     return { mode: 'spawn' };
   }
 
-  // 2/3. The fix loop, or the first pass.
-  if (stage === AUTHORING_STAGE) {
-    const hotAuthorSessionId = mostRecentSessionIdForStage(task, AUTHORING_STAGE);
-    if (hotAuthorSessionId !== null) {
-      return { mode: 'resume', appSessionId: hotAuthorSessionId };
-    }
-    return { mode: 'spawn' };
-  }
-
-  // 4. Everything else.
+  // 2. Everything else, including the fix loop (D46).
   return { mode: 'spawn' };
-}
-
-/**
- * The `appSessionId` of the MOST RECENT ref for `stage`, or null when there is
- * none.
- *
- * ⚠ WHICH END IS "MOST RECENT": **the LAST element of the array.** The tasks
- * projection folds `task_session_attached` by APPENDING, never sorting
- * (`projections/tasks.ts` — "APPEND, never sort: the refs are a chronological
- * trail of which sessions ran this task, and the log order is the only order that
- * means anything"). So the array reads oldest → newest and `.at(-1)` of the
- * matches is the newest. Scanning backwards from the end and returning the first
- * hit is that same fact, written so it short-circuits.
- *
- * WHY the most recent and not the first: a task can go round the review/fix loop
- * more than once, and after a quarantine a re-run is a NEW session that the
- * projection deliberately keeps alongside the old one. The oldest implementing ref
- * may therefore be a dead session with stale context; the newest is the author of
- * the work that is actually on disk.
- *
- * TOTAL BY CONSTRUCTION (I8): `sessionRefs` is validated as an array of
- * `{stage, appSessionId}` by the schema, but this function is reachable from an
- * API boundary and from replayed records, so every assumption is re-checked here
- * rather than trusted. A malformed ref is SKIPPED, never thrown on — and a task
- * whose refs are entirely malformed simply has no author, which resolves to
- * `spawn`, the safe direction.
- */
-function mostRecentSessionIdForStage(task: TaskRecord, stage: string): string | null {
-  const sessionRefs: unknown = task?.sessionRefs;
-  if (!Array.isArray(sessionRefs)) {
-    return null;
-  }
-  for (let refIndex = sessionRefs.length - 1; refIndex >= 0; refIndex -= 1) {
-    const sessionRef: unknown = sessionRefs[refIndex];
-    if (sessionRef === null || typeof sessionRef !== 'object') {
-      continue;
-    }
-    const candidate = sessionRef as { stage?: unknown; appSessionId?: unknown };
-    // Exact string match, never a case-insensitive or prefix one: 'implementing'
-    // is an enum value, not a label, and a fuzzy match here would let some future
-    // 'implementing-review' stage silently inherit the author.
-    if (candidate.stage !== stage) {
-      continue;
-    }
-    if (typeof candidate.appSessionId !== 'string' || candidate.appSessionId.length === 0) {
-      // A ref with no usable session id cannot be resumed. Skipping (rather than
-      // returning null) keeps looking further back — one corrupt ref must not
-      // hide an intact older author.
-      continue;
-    }
-    return candidate.appSessionId;
-  }
-  return null;
 }
