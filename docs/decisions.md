@@ -1828,3 +1828,61 @@ detectable at the `canUseTool` gate.
 rule 0.7) — does denying the Agent/Task tool at `canUseTool` + a plan-directed
 instruction make the planner investigate inline and reach `ExitPlanMode` cleanly?
 Findings + fixture bank like S7·0 before this is built into the dispatcher/adapter.
+
+## D52 — Un-defer the exposed-tool (in-process MCP) channel; `report_review` is its first customer — DECIDED 2026-07-26
+
+**Decision (Wes).** VIMES exposes its first session-callable custom tool. D48 had
+re-scoped away the `submit_plan` MCP surface in favour of native `ExitPlanMode`, and
+MCP was parked as a `design-directions.md` horizon item — but S7·6 (independent
+review) needs a dispatched session to hand back a STRUCTURED per-criterion verdict,
+and there is no native tool that carries that shape (the map confirmed ZERO exposed-
+tool infra existed). Three upcoming units need the same "dispatched session →
+structured payload → VIMES" channel (`report_review`, `report_completion`'s worklog,
+and the future abort-and-flag / orchestrator tools), so it is foundational, not a
+one-off. Un-deferred with conviction; "deferred" was never "forbidden."
+
+**Spike-confirmed mechanism (`scratchpad/spike-s7-6-FINDINGS.md`, SDK 0.3.207, rule
+0.6/0.7 — orchestrator re-verified against raw transcripts).** In-process MCP via
+`createSdkMcpServer` + `tool()` mounted on the query's `mcpServers`:
+- **Orthogonal to the D50 `tools` clamp** — the clamp filters BUILT-IN tools only;
+  the MCP tool rides in via `mcpServers` regardless, needs NO allowlist entry, and
+  **opens no spawn hole** (0 spawns under a force-fanout prompt; `ToolSearch` stays
+  absent). This is the load-bearing clean result.
+- **Captured in the tool HANDLER** (in-process), NOT `canUseTool` — under
+  `permissionMode:'auto'` (the dispatched footing) `canUseTool` is bypassed for the
+  MCP tool but the handler still fires. So capture lives in the handler.
+- Model calls it reliably; payload schema-valid; clean stop on a normal result.
+
+**As built (S7·6a core + S7·6b daemon, 2026-07-26).** 6a: `review_reported` event
+(payload = `reportReviewPayloadSchema` verbatim), pure `deriveReviewOutcome`
+(all-pass+full-coverage → `done`; any fail / incomplete → `implementing`; bare task →
+`done`), and the review-stage briefing branch (renders criteria WITH ids, directs the
+`report_review` tool). 6b: exposes `report_review` via `createSdkMcpServer`/
+`mcpServers` on dispatched sessions (SDK imports stay ONLY in the query factory — the
+adapter passes a plain tool-spec through `SdkQueryOptions`, factory wraps it), captures
+in the handler → `recordReview` (mirror of `recordPlan`: reverse-lookup a `review`
+sessionRef → emit `review_reported` → propose `review→done`/`review→implementing` via
+the `taskWriter` I7 choke). The review loop is now end-to-end.
+
+**Two findings surfaced building it (rule 0.1), both at the core↔daemon schema seam:**
+1. **6a — `schemas.ts` leaf cycle.** The `lastReview` fix-seed field could not import
+   `reportReviewPayloadSchema` (schemas.ts is the leaf; workOrder.ts → schemas.ts).
+   **Resolved: `lastReview` + its projection fold DEFERRED to S7·7b** (its only
+   consumer, rule 0.5), which will also resolve the schema-location (likely hoist the
+   payload schema into the leaf) at that point. The review loop works without it
+   (transition derives straight from the event payload).
+2. **6b — zod v3/v4 boundary.** Core validates with zod **v3**, the daemon + Agent SDK
+   use zod **v4** (the split `taskApi.ts:92` already documents). Reusing core's schema
+   object in the daemon throws at runtime (invisible to CI). **Resolved: the tool's
+   input shape is RESTATED in daemon-v4 zod and BOUND to core by a two-way `satisfies`
+   type-check** (`taskApi.ts` boundary discipline; the drift-guard was verified by
+   breaking). Caveat: catches structural drift, not future value-level tightening.
+
+**Recurring-seam note (candidate future cleanup, not blocking):** two findings this
+session both stem from **core sharing zod-schema objects across the v3/daemon-v4
+boundary**. Worth a deliberate pass someday — align zod versions, or formalise the
+"restate-and-type-bind at the boundary" discipline as the standing rule.
+
+**Deferred to S7·7b:** `report_completion` (the worklog fix-seed producer) + the
+`lastReview`/`lastCompletion` folds + the fix-seed composition (the consumer). Only
+the review path shipped here; `report_completion` waits for its consumer (rule 0.5).

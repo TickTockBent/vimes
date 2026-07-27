@@ -1,4 +1,5 @@
 import { createRequire } from 'node:module';
+import { z } from 'zod';
 import {
   EventRouter,
   INITIAL_LIVENESS,
@@ -28,6 +29,7 @@ import {
   type EventStore,
   type IdSource,
   type Liveness,
+  type ReportReviewPayload,
   type SessionRecord,
 } from '@vimes/core';
 import type { DaemonConfig } from './config.js';
@@ -82,6 +84,26 @@ export interface SdkStreamMessage {
   [key: string]: unknown;
 }
 
+// ── S7·6b: the SDK-agnostic report-tool spec (the SDK-boundary rule) ─────────
+//
+// The adapter (this file, the testable core) builds a PLAIN spec — a name, a
+// description, a zod raw shape, and an async handler — and NEVER imports the SDK.
+// The `defaultSdkQueryFactory` (the determinism-exempt boundary) is the ONLY code
+// that wraps these into `createSdkMcpServer` + `tool()` and mounts them on the
+// query's `mcpServers`. So `createSdkMcpServer`/`tool` stay out of CI (rule 0.3 /
+// D18), exactly as they did for `query` itself. See `buildReportMcpServers`.
+//
+// `inputSchema` is a zod RAW SHAPE (the object-of-schemas the SDK's `tool()` takes
+// as its 3rd arg — sdk.d.ts:6745), not a wrapped `z.object`, so the factory hands
+// it straight through. The handler's `{ ok }` return is wrapped into the SDK's
+// `CallToolResult` by the factory (the handler here is SDK-agnostic).
+export interface SdkReportToolSpec {
+  name: string;
+  description: string;
+  inputSchema: z.ZodRawShape;
+  handler: (input: unknown) => Promise<{ ok: boolean }>;
+}
+
 export interface SdkQueryOptions {
   cwd: string;
   resume?: string;
@@ -108,6 +130,10 @@ export interface SdkQueryOptions {
   // D50: named sub-agent spawn surfaces removed from context (SDK `disallowedTools`
   // belt). Set together with `tools` on a dispatched spawn, or absent entirely.
   disallowedTools?: string[];
+  // S7·6b: in-process report tools exposed to this session (today: `report_review`
+  // for dispatched sessions). The factory wraps them into `mcpServers`. Absent (the
+  // common case) = no custom tools, options byte-identical to before this unit.
+  reportTools?: SdkReportToolSpec[];
 }
 
 export interface SdkQueryHandle extends AsyncIterable<SdkStreamMessage> {
@@ -256,6 +282,13 @@ interface AdapterServices {
   // to the dispatcher, which owns task state. The adapter never touches task state
   // or the artifact store itself.
   onPlanCaptured(appSessionId: string, planText: string): void;
+  // S7·6b review capture (I10): the SDK adapter OBSERVES a dispatched review
+  // session's `report_review` tool call (in the tool HANDLER — canUseTool is
+  // bypassed under `auto`, spike 2026-07-26) and PROPOSES the reported criteria
+  // back through here; the host forwards it to the dispatcher's `recordReview`,
+  // which owns task state. The adapter never touches task state itself. Mirrors
+  // `onPlanCaptured` exactly.
+  onReviewReported(appSessionId: string, criteria: ReportReviewPayload['criteria']): void;
 }
 
 interface LiveProcess {
@@ -305,6 +338,11 @@ export interface SessionHostDeps {
   // to `taskDispatcher.recordPlan` (the state-owning half, S7·5b-i). Unset = no-op:
   // the interception still denies cleanly and the plan is simply not recorded.
   onPlanCaptured?: (appSessionId: string, planText: string) => void;
+  // S7·6b review capture (I10): invoked when a dispatched review session calls the
+  // `report_review` tool, carrying the reviewer's reported criteria. app.ts wires it
+  // to `taskDispatcher.recordReview` (the state-owning half). Unset = no-op: the tool
+  // handler still returns cleanly and the verdict is simply not recorded.
+  onReviewReported?: (appSessionId: string, criteria: ReportReviewPayload['criteria']) => void;
 }
 
 // Delete every CLAUDE* key (covers CLAUDECODE) from a copy of the parent env; keep
@@ -371,6 +409,42 @@ export function extractGateTarget(
 // credential change is picked up promptly.
 const PREFLIGHT_CACHE_TTL_MS = 5_000;
 
+// ── S7·6b: the `report_review` tool's input shape ────────────────────────────
+//
+// ⚠ FINDING (2026-07-26), surfaced rather than quietly patched (rule 0.1): the
+// work-order specified DERIVING this schema from core as
+// `z.object({ criteria: reportReviewPayloadSchema.shape.criteria })`. That does NOT
+// work here. `packages/core` validates with zod **v3** (`_def`, no `_zod`); the
+// daemon tree + the Agent SDK use zod **v4** — the exact split taskApi.ts:92-97
+// documents. Reusing core's schema OBJECT throws at construction
+// ("Invalid element … expected a Zod schema"), and passing it as a raw shape
+// converts to a broken JSON schema at query time (the SDK reads `_zod.toJSONSchema()`,
+// which a v3 schema lacks). So the shape is RESTATED with the daemon's v4 zod, and
+// BOUND to core at the TYPE level below — the same drift-guard discipline taskApi.ts
+// applies to its boundary vocabularies (a drift in core reddens THIS build, not a
+// live session). `criterionId`/`text` mirror `acceptanceCriterionSchema` (both
+// `z.string()`); `verdict`/`note` mirror `reportReviewPayloadSchema.criteria`.
+const reviewCriteriaSchema = z.array(
+  z.object({
+    criterionId: z.string(),
+    verdict: z.enum(['pass', 'fail']),
+    note: z.string().optional(),
+  }),
+);
+const REVIEW_REPORT_INPUT_SHAPE = { criteria: reviewCriteriaSchema } satisfies z.ZodRawShape;
+type ReviewReportCriteria = z.infer<typeof reviewCriteriaSchema>;
+// Drift bind (both directions = structural equivalence with core): if
+// `reportReviewPayloadSchema.criteria` gains/loses/renames a field, one of these
+// stops compiling and the build fails — the derivation-without-reuse guarantee.
+const _reviewCriteriaMatchesCore = [] as ReviewReportCriteria satisfies ReportReviewPayload['criteria'];
+const _coreMatchesReviewCriteria = [] as ReportReviewPayload['criteria'] satisfies ReviewReportCriteria;
+void _reviewCriteriaMatchesCore;
+void _coreMatchesReviewCriteria;
+
+const REVIEW_TOOL_DESCRIPTION =
+  'Report your independent review verdict: one entry per acceptance criterion ' +
+  '(its id, pass or fail, an optional note).';
+
 // ── ClaudeSdkAdapter ─────────────────────────────────────────────────────────
 class ClaudeSdkAdapter implements SessionAdapter {
   readonly capabilities = CLAUDE_SDK_CAPABILITIES;
@@ -421,6 +495,14 @@ class ClaudeSdkAdapter implements SessionAdapter {
         ...(context.dispatched === true
           ? { tools: [...DISPATCHED_SESSION_TOOLS], disallowedTools: [...SUBAGENT_SPAWN_TOOLS] }
           : {}),
+        // S7·6b: expose the `report_review` in-process tool to EVERY dispatched
+        // session (the spike proved `mcpServers` is orthogonal to the D50 `tools`
+        // clamp — no allowlist entry needed, no spawn hole). Exposing it broadly is
+        // safe because `recordReview` no-ops for a non-review/unknown session (the
+        // guard). The handler closes over this session's id + the services callback,
+        // and only OBSERVES + PROPOSES (I10) — it never touches task state. Set via
+        // the same spread idiom, so a non-dispatched spawn stays byte-identical.
+        ...(context.dispatched === true ? { reportTools: [this.buildReviewSpec(context.appSessionId)] } : {}),
       },
     });
     if (context.permissionMode === 'plan') {
@@ -437,6 +519,24 @@ class ClaudeSdkAdapter implements SessionAdapter {
       sdkInput: input,
       sdkHandle: handle,
       sawResult: false,
+    };
+  }
+
+  // S7·6b: the SDK-agnostic `report_review` spec for this session. The handler
+  // closes over `appSessionId` + `this.services` and forwards the reviewer's
+  // reported criteria to the dispatcher via `onReviewReported` (observe + propose
+  // only — I10). Returning `{ ok: true }` is wrapped into a success CallToolResult
+  // by the factory, which the spike showed stops the session cleanly.
+  private buildReviewSpec(appSessionId: string): SdkReportToolSpec {
+    return {
+      name: 'report_review',
+      description: REVIEW_TOOL_DESCRIPTION,
+      inputSchema: REVIEW_REPORT_INPUT_SHAPE,
+      handler: async (input) => {
+        const criteria = (input as { criteria?: ReportReviewPayload['criteria'] }).criteria ?? [];
+        this.services.onReviewReported(appSessionId, criteria);
+        return { ok: true };
+      },
     };
   }
 
@@ -697,6 +797,9 @@ export class SessionHost implements HookHost {
   private readonly preflightProbe: PreflightProbe;
   private readonly onSessionCreated: ((appSessionId: string) => void) | undefined;
   private readonly onPlanCaptured: ((appSessionId: string, planText: string) => void) | undefined;
+  private readonly onReviewReported:
+    | ((appSessionId: string, criteria: ReportReviewPayload['criteria']) => void)
+    | undefined;
 
   private readonly sdkAdapter: ClaudeSdkAdapter;
   private readonly ptyAdapter: ClaudePtyAdapter;
@@ -728,6 +831,7 @@ export class SessionHost implements HookHost {
     this.preflightProbe = deps.preflightProbe ?? (() => ({ ok: true }));
     this.onSessionCreated = deps.onSessionCreated;
     this.onPlanCaptured = deps.onPlanCaptured;
+    this.onReviewReported = deps.onReviewReported;
 
     const services: AdapterServices = {
       emit: (events) => this.router.emit(events),
@@ -745,6 +849,9 @@ export class SessionHost implements HookHost {
       // Injected callback (no-op when unset) — the host owns none of recordPlan's
       // logic; it only forwards the adapter's observation to the dispatcher.
       onPlanCaptured: (appSessionId, planText) => this.onPlanCaptured?.(appSessionId, planText),
+      // Injected callback (no-op when unset) — the host forwards the adapter's
+      // observation to the dispatcher's recordReview; it owns none of that logic.
+      onReviewReported: (appSessionId, criteria) => this.onReviewReported?.(appSessionId, criteria),
     };
     this.sdkAdapter = new ClaudeSdkAdapter(deps.sdkQueryFactory ?? defaultSdkQueryFactory, services);
     this.ptyAdapter = new ClaudePtyAdapter(deps.ptySpawnFactory ?? defaultPtySpawnFactory, services);
@@ -1352,13 +1459,83 @@ class AsyncMessageQueue<ItemType> implements AsyncIterable<ItemType> {
 // Lazy dynamic imports so CI (which injects fakes) never loads the SDK or the
 // node-pty native binary.
 
+// A success `CallToolResult` (sdk.d.ts:3880 → @modelcontextprotocol/sdk/types.js:4).
+// The single-text-content success shape the spike observed stopping a session
+// cleanly. Kept SDK-import-free (a structural type) so this stays in the testable
+// core; the real SDK's `CallToolResult` is structurally compatible with it.
+interface CallToolResultLike {
+  content: Array<{ type: 'text'; text: string }>;
+}
+
+// The minimal SDK surface the factory needs to mount report tools — `tool()`
+// (sdk.d.ts:6745) and `createSdkMcpServer()` (:467). Injectable so a test can drive
+// `buildReportMcpServers` with a fake and CI never loads the real SDK (rule 0.3).
+interface SdkReportToolSurface {
+  tool: (
+    name: string,
+    description: string,
+    inputSchema: z.ZodRawShape,
+    handler: (args: unknown, extra: unknown) => Promise<CallToolResultLike>,
+  ) => unknown;
+  createSdkMcpServer: (options: {
+    name: string;
+    version?: string;
+    tools: unknown[];
+    alwaysLoad?: boolean;
+  }) => unknown;
+}
+
+// S7·6b: map the SDK-agnostic report-tool specs onto the SDK's `mcpServers` value —
+// or `undefined` when there are none, so the query options stay byte-identical for a
+// non-dispatched spawn (the spread idiom at the call site drops an undefined key).
+// This is the ONLY place the SDK's `tool`/`createSdkMcpServer` are touched
+// (sdk.d.ts:467/:6745), keeping them out of the testable adapter (D18 / the
+// SDK-boundary rule). Exported for the unit test, which injects a fake surface.
+export function buildReportMcpServers(
+  reportTools: SdkReportToolSpec[] | undefined,
+  sdk: SdkReportToolSurface,
+): Record<string, unknown> | undefined {
+  if (reportTools === undefined || reportTools.length === 0) {
+    return undefined;
+  }
+  return {
+    vimes_report: sdk.createSdkMcpServer({
+      name: 'vimes_report',
+      version: '0.0.1',
+      // alwaysLoad: the tools ride in the prompt and are never deferred behind tool
+      // search (sdk.d.ts:480-487) — the spike relied on this to keep report_review
+      // reachable under the D50 clamp.
+      alwaysLoad: true,
+      tools: reportTools.map((spec) =>
+        sdk.tool(spec.name, spec.description, spec.inputSchema, async (args) => {
+          // Wrap the SDK-agnostic `{ ok }` return into a success CallToolResult. The
+          // observation (onReviewReported) already happened inside spec.handler,
+          // BEFORE this wrap-up result is returned to the model.
+          const result = await spec.handler(args);
+          return {
+            content: [
+              {
+                type: 'text',
+                text: result.ok ? 'Review verdict recorded.' : 'Review verdict not recorded.',
+              },
+            ],
+          };
+        }),
+      ),
+    }),
+  };
+}
+
 const defaultSdkQueryFactory: SdkQueryFactory = ({ prompt, options }) => {
   let activeQuery: { close?: () => void } | undefined;
   async function* run(): AsyncGenerator<SdkStreamMessage> {
     // determinism-exempt: real Agent SDK.
     const sdk = (await import('@anthropic-ai/claude-agent-sdk')) as unknown as {
       query: (args: { prompt: AsyncIterable<SdkUserMessage>; options: Record<string, unknown> }) => AsyncIterable<SdkStreamMessage> & { close?: () => void };
-    };
+    } & SdkReportToolSurface;
+    // S7·6b: build the in-process MCP server(s) from the SDK-agnostic specs. Absent
+    // → undefined → the mcpServers key is not set (byte-identical non-dispatched).
+    const mcpServers = buildReportMcpServers(options.reportTools, sdk);
     const query = sdk.query({
       prompt,
       options: {
@@ -1381,6 +1558,9 @@ const defaultSdkQueryFactory: SdkQueryFactory = ({ prompt, options }) => {
         // keeping a non-dispatched query byte-identical to before this unit.
         ...(options.tools === undefined ? {} : { tools: options.tools }),
         ...(options.disallowedTools === undefined ? {} : { disallowedTools: options.disallowedTools }),
+        // S7·6b: mount the report tool(s) ONLY when present. Absent → the key is not
+        // set, keeping a non-dispatched query byte-identical to before this unit.
+        ...(mcpServers === undefined ? {} : { mcpServers }),
       },
     });
     activeQuery = query;

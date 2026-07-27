@@ -7,6 +7,19 @@ reason `slice-6-test-plan.md` lives here. Delete an entry when it ships.
 
 ---
 
+## BUG — task toast's "move to" options don't refresh after a stage move (UI-only)
+
+Observed 2026-07-26 (Wes, during Gate-1 testing). Moving a task from the task toast
+(e.g. Implementing → Review) DOES move it, but the toast keeps showing the
+destination stages valid for the OLD stage — the "move to" set doesn't refresh to the
+new stage's legal edges until the toast is closed and reopened. **Hypothesis:** the
+toast computes its destination list once on open (a snapshot of `task.stage`) instead
+of deriving it reactively from the live task record in the store, so it goes stale
+after the transition streams back. **Fix locus:** make the toast's destination-edge
+list a reactive derivation of the current `task.stage` (from `TASK_STAGE_EDGES` /
+whatever the UI mirror is), not a value captured at open. UI-only (`packages/ui`),
+no daemon change → ships on the next ci-gate, no restart. Small.
+
 ## ▶ NEXT SESSION STARTS HERE (updated 2026-07-25 eve — read `scratchpad/HANDOFF.md` first)
 
 **SLICE 6b — DONE** (UI foundation + full re-skin; deployed). **SLICE 7 (task model)

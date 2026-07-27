@@ -297,6 +297,14 @@ first bites at S7·5). One shape refinement from the work-order: `report_review`
   (rule 0.3/0.6) → halt/spike.
 
 ### S7·6 — `report_review` (per-criterion) + `report_completion` (worklog) — `opus`
+**REVIEW PATH DONE 2026-07-26 (S7·6a core + S7·6b daemon); `report_completion` DEFERRED
+to S7·7b (its consumer, rule 0.5).** Un-defers the exposed-tool channel — see
+**decisions.md D52** (spike-confirmed: in-process MCP via `mcpServers`, orthogonal to
+the D50 clamp, capture in the handler; two schema-seam findings resolved). Built:
+`review_reported` event + pure `deriveReviewOutcome` + review briefing (6a); the
+`report_review` MCP tool + `recordReview` (mirror of `recordPlan`, transition via the
+I7 choke) (6b). Full suite 2525 green; verified + verify-by-broken by the orchestrator.
+The `review→done`/`review→implementing` loop is now real end-to-end.
 - **Scope:** both tools on the S7·5 machinery; `report_review` carries **per-criterion
   pass/fail keyed to the acceptance list**; `report_completion` carries the **worklog**
   (decisions-made, paths-rejected) — D46's fix-seed.

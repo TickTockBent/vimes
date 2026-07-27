@@ -79,6 +79,33 @@ The plan is your ENTIRE deliverable: VIMES captures it and hands it to a fresh
 session that will implement it without your context, so make it complete and
 self-contained enough for a stranger to execute.`;
 
+// The stable OPENING paragraph of the REVIEW briefing — byte-stable prefix
+// (cache discipline, same rationale as the openings above). Review-directed: it
+// tells the worker it is judging code it did NOT write, fresh, against the criteria.
+const REVIEW_BRIEFING_OPENING =
+  `You are a worker session that VIMES dispatched to REVIEW one task's implementation
+independently. You did not write this code — judge it fresh against the acceptance
+criteria below.`;
+
+// The stable CLOSING two paragraphs — the inspect-directly + no-sub-agents contract,
+// and the report-via-report_review contract. Byte-stable SUFFIX.
+//
+// ⚠ The tool name `report_review` here MUST match the tool S7·6b registers (SDK MCP
+// server `vimes_report`, tool `report_review`; model-facing name
+// `mcp__vimes_report__report_review`, which the model resolves from this plain name).
+// It is load-bearing prose (spike-proven, mirroring planning's ExitPlanMode line):
+// the report tool call is how the reviewer finishes, and deriveReviewOutcome reads
+// the per-criterion verdicts it produces.
+const REVIEW_BRIEFING_CLOSING =
+  `Inspect the implementation directly with your own tools — read the changed files, run
+git diff and the tests, search as needed. Sub-agents are NOT authorized for this
+task; do the review yourself.
+
+When you have judged every criterion, report your verdict using the report_review
+tool — one entry per criterion (its id, pass or fail, a short note). That report is
+how you finish and is your ENTIRE deliverable: VIMES reads it to decide whether the
+task is done or goes back for fixes. You do not advance the task yourself.`;
+
 // The third param is OPTIONAL → ABSENT-STAYS-ABSENT: called with no context (the
 // default composer wiring, and every pre-S7·7a caller), the output is
 // byte-identical to what this function produced before S7·7a. Only a `spawn` into
@@ -222,6 +249,63 @@ export function composeStageInstruction(
     }
 
     briefingBlocks.push(PLANNING_BRIEFING_CLOSING);
+
+    return briefingBlocks.join('\n\n');
+  }
+
+  // ── S7·6a: the REVIEW briefing (D43/D46) ───────────────────────────────────
+  //
+  // A dispatched review session judges an implementation it did NOT write, fresh,
+  // against the acceptance criteria, and reports per-criterion pass/fail via the
+  // `report_review` tool (S7·6b registers it; deriveReviewOutcome reads the verdicts).
+  // Work-order sections are conditional on presence (I8 totality), like the branches
+  // above.
+  //
+  // ⚠ TWO DIFFERENCES from the implementing / planning branches:
+  //   1. Like planning, NO degrade-to-generic — even a bare review task (no criteria)
+  //      returns THIS briefing: the review framing + the report_review contract are
+  //      ALWAYS load-bearing. So this branch always returns.
+  //   2. Acceptance criteria are rendered WITH their `[id]`, because the reviewer must
+  //      report per-criterion BY id (planning/implementing deliberately HID the ids —
+  //      the worker there has no per-id obligation; the reviewer does).
+  if (plan.mode === 'spawn' && task.stage === 'review') {
+    const hasScope = typeof task.scope === 'string' && task.scope.length > 0;
+    const hasAcceptanceCriteria =
+      Array.isArray(task.acceptanceCriteria) && task.acceptanceCriteria.length > 0;
+    const hasExplicitlyOut = Array.isArray(task.explicitlyOut) && task.explicitlyOut.length > 0;
+
+    const briefingBlocks: string[] = [];
+
+    briefingBlocks.push(
+      `${REVIEW_BRIEFING_OPENING}
+
+  Task:      ${label}
+  Stage:     review
+  Directory: ${task.projectRoot} — the implementation is here; review it in place.`,
+    );
+
+    if (hasScope) {
+      briefingBlocks.push(`Scope — what this task was meant to do:\n${task.scope}`);
+    }
+    if (hasAcceptanceCriteria) {
+      // ⚠ Rendered WITH `[id]` — the reviewer reports per-criterion BY id via
+      // report_review. This is the deliberate DIFFERENCE from S7·5c/S7·7a, which
+      // hide the id. DEGENERATE case: a task with NO acceptance criteria omits this
+      // whole section (never an empty bulleted list) but STILL returns the review
+      // briefing — deriveReviewOutcome sends an empty-criteria task to `done`.
+      const criterionBullets = task.acceptanceCriteria!
+        .map((criterion) => `  - [${criterion.id}] ${criterion.text}`)
+        .join('\n');
+      briefingBlocks.push(`Acceptance criteria — judge EACH as pass or fail:\n${criterionBullets}`);
+    }
+    if (hasExplicitlyOut) {
+      const explicitlyOutBullets = task.explicitlyOut!.map((item) => `  - ${item}`).join('\n');
+      briefingBlocks.push(
+        `Explicitly out of scope — do not hold these against it:\n${explicitlyOutBullets}`,
+      );
+    }
+
+    briefingBlocks.push(REVIEW_BRIEFING_CLOSING);
 
     return briefingBlocks.join('\n\n');
   }

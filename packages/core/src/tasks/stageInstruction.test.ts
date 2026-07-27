@@ -573,6 +573,189 @@ describe('composeStageInstruction — planning cache prefix + determinism', () =
   });
 });
 
+// ─── S7·6a: the review briefing (D43/D46) ─────────────────────────────────────
+//
+// A spawn into the `review` stage gets the review-directed briefing. Like planning
+// there is NO degrade-to-generic — even a bare review task returns this briefing,
+// because the review framing + the report_review contract are always load-bearing.
+// The KEY difference from S7·5c/S7·7a: acceptance criteria are rendered WITH their
+// `[id]`, because the reviewer must report per-criterion BY id. The tests pin the
+// signed-off prose (rule 0.2), prove every section is conditional (I8), pin the
+// stable framing as a cache prefix, and prove NO degrade.
+
+// The stable OPENING paragraph — mirrored here from stageInstruction.ts (a
+// deliberate copy, not an import: this test is the pin, so it must fail loudly if
+// the source constant drifts).
+const STABLE_REVIEW_OPENING =
+  `You are a worker session that VIMES dispatched to REVIEW one task's implementation
+independently. You did not write this code — judge it fresh against the acceptance
+criteria below.`;
+
+// A fully-populated review task — every rendered work-order field present.
+function populatedReviewTask(overrides: Partial<TaskRecord> = {}): TaskRecord {
+  return taskRecord({
+    title: 'Fix the widget',
+    stage: 'review',
+    projectRoot: '/home/foo',
+    scope: 'Make the widget do the thing.',
+    explicitlyOut: ['Do not touch the gadget.', 'Do not refactor unrelated code.'],
+    acceptanceCriteria: [
+      { id: 'ac-1', text: 'The widget works.' },
+      { id: 'ac-2', text: 'Tests pass.' },
+    ],
+    killCriterion: 'the build cannot be made green without a schema change.',
+    ...overrides,
+  });
+}
+
+describe('composeStageInstruction — review briefing (S7·6a)', () => {
+  it('is byte-identical, in full, to the signed-off review briefing (criteria rendered WITH ids)', () => {
+    const instruction = composeStageInstruction(populatedReviewTask(), SPAWN);
+    expect(instruction).toBe(
+      `You are a worker session that VIMES dispatched to REVIEW one task's implementation
+independently. You did not write this code — judge it fresh against the acceptance
+criteria below.
+
+  Task:      Fix the widget
+  Stage:     review
+  Directory: /home/foo — the implementation is here; review it in place.
+
+Scope — what this task was meant to do:
+Make the widget do the thing.
+
+Acceptance criteria — judge EACH as pass or fail:
+  - [ac-1] The widget works.
+  - [ac-2] Tests pass.
+
+Explicitly out of scope — do not hold these against it:
+  - Do not touch the gadget.
+  - Do not refactor unrelated code.
+
+Inspect the implementation directly with your own tools — read the changed files, run
+git diff and the tests, search as needed. Sub-agents are NOT authorized for this
+task; do the review yourself.
+
+When you have judged every criterion, report your verdict using the report_review
+tool — one entry per criterion (its id, pass or fail, a short note). That report is
+how you finish and is your ENTIRE deliverable: VIMES reads it to decide whether the
+task is done or goes back for fixes. You do not advance the task yourself.`,
+    );
+  });
+
+  it('renders acceptance criteria WITH their [id] — the difference from planning/implementing', () => {
+    const instruction = composeStageInstruction(populatedReviewTask(), SPAWN);
+    expect(instruction).toContain('  - [ac-1] The widget works.');
+    expect(instruction).toContain('  - [ac-2] Tests pass.');
+  });
+
+  it('names the report_review tool (the exact name S7·6b registers)', () => {
+    const instruction = composeStageInstruction(populatedReviewTask(), SPAWN);
+    expect(instruction).toContain('report your verdict using the report_review');
+    expect(instruction).toContain('Sub-agents are NOT authorized');
+  });
+
+  it('DEGENERATE: a review task with NO acceptance criteria still returns the review briefing, criteria section omitted', () => {
+    const bare = taskRecord({ title: 'Bare review task', stage: 'review', projectRoot: '/home/foo' });
+    const instruction = composeStageInstruction(bare, SPAWN);
+    expect(instruction).toBe(
+      `You are a worker session that VIMES dispatched to REVIEW one task's implementation
+independently. You did not write this code — judge it fresh against the acceptance
+criteria below.
+
+  Task:      Bare review task
+  Stage:     review
+  Directory: /home/foo — the implementation is here; review it in place.
+
+Inspect the implementation directly with your own tools — read the changed files, run
+git diff and the tests, search as needed. Sub-agents are NOT authorized for this
+task; do the review yourself.
+
+When you have judged every criterion, report your verdict using the report_review
+tool — one entry per criterion (its id, pass or fail, a short note). That report is
+how you finish and is your ENTIRE deliverable: VIMES reads it to decide whether the
+task is done or goes back for fixes. You do not advance the task yourself.`,
+    );
+    // NO degrade-to-generic (the whole point).
+    expect(instruction).not.toContain(
+      'You are a worker session that VIMES dispatched to make progress on one task.',
+    );
+    expect(instruction).not.toContain('Acceptance criteria — judge EACH');
+  });
+});
+
+describe('composeStageInstruction — review conditional sections (I8)', () => {
+  it('omits scope when it is the EMPTY STRING; other sections still render', () => {
+    const task = populatedReviewTask({ scope: '' });
+    const instruction = composeStageInstruction(task, SPAWN);
+    expect(instruction).not.toContain('Scope — what this task was meant to do:');
+    expect(instruction).toContain('Acceptance criteria — judge EACH as pass or fail:');
+  });
+
+  it('omits acceptanceCriteria when the array is EMPTY', () => {
+    const task = populatedReviewTask({ acceptanceCriteria: [] });
+    const instruction = composeStageInstruction(task, SPAWN);
+    expect(instruction).not.toContain('Acceptance criteria — judge EACH');
+    expect(instruction).toContain('Scope — what this task was meant to do:');
+  });
+
+  it('omits explicitlyOut when the array is EMPTY', () => {
+    const task = populatedReviewTask({ explicitlyOut: [] });
+    const instruction = composeStageInstruction(task, SPAWN);
+    expect(instruction).not.toContain('Explicitly out of scope — do not hold these against it:');
+    expect(instruction).toContain('Acceptance criteria — judge EACH as pass or fail:');
+  });
+
+  it('does NOT render a killCriterion section (review omits it)', () => {
+    const instruction = composeStageInstruction(populatedReviewTask(), SPAWN);
+    expect(instruction).not.toContain('Stop and report');
+  });
+
+  it('renders ONLY the opening/Task block + closing when no work-order fields are present', () => {
+    const bare = taskRecord({ title: 'Bare', stage: 'review', projectRoot: '/p' });
+    const instruction = composeStageInstruction(bare, SPAWN);
+    expect(instruction).not.toContain('Scope — what this task was meant to do:');
+    expect(instruction).not.toContain('Acceptance criteria — judge EACH');
+    expect(instruction).not.toContain('Explicitly out of scope');
+    expect(instruction.startsWith(STABLE_REVIEW_OPENING)).toBe(true);
+  });
+});
+
+describe('composeStageInstruction — review cache prefix + determinism', () => {
+  it('the stable opening is a common PREFIX across two DIFFERENT review tasks', () => {
+    const first = composeStageInstruction(
+      populatedReviewTask({ title: 'Task A', scope: 'scope A' }),
+      SPAWN,
+    );
+    const second = composeStageInstruction(
+      populatedReviewTask({ title: 'Task B', scope: 'a completely different scope' }),
+      SPAWN,
+    );
+    expect(first.startsWith(STABLE_REVIEW_OPENING)).toBe(true);
+    expect(second.startsWith(STABLE_REVIEW_OPENING)).toBe(true);
+  });
+
+  it('perturbing a work-order field leaves the framing prefix byte-unchanged', () => {
+    const base = populatedReviewTask({ scope: 'the original scope' });
+    const perturbed = populatedReviewTask({ scope: 'a perturbed scope, longer than before' });
+    const commonPrefix = longestCommonPrefix(
+      composeStageInstruction(base, SPAWN),
+      composeStageInstruction(perturbed, SPAWN),
+    );
+    expect(commonPrefix.startsWith(STABLE_REVIEW_OPENING)).toBe(true);
+    expect(commonPrefix).toContain('Directory: /home/foo — the implementation is here');
+  });
+
+  it('never carries an approved-plan section (review judges the code, it does not receive a plan)', () => {
+    const instruction = composeStageInstruction(populatedReviewTask(), SPAWN, { plan: PLAN_BLOB });
+    expect(instruction).not.toContain('The approved plan:');
+  });
+
+  it('same (task, plan) in → byte-identical string out, twice', () => {
+    const task = populatedReviewTask();
+    expect(composeStageInstruction(task, SPAWN)).toBe(composeStageInstruction(task, SPAWN));
+  });
+});
+
 // The longest common prefix of two strings — a test helper, not production code.
 function longestCommonPrefix(first: string, second: string): string {
   let index = 0;

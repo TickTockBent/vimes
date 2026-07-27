@@ -17,6 +17,16 @@ import {
 // is events.ts -> tasks/workOrder.ts -> { schemas.ts, taskStateMachine.ts}; that
 // module imports nothing from here, so there is no cycle.
 import { submitPlanPayloadSchema, type SubmitPlanPayload } from './tasks/workOrder.js';
+// S7·6a: `review_reported`'s payload REUSES the reserved `report_review` MCP tool
+// payload (D43) and `completion_reported`'s the reserved `report_completion` payload,
+// exactly as `plan_submitted` reuses `submit_plan` — one source of record per fact
+// (principle 9). Same import direction (events.ts -> tasks/workOrder.ts), no cycle.
+import {
+  reportReviewPayloadSchema,
+  type ReportReviewPayload,
+  reportCompletionPayloadSchema,
+  type ReportCompletionPayload,
+} from './tasks/workOrder.js';
 
 // The domain event vocabulary (spec §3.3 / slice-0.md). Each type carries a zod
 // payload schema; helper constructors build EventInput records ready for
@@ -183,6 +193,28 @@ export const EVENT_TYPES = {
   // a stage change in HERE as well would let the record disagree with itself
   // about which event is the authority for stage (principle 9).
   planSubmitted: 'plan_submitted',
+  // Slice-7 S7·6a: a captured independent REVIEW crossed the tool boundary — the
+  // reviewer's per-criterion pass/fail verdict, recorded as an event. RESERVED, no
+  // emitter yet (S7·6b — the daemon's SDK adapter — registers the `report_review`
+  // MCP tool and emits exactly one of these per captured review), same posture as
+  // `plan_submitted` above. It is the durable RECORD of the verdict and is
+  // deliberately NOT a stage transition: the review -> done / review -> implementing
+  // move is a SEPARATE `task_transitioned` the dispatcher emits (S7·6b) after
+  // deriving the target via `deriveReviewOutcome` (tasks/reviewOutcome.ts) directly
+  // from this event's payload. Folding a stage change in here too would give the
+  // record two authorities over its own stage (principle 9). NOTE (finding
+  // 2026-07-26): unlike `plan_submitted`, this does NOT fold anything onto the task
+  // record in S7·6a — the `lastReview` fix-seed field is DEFERRED to S7·7b (its only
+  // consumer), which also resolves the schemas.ts leaf-vs-workOrder cycle at that
+  // point. So there is no projection fold for this event yet, and that is deliberate.
+  reviewReported: 'review_reported',
+  // Slice-7 S7·7b: the worklog FIX-SEED (D46). RESERVED, NO EMITTER YET — and no
+  // fold either: S7·7b is BOTH the writer (the `report_completion` tool) and the
+  // reader (the fix-seed composition). Reserved now, alongside `review_reported`, so
+  // the report pair is schema-complete and S7·7b needs no migration — the same
+  // no-emitter posture as `work_order_amended`. If you are grepping for the code
+  // path that emits a completion, there isn't one yet, and that is deliberate.
+  completionReported: 'completion_reported',
 } as const;
 
 export const SYSTEM_STREAM = 'system';
@@ -747,6 +779,10 @@ export const EVENT_PAYLOAD_SCHEMAS = {
   // Reused verbatim — see the note above `EVENT_TYPES.planSubmitted` /
   // just above this schema's own registration.
   [EVENT_TYPES.planSubmitted]: submitPlanPayloadSchema,
+  // Reused verbatim (S7·6a) — the `report_review` / `report_completion` tool
+  // payloads ARE these event payloads (D43/D46), not restated shapes.
+  [EVENT_TYPES.reviewReported]: reportReviewPayloadSchema,
+  [EVENT_TYPES.completionReported]: reportCompletionPayloadSchema,
 } as const;
 
 export type SessionCreatedPayload = z.infer<typeof sessionCreatedPayloadSchema>;
@@ -832,7 +868,9 @@ export type DomainEvent =
   | { type: typeof EVENT_TYPES.correctionQueued; payload: CorrectionQueuedPayload }
   | { type: typeof EVENT_TYPES.correctionDelivered; payload: CorrectionDeliveredPayload }
   | { type: typeof EVENT_TYPES.workOrderAmended; payload: WorkOrderAmendedPayload }
-  | { type: typeof EVENT_TYPES.planSubmitted; payload: SubmitPlanPayload };
+  | { type: typeof EVENT_TYPES.planSubmitted; payload: SubmitPlanPayload }
+  | { type: typeof EVENT_TYPES.reviewReported; payload: ReportReviewPayload }
+  | { type: typeof EVENT_TYPES.completionReported; payload: ReportCompletionPayload };
 
 // Maps each attention-setting event type to the needsAttention reason it sets.
 const ATTENTION_SETTER_REASON: Readonly<Record<string, AttentionReason>> = {
@@ -963,6 +1001,27 @@ export function workOrderAmended(payload: WorkOrderAmendedPayload): EventInput {
 // planning -> plan-ready separately.
 export function planSubmitted(payload: SubmitPlanPayload): EventInput {
   return { stream: 'tasks', type: EVENT_TYPES.planSubmitted, payload };
+}
+// review_reported (S7·6a, RESERVED — see EVENT_TYPES.reviewReported and
+// `reportReviewPayloadSchema`'s registration above). Same 'tasks' stream and same
+// literal-string reasoning as its siblings: the vocabulary module stays
+// free-standing. NO CALLER INVOKES THIS YET — S7·6b (the daemon's SDK adapter,
+// after capturing a `report_review` tool call) is the emitter. It is the durable
+// record of the verdict and is not a stage transition; the dispatcher's own
+// `task_transitioned` handles review -> done / review -> implementing separately,
+// deriving the target via `deriveReviewOutcome` from this payload. No projection
+// fold in S7·6a — the `lastReview` fix-seed field is deferred to S7·7b (finding
+// 2026-07-26; sidesteps the schemas.ts leaf/workOrder cycle until its consumer).
+export function reviewReported(payload: ReportReviewPayload): EventInput {
+  return { stream: 'tasks', type: EVENT_TYPES.reviewReported, payload };
+}
+// completion_reported (S7·7b, RESERVED — see EVENT_TYPES.completionReported above).
+// Same 'tasks' stream and same free-standing reasoning as its siblings. NO CALLER
+// INVOKES THIS YET and NO PROJECTION FOLDS IT: S7·7b consumes; no emitter until
+// then. It exists so the report pair (review + completion) is schema-complete and
+// S7·7b needs no migration when it lands both the writer and the fix-seed reader.
+export function completionReported(payload: ReportCompletionPayload): EventInput {
+  return { stream: 'tasks', type: EVENT_TYPES.completionReported, payload };
 }
 
 // The task↔session link (step 4a). On the 'tasks' stream and NOT the session's
