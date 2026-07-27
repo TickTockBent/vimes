@@ -652,6 +652,12 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     // state and records it (S7·5b-i's `recordPlan`). `taskDispatcher` is
     // constructed above; this thunk only runs per interception, long after.
     onPlanCaptured: (appSessionId, planText) => taskDispatcher.recordPlan(appSessionId, planText),
+    // S7·6b review capture (I10): the SDK adapter observes a dispatched review
+    // session's `report_review` tool call and hands the reported criteria here; the
+    // dispatcher owns task state and records it (S7·6b's `recordReview` — emit
+    // review_reported + propose the review→done/implementing transition via I7).
+    // Same wiring shape as onPlanCaptured above.
+    onReviewReported: (appSessionId, criteria) => taskDispatcher.recordReview(appSessionId, criteria),
   });
   const tailer = new JsonlTailer({
     router,

@@ -1957,3 +1957,215 @@ describe('TaskDispatcher — recordPlan: the native plan-capture seam (S7·5b-i)
     expect(secondSerialization).toBe(firstSerialization);
   });
 });
+
+// ─── S7·6b — recordReview: the DETERMINISTIC I10 core of the review path ──────
+//
+// recordReview mirrors recordPlan. The SDK adapter (S7·6b) only OBSERVES a review
+// session's report_review verdicts and PROPOSES them back through a callback; THIS
+// method does the writing — emit `review_reported`, then propose the
+// review→done/implementing transition THROUGH the task writer (I7's choke point).
+// No artifact store: the review payload is small structured data carried inline.
+//
+// Instruments: `harness.emitted` (exactly one `review_reported` with the built
+// payload, and — the I10 point — NO hand-rolled `task_transitioned`), and
+// `harness.taskWriter` (`proposeTransitionCalls` proves the transition went through
+// the writer with the DERIVED toStage, `emittedCountBefore` proves it went AFTER
+// the emit).
+
+const REVIEWER_SESSION_ID = 'cccccccc-0000-4000-8000-000000000006';
+
+// A task whose review stage is being run by REVIEWER_SESSION_ID, with a two-item
+// acceptance list — the record recordReview reverse-looks-up and derives against.
+function reviewTask(overrides: Partial<TaskRecord> = {}): TaskRecord {
+  return taskRecord({
+    stage: 'review',
+    sessionRefs: [{ stage: 'review', appSessionId: REVIEWER_SESSION_ID }],
+    acceptanceCriteria: [
+      { id: 'c1', text: 'first criterion' },
+      { id: 'c2', text: 'second criterion' },
+    ],
+    ...overrides,
+  });
+}
+
+describe('TaskDispatcher — recordReview: the review path seam (S7·6b)', () => {
+  it('all pass + full coverage → emits ONE review_reported then proposes done — in that order', () => {
+    const harness = buildHarness({ tasks: [reviewTask()] });
+    const criteria = [
+      { criterionId: 'c1', verdict: 'pass' as const },
+      { criterionId: 'c2', verdict: 'pass' as const, note: 'looks good' },
+    ];
+
+    harness.dispatcher.recordReview(REVIEWER_SESSION_ID, criteria);
+
+    // Exactly one event, and it is the S7·6a review_reported with the full payload.
+    expect(harness.emitted).toHaveLength(1);
+    const event = harness.emitted[0]!;
+    expect(event.type).toBe(EVENT_TYPES.reviewReported);
+    expect(event.stream).toBe('tasks');
+    expect(event.payload).toEqual({
+      taskId: TASK_ID,
+      stage: 'review',
+      attempt: 1,
+      workOrderRev: 0,
+      criteria,
+    });
+
+    // The transition went through the writer's choke point (I7), once, with the
+    // DERIVED toStage (done), and AFTER the emit (emittedCountBefore === 1).
+    expect(harness.taskWriter.proposeTransitionCalls).toEqual([
+      {
+        taskId: TASK_ID,
+        proposal: { toStage: 'done', proposedBy: 'dispatcher' },
+        emittedCountBefore: 1,
+      },
+    ]);
+  });
+
+  it('any fail → proposes implementing (the fix loop)', () => {
+    const harness = buildHarness({ tasks: [reviewTask()] });
+    harness.dispatcher.recordReview(REVIEWER_SESSION_ID, [
+      { criterionId: 'c1', verdict: 'pass' },
+      { criterionId: 'c2', verdict: 'fail', note: 'regression' },
+    ]);
+    expect(harness.taskWriter.proposeTransitionCalls[0]!.proposal.toStage).toBe('implementing');
+  });
+
+  it('incomplete coverage (a task criterion never passed) → proposes implementing', () => {
+    const harness = buildHarness({ tasks: [reviewTask()] });
+    // Only c1 reported; c2 is uncovered → implementing.
+    harness.dispatcher.recordReview(REVIEWER_SESSION_ID, [{ criterionId: 'c1', verdict: 'pass' }]);
+    expect(harness.taskWriter.proposeTransitionCalls[0]!.proposal.toStage).toBe('implementing');
+  });
+
+  it('a bare task (no acceptance criteria) → vacuously covered → done', () => {
+    const harness = buildHarness({ tasks: [reviewTask({ acceptanceCriteria: undefined })] });
+    harness.dispatcher.recordReview(REVIEWER_SESSION_ID, []);
+    expect(harness.taskWriter.proposeTransitionCalls[0]!.proposal.toStage).toBe('done');
+  });
+
+  it('unknown / non-review session → total no-op: no event, no proposal', () => {
+    const harness = buildHarness({ tasks: [reviewTask()] });
+    expect(() =>
+      harness.dispatcher.recordReview('cccccccc-0000-4000-8000-00000000dead', [
+        { criterionId: 'c1', verdict: 'pass' },
+      ]),
+    ).not.toThrow();
+    expect(harness.emitted).toEqual([]);
+    expect(harness.taskWriter.proposeTransitionCalls).toEqual([]);
+  });
+
+  it('a ref that matches the session but NOT the review stage → no-op', () => {
+    // The reverse-lookup keys on BOTH {stage:'review', appSessionId}: a session that
+    // authored an IMPLEMENTING ref for this task never ran a review. This guard is
+    // what makes exposing report_review to every dispatched session safe.
+    const harness = buildHarness({
+      tasks: [
+        taskRecord({
+          stage: 'implementing',
+          sessionRefs: [{ stage: 'implementing', appSessionId: REVIEWER_SESSION_ID }],
+        }),
+      ],
+    });
+    harness.dispatcher.recordReview(REVIEWER_SESSION_ID, [{ criterionId: 'c1', verdict: 'pass' }]);
+    expect(harness.emitted).toEqual([]);
+    expect(harness.taskWriter.proposeTransitionCalls).toEqual([]);
+  });
+
+  it('I7: the transition goes through the writer, NOT a hand-rolled task_transitioned emit', () => {
+    const harness = buildHarness({ tasks: [reviewTask()] });
+    harness.dispatcher.recordReview(REVIEWER_SESSION_ID, [
+      { criterionId: 'c1', verdict: 'pass' },
+      { criterionId: 'c2', verdict: 'pass' },
+    ]);
+    // The ONLY event the dispatcher emits is review_reported. If recordReview is
+    // "simplified" to emit task_transitioned itself, this reddens (a second event
+    // type appears) AND the writer call below vanishes — the two halves of I10/I7.
+    expect(eventTypes(harness.emitted)).toEqual([EVENT_TYPES.reviewReported]);
+    expect(harness.emitted.some((event) => event.type === EVENT_TYPES.taskTransitioned)).toBe(false);
+    expect(harness.taskWriter.proposeTransitionCalls).toHaveLength(1);
+  });
+
+  it('attempt counts the review refs — two prior review runs → attempt 2', () => {
+    const harness = buildHarness({
+      tasks: [
+        reviewTask({
+          sessionRefs: [
+            { stage: 'review', appSessionId: 'cccccccc-0000-4000-8000-0000000000aa' },
+            { stage: 'implementing', appSessionId: 'cccccccc-0000-4000-8000-0000000000bb' },
+            { stage: 'review', appSessionId: REVIEWER_SESSION_ID },
+          ],
+        }),
+      ],
+    });
+    harness.dispatcher.recordReview(REVIEWER_SESSION_ID, [
+      { criterionId: 'c1', verdict: 'pass' },
+      { criterionId: 'c2', verdict: 'pass' },
+    ]);
+    const payload = harness.emitted[0]!.payload as { attempt: number };
+    // Two review refs → this is the 2nd review attempt. The implementing ref does
+    // not count.
+    expect(payload.attempt).toBe(2);
+  });
+
+  it('workOrderRev is read from the task and defaults to 0 when absent', () => {
+    const bothPass = [
+      { criterionId: 'c1', verdict: 'pass' as const },
+      { criterionId: 'c2', verdict: 'pass' as const },
+    ];
+    const withoutRev = buildHarness({ tasks: [reviewTask()] });
+    withoutRev.dispatcher.recordReview(REVIEWER_SESSION_ID, bothPass);
+    expect((withoutRev.emitted[0]!.payload as { workOrderRev: number }).workOrderRev).toBe(0);
+
+    const withRev = buildHarness({ tasks: [reviewTask({ workOrderRev: 4 })] });
+    withRev.dispatcher.recordReview(REVIEWER_SESSION_ID, bothPass);
+    expect((withRev.emitted[0]!.payload as { workOrderRev: number }).workOrderRev).toBe(4);
+  });
+
+  it('I6 replay: an emitted review_reported folds deterministically and does not perturb the record', () => {
+    // End-to-end against the REAL tasks projection over a real MemoryEventStore.
+    // S7·6a added review_reported as an event with NO fold, so it must not change
+    // the task record; the transition (which WOULD) goes through the fake writer,
+    // which does not emit — so the stage stays 'review'.
+    const store = new MemoryEventStore({
+      clock: new SteppingClock(FIXED_NOW, 1000),
+      ids: new CountingIdSource(),
+    });
+    store.append([
+      taskCreated({
+        taskId: TASK_ID,
+        projectRoot: PROJECT_ROOT,
+        createdBy: 'human',
+        isolation: 'shared-dir',
+        stage: 'review',
+      }),
+      taskSessionAttached({ taskId: TASK_ID, stage: 'review', appSessionId: REVIEWER_SESSION_ID }),
+    ]);
+    const readTasks = (): TasksState => replayFromEmpty(tasksProjection, readAllStreamsGrouped(store));
+
+    const dispatcher = new TaskDispatcher({
+      sessionHost: new RecordingSessionHost(),
+      emit: (events) => {
+        store.append(events);
+      },
+      readTasks,
+      readMeters: () => ({ meters: {}, history: {} }),
+      nowIso: () => FIXED_NOW,
+      staleAfterMs: STALE_AFTER_MS,
+      artifactStore: new MemoryArtifactStore(),
+      taskWriter: new RecordingTaskWriter(),
+    });
+
+    dispatcher.recordReview(REVIEWER_SESSION_ID, [{ criterionId: 'c1', verdict: 'pass' }]);
+
+    const folded = readTasks().tasks[TASK_ID]!;
+    expect(folded.stage).toBe('review');
+
+    // Double-fold identical (I6): the same log serializes to the same bytes.
+    const firstSerialization = tasksProjection.serialize(readTasks());
+    const secondSerialization = tasksProjection.serialize(
+      replayFromEmpty(tasksProjection, readAllStreamsGrouped(store)),
+    );
+    expect(secondSerialization).toBe(firstSerialization);
+  });
+});

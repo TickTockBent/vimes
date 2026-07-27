@@ -1,8 +1,10 @@
 import {
   decideDispatch,
+  deriveReviewOutcome,
   dispatchRefused,
   planSubmitted,
   resolveStageRunner,
+  reviewReported,
   taskSessionAttached,
   taskWorktreeCreated,
   type ArtifactStore,
@@ -10,6 +12,7 @@ import {
   type DispatchRefuseReason,
   type EventInput,
   type MetersState,
+  type ReportReviewPayload,
   type StageInstructionContext,
   type StageRunnerPlan,
   type TaskRecord,
@@ -642,6 +645,85 @@ export class TaskDispatcher {
     // rejection if the task is not in `planning`, which is correct and recorded).
     this.deps.taskWriter.proposeTaskTransition(owningTask.taskId, {
       toStage: 'plan-ready',
+      proposedBy: 'dispatcher',
+    });
+  }
+
+  /**
+   * Record a reported review — the DETERMINISTIC I10 core of the review path
+   * (S7·6b), the exact mirror of `recordPlan`. Called with the reviewer's
+   * app-session id and the per-criterion verdicts a dispatched review session
+   * reported through the `report_review` tool (S7·6b's SDK-adapter trigger).
+   *
+   * The dispatcher owns two writes here, IN THIS ORDER, and the order is the
+   * contract (mirroring recordPlan's store→emit→propose): emit `review_reported`
+   * (the durable record) → propose the review→done / review→implementing transition
+   * through `taskWriter.proposeTaskTransition` (I7's choke point). Unlike a plan,
+   * the review payload is small structured data carried inline — NO artifact store.
+   *
+   * TOTAL and NEVER THROWS on its own paths — like `recordPlan`, it is called from an
+   * adapter and a method that throws is a capture that silently stopped. One path is
+   * a deliberate NO-OP:
+   *
+   *   • UNKNOWN / NON-REVIEW SESSION → nothing. If no task carries a
+   *     `{ stage: 'review', appSessionId }` ref for this reviewer, there is no task
+   *     to record against. THIS GUARD IS WHY EXPOSING `report_review` TO EVERY
+   *     DISPATCHED SESSION IS SAFE: an implementing session that never calls it is a
+   *     no-op, and one that spuriously calls it is guarded here.
+   *
+   * ⚠ THE TRANSITION GOES THROUGH `taskWriter.proposeTaskTransition` (I7's choke
+   * point), NEVER a `task_transitioned` this module emits — the same contract
+   * recordPlan keeps. The writer adjudicates the move and records EITHER a
+   * `task_transitioned` or an evented rejection (e.g. the task already left
+   * `review`). Emitting the transition here would make this a second writer of task
+   * state and break I10/I7.
+   */
+  recordReview(reviewerAppSessionId: string, criteria: ReportReviewPayload['criteria']): void {
+    // 1. REVERSE-LOOKUP the owning task from its OWN review refs (recordPlan keys on
+    // 'planning'; this keys on 'review'). Fresh read, like every other read here. No
+    // task claims this reviewer with a review ref → NO-OP (the safety guard above).
+    const owningTask = Object.values(this.deps.readTasks().tasks).find((task) =>
+      task.sessionRefs.some(
+        (sessionRef) =>
+          sessionRef.stage === 'review' && sessionRef.appSessionId === reviewerAppSessionId,
+      ),
+    );
+    if (owningTask === undefined) {
+      return;
+    }
+
+    // 2. IDENTITY (mirrors recordPlan). `attempt` = count of this task's review refs
+    // (≥1, we just matched one); `workOrderRev` defaults to 0 until the first
+    // amendment, matching the record's absent-until-amended field.
+    const reviewAttempt = owningTask.sessionRefs.filter(
+      (sessionRef) => sessionRef.stage === 'review',
+    ).length;
+    const workOrderRev = owningTask.workOrderRev ?? 0;
+
+    // 3. EMIT `review_reported` (S7·6a) — the durable record, FIRST, so the fact is
+    // written before the consequence is proposed (recordPlan's store→emit→propose
+    // ordering, minus the store).
+    this.deps.emit([
+      reviewReported({
+        taskId: owningTask.taskId,
+        stage: 'review',
+        attempt: reviewAttempt,
+        workOrderRev,
+        criteria,
+      }),
+    ]);
+
+    // 4. DERIVE the outcome (S7·6a's pure function) and PROPOSE the transition
+    // through I7's choke point — LAST, and never a hand-rolled emit. `done` when
+    // every task criterion has a reported pass; `implementing` on any fail or
+    // incomplete coverage. The writer emits `task_transitioned` (or an evented
+    // rejection if the task is not in `review`, which is correct and recorded).
+    const toStage = deriveReviewOutcome(
+      criteria,
+      owningTask.acceptanceCriteria?.map((criterion) => criterion.id) ?? [],
+    );
+    this.deps.taskWriter.proposeTaskTransition(owningTask.taskId, {
+      toStage,
       proposedBy: 'dispatcher',
     });
   }

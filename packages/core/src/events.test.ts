@@ -23,12 +23,18 @@ import {
   sessionRenamed,
   sessionRenamedPayloadSchema,
   planSubmitted,
+  reviewReported,
+  completionReported,
   taskCreatedPayloadSchema,
   workOrderAmended,
   workOrderAmendedPayloadSchema,
 } from './events.js';
 import { sessionRecordSchema } from './schemas.js';
-import { submitPlanPayloadSchema } from './tasks/workOrder.js';
+import {
+  submitPlanPayloadSchema,
+  reportReviewPayloadSchema,
+  reportCompletionPayloadSchema,
+} from './tasks/workOrder.js';
 
 // gate_fired's schema widened (rule 0.7) to match wire reality: the daemon's
 // real SDK gate carries requestId (sessionHost.ts's handleGate), harness
@@ -344,6 +350,67 @@ describe('plan_submitted (S7·5a — RESERVED, payload REUSED from tasks/workOrd
     expect(EVENT_TYPES.planSubmitted).toBe('plan_submitted');
     // Identity (===), not mere schema equivalence — the reuse D48 calls for.
     expect(EVENT_PAYLOAD_SCHEMAS[EVENT_TYPES.planSubmitted]).toBe(submitPlanPayloadSchema);
+  });
+});
+
+describe('review_reported (S7·6a — RESERVED, payload REUSED from tasks/workOrder.ts)', () => {
+  // Mirrors the plan_submitted describe above: schema-first reservation, no emitter
+  // yet (S7·6b), and the identity assertion is the point — `report_review`'s tool
+  // payload and this event's payload are the SAME zod object (D43), not two shapes.
+  const reviewPayload = {
+    taskId: 'task-aaaa-0001',
+    stage: 'review' as const,
+    attempt: 1,
+    workOrderRev: 0,
+    criteria: [
+      { criterionId: 'crit-id-1', verdict: 'pass' as const, note: 'looks good' },
+      { criterionId: 'crit-id-2', verdict: 'fail' as const },
+    ],
+  };
+
+  it('constructs on the tasks stream and validates against reportReviewPayloadSchema', () => {
+    expect(reviewReported(reviewPayload)).toEqual({
+      stream: 'tasks',
+      type: 'review_reported',
+      payload: reviewPayload,
+    });
+    expect(reportReviewPayloadSchema.safeParse(reviewPayload).success).toBe(true);
+  });
+
+  it('is registered under the review_reported type string, IDENTICAL to reportReviewPayloadSchema', () => {
+    expect(EVENT_TYPES.reviewReported).toBe('review_reported');
+    // Identity (===), not mere schema equivalence — the reuse D43 calls for.
+    expect(EVENT_PAYLOAD_SCHEMAS[EVENT_TYPES.reviewReported]).toBe(reportReviewPayloadSchema);
+  });
+});
+
+describe('completion_reported (S7·7b — RESERVED, no emitter, payload REUSED)', () => {
+  // A no-emitter reservation exactly like work_order_amended: the pair exists so
+  // S7·7b needs no migration, but NOTHING calls the constructor yet and no
+  // projection folds it.
+  const completionPayload = {
+    taskId: 'task-aaaa-0001',
+    stage: 'implementing' as const,
+    attempt: 2,
+    workOrderRev: 0,
+    worklog: {
+      decisionsMade: ['used the existing helper'],
+      pathsRejected: ['a bespoke parser — too slow'],
+    },
+  };
+
+  it('constructs on the tasks stream and validates against reportCompletionPayloadSchema', () => {
+    expect(completionReported(completionPayload)).toEqual({
+      stream: 'tasks',
+      type: 'completion_reported',
+      payload: completionPayload,
+    });
+    expect(reportCompletionPayloadSchema.safeParse(completionPayload).success).toBe(true);
+  });
+
+  it('is registered under the completion_reported type string, IDENTICAL to reportCompletionPayloadSchema', () => {
+    expect(EVENT_TYPES.completionReported).toBe('completion_reported');
+    expect(EVENT_PAYLOAD_SCHEMAS[EVENT_TYPES.completionReported]).toBe(reportCompletionPayloadSchema);
   });
 });
 

@@ -1,4 +1,5 @@
 import { afterAll, describe, expect, it } from 'vitest';
+import { z } from 'zod';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -25,6 +26,7 @@ import {
   CLAUDE_PTY_CAPABILITIES,
   CLAUDE_SDK_CAPABILITIES,
   SessionHost,
+  buildReportMcpServers,
   scrubClaudeEnv,
   extractGateTarget,
   truncateGatePrompt,
@@ -32,6 +34,7 @@ import {
   type PtySpawnFactory,
   type SdkQueryFactory,
   type SdkQueryOptions,
+  type SdkReportToolSpec,
   type SdkStreamMessage,
   type SdkUserMessage,
 } from './sessionHost.js';
@@ -100,6 +103,8 @@ function makeHarness(deps: {
   // D48: the plan-capture callback the SDK adapter proposes plans through. Unset
   // in most cases (the no-op path), injected by the plan-capture tests.
   onPlanCaptured?: (appSessionId: string, planText: string) => void;
+  // S7·6b: the review-capture callback the SDK adapter proposes verdicts through.
+  onReviewReported?: (appSessionId: string, criteria: unknown) => void;
 }): Harness {
   const clock = new SteppingClock('2026-01-01T00:00:00.000Z', 1000);
   const ids = new CountingIdSource();
@@ -115,6 +120,7 @@ function makeHarness(deps: {
     ptySpawnFactory: deps.ptySpawnFactory,
     projectsRoot: '/fake-projects',
     onPlanCaptured: deps.onPlanCaptured,
+    onReviewReported: deps.onReviewReported,
   });
   return { host, store, router };
 }
@@ -1689,5 +1695,163 @@ describe('SessionHost — custody refusals, adoption, session ops (D10 / v0.2)',
     } finally {
       host.stop();
     }
+  });
+});
+
+// ── S7·6b: report_review tool exposure + handler + the SDK-boundary wrap ───────
+//
+// The adapter exposes an SDK-agnostic `report_review` spec to EVERY dispatched
+// session (safe: recordReview no-ops for a non-review session). The factory wraps
+// specs into `mcpServers` via the SDK — tested here through `buildReportMcpServers`
+// with a FAKE surface, so CI never loads the real SDK (the SDK-boundary rule).
+
+describe('SessionHost — report_review tool exposure (S7·6b)', () => {
+  it('a dispatched spawn carries the report_review spec in reportTools (criteria-only schema)', async () => {
+    const { factory, calls } = makeSdkFactory(async function* () {
+      yield { type: 'system', subtype: 'init', session_id: 'claude-1' };
+      yield { type: 'result', subtype: 'success' };
+    });
+    const { host } = makeHarness({ sdkQueryFactory: factory });
+    try {
+      host.spawnSession({ channel: 'sdk', cwd: '/p', dispatched: true });
+      await waitFor(() => calls.length === 1);
+      const specs = calls[0]!.reportTools;
+      expect(specs).toHaveLength(1);
+      expect(specs![0]!.name).toBe('report_review');
+      expect(typeof specs![0]!.handler).toBe('function');
+      // The tool schema is criteria-ONLY — VIMES supplies taskId/stage/attempt/rev.
+      expect(Object.keys(specs![0]!.inputSchema)).toEqual(['criteria']);
+    } finally {
+      host.stop();
+    }
+  });
+
+  it('a NON-dispatched spawn carries NO reportTools key (byte-identical options)', async () => {
+    const { factory, calls } = makeSdkFactory(async function* () {
+      yield { type: 'system', subtype: 'init', session_id: 'claude-1' };
+      yield { type: 'result', subtype: 'success' };
+    });
+    const { host } = makeHarness({ sdkQueryFactory: factory });
+    try {
+      host.spawnSession({ channel: 'sdk', cwd: '/p' });
+      await waitFor(() => calls.length === 1);
+      // Absent, not undefined — the same options object as before this unit.
+      expect('reportTools' in calls[0]!).toBe(false);
+    } finally {
+      host.stop();
+    }
+  });
+
+  it('invoking the spec handler fires onReviewReported(appSessionId, criteria) and returns {ok:true}', async () => {
+    const captured: Array<{ appSessionId: string; criteria: unknown }> = [];
+    const { factory, calls } = makeSdkFactory(async function* () {
+      yield { type: 'system', subtype: 'init', session_id: 'claude-1' };
+      yield { type: 'result', subtype: 'success' };
+    });
+    const { host } = makeHarness({
+      sdkQueryFactory: factory,
+      onReviewReported: (appSessionId, criteria) => captured.push({ appSessionId, criteria }),
+    });
+    try {
+      const spawn = host.spawnSession({ channel: 'sdk', cwd: '/p', dispatched: true });
+      const appSessionId = 'appSessionId' in spawn ? spawn.appSessionId : '';
+      await waitFor(() => calls.length === 1);
+      const spec = calls[0]!.reportTools![0]!;
+      const criteria = [{ criterionId: 'c1', verdict: 'pass' }];
+      const result = await spec.handler({ criteria });
+      // The handler closes over THIS session's id and forwards to the callback.
+      expect(result).toEqual({ ok: true });
+      expect(captured).toEqual([{ appSessionId, criteria }]);
+    } finally {
+      host.stop();
+    }
+  });
+});
+
+describe('buildReportMcpServers — the SDK-boundary wrap (S7·6b)', () => {
+  function fakeSurface(): {
+    surface: Parameters<typeof buildReportMcpServers>[1];
+    toolCalls: Array<{ name: string; description: string; inputSchema: unknown }>;
+    serverCalls: Array<{ name: string; version?: string; alwaysLoad?: boolean; toolCount: number }>;
+  } {
+    const toolCalls: Array<{ name: string; description: string; inputSchema: unknown }> = [];
+    const serverCalls: Array<{ name: string; version?: string; alwaysLoad?: boolean; toolCount: number }> = [];
+    const surface = {
+      tool: (
+        name: string,
+        description: string,
+        inputSchema: unknown,
+        handler: (args: unknown, extra: unknown) => Promise<{ content: Array<{ type: 'text'; text: string }> }>,
+      ) => {
+        toolCalls.push({ name, description, inputSchema });
+        // Return an object carrying the WRAPPED handler so a case can invoke it.
+        return { __toolName: name, handler };
+      },
+      createSdkMcpServer: (options: {
+        name: string;
+        version?: string;
+        tools: unknown[];
+        alwaysLoad?: boolean;
+      }) => {
+        serverCalls.push({
+          name: options.name,
+          version: options.version,
+          alwaysLoad: options.alwaysLoad,
+          toolCount: options.tools.length,
+        });
+        return { __serverName: options.name, tools: options.tools };
+      },
+    };
+    return { surface, toolCalls, serverCalls };
+  }
+
+  const spec: SdkReportToolSpec = {
+    name: 'report_review',
+    description: 'desc',
+    inputSchema: { criteria: z.array(z.object({ criterionId: z.string(), verdict: z.enum(['pass', 'fail']) })) },
+    handler: async () => ({ ok: true }),
+  };
+
+  it('given specs, mounts them under mcpServers.vimes_report with alwaysLoad', () => {
+    const { surface, toolCalls, serverCalls } = fakeSurface();
+    const servers = buildReportMcpServers([spec], surface);
+    expect(servers).toBeDefined();
+    expect(Object.keys(servers!)).toEqual(['vimes_report']);
+    expect(serverCalls).toEqual([
+      { name: 'vimes_report', version: '0.0.1', alwaysLoad: true, toolCount: 1 },
+    ]);
+    expect(toolCalls).toHaveLength(1);
+    expect(toolCalls[0]!.name).toBe('report_review');
+    // The spec's raw shape is handed STRAIGHT through to tool() — same object.
+    expect(toolCalls[0]!.inputSchema).toBe(spec.inputSchema);
+  });
+
+  it('the wrapped tool handler calls the spec handler and returns a success CallToolResult', async () => {
+    const { surface } = fakeSurface();
+    let seenInput: unknown;
+    const observingSpec: SdkReportToolSpec = {
+      ...spec,
+      handler: async (input) => {
+        seenInput = input;
+        return { ok: true };
+      },
+    };
+    const servers = buildReportMcpServers([observingSpec], surface)!;
+    const server = servers.vimes_report as {
+      tools: Array<{ handler: (args: unknown, extra: unknown) => Promise<{ content: Array<{ type: 'text'; text: string }> }> }>;
+    };
+    const wrapped = server.tools[0]!.handler;
+    const payload = { criteria: [{ criterionId: 'c1', verdict: 'pass' }] };
+    const result = await wrapped(payload, undefined);
+    // The spec handler ran with the SDK's parsed args, and the {ok} became a
+    // success CallToolResult (the spike's clean-stop shape).
+    expect(seenInput).toEqual(payload);
+    expect(result).toEqual({ content: [{ type: 'text', text: 'Review verdict recorded.' }] });
+  });
+
+  it('given no specs, returns undefined (so the mcpServers key is never set)', () => {
+    const { surface } = fakeSurface();
+    expect(buildReportMcpServers(undefined, surface)).toBeUndefined();
+    expect(buildReportMcpServers([], surface)).toBeUndefined();
   });
 });
