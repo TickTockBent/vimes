@@ -61,6 +61,10 @@ export interface StageInstructionContext {
   readonly worklog?: ReportCompletionPayload['worklog'];
 }
 
+// ⚠ S7·7f: the PROSE constants below are UNWRAPPED on purpose — each paragraph is
+// one long source line (no mid-sentence `\n`) because template literals preserve
+// hard-wraps verbatim into the dispatched prompt; do not re-wrap them for tidiness.
+
 // The stable OPENING paragraph of the implementing briefing — a byte-stable
 // constant with no task-specific values, so it is a common PREFIX across every
 // implementing handoff (the cache-read discipline from the slice-7
@@ -68,9 +72,7 @@ export interface StageInstructionContext {
 // across dispatches). Perturbing a work-order field must never disturb it; the
 // cache-prefix test verifies exactly that.
 const IMPLEMENTING_BRIEFING_OPENING =
-  `You are a worker session that VIMES dispatched to implement one task. This is
-real work. The plan below has already been reviewed and approved — carry it out;
-do not re-plan it.`;
+  `You are a worker session that VIMES dispatched to implement one task. This is real work. The plan below has already been reviewed and approved — carry it out; do not re-plan it.`;
 
 // The stable CLOSING two paragraphs — the mid-run-steering contract, then the
 // FINISH contract. Byte-stable SUFFIX of the implementing briefing.
@@ -98,15 +100,9 @@ do not re-plan it.`;
 // briefing is only true once that unit lands — which is why the two are sequenced
 // back to back and not separated by a deploy.
 const IMPLEMENTING_BRIEFING_CLOSING =
-  `Implement the plan, staying within scope. If a message arrives while you're
-working, it's a human steering you mid-run — read it and adjust. It's a
-correction to THIS task, not a new task.
+  `Implement the plan, staying within scope. If a message arrives while you're working, it's a human steering you mid-run — read it and adjust. It's a correction to THIS task, not a new task.
 
-When the work is done, report it using the report_completion tool — a worklog with
-decisionsMade (the calls you made and why) and pathsRejected (dead ends you tried
-or considered and abandoned; the next attempt must not re-explore them). That
-report is how you finish and is your ENTIRE deliverable: VIMES records it and moves
-the task to review. You do not advance the task yourself.`;
+When the work is done, report it using the report_completion tool — a worklog with decisionsMade (the calls you made and why) and pathsRejected (dead ends you tried or considered and abandoned; the next attempt must not re-explore them). That report is how you finish and is your ENTIRE deliverable: VIMES records it and moves the task to review. You do not advance the task yourself.`;
 
 // ── S7·7b: the FIX-SEED preamble (D46 + D53's on-disk-diff rider) ─────────────
 //
@@ -121,18 +117,13 @@ the task to review. You do not advance the task yourself.`;
 //   • it must NOT say "you wrote this" — the fixer is a stranger to the code, and
 //     D46's anchoring argument is the whole reason it is a stranger.
 const FIX_ATTEMPT_PREAMBLE =
-  `This is a FIX. A previous attempt at this task was implemented and then FAILED an
-independent review. You did not write that attempt — but its changes are ALREADY
-ON DISK in the directory above. Read them first (\`git diff\`, and \`git status\` for
-new files) so you are correcting existing work rather than starting over on top of
-it.`;
+  `This is a FIX. A previous attempt at this task was implemented and then FAILED an independent review. You did not write that attempt — but its changes are ALREADY ON DISK in the directory above. Read them first (\`git diff\`, and \`git status\` for new files) so you are correcting existing work rather than starting over on top of it.`;
 
 // The stable OPENING paragraph of the PLANNING briefing — byte-stable prefix
 // (cache discipline, same rationale as IMPLEMENTING_BRIEFING_OPENING). Plan-
 // directed: it tells the worker it is in plan mode and must produce a plan.
 const PLANNING_BRIEFING_OPENING =
-  `You are a worker session that VIMES dispatched to PLAN one task. You are in plan
-mode: investigate directly and produce a plan — do not implement anything yet.`;
+  `You are a worker session that VIMES dispatched to PLAN one task. You are in plan mode: investigate directly and produce a plan — do not implement anything yet.`;
 
 // The stable CLOSING two paragraphs — the investigate-directly + no-sub-agents
 // contract, and the present-via-exit-plan-mode contract. Byte-stable SUFFIX.
@@ -140,22 +131,15 @@ mode: investigate directly and produce a plan — do not implement anything yet.
 // the tools-restriction choke, and "present it by exiting plan mode" is what
 // makes the planner call ExitPlanMode instead of writing a plan file and stopping.
 const PLANNING_BRIEFING_CLOSING =
-  `Investigate the codebase directly with your own tools — read files, search, run
-read-only commands. Sub-agents are NOT authorized for this task; do the
-exploration yourself. Do not wait for anything or anyone.
+  `Investigate the codebase directly with your own tools — read files, search, run read-only commands. Sub-agents are NOT authorized for this task; do the exploration yourself. Do not wait for anything or anyone.
 
-When you have a plan, present it by exiting plan mode — that is how you finish.
-The plan is your ENTIRE deliverable: VIMES captures it and hands it to a fresh
-session that will implement it without your context, so make it complete and
-self-contained enough for a stranger to execute.`;
+When you have a plan, present it by exiting plan mode — that is how you finish. The plan is your ENTIRE deliverable: VIMES captures it and hands it to a fresh session that will implement it without your context, so make it complete and self-contained enough for a stranger to execute.`;
 
 // The stable OPENING paragraph of the REVIEW briefing — byte-stable prefix
 // (cache discipline, same rationale as the openings above). Review-directed: it
 // tells the worker it is judging code it did NOT write, fresh, against the criteria.
 const REVIEW_BRIEFING_OPENING =
-  `You are a worker session that VIMES dispatched to REVIEW one task's implementation
-independently. You did not write this code — judge it fresh against the acceptance
-criteria below.`;
+  `You are a worker session that VIMES dispatched to REVIEW one task's implementation independently. You did not write this code — judge it fresh against the acceptance criteria below.`;
 
 // The stable CLOSING two paragraphs — the inspect-directly + no-sub-agents contract,
 // and the report-via-report_review contract. Byte-stable SUFFIX.
@@ -167,14 +151,9 @@ criteria below.`;
 // the report tool call is how the reviewer finishes, and deriveReviewOutcome reads
 // the per-criterion verdicts it produces.
 const REVIEW_BRIEFING_CLOSING =
-  `Inspect the implementation directly with your own tools — read the changed files, run
-git diff and the tests, search as needed. Sub-agents are NOT authorized for this
-task; do the review yourself.
+  `Inspect the implementation directly with your own tools — read the changed files, run git diff and the tests, search as needed. Sub-agents are NOT authorized for this task; do the review yourself.
 
-When you have judged every criterion, report your verdict using the report_review
-tool — one entry per criterion (its id, pass or fail, a short note). That report is
-how you finish and is your ENTIRE deliverable: VIMES reads it to decide whether the
-task is done or goes back for fixes. You do not advance the task yourself.`;
+When you have judged every criterion, report your verdict using the report_review tool — one entry per criterion (its id, pass or fail, a short note). That report is how you finish and is your ENTIRE deliverable: VIMES reads it to decide whether the task is done or goes back for fixes. You do not advance the task yourself.`;
 
 // The third param is OPTIONAL → ABSENT-STAYS-ABSENT: called with no context (the
 // default composer wiring, and every pre-S7·7a caller), the output is
@@ -277,8 +256,7 @@ export function composeStageInstruction(
 
   Task:      ${label}
   Stage:     implementing
-  Directory: ${task.projectRoot} — work in this directory; do not guess or invent a
-             different path name.`,
+  Directory: ${task.projectRoot} — work in this directory; do not guess or invent a different path name.`,
       );
 
       if (hasScope) {
@@ -345,9 +323,7 @@ export function composeStageInstruction(
         // the same blank line the outer join uses, so the spacing is uniform
         // whether one sub-list is present or both.
         const worklogParts: string[] = [
-          `The previous attempt's own worklog — do NOT re-explore what it already
-rejected. If you think a rejected path is right after all, say so in your report
-rather than quietly retrying it.`,
+          `The previous attempt's own worklog — do NOT re-explore what it already rejected. If you think a rejected path is right after all, say so in your report rather than quietly retrying it.`,
         ];
         if (hasDecisionsMade) {
           worklogParts.push(
@@ -395,8 +371,7 @@ rather than quietly retrying it.`,
 
   Task:      ${label}
   Stage:     planning
-  Directory: ${task.projectRoot} — work in this directory; do not guess or invent a
-             different path name.`,
+  Directory: ${task.projectRoot} — work in this directory; do not guess or invent a different path name.`,
     );
 
     if (hasScope) {
@@ -465,6 +440,21 @@ rather than quietly retrying it.`,
         .map((criterion) => `  - [${criterion.id}] ${criterion.text}`)
         .join('\n');
       briefingBlocks.push(`Acceptance criteria — judge EACH as pass or fail:\n${criterionBullets}`);
+    } else {
+      // ── S7·7f: the NO-CRITERIA review clause ─────────────────────────────────
+      //
+      // A SEPARATE conditional block, not folded into REVIEW_BRIEFING_CLOSING: the
+      // closing must stay a byte-stable SUFFIX (cache-prefix discipline — it is
+      // shared across every review dispatch), and a conditional clause inside it
+      // would fork that suffix. Observed 2026-07-27 (the johnny run): a reviewer
+      // dispatched against a bare task with no acceptance criteria improvised 9
+      // sensible criteria of its own and reported each one through report_review —
+      // this blesses that OBSERVED-GOOD behaviour explicitly rather than changing
+      // the mechanism. `deriveReviewOutcome` is UNTOUCHED: an empty-task-criteria
+      // review still resolves the same way regardless of this prose.
+      briefingBlocks.push(
+        'This task enumerates no acceptance criteria. Derive sensible criteria yourself from the scope and the implementation, and report each one through report_review — mint a short id per criterion so each verdict is keyed.',
+      );
     }
     if (hasExplicitlyOut) {
       const explicitlyOutBullets = task.explicitlyOut!.map((item) => `  - ${item}`).join('\n');
@@ -501,20 +491,15 @@ rather than quietly retrying it.`,
   // TODO(worktree-isolation): when that flag flips, the worker's cwd is the
   // *worktree* path, not projectRoot, so the composer will need the resolved
   // cwd passed in — a follow-up tied to the isolation flip (not solved here).
-  return `You are a worker session that VIMES dispatched to make progress on one task.
-This is real work.
+  return `You are a worker session that VIMES dispatched to make progress on one task. This is real work.
 
   Task:      ${label}
   Stage:     ${task.stage}
-  Directory: ${task.projectRoot} — work in this directory; do not guess or invent a
-             different path name.
+  Directory: ${task.projectRoot} — work in this directory; do not guess or invent a different path name.
 
 Do the work this stage calls for, and stay within the task's scope.
 
-If a message arrives while you're working, it's a human steering you mid-run —
-read it and adjust. It's a correction to THIS task, not a new task.
+If a message arrives while you're working, it's a human steering you mid-run — read it and adjust. It's a correction to THIS task, not a new task.
 
-When you believe the stage is done, briefly summarize what you did and what (if
-anything) remains, then stop. You do not advance the task yourself — a human
-reviews and moves it forward on the board.`;
+When you believe the stage is done, briefly summarize what you did and what (if anything) remains, then stop. You do not advance the task yourself — a human reviews and moves it forward on the board.`;
 }

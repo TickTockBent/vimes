@@ -53,16 +53,14 @@ describe('composeStageInstruction — spawn wording', () => {
   it('contains the mid-run steering / correction sentence', () => {
     const instruction = composeStageInstruction(taskRecord(), SPAWN);
     expect(instruction).toContain(
-      "If a message arrives while you're working, it's a human steering you mid-run —\nread it and adjust. It's a correction to THIS task, not a new task.",
+      "If a message arrives while you're working, it's a human steering you mid-run — read it and adjust. It's a correction to THIS task, not a new task.",
     );
   });
 
   it('contains the "You do not advance the task yourself" sentence', () => {
     const instruction = composeStageInstruction(taskRecord(), SPAWN);
     expect(instruction).toContain(
-      'When you believe the stage is done, briefly summarize what you did and what (if\n' +
-        'anything) remains, then stop. You do not advance the task yourself — a human\n' +
-        'reviews and moves it forward on the board.',
+      'When you believe the stage is done, briefly summarize what you did and what (if anything) remains, then stop. You do not advance the task yourself — a human reviews and moves it forward on the board.',
     );
   });
 
@@ -70,22 +68,17 @@ describe('composeStageInstruction — spawn wording', () => {
     const task = taskRecord({ title: 'Fix the widget', stage: 'implementing', projectRoot: '/home/foo' });
     const instruction = composeStageInstruction(task, SPAWN);
     expect(instruction).toBe(
-      `You are a worker session that VIMES dispatched to make progress on one task.
-This is real work.
+      `You are a worker session that VIMES dispatched to make progress on one task. This is real work.
 
   Task:      Fix the widget
   Stage:     implementing
-  Directory: /home/foo — work in this directory; do not guess or invent a
-             different path name.
+  Directory: /home/foo — work in this directory; do not guess or invent a different path name.
 
 Do the work this stage calls for, and stay within the task's scope.
 
-If a message arrives while you're working, it's a human steering you mid-run —
-read it and adjust. It's a correction to THIS task, not a new task.
+If a message arrives while you're working, it's a human steering you mid-run — read it and adjust. It's a correction to THIS task, not a new task.
 
-When you believe the stage is done, briefly summarize what you did and what (if
-anything) remains, then stop. You do not advance the task yourself — a human
-reviews and moves it forward on the board.`,
+When you believe the stage is done, briefly summarize what you did and what (if anything) remains, then stop. You do not advance the task yourself — a human reviews and moves it forward on the board.`,
     );
   });
 });
@@ -159,9 +152,7 @@ describe('composeStageInstruction — totality (I8)', () => {
 // the source constant drifts). It carries NO task-specific value and is therefore
 // a common prefix across every implementing briefing.
 const STABLE_OPENING =
-  `You are a worker session that VIMES dispatched to implement one task. This is
-real work. The plan below has already been reviewed and approved — carry it out;
-do not re-plan it.`;
+  `You are a worker session that VIMES dispatched to implement one task. This is real work. The plan below has already been reviewed and approved — carry it out; do not re-plan it.`;
 
 // A fully-populated implementing task — every work-order field present.
 function populatedImplementingTask(overrides: Partial<TaskRecord> = {}): TaskRecord {
@@ -188,14 +179,11 @@ describe('composeStageInstruction — implementing handoff (S7·7a)', () => {
       plan: PLAN_BLOB,
     });
     expect(instruction).toBe(
-      `You are a worker session that VIMES dispatched to implement one task. This is
-real work. The plan below has already been reviewed and approved — carry it out;
-do not re-plan it.
+      `You are a worker session that VIMES dispatched to implement one task. This is real work. The plan below has already been reviewed and approved — carry it out; do not re-plan it.
 
   Task:      Fix the widget
   Stage:     implementing
-  Directory: /home/foo — work in this directory; do not guess or invent a
-             different path name.
+  Directory: /home/foo — work in this directory; do not guess or invent a different path name.
 
 Scope — what this task is:
 Make the widget do the thing.
@@ -215,15 +203,9 @@ The approved plan:
 Step 1. Do the thing.
 Step 2. Verify.
 
-Implement the plan, staying within scope. If a message arrives while you're
-working, it's a human steering you mid-run — read it and adjust. It's a
-correction to THIS task, not a new task.
+Implement the plan, staying within scope. If a message arrives while you're working, it's a human steering you mid-run — read it and adjust. It's a correction to THIS task, not a new task.
 
-When the work is done, report it using the report_completion tool — a worklog with
-decisionsMade (the calls you made and why) and pathsRejected (dead ends you tried
-or considered and abandoned; the next attempt must not re-explore them). That
-report is how you finish and is your ENTIRE deliverable: VIMES records it and moves
-the task to review. You do not advance the task yourself.`,
+When the work is done, report it using the report_completion tool — a worklog with decisionsMade (the calls you made and why) and pathsRejected (dead ends you tried or considered and abandoned; the next attempt must not re-explore them). That report is how you finish and is your ENTIRE deliverable: VIMES records it and moves the task to review. You do not advance the task yourself.`,
     );
   });
 
@@ -238,12 +220,12 @@ the task to review. You do not advance the task yourself.`,
       plan: PLAN_BLOB,
     });
     expect(implementing).toContain(
-      "If a message arrives while you're\nworking, it's a human steering you mid-run — read it and adjust. It's a\n" +
+      "If a message arrives while you're working, it's a human steering you mid-run — read it and adjust. It's a " +
         'correction to THIS task, not a new task.',
     );
     // And the superseded sentence is GONE from this briefing — the pin on the
     // reversal, not merely on the new text.
-    expect(implementing).not.toContain('a human\nreviews and moves it forward on the board.');
+    expect(implementing).not.toContain('a human reviews and moves it forward on the board.');
   });
 
   it('names the report_completion tool and its two worklog fields (the exact names 7b-daemon registers)', () => {
@@ -267,9 +249,7 @@ the task to review. You do not advance the task yourself.`,
     const genericTask = taskRecord({ title: 'Bare task', stage: 'implementing' });
     const generic = composeStageInstruction(genericTask, SPAWN);
     expect(generic).toContain(
-      'When you believe the stage is done, briefly summarize what you did and what (if\n' +
-        'anything) remains, then stop. You do not advance the task yourself — a human\n' +
-        'reviews and moves it forward on the board.',
+      'When you believe the stage is done, briefly summarize what you did and what (if anything) remains, then stop. You do not advance the task yourself — a human reviews and moves it forward on the board.',
     );
     expect(generic).not.toContain('report_completion');
     expect(composeStageInstruction(populatedPlanningTask(), SPAWN)).not.toContain(
@@ -353,22 +333,17 @@ describe('composeStageInstruction — implementing degrade (0.4)', () => {
   it('falls through to the GENERIC spawn text when NONE of the five is present', () => {
     // A bare implementing task with no work-order fields and no plan context.
     const bare = taskRecord({ title: 'Bare task', stage: 'implementing', projectRoot: '/home/foo' });
-    const generic = `You are a worker session that VIMES dispatched to make progress on one task.
-This is real work.
+    const generic = `You are a worker session that VIMES dispatched to make progress on one task. This is real work.
 
   Task:      Bare task
   Stage:     implementing
-  Directory: /home/foo — work in this directory; do not guess or invent a
-             different path name.
+  Directory: /home/foo — work in this directory; do not guess or invent a different path name.
 
 Do the work this stage calls for, and stay within the task's scope.
 
-If a message arrives while you're working, it's a human steering you mid-run —
-read it and adjust. It's a correction to THIS task, not a new task.
+If a message arrives while you're working, it's a human steering you mid-run — read it and adjust. It's a correction to THIS task, not a new task.
 
-When you believe the stage is done, briefly summarize what you did and what (if
-anything) remains, then stop. You do not advance the task yourself — a human
-reviews and moves it forward on the board.`;
+When you believe the stage is done, briefly summarize what you did and what (if anything) remains, then stop. You do not advance the task yourself — a human reviews and moves it forward on the board.`;
     expect(composeStageInstruction(bare, SPAWN)).toBe(generic);
     // Absent-stays-absent: an empty context, or an empty plan, is the same as none.
     expect(composeStageInstruction(bare, SPAWN, {})).toBe(generic);
@@ -443,8 +418,7 @@ describe('composeStageInstruction — implementing determinism (rule 0.3)', () =
 // deliberate copy, not an import: this test is the pin, so it must fail loudly if
 // the source constant drifts).
 const STABLE_PLANNING_OPENING =
-  `You are a worker session that VIMES dispatched to PLAN one task. You are in plan
-mode: investigate directly and produce a plan — do not implement anything yet.`;
+  `You are a worker session that VIMES dispatched to PLAN one task. You are in plan mode: investigate directly and produce a plan — do not implement anything yet.`;
 
 // A fully-populated planning task — every work-order field present. There is no
 // plan blob for planning (planning PRODUCES the plan).
@@ -468,13 +442,11 @@ describe('composeStageInstruction — planning briefing (S7·5c)', () => {
   it('is byte-identical, in full, to the signed-off planning briefing (all four fields)', () => {
     const instruction = composeStageInstruction(populatedPlanningTask(), SPAWN);
     expect(instruction).toBe(
-      `You are a worker session that VIMES dispatched to PLAN one task. You are in plan
-mode: investigate directly and produce a plan — do not implement anything yet.
+      `You are a worker session that VIMES dispatched to PLAN one task. You are in plan mode: investigate directly and produce a plan — do not implement anything yet.
 
   Task:      Fix the widget
   Stage:     planning
-  Directory: /home/foo — work in this directory; do not guess or invent a
-             different path name.
+  Directory: /home/foo — work in this directory; do not guess or invent a different path name.
 
 Scope — what this task is:
 Make the widget do the thing.
@@ -489,14 +461,9 @@ Acceptance criteria — your plan must make ALL of these achievable:
 
 Stop and report instead of planning if: the build cannot be made green without a schema change.
 
-Investigate the codebase directly with your own tools — read files, search, run
-read-only commands. Sub-agents are NOT authorized for this task; do the
-exploration yourself. Do not wait for anything or anyone.
+Investigate the codebase directly with your own tools — read files, search, run read-only commands. Sub-agents are NOT authorized for this task; do the exploration yourself. Do not wait for anything or anyone.
 
-When you have a plan, present it by exiting plan mode — that is how you finish.
-The plan is your ENTIRE deliverable: VIMES captures it and hands it to a fresh
-session that will implement it without your context, so make it complete and
-self-contained enough for a stranger to execute.`,
+When you have a plan, present it by exiting plan mode — that is how you finish. The plan is your ENTIRE deliverable: VIMES captures it and hands it to a fresh session that will implement it without your context, so make it complete and self-contained enough for a stranger to execute.`,
     );
   });
 
@@ -504,22 +471,15 @@ self-contained enough for a stranger to execute.`,
     const bare = taskRecord({ title: 'Bare plan task', stage: 'planning', projectRoot: '/home/foo' });
     const instruction = composeStageInstruction(bare, SPAWN);
     expect(instruction).toBe(
-      `You are a worker session that VIMES dispatched to PLAN one task. You are in plan
-mode: investigate directly and produce a plan — do not implement anything yet.
+      `You are a worker session that VIMES dispatched to PLAN one task. You are in plan mode: investigate directly and produce a plan — do not implement anything yet.
 
   Task:      Bare plan task
   Stage:     planning
-  Directory: /home/foo — work in this directory; do not guess or invent a
-             different path name.
+  Directory: /home/foo — work in this directory; do not guess or invent a different path name.
 
-Investigate the codebase directly with your own tools — read files, search, run
-read-only commands. Sub-agents are NOT authorized for this task; do the
-exploration yourself. Do not wait for anything or anyone.
+Investigate the codebase directly with your own tools — read files, search, run read-only commands. Sub-agents are NOT authorized for this task; do the exploration yourself. Do not wait for anything or anyone.
 
-When you have a plan, present it by exiting plan mode — that is how you finish.
-The plan is your ENTIRE deliverable: VIMES captures it and hands it to a fresh
-session that will implement it without your context, so make it complete and
-self-contained enough for a stranger to execute.`,
+When you have a plan, present it by exiting plan mode — that is how you finish. The plan is your ENTIRE deliverable: VIMES captures it and hands it to a fresh session that will implement it without your context, so make it complete and self-contained enough for a stranger to execute.`,
     );
     // It must NOT be the generic spawn text (that is the whole point of no-degrade).
     expect(instruction).not.toContain(
@@ -624,9 +584,7 @@ describe('composeStageInstruction — planning cache prefix + determinism', () =
 // deliberate copy, not an import: this test is the pin, so it must fail loudly if
 // the source constant drifts).
 const STABLE_REVIEW_OPENING =
-  `You are a worker session that VIMES dispatched to REVIEW one task's implementation
-independently. You did not write this code — judge it fresh against the acceptance
-criteria below.`;
+  `You are a worker session that VIMES dispatched to REVIEW one task's implementation independently. You did not write this code — judge it fresh against the acceptance criteria below.`;
 
 // A fully-populated review task — every rendered work-order field present.
 function populatedReviewTask(overrides: Partial<TaskRecord> = {}): TaskRecord {
@@ -649,9 +607,7 @@ describe('composeStageInstruction — review briefing (S7·6a)', () => {
   it('is byte-identical, in full, to the signed-off review briefing (criteria rendered WITH ids)', () => {
     const instruction = composeStageInstruction(populatedReviewTask(), SPAWN);
     expect(instruction).toBe(
-      `You are a worker session that VIMES dispatched to REVIEW one task's implementation
-independently. You did not write this code — judge it fresh against the acceptance
-criteria below.
+      `You are a worker session that VIMES dispatched to REVIEW one task's implementation independently. You did not write this code — judge it fresh against the acceptance criteria below.
 
   Task:      Fix the widget
   Stage:     review
@@ -668,14 +624,9 @@ Explicitly out of scope — do not hold these against it:
   - Do not touch the gadget.
   - Do not refactor unrelated code.
 
-Inspect the implementation directly with your own tools — read the changed files, run
-git diff and the tests, search as needed. Sub-agents are NOT authorized for this
-task; do the review yourself.
+Inspect the implementation directly with your own tools — read the changed files, run git diff and the tests, search as needed. Sub-agents are NOT authorized for this task; do the review yourself.
 
-When you have judged every criterion, report your verdict using the report_review
-tool — one entry per criterion (its id, pass or fail, a short note). That report is
-how you finish and is your ENTIRE deliverable: VIMES reads it to decide whether the
-task is done or goes back for fixes. You do not advance the task yourself.`,
+When you have judged every criterion, report your verdict using the report_review tool — one entry per criterion (its id, pass or fail, a short note). That report is how you finish and is your ENTIRE deliverable: VIMES reads it to decide whether the task is done or goes back for fixes. You do not advance the task yourself.`,
     );
   });
 
@@ -691,32 +642,46 @@ task is done or goes back for fixes. You do not advance the task yourself.`,
     expect(instruction).toContain('Sub-agents are NOT authorized');
   });
 
-  it('DEGENERATE: a review task with NO acceptance criteria still returns the review briefing, criteria section omitted', () => {
+  it('DEGENERATE: a review task with NO acceptance criteria still returns the review briefing, criteria section omitted, no-criteria clause rendered instead', () => {
     const bare = taskRecord({ title: 'Bare review task', stage: 'review', projectRoot: '/home/foo' });
     const instruction = composeStageInstruction(bare, SPAWN);
     expect(instruction).toBe(
-      `You are a worker session that VIMES dispatched to REVIEW one task's implementation
-independently. You did not write this code — judge it fresh against the acceptance
-criteria below.
+      `You are a worker session that VIMES dispatched to REVIEW one task's implementation independently. You did not write this code — judge it fresh against the acceptance criteria below.
 
   Task:      Bare review task
   Stage:     review
   Directory: /home/foo — the implementation is here; review it in place.
 
-Inspect the implementation directly with your own tools — read the changed files, run
-git diff and the tests, search as needed. Sub-agents are NOT authorized for this
-task; do the review yourself.
+This task enumerates no acceptance criteria. Derive sensible criteria yourself from the scope and the implementation, and report each one through report_review — mint a short id per criterion so each verdict is keyed.
 
-When you have judged every criterion, report your verdict using the report_review
-tool — one entry per criterion (its id, pass or fail, a short note). That report is
-how you finish and is your ENTIRE deliverable: VIMES reads it to decide whether the
-task is done or goes back for fixes. You do not advance the task yourself.`,
+Inspect the implementation directly with your own tools — read the changed files, run git diff and the tests, search as needed. Sub-agents are NOT authorized for this task; do the review yourself.
+
+When you have judged every criterion, report your verdict using the report_review tool — one entry per criterion (its id, pass or fail, a short note). That report is how you finish and is your ENTIRE deliverable: VIMES reads it to decide whether the task is done or goes back for fixes. You do not advance the task yourself.`,
     );
     // NO degrade-to-generic (the whole point).
     expect(instruction).not.toContain(
       'You are a worker session that VIMES dispatched to make progress on one task.',
     );
     expect(instruction).not.toContain('Acceptance criteria — judge EACH');
+  });
+
+  // ─── S7·7f: the no-criteria review clause ─────────────────────────────────────
+  it('renders the no-criteria clause when acceptanceCriteria is ABSENT, and NOT when present', () => {
+    const withoutCriteria = composeStageInstruction(
+      taskRecord({ title: 'Bare review task', stage: 'review', projectRoot: '/home/foo' }),
+      SPAWN,
+    );
+    expect(withoutCriteria).toContain(
+      'This task enumerates no acceptance criteria. Derive sensible criteria yourself from the scope and the implementation, and report each one through report_review — mint a short id per criterion so each verdict is keyed.',
+    );
+
+    const withCriteria = composeStageInstruction(populatedReviewTask(), SPAWN);
+    expect(withCriteria).not.toContain('This task enumerates no acceptance criteria.');
+  });
+
+  it('renders the no-criteria clause when acceptanceCriteria is an EMPTY array too', () => {
+    const instruction = composeStageInstruction(populatedReviewTask({ acceptanceCriteria: [] }), SPAWN);
+    expect(instruction).toContain('This task enumerates no acceptance criteria.');
   });
 });
 
@@ -821,14 +786,11 @@ describe('composeStageInstruction — fix-seed (S7·7b)', () => {
       worklog: FIX_WORKLOG,
     });
     expect(instruction).toBe(
-      `You are a worker session that VIMES dispatched to implement one task. This is
-real work. The plan below has already been reviewed and approved — carry it out;
-do not re-plan it.
+      `You are a worker session that VIMES dispatched to implement one task. This is real work. The plan below has already been reviewed and approved — carry it out; do not re-plan it.
 
   Task:      Fix the widget
   Stage:     implementing
-  Directory: /home/foo — work in this directory; do not guess or invent a
-             different path name.
+  Directory: /home/foo — work in this directory; do not guess or invent a different path name.
 
 Scope — what this task is:
 Make the widget do the thing.
@@ -848,20 +810,14 @@ The approved plan:
 Step 1. Do the thing.
 Step 2. Verify.
 
-This is a FIX. A previous attempt at this task was implemented and then FAILED an
-independent review. You did not write that attempt — but its changes are ALREADY
-ON DISK in the directory above. Read them first (\`git diff\`, and \`git status\` for
-new files) so you are correcting existing work rather than starting over on top of
-it.
+This is a FIX. A previous attempt at this task was implemented and then FAILED an independent review. You did not write that attempt — but its changes are ALREADY ON DISK in the directory above. Read them first (\`git diff\`, and \`git status\` for new files) so you are correcting existing work rather than starting over on top of it.
 
 The review's verdict on that attempt — every FAIL is your job:
   - [ac-2] FAIL — two tests still red
   - [ac-3] FAIL
   - [ac-1] PASS — the widget works now
 
-The previous attempt's own worklog — do NOT re-explore what it already
-rejected. If you think a rejected path is right after all, say so in your report
-rather than quietly retrying it.
+The previous attempt's own worklog — do NOT re-explore what it already rejected. If you think a rejected path is right after all, say so in your report rather than quietly retrying it.
 
 Decisions made:
   - reused the existing helper rather than a new one
@@ -870,15 +826,9 @@ Paths rejected:
   - a bespoke parser — too slow
   - patching the caller — wrong layer
 
-Implement the plan, staying within scope. If a message arrives while you're
-working, it's a human steering you mid-run — read it and adjust. It's a
-correction to THIS task, not a new task.
+Implement the plan, staying within scope. If a message arrives while you're working, it's a human steering you mid-run — read it and adjust. It's a correction to THIS task, not a new task.
 
-When the work is done, report it using the report_completion tool — a worklog with
-decisionsMade (the calls you made and why) and pathsRejected (dead ends you tried
-or considered and abandoned; the next attempt must not re-explore them). That
-report is how you finish and is your ENTIRE deliverable: VIMES records it and moves
-the task to review. You do not advance the task yourself.`,
+When the work is done, report it using the report_completion tool — a worklog with decisionsMade (the calls you made and why) and pathsRejected (dead ends you tried or considered and abandoned; the next attempt must not re-explore them). That report is how you finish and is your ENTIRE deliverable: VIMES records it and moves the task to review. You do not advance the task yourself.`,
     );
   });
 
@@ -887,7 +837,7 @@ the task to review. You do not advance the task yourself.`,
       plan: PLAN_BLOB,
       reviewFeedback: FIX_FEEDBACK,
     });
-    expect(instruction).toContain('its changes are ALREADY\nON DISK in the directory above');
+    expect(instruction).toContain('its changes are ALREADY ON DISK in the directory above');
     expect(instruction).toContain('`git diff`');
     // The refinement, stated negatively: no diff SECTION exists to inline into.
     expect(instruction).not.toContain('The previous diff:');

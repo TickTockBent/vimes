@@ -1,6 +1,7 @@
 import type { Context, Hono } from 'hono';
 import { z } from 'zod';
 import {
+  shouldDispatchOnTransition,
   taskStageEdgesRecord,
   type TaskRecord,
   type TaskStage,
@@ -62,7 +63,21 @@ export interface CreateTaskResponse {
   task: TaskRecord;
 }
 export type ProposeTransitionResponse =
-  | { accepted: true; task: TaskRecord }
+  | {
+      accepted: true;
+      task: TaskRecord;
+      // ── S7·7c: THE DISPATCH-ON-PROMOTION RIDER (D53), OPTIONAL ON PURPOSE ─────
+      //
+      // Present ONLY when the accepted edge was a PROMOTION INTO AN ACTIVE STAGE
+      // and the route therefore made one dispatch attempt. On every other accepted
+      // transition — an outcome edge, a move into a non-active stage — the key is
+      // ABSENT, not `undefined`, so those envelopes stay byte-identical to what
+      // they were before this unit and no existing client sees a new field.
+      //
+      // It carries the dispatcher's own result VERBATIM, whatever it says. See the
+      // route for why a `refused` / `spawn-failed` dispatch still rides a 200.
+      dispatch?: DispatchAttemptResult;
+    }
   | { accepted: false; reason: TransitionRejectionReason };
 export interface DispatchResponse {
   result: DispatchAttemptResult;
@@ -399,6 +414,34 @@ export function registerTaskApi(app: Hono, deps: TaskApiDeps): void {
   //     that evented would put proposals in the log that were never made.
   //   • **404 = "no such task"**, nothing in the log — fabricating a rejection for
   //     a taskId no `task_created` introduced would put a phantom task there.
+  //
+  // ── S7·7c: THIS ROUTE NOW PERFORMS AT MOST ONE DISPATCH ATTEMPT (D53) ────────
+  //
+  // D53's third category — *dispatch is MECHANICS* — says entering an ACTIVE stage
+  // starts the work: *"Why would you move it to Implementing and NOT want it to
+  // begin implementation? The promotion should be the decision."* So an ACCEPTED
+  // transition that `shouldDispatchOnTransition` calls a promotion into `planning`
+  // or `implementing` is followed by ONE `deps.dispatchTask` call, and the result
+  // rides the 200 as an optional `dispatch` field.
+  //
+  // ⚠ THE ROUTE STILL DECIDES NOTHING (principle 10, and the file header above).
+  // The predicate is core's, imported not re-derived; the attempt is the
+  // dispatcher's; this handler only sequences the two and reports what came back.
+  //
+  // Boundaries, stated so none of them is re-litigated by accident:
+  //   • **AT MOST ONE ATTEMPT, and no loop or retry** — a rejected transition
+  //     attempts nothing, and an accepted one attempts exactly once. The dispatch
+  //     route's own "one request, one attempt" contract below is UNCHANGED; this
+  //     is a second caller of the same narrow function, not a second policy.
+  //   • **CREATION NEVER AUTO-DISPATCHES.** `POST /api/tasks` with
+  //     `stage: 'planning'` writes a birth record and stops. A birth record is not
+  //     a promotion — nobody decided anything by writing one — and transitions are
+  //     the only movement D53 gave to mechanics.
+  //   • **REVIEW IS A HOLDING PEN**, so entering it starts nothing, and an OUTCOME
+  //     edge (`proposedBy: 'dispatcher'` — a reported plan, completion or verdict)
+  //     starts nothing either. The verdict bounce `review → implementing` therefore
+  //     lands UN-dispatched; starting the fixer is the orchestrator's explicit
+  //     `POST /api/tasks/:taskId/dispatch`. No chaining, anywhere.
   app.post('/api/tasks/:taskId/transitions', async (context) => {
     const parsedBody = await parseJsonBody(context.req.raw, proposeTransitionBodySchema);
     if (!parsedBody.ok) {
@@ -431,7 +474,34 @@ export function registerTaskApi(app: Hono, deps: TaskApiDeps): void {
           return context.json(response, 409);
         }
         case 'accepted': {
-          const response: ProposeTransitionResponse = { accepted: true, task: result.task };
+          // ⚠ READ `result.task.stage`, NOT `proposal.toStage`. The recorded edge is
+          // the edge THE MACHINE ACCEPTED; the proposal is only what was asked for,
+          // and it crossed the wire as an unvalidated string (see the cast above).
+          // Asking the predicate about the proposal would be asking about a stage
+          // the task may not be in.
+          const dispatch = shouldDispatchOnTransition({
+            toStage: result.task.stage,
+            proposedBy: proposal.proposedBy,
+          })
+            ? await deps.dispatchTask(context.req.param('taskId'))
+            : undefined;
+          // ⚠ **EVERY DISPATCH OUTCOME RIDES THE 200 VERBATIM** — `refused`,
+          // `deferred`, `spawn-failed`, `worktree-failed`, `in-flight`, and even
+          // `unknown-task` (unreachable here, since the task just transitioned, but
+          // carried honestly rather than translated if it ever appears). Two facts
+          // happened and both are reported: **the transition was ACCEPTED and is in
+          // the log**, and the dispatch attempt did whatever it did. Turning a
+          // refused dispatch into a 4xx would retroactively deny an accepted, evented
+          // transition, and would push clients toward retry machinery for what is
+          // really "here is what happened" — the same rationale the dispatch route
+          // below states for its own 200-with-the-envelope convention.
+          const response: ProposeTransitionResponse = {
+            accepted: true,
+            task: result.task,
+            // Spread rather than set: ABSENT stays absent on a non-promoting
+            // transition, so its envelope is byte-identical to the pre-S7·7c one.
+            ...(dispatch === undefined ? {} : { dispatch }),
+          };
           return context.json(response, 200);
         }
       }

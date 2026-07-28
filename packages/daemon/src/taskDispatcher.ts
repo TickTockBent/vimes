@@ -39,8 +39,19 @@ import type { WorktreeManager } from './worktreeManager.js';
 // `decideDispatch` instead — a second decider is a second authority (principle
 // 10), and I10 stops being assertable headlessly the moment one exists.
 //
+// ⚠ **ONE DELIBERATE EXCEPTION TO THAT RULE, ADDED BY S7·7c: the in-flight lock**
+// (`inFlightDispatches`, D54). It is an `if` that changes whether something
+// spawns, and it stays HERE rather than moving into `decideDispatch`, because
+// in-flight-ness is PROCESS STATE — a set of live promises inside one daemon —
+// not projection state. `decideDispatch` is pure and replayable from the log;
+// "another call is halfway through its `await` right now" is not a fact the log
+// contains and never will be. It is execution-level in exactly the way the
+// worktree failure is, which is why it returns an EXECUTION outcome rather than
+// a `DispatchRefuseReason`.
+//
 // ⚠ NO TIMER. NO SCHEDULING LOOP. `dispatchTask` is called explicitly — by tests
-// today, by the task API (step 4b) or a scheduler later. Scheduling policy, and
+// today, by the task API (step 4b, and since S7·7c by the transitions route as
+// D53's dispatch-on-promotion rider) or a scheduler later. Scheduling policy, and
 // the event-spam question that arrives with a polling loop, is deliberately out
 // of this unit. Nothing in this file subscribes to anything or sets an interval.
 
@@ -240,32 +251,22 @@ export type StageInstructionDelivery =
 // records — and the log would then claim the dispatcher refused work it actually
 // attempted.
 //
-// ⚠ STEP 7 ADDED TWO EXECUTION OUTCOMES, `resumed` and `resume-failed`, as SIBLINGS
-// of `spawned` / `spawn-failed` rather than as a flag on them. A caller reading the
-// log or the API envelope must be able to tell "a fresh stranger started this
-// stage" from "the hot author picked it back up" without decoding a boolean.
-//
-// ⚠⚠ **AS OF S7·7b (D46) NOTHING PRODUCES EITHER OF THEM. THEY ARE DECLARED-BUT-
-// UNREACHABLE, AND THAT IS A DELIBERATE, RECORDED PAUSE — NOT AN OVERSIGHT.**
-// D46 removed the dispatcher's resume path (`resumeStageRun`, below the spawn
-// path, is gone), so no code in this class can return these two variants any more.
-// They were NOT deleted with it, because they are consumed OUTSIDE this module and
-// outside its tests, by surfaces this unit was scoped away from:
-//
-//   • `packages/ui/src/lib/taskBoard.ts` — `case 'resumed':` and
-//     `case 'resume-failed':` in `describeDispatchResponse`, each with its own
-//     operator-facing headline;
-//   • `packages/ui/src/lib/dispatchFollow.ts` — `sessionToSubscribeAfterDispatch`
-//     documents `resumed` as the one outcome that carries an appSessionId WITHOUT
-//     being a new session, which is why it is excluded there;
-//   • the tests of both.
-//
-// Those consumers read the outcome as an UNTYPED STRING off the HTTP envelope, so
-// deleting the variants here would NOT redden the build — it would silently leave
-// the board carrying two branches that can never fire. Removing them is therefore a
-// UI unit with its own diff, not a side effect of this one. Until that lands, the
-// honest state is: the API can no longer emit these, the board can still describe
-// them, and this comment is the bridge between those two facts.
+// ⚠ S7·7e — `resumed` AND `resume-failed` ARE GONE, AS FORETOLD. Step 7 added
+// them as EXECUTION-outcome siblings of `spawned` / `spawn-failed` (not a flag on
+// them) so a caller could tell "a fresh stranger started this stage" from "the hot
+// author picked it back up" without decoding a boolean. D46 (S7·7b) then removed
+// the dispatcher's resume path entirely (`resumeStageRun`, which stood below the
+// spawn path, is gone), which made both variants declared-but-unreachable — kept
+// on purpose, at the time, because their consumers lived outside this module and
+// outside its tests: `packages/ui/src/lib/taskBoard.ts`'s `describeDispatchResponse`
+// (a `case 'resumed':` and a `case 'resume-failed':`, each with its own headline)
+// and `packages/ui/src/lib/dispatchFollow.ts`'s `sessionToSubscribeAfterDispatch`
+// (which named `resumed` as the one outcome deliberately excluded despite carrying
+// an appSessionId). This unit is that promised UI-inclusive removal: both switch
+// cases, both mentions in dispatchFollow's comments, and their tests are gone or
+// repointed to pin the honest default-branch degrade for the now-retired strings.
+// Type-only change here — nothing in this class could ever construct either
+// variant, so no runtime behaviour moves with this edit.
 export type DispatchAttemptResult =
   | {
       readonly outcome: 'spawned';
@@ -274,18 +275,6 @@ export type DispatchAttemptResult =
       readonly appSessionId: string;
       readonly cwd: string;
       // Absent unless an instruction was composed — see the seam above.
-      readonly instructionDelivery?: StageInstructionDelivery;
-    }
-  | {
-      // THE FIX LOOP RAN: this stage was picked up by the session that authored
-      // the work, not by a new one. No `cwd` field, deliberately — the resumed
-      // session keeps its own recorded working directory and the dispatcher never
-      // chose one, so reporting a resolved path here would be a fabricated fact.
-      // ⚠ UNREACHABLE SINCE D46 — see the note above the union.
-      readonly outcome: 'resumed';
-      readonly taskId: string;
-      readonly stage: string;
-      readonly appSessionId: string;
       readonly instructionDelivery?: StageInstructionDelivery;
     }
   | {
@@ -302,22 +291,6 @@ export type DispatchAttemptResult =
   | {
       readonly outcome: 'spawn-failed';
       readonly taskId: string;
-      // The session host's own refusal reason, verbatim. NOT a DispatchRefuseReason.
-      readonly reason: string;
-    }
-  | {
-      // A refused resume is an EXECUTION outcome, exactly like `spawn-failed`, and
-      // for exactly the same reason: the DECISION was to run this stage, we tried,
-      // and the host did not produce a live session. It invents no
-      // `DispatchRefuseReason` — putting it in the decision enum would make
-      // `dispatch_refused` claim the dispatcher refused work it actually attempted.
-      // Its own outcome rather than a shared `spawn-failed` so a reader can see
-      // WHICH call failed; the two are not interchangeable in a post-mortem.
-      // ⚠ UNREACHABLE SINCE D46 — see the note above the union.
-      readonly outcome: 'resume-failed';
-      readonly taskId: string;
-      // Which session we tried to bring back — the missing half of a bare reason.
-      readonly appSessionId: string;
       // The session host's own refusal reason, verbatim. NOT a DispatchRefuseReason.
       readonly reason: string;
     }
@@ -344,6 +317,40 @@ export type DispatchAttemptResult =
       // `DispatchRefuseReason`.
       readonly reason: string;
     }
+  | {
+      // ⚠ **S7·7c'S OUTCOME — THE D54 LOCK SPEAKING.** Another `dispatchTask` call
+      // for THIS SAME taskId is already in flight in this process, so this attempt
+      // did nothing at all: no decision was taken, no session spawned, no event
+      // written. Three things about it, each of them a choice:
+      //
+      //   (a) **It is an EXECUTION-vocabulary sibling of `spawn-failed` and
+      //       `worktree-failed`, NOT a `DispatchRefuseReason`.** The decision
+      //       function never saw this attempt — the lock fires ABOVE
+      //       `decideDispatch`, before the meters are even read. Putting it in the
+      //       decision enum would make a `dispatch_refused` record claim the
+      //       dispatcher refused work it never judged, which is a lie in an
+      //       append-only log about the one thing that log is for.
+      //   (b) **It is SILENT — nothing is emitted**, the same rationale as `defer`.
+      //       Nothing happened and nothing changed; the CONCURRENT attempt's own
+      //       result is the record of what this task did. Eventing here would write
+      //       one record per loser of a race — non-events filling the log, which is
+      //       pillar 5 (attention is the scarce resource) losing.
+      //   (c) **It exists because `dispatchTask` went async in step 8**, and D54
+      //       named the window: `already-running` is derived from the task's OWN
+      //       refs against live processes, so it can only fire once
+      //       `task_session_attached` has LANDED. Between `decideDispatch` saying
+      //       spawn and that event being emitted there is an `await` (worktree
+      //       creation is a subprocess), and a second attempt arriving inside it
+      //       used to sail straight through to a second live session on one task.
+      //       That was tolerable while every dispatch was human-clicked; S7·7c makes
+      //       dispatch machine-initiated (D53 promotions), which is exactly the
+      //       sharpening D54 said would arrive.
+      //
+      // ⚠ WHAT IT DOES NOT GUARD: another PROCESS. This is an in-memory set in one
+      // daemon, and there is still no scheduler and no cross-process lease.
+      readonly outcome: 'in-flight';
+      readonly taskId: string;
+    }
   | { readonly outcome: 'unknown-task'; readonly taskId: string };
 
 // What the working-directory resolution produced. The FAILURE arm carries no
@@ -363,6 +370,21 @@ type WorkingDirectoryResolution =
 
 export class TaskDispatcher {
   private readonly deps: TaskDispatcherDeps;
+  // ── S7·7c — THE D54 IN-FLIGHT LOCK: taskIds with a dispatch attempt underway ──
+  //
+  // The only mutable state this class has ever held, and it is deliberately the
+  // smallest possible shape: a set of ids, added on the way in and removed in a
+  // `finally`. It is not a queue (a loser waits for nothing — it returns
+  // `in-flight` immediately), not a lease (nothing expires), and not persisted —
+  // a daemon restart clears it, which is correct, because the promises it was
+  // tracking died with the process.
+  //
+  // ⚠ CORRECTNESS RESTS ON JAVASCRIPT'S SINGLE THREAD. The add is in the
+  // SYNCHRONOUS PREFIX of `dispatchTask`, before its first `await`, so no other
+  // call can interleave between the check and the add. That is the whole
+  // mechanism; anything that moved the add below an `await` would reopen exactly
+  // the window this closes.
+  private readonly inFlightDispatches = new Set<string>();
   private readonly resolveWorkingDirectory: (task: TaskRecord) => string;
   private readonly composeStageInstruction: (
     task: TaskRecord,
@@ -421,13 +443,33 @@ export class TaskDispatcher {
    * byte-identical, and the method is still total (it returns a rejected promise for
    * nothing; every path resolves to a result).
    *
-   * ⚠ **STILL NO CONCURRENCY CONTROL, and that is unchanged rather than overlooked.**
-   * `dispatchTask` is called once per explicit request; two overlapping calls for the
-   * SAME task were already possible before this step and are still handled by
-   * `decideDispatch`'s `already-running` guard plus the session host's own I11
-   * backstop. `ensureWorktree` adds a third: it is idempotent, so a racing pair
-   * converges on one directory rather than two. What no layer has today is a lock —
-   * that is a scheduler's problem, and there is still no scheduler.
+   * ⚠ **THE PER-TASK IN-FLIGHT LOCK (S7·7c, D54) — WHAT IT GUARDS AND WHAT IT DOES
+   * NOT.** The FIRST thing this method does after the unknown-task lookup is claim
+   * `taskId` in `inFlightDispatches`; a second call that arrives while the first is
+   * still running gets `in-flight` and returns without judging, spawning or
+   * emitting anything. The whole remaining body is wrapped in `try/finally` so
+   * EVERY path releases — refuse, defer, spawn, worktree-failed, and a spawn that
+   * threw alike. A lock released on only the happy path is a task that can never be
+   * dispatched again.
+   *
+   *   • **GUARDS: the async window D54 named.** `already-running` is derived from
+   *     the task's own `sessionRefs` against live processes, so it cannot fire until
+   *     `task_session_attached` has LANDED. Since step 8 there is an `await` between
+   *     the decision and that event (worktree creation is a subprocess), and a
+   *     second attempt inside that window used to reach a second spawn — two live
+   *     sessions on one task. Human-clicked dispatch made that rare and visible;
+   *     dispatch-on-promotion (D53, S7·7c) makes it machine-initiated, which is the
+   *     sharpening D54 predicted.
+   *   • **DOES NOT GUARD: another process.** It is an in-memory set in one daemon.
+   *     There is still NO SCHEDULER, no retry, no queue and no cross-process lease;
+   *     a second daemon over the same store would contend exactly as before.
+   *   • **THE POST-ATTACH GUARDS ARE UNCHANGED and still do the other half of the
+   *     job.** Once the attach event has landed, `decideDispatch`'s `already-running`
+   *     refusal covers every later attempt (including one arriving after this
+   *     process restarted), and `SessionHost`'s I11 backstop still refuses a resume
+   *     against a live process on the human's own resume path. `ensureWorktree` is
+   *     idempotent on top of both, so a racing pair converges on one directory.
+   *     The lock closes the gap BETWEEN them; it does not replace either.
    */
   async dispatchTask(taskId: string): Promise<DispatchAttemptResult> {
     const task = this.deps.readTasks().tasks[taskId];
@@ -438,144 +480,188 @@ export class TaskDispatcher {
       return { outcome: 'unknown-task', taskId };
     }
 
-    const decision = decideDispatch({
-      task,
-      meters: this.deps.readMeters(),
-      nowIso: this.deps.nowIso(),
-      staleAfterMs: this.deps.staleAfterMs,
-      hasLiveRun: this.hasLiveRun(task),
-    });
+    // ── THE D54 IN-FLIGHT LOCK (S7·7c) — claimed HERE, released in the `finally` ──
+    //
+    // AFTER the unknown-task lookup, deliberately: a taskId nothing ever created is
+    // not a task to serialise against, and claiming one would leave the set holding
+    // ids that no `task_created` ever introduced. BEFORE the decision, equally
+    // deliberately: the loser of a race must not read the meters, must not judge,
+    // and must not be able to reach any I/O — see the outcome's own note for why it
+    // is an execution fact rather than a `DispatchRefuseReason`.
+    //
+    // SILENT. No event, same rationale as `defer`: nothing happened and nothing
+    // changed, and the concurrent attempt's own result is the record.
+    if (this.inFlightDispatches.has(taskId)) {
+      return { outcome: 'in-flight', taskId };
+    }
+    // The claim is in the SYNCHRONOUS PREFIX — no `await` stands between the check
+    // above and this line, which is the whole of the guarantee on a single thread.
+    this.inFlightDispatches.add(taskId);
+    try {
+      const decision = decideDispatch({
+        task,
+        meters: this.deps.readMeters(),
+        nowIso: this.deps.nowIso(),
+        staleAfterMs: this.deps.staleAfterMs,
+        hasLiveRun: this.hasLiveRun(task),
+      });
 
-    switch (decision.action) {
-      case 'refuse': {
-        // I10's evented refusal. Note what is NOT here: no spawn call above it,
-        // and none below it — the refusal branch returns before any I/O, so the
-        // session host is never reached at all on this path.
-        this.deps.emit([dispatchRefused({ taskId: task.taskId, reason: decision.reason })]);
-        return { outcome: 'refused', taskId: task.taskId, reason: decision.reason };
-      }
+      switch (decision.action) {
+        case 'refuse': {
+          // I10's evented refusal. Note what is NOT here: no spawn call above it,
+          // and none below it — the refusal branch returns before any I/O, so the
+          // session host is never reached at all on this path.
+          this.deps.emit([dispatchRefused({ taskId: task.taskId, reason: decision.reason })]);
+          return { outcome: 'refused', taskId: task.taskId, reason: decision.reason };
+        }
 
-      case 'defer': {
-        // Deliberately silent — see the `defer` note above.
-        return {
-          outcome: 'deferred',
-          taskId: task.taskId,
-          reason: decision.reason,
-          meterId: decision.meterId,
-        };
-      }
+        case 'defer': {
+          // Deliberately silent — see the `defer` note above.
+          return {
+            outcome: 'deferred',
+            taskId: task.taskId,
+            reason: decision.reason,
+            meterId: decision.meterId,
+          };
+        }
 
-      case 'spawn': {
-        // WHETHER is settled (`decideDispatch` said run it). WHO runs it is a
-        // SECOND, separate question, answered by a second pure function — step 7.
-        // Note the shape: `decideDispatch` never sees this, and `resolveStageRunner`
-        // never sees the meters. Neither can drift into the other's job, and I10
-        // stays assertable against the decision function alone.
-        //
-        // ⚠ S7·7b DELETED THE `mode === 'resume'` BRANCH THAT STOOD HERE (D46 — a
-        // recorded reversal). It read "THE FIX LOOP. The task came back down
-        // `review → implementing`, so the work has an author and the author is
-        // cache-warm" and routed to `resumeStageRun`. `resolveStageRunner` no longer
-        // has a second mode to return, so there is nothing left to branch on and the
-        // spawn path below is the whole of the answer. A fix carries its context in
-        // the FIX-SEED instead (see `deliverStageInstruction`).
-        const runnerPlan = resolveStageRunner(task);
-        // WHERE it runs. Under the flag this may create a git worktree, which is
-        // why the whole method is async.
-        const workingDirectory = await this.resolveSpawnWorkingDirectory(task);
-        if (!workingDirectory.ok) {
-          // ⚠ **NO FALLBACK. NO SPAWN. NO EVENT.** The task asked to be isolated and
-          // it could not be; running it in the shared project root anyway would be
-          // the concurrency hazard isolation exists to remove, and the log would show
-          // an ordinary successful dispatch. So nothing runs, and the failure is
-          // reported to the caller as a first-class outcome.
+        case 'spawn': {
+          // WHETHER is settled (`decideDispatch` said run it). WHO runs it is a
+          // SECOND, separate question, answered by a second pure function — step 7.
+          // Note the shape: `decideDispatch` never sees this, and `resolveStageRunner`
+          // never sees the meters. Neither can drift into the other's job, and I10
+          // stays assertable against the decision function alone.
           //
-          // Nothing is emitted here on purpose, matching `spawn-failed`: no session
-          // exists to attach, and no `dispatch_refused` is invented because that enum
-          // is the DECISION vocabulary and this decision was `spawn`. The failure is
-          // in the RESULT, which the API returns verbatim.
+          // ⚠ S7·7b DELETED THE `mode === 'resume'` BRANCH THAT STOOD HERE (D46 — a
+          // recorded reversal). It read "THE FIX LOOP. The task came back down
+          // `review → implementing`, so the work has an author and the author is
+          // cache-warm" and routed to `resumeStageRun`. `resolveStageRunner` no longer
+          // has a second mode to return, so there is nothing left to branch on and the
+          // spawn path below is the whole of the answer. A fix carries its context in
+          // the FIX-SEED instead (see `deliverStageInstruction`).
+          const runnerPlan = resolveStageRunner(task);
+          // WHERE it runs. Under the flag this may create a git worktree, which is
+          // why the whole method is async.
+          const workingDirectory = await this.resolveSpawnWorkingDirectory(task);
+          if (!workingDirectory.ok) {
+            // ⚠ **NO FALLBACK. NO SPAWN. NO EVENT.** The task asked to be isolated and
+            // it could not be; running it in the shared project root anyway would be
+            // the concurrency hazard isolation exists to remove, and the log would show
+            // an ordinary successful dispatch. So nothing runs, and the failure is
+            // reported to the caller as a first-class outcome.
+            //
+            // Nothing is emitted here on purpose, matching `spawn-failed`: no session
+            // exists to attach, and no `dispatch_refused` is invented because that enum
+            // is the DECISION vocabulary and this decision was `spawn`. The failure is
+            // in the RESULT, which the API returns verbatim.
+            return {
+              outcome: 'worktree-failed',
+              taskId: task.taskId,
+              reason: workingDirectory.reason,
+            };
+          }
+          const cwd = workingDirectory.cwd;
+          if (workingDirectory.worktreeEvent !== undefined) {
+            // BEFORE the spawn, deliberately. The directory exists at this point and
+            // the session does not; recording it after the spawn would leave a window
+            // in which an agent is running somewhere the log has never mentioned.
+            this.deps.emit([workingDirectory.worktreeEvent]);
+          }
+          // Stage runs are ORDINARY SESSIONS (spec §3.5) on the 'sdk' channel:
+          // everything slices 1–5b built — stream, diff, cost, resume, attention —
+          // applies to a stage run for free. There is no parallel session concept.
+          //
+          // KNOWN GAP, recorded rather than hidden: `spawnSession` writes
+          // `taskRef: null` into `session_created`, and sessionHost.ts is frozen for
+          // this step, so the session→task backlink does not exist yet. The link
+          // lives ONLY on the task side, in the `task_session_attached` below.
+          // D48: the PLANNING stage runs write-blocked in permissionMode 'plan' so
+          // the planner produces a plan rather than doing the work; the SDK adapter
+          // intercepts its ExitPlanMode and hands the plan to `recordPlan` (S7·5b-ii).
+          // Every other stage spawns in the default mode — the key is added ONLY for
+          // planning, keeping the non-planning spawn options byte-identical.
+          // D50: EVERY dispatched task session is `dispatched: true` — the SDK adapter
+          // then clamps it to the closed tool allowlist (no sub-agent spawns) and
+          // auto-denies AskUserQuestion (no human to answer it). The planning branch
+          // also runs write-blocked in permissionMode 'plan' (D48); every other
+          // dispatched stage runs permissionMode 'auto' (Anthropic's server-side
+          // classifier — no per-tool gate; the PreToolUse hard-deny boundary hook is
+          // a separate follow-up unit, not yet in place).
+          // S7·7d: BOTH branches name the stage, because the host uses it to decide
+          // WHICH report tool this session is offered (`report_completion` for
+          // implementing, `report_review` for review, neither for planning). It is
+          // not a branch discriminator here — it is the same fact both branches
+          // already have, now travelling to the one place that needs it.
+          const spawnOptions =
+            decision.stage === 'planning'
+              ? {
+                  channel: 'sdk' as const,
+                  cwd,
+                  dispatched: true as const,
+                  permissionMode: 'plan' as const,
+                  stage: decision.stage,
+                }
+              : {
+                  channel: 'sdk' as const,
+                  cwd,
+                  dispatched: true as const,
+                  permissionMode: 'auto' as const,
+                  stage: decision.stage,
+                };
+          let spawnResult;
+          try {
+            spawnResult = this.deps.sessionHost.spawnSession(spawnOptions);
+          } catch (spawnError) {
+            // The host's contract is to refuse rather than throw, but a dispatcher
+            // must survive its adapters regardless.
+            return {
+              outcome: 'spawn-failed',
+              taskId: task.taskId,
+              reason: `spawn-threw:${describeThrown(spawnError)}`,
+            };
+          }
+          if ('refused' in spawnResult) {
+            // The spawn did not yield a session (preflight, typically). NO
+            // `task_session_attached` — there is no session to attach — and NO
+            // `dispatch_refused`, on two counts: this was an execution failure
+            // rather than a decision (see the vocabulary note above), and the
+            // session host ALREADY evented its own refusal. Recording it again here
+            // would double-count one failure as two facts in the log.
+            return { outcome: 'spawn-failed', taskId: task.taskId, reason: spawnResult.reason };
+          }
+          this.deps.emit([
+            taskSessionAttached({
+              taskId: task.taskId,
+              stage: decision.stage,
+              appSessionId: spawnResult.appSessionId,
+            }),
+          ]);
+          const instructionDelivery = this.deliverStageInstruction(
+            task,
+            runnerPlan,
+            spawnResult.appSessionId,
+          );
           return {
-            outcome: 'worktree-failed',
-            taskId: task.taskId,
-            reason: workingDirectory.reason,
-          };
-        }
-        const cwd = workingDirectory.cwd;
-        if (workingDirectory.worktreeEvent !== undefined) {
-          // BEFORE the spawn, deliberately. The directory exists at this point and
-          // the session does not; recording it after the spawn would leave a window
-          // in which an agent is running somewhere the log has never mentioned.
-          this.deps.emit([workingDirectory.worktreeEvent]);
-        }
-        // Stage runs are ORDINARY SESSIONS (spec §3.5) on the 'sdk' channel:
-        // everything slices 1–5b built — stream, diff, cost, resume, attention —
-        // applies to a stage run for free. There is no parallel session concept.
-        //
-        // KNOWN GAP, recorded rather than hidden: `spawnSession` writes
-        // `taskRef: null` into `session_created`, and sessionHost.ts is frozen for
-        // this step, so the session→task backlink does not exist yet. The link
-        // lives ONLY on the task side, in the `task_session_attached` below.
-        // D48: the PLANNING stage runs write-blocked in permissionMode 'plan' so
-        // the planner produces a plan rather than doing the work; the SDK adapter
-        // intercepts its ExitPlanMode and hands the plan to `recordPlan` (S7·5b-ii).
-        // Every other stage spawns in the default mode — the key is added ONLY for
-        // planning, keeping the non-planning spawn options byte-identical.
-        // D50: EVERY dispatched task session is `dispatched: true` — the SDK adapter
-        // then clamps it to the closed tool allowlist (no sub-agent spawns) and
-        // auto-denies AskUserQuestion (no human to answer it). The planning branch
-        // also runs write-blocked in permissionMode 'plan' (D48); every other
-        // dispatched stage runs permissionMode 'auto' (Anthropic's server-side
-        // classifier — no per-tool gate; the PreToolUse hard-deny boundary hook is
-        // a separate follow-up unit, not yet in place).
-        const spawnOptions =
-          decision.stage === 'planning'
-            ? { channel: 'sdk' as const, cwd, dispatched: true as const, permissionMode: 'plan' as const }
-            : { channel: 'sdk' as const, cwd, dispatched: true as const, permissionMode: 'auto' as const };
-        let spawnResult;
-        try {
-          spawnResult = this.deps.sessionHost.spawnSession(spawnOptions);
-        } catch (spawnError) {
-          // The host's contract is to refuse rather than throw, but a dispatcher
-          // must survive its adapters regardless.
-          return {
-            outcome: 'spawn-failed',
-            taskId: task.taskId,
-            reason: `spawn-threw:${describeThrown(spawnError)}`,
-          };
-        }
-        if ('refused' in spawnResult) {
-          // The spawn did not yield a session (preflight, typically). NO
-          // `task_session_attached` — there is no session to attach — and NO
-          // `dispatch_refused`, on two counts: this was an execution failure
-          // rather than a decision (see the vocabulary note above), and the
-          // session host ALREADY evented its own refusal. Recording it again here
-          // would double-count one failure as two facts in the log.
-          return { outcome: 'spawn-failed', taskId: task.taskId, reason: spawnResult.reason };
-        }
-        this.deps.emit([
-          taskSessionAttached({
+            outcome: 'spawned',
             taskId: task.taskId,
             stage: decision.stage,
             appSessionId: spawnResult.appSessionId,
-          }),
-        ]);
-        const instructionDelivery = this.deliverStageInstruction(
-          task,
-          runnerPlan,
-          spawnResult.appSessionId,
-        );
-        return {
-          outcome: 'spawned',
-          taskId: task.taskId,
-          stage: decision.stage,
-          appSessionId: spawnResult.appSessionId,
-          cwd,
-          // Spread rather than set: under the default seam the key is ABSENT, so
-          // the result is byte-identical to step 4a's and every prior assertion
-          // (and the `/api/tasks/:id/dispatch` envelope) is untouched.
-          ...(instructionDelivery === undefined ? {} : { instructionDelivery }),
-        };
+            cwd,
+            // Spread rather than set: under the default seam the key is ABSENT, so
+            // the result is byte-identical to step 4a's and every prior assertion
+            // (and the `/api/tasks/:id/dispatch` envelope) is untouched.
+            ...(instructionDelivery === undefined ? {} : { instructionDelivery }),
+          };
+        }
       }
+    } finally {
+      // ⚠ EVERY PATH RELEASES — refused, deferred, spawned, worktree-failed, and a
+      // spawn that THREW alike. A `finally` rather than a delete before each return
+      // precisely because the throwing path is the one a hand-placed release
+      // forgets, and a task whose id is never released is a task that can never be
+      // dispatched again for the life of the process — a silent, permanent stall
+      // that would look exactly like "the orchestrator stopped promoting things".
+      this.inFlightDispatches.delete(taskId);
     }
   }
 
