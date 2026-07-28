@@ -463,6 +463,51 @@ once) + liveness chip + short-id link via the same S9 `buildHash` affordance.
 Suite 2614 green; orchestrator sabotage (attempt counter pinned to 1) reddened
 exactly the two attempt-measuring tests.
 
+### ✅ THE BOUNCE-PATH LIVE TEST — 2026-07-28 evening (task `2f83c29a`, johnny `count()`)
+
+**The full loop including the fix leg is now LIVE-VERIFIED — every stage
+movement the task machine defines has run against real work.** One evening, one
+real feature (johnny's `count()`, a genuine follow-up to `list()`), five
+sessions, five human clicks, **zero permission gates across all five sessions**.
+
+The observed run (all times from the event log, UTC):
+- `22:18:06.329` backlog→planning (human) → planner attached **+95ms**
+  (`bd27d50b`) — **S7·7c dispatch-on-promotion, first live firing.** Briefing
+  went out in clean unwrapped prose (S7·7f live).
+- `22:22:01` plan captured (10.9KB) → plan-ready (+2ms). **0 gates — D55
+  live-verified**: the planner had NO report tools to call (last run's spurious
+  gate is structurally gone); it ended via ExitPlanMode alone. The plan
+  investigated and OVERRODE the work-order's suggested mechanism with evidence
+  (Prisma count delegate can't express the filters; reuse
+  `buildFilterConditions()`), and explicitly checked the kill criterion.
+- `22:54:03` plan-ready→implementing (human) → implementer attached **+87ms**,
+  full plan inline. `22:58:18` `report_completion` (~4 min): all 9 files, both
+  test suites, docker-postgres integration run included → review (+5ms).
+- **The holding pen earned its name**: orchestrator inspected on the pause,
+  found ALL six criteria genuinely met (independently re-ran the unit suite),
+  and seeded the planned perturbation — reverted the CHANGELOG entry, leaving
+  the worklog and the `0.5.0` bump *claiming* what disk lacked.
+- `23:17:51` reviewer #1 (`83b541be`, explicit dispatch): **5 PASS / 1 FAIL**,
+  the FAIL note exactly honest ("grep for 'count' returns nothing"); one PASS
+  honestly caveated (integration not executable — no DB up — judged by
+  reading). → **auto-bounce review→implementing (+5ms), landing UN-DISPATCHED**
+  — D53's no-chaining rule observed working.
+- `23:29:25` Wes's explicit Dispatch = the fix decision → fixer (`96f12166`)
+  got the **first live FIX-SEED briefing**: FIX preamble, FAIL-first verdict
+  block with real criterion UUIDs, the prior worklog (claiming the entry disk
+  lacked — the disk-vs-memory tension by design), the `git diff` pointer.
+- **The fixer was textbook, 42 seconds**: FIRST action `git status`/`git diff`
+  (trusted disk over the worklog, per the preamble); touched ONLY the FAIL
+  ("re-doing them risked regressions"); resolved the plan's version-heading
+  either/or by checking `git diff package.json`; re-verified proportionally
+  (build + 136 unit; consciously skipped integration with a stated reason).
+- `23:41:45` reviewer #2 (`a7bedea9`): **6/6 PASS → done (+2ms).**
+
+Also proven en route: the session trail (S7·7g) accumulated the full history
+(planning ×1, implementing ×2, review ×2) on the live card. Johnny's `count()`
+change sits COMPLETE and UNCOMMITTED in `~/projects/infrastructure/johnny`
+(version bumped 0.5.0) — publishing it is Wes's call.
+
 ### S7·8 — The two-door board UX — `sonnet` *(UI-only)*
 - **Scope:** steer (same rev, new attempt) vs amend (new rev) as a **labeled, visible**
   choice (T7's lesson: the doors weren't labeled).
