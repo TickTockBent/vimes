@@ -12,6 +12,7 @@ import {
   findTaskCard,
   groupTasksForBoard,
   moveOptionsFor,
+  sessionTrailOf,
   shortTaskId,
   stageKind,
   stageLabel,
@@ -532,12 +533,11 @@ describe('describeDispatchResponse — every honest outcome, distinctly', () => 
   it('renders each outcome with its OWN headline and tone', () => {
     const reports = [
       dispatch({ outcome: 'spawned', appSessionId: SESSION_ONE, cwd: '/home/user/projects/vimes' }),
-      dispatch({ outcome: 'resumed', appSessionId: SESSION_ONE }),
       dispatch({ outcome: 'deferred', reason: 'awaiting-meter-reset', meterId: 'window-5h' }),
       dispatch({ outcome: 'refused', reason: 'already-running' }),
       dispatch({ outcome: 'spawn-failed', reason: 'the host said no' }),
-      dispatch({ outcome: 'resume-failed', reason: 'no such transcript', appSessionId: SESSION_ONE }),
       dispatch({ outcome: 'worktree-failed', reason: 'worktree-create-failed: fatal: ...' }),
+      dispatch({ outcome: 'in-flight' }),
     ];
     const headlines = reports.map((report) => report.headline);
     expect(new Set(headlines).size, 'two outcomes share a headline').toBe(headlines.length);
@@ -608,6 +608,17 @@ describe('describeDispatchResponse — every honest outcome, distinctly', () => 
     expect(report.tone).toBe('failed');
   });
 
+  it('IN-FLIGHT (D54\'s per-task lock) reads as waiting, not refused or failed', () => {
+    // A losing attempt was never judged — nothing was denied and nothing
+    // failed, the concurrent winner's own result is the record. Exactly the
+    // same tone rationale as `deferred`.
+    const report = dispatch({ outcome: 'in-flight' });
+    expect(report.tone).toBe('waiting');
+    expect(report.headline.toLowerCase()).toContain('already in flight');
+    expect(report.detail?.toLowerCase()).toContain('nothing was attempted');
+    expect(report.idleNote).toBeNull();
+  });
+
   it('SPAWNED says plainly that the session was told NOTHING (step 7’s open seam)', () => {
     // `composeStageInstruction` defaults to sending nothing, so a dispatched
     // session spawns and sits idle. Saying so is the difference between "this is
@@ -631,8 +642,9 @@ describe('describeDispatchResponse — every honest outcome, distinctly', () => 
 
   it('an UNDELIVERED instruction is its own third state, not silence', () => {
     const report = dispatch({
-      outcome: 'resumed',
+      outcome: 'spawned',
       appSessionId: SESSION_ONE,
+      cwd: '/x',
       instructionDelivery: { status: 'not-delivered', reason: 'session busy' },
     });
     expect(report.idleNote).toContain('NOT delivered');
@@ -662,6 +674,21 @@ describe('describeDispatchResponse — every honest outcome, distinctly', () => 
     expect(describeDispatchResponse(200, { result: { outcome: 'teleported' } }).headline).toContain(
       'teleported',
     );
+  });
+
+  it('S7·7e — the RETIRED `resumed` / `resume-failed` vocabulary pins the honest degrade', () => {
+    // D46 removed the daemon's resume path months before this unit landed, and
+    // this unit deleted the two switch cases that used to read these strings
+    // (taskDispatcher.ts's union variants went with them). Neither string can
+    // arrive from the daemon any more, but IF one somehow did — an old client,
+    // a hand-crafted request — it must fall to the SAME honest "unrecognised"
+    // default any other unknown string gets, never quietly rendered as a live
+    // outcome again.
+    for (const outcome of ['resumed', 'resume-failed']) {
+      const report = dispatch({ outcome, appSessionId: SESSION_ONE });
+      expect(report.tone, outcome).toBe('unknown');
+      expect(report.headline, outcome).toContain(outcome);
+    }
   });
 });
 
@@ -791,5 +818,96 @@ describe('groupTasksForBoard — hostile input never throws and never drops a ta
     for (const card of allCards) {
       expect(card.label.length, card.taskId).toBeGreaterThan(0);
     }
+  });
+});
+
+// ── ASSERTION 9: `sessionTrailOf` — `latestSessionOf`'s sibling, the WHOLE
+// history rather than just the badge (S7·7g) ────────────────────────────────
+
+describe('sessionTrailOf — the task’s full session history, oldest first', () => {
+  const SESSION_PLANNING = 'dddddddd-1111-4000-8000-000000000011';
+  const SESSION_IMPL_ONE = 'dddddddd-2222-4000-8000-000000000012';
+  const SESSION_REVIEW_ONE = 'dddddddd-3333-4000-8000-000000000013';
+  const SESSION_IMPL_TWO = 'dddddddd-4444-4000-8000-000000000014';
+  const SESSION_REVIEW_TWO = 'dddddddd-5555-4000-8000-000000000015';
+
+  it('walks a multi-stage history FORWARDS, numbering attempts per stage', () => {
+    const task = taskRecord({
+      sessionRefs: [
+        { stage: 'planning', appSessionId: SESSION_PLANNING },
+        { stage: 'implementing', appSessionId: SESSION_IMPL_ONE },
+        { stage: 'review', appSessionId: SESSION_REVIEW_ONE },
+        { stage: 'implementing', appSessionId: SESSION_IMPL_TWO },
+        { stage: 'review', appSessionId: SESSION_REVIEW_TWO },
+      ],
+    }) as never;
+
+    const trail = sessionTrailOf(task, {});
+
+    expect(trail).toEqual([
+      { appSessionId: SESSION_PLANNING, stage: 'planning', attempt: 1, liveness: null },
+      { appSessionId: SESSION_IMPL_ONE, stage: 'implementing', attempt: 1, liveness: null },
+      { appSessionId: SESSION_REVIEW_ONE, stage: 'review', attempt: 1, liveness: null },
+      { appSessionId: SESSION_IMPL_TWO, stage: 'implementing', attempt: 2, liveness: null },
+      { appSessionId: SESSION_REVIEW_TWO, stage: 'review', attempt: 2, liveness: null },
+    ]);
+  });
+
+  it('skips a malformed entry (no usable appSessionId) without throwing and without counting it', () => {
+    const task = taskRecord({
+      sessionRefs: [
+        { stage: 'planning', appSessionId: SESSION_PLANNING },
+        null,
+        { appSessionId: 7 },
+        {},
+        { stage: 'planning' },
+      ],
+    }) as never;
+
+    const trail = sessionTrailOf(task, {});
+
+    // Only the one usable ref survives — none of the malformed siblings bump
+    // its attempt number, because none of them was ever counted.
+    expect(trail).toEqual([
+      { appSessionId: SESSION_PLANNING, stage: 'planning', attempt: 1, liveness: null },
+    ]);
+  });
+
+  it('keeps a usable id with a malformed stage — stage: "", not dropped, not guessed', () => {
+    const task = taskRecord({
+      sessionRefs: [{ appSessionId: SESSION_PLANNING }, { stage: 42, appSessionId: SESSION_IMPL_ONE }],
+    }) as never;
+
+    const trail = sessionTrailOf(task, {});
+
+    expect(trail).toEqual([
+      { appSessionId: SESSION_PLANNING, stage: '', attempt: 1, liveness: null },
+      { appSessionId: SESSION_IMPL_ONE, stage: '', attempt: 2, liveness: null },
+    ]);
+  });
+
+  it('is TOTAL over hostile sessionRefs shapes — never throws, always []', () => {
+    for (const malformedRefs of [null, undefined, 'nope', 42, {}]) {
+      const task = taskRecord({ sessionRefs: malformedRefs }) as never;
+      expect(sessionTrailOf(task, {}), JSON.stringify(malformedRefs)).toEqual([]);
+    }
+  });
+
+  it('joins liveness from sessionsById — present session → its liveness, absent → null', () => {
+    const task = taskRecord({
+      sessionRefs: [
+        { stage: 'planning', appSessionId: SESSION_PLANNING },
+        { stage: 'implementing', appSessionId: SESSION_IMPL_ONE },
+      ],
+    }) as never;
+
+    const trail = sessionTrailOf(task, {
+      [SESSION_PLANNING]: sessionRecord({ appSessionId: SESSION_PLANNING, liveness: 'dormant' }),
+    });
+
+    expect(trail).toEqual([
+      { appSessionId: SESSION_PLANNING, stage: 'planning', attempt: 1, liveness: 'dormant' },
+      { appSessionId: SESSION_IMPL_ONE, stage: 'implementing', attempt: 1, liveness: null },
+    ]);
   });
 });

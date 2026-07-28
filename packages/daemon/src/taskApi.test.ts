@@ -35,7 +35,7 @@ import {
   type WorkOrderSchemaResponse,
 } from './taskApi.js';
 import { TaskWriter } from './taskWriter.js';
-import { TaskDispatcher } from './taskDispatcher.js';
+import { TaskDispatcher, type DispatchAttemptResult } from './taskDispatcher.js';
 import type {
   ResumeResult,
   SdkQueryFactory,
@@ -156,12 +156,27 @@ interface ApiHarness {
   // The 'tasks' stream head — the "did anything get written" instrument.
   tasksHead: () => number;
   dispatchCallCount: () => number;
+  // S7·7c: the taskIds `dispatchTask` was called with, in order. The COUNT alone
+  // cannot tell "the route dispatched the right task" from "the route dispatched
+  // something", and dispatch-on-promotion is the first feature where the route
+  // chooses the argument rather than echoing a path param it was handed.
+  dispatchedTaskIds: () => string[];
   allowedRoot: string;
   outsideRoot: string;
 }
 
 function buildApiHarness(
-  options: { meters?: MetersState; staleAfterMs?: number } = {},
+  options: {
+    meters?: MetersState;
+    staleAfterMs?: number;
+    // S7·7c. When present, `dispatchTask` is a FAKE returning exactly this, and the
+    // real `TaskDispatcher` is never reached. The route's own contract is "call it
+    // once and carry the result back verbatim", and a fake is the only way to assert
+    // VERBATIM — a real dispatcher's result is a fact about the dispatcher, not
+    // about this route's fidelity to it. Cases that want the whole stack (the
+    // legal-edge case below) leave it out and get the real one.
+    dispatchResult?: DispatchAttemptResult;
+  } = {},
 ): ApiHarness {
   const store = new MemoryEventStore({
     clock: new SteppingClock(FIXED_NOW, 1000),
@@ -177,6 +192,7 @@ function buildApiHarness(
     history: {},
   };
   let dispatchCallCount = 0;
+  const dispatchedTaskIds: string[] = [];
 
   const readTasks = () => replayFromEmpty(tasksProjection, readAllStreamsGrouped(store));
   const emit = (events: Parameters<MemoryEventStore['append']>[0]): void => {
@@ -215,7 +231,10 @@ function buildApiHarness(
     taskWriter,
     dispatchTask: (taskId) => {
       dispatchCallCount += 1;
-      return taskDispatcher.dispatchTask(taskId);
+      dispatchedTaskIds.push(taskId);
+      return options.dispatchResult === undefined
+        ? taskDispatcher.dispatchTask(taskId)
+        : Promise.resolve(options.dispatchResult);
     },
     getAllowedRoots: () => [allowedRoot],
   });
@@ -227,6 +246,7 @@ function buildApiHarness(
     taskEventTypes: () => store.read('tasks', 1).map((record) => record.type),
     tasksHead: () => store.head('tasks'),
     dispatchCallCount: () => dispatchCallCount,
+    dispatchedTaskIds: () => dispatchedTaskIds,
     allowedRoot,
     outsideRoot,
   };
@@ -591,7 +611,17 @@ describe('POST /api/tasks — the projectRoot allowlist wall (403, and NOTHING i
 // ── assertion 10: I7 over HTTP ───────────────────────────────────────────────
 
 describe('POST /api/tasks/:taskId/transitions — I7 over HTTP', () => {
-  it('accepts a legal edge: 200 + the moved task, one task_transitioned', async () => {
+  it('accepts a legal edge: 200 + the moved task, one task_transitioned — AND, since S7·7c, the D53 dispatch', async () => {
+    // ⚠ **THIS CASE MOVED IN S7·7c, AND THE MOVE IS THE FEATURE.** It used to
+    // assert exactly `[task_created, task_transitioned]` and an envelope of
+    // `{ accepted, task }`. `backlog → planning` proposed by a HUMAN is a
+    // PROMOTION INTO AN ACTIVE STAGE, which D53 says starts the work — so the
+    // route now makes one dispatch attempt and the envelope carries its result.
+    //
+    // Deliberately run against the REAL `TaskDispatcher` (no `dispatchResult`
+    // fake): this is the whole stack — route → predicate → dispatcher → the fake
+    // session host — and the `task_session_attached` below is the evidence that a
+    // stage run really started off the back of a promotion.
     const harness = buildApiHarness();
     const task = await createTaskThrough(harness);
 
@@ -604,12 +634,25 @@ describe('POST /api/tasks/:taskId/transitions — I7 over HTTP', () => {
     const body = (await response.json()) as ProposeTransitionResponse;
     expect(body).toEqual({
       accepted: true,
+      // The task as the WRITER returned it — computed before the dispatch ran, so
+      // it carries no `sessionRefs` yet. The transition and the dispatch are two
+      // facts, and the envelope does not blend them.
       task: { ...task, stage: 'planning' },
+      dispatch: {
+        outcome: 'spawned',
+        taskId: task.taskId,
+        stage: 'planning',
+        appSessionId: 'ffffffff-0000-4000-8000-000000000001',
+        cwd: harness.allowedRoot,
+      },
     });
     expect(harness.taskEventTypes()).toEqual([
       EVENT_TYPES.taskCreated,
       EVENT_TYPES.taskTransitioned,
+      EVENT_TYPES.taskSessionAttached,
     ]);
+    // ONE attempt, on THIS task. The route is not a scheduler.
+    expect(harness.dispatchedTaskIds()).toEqual([task.taskId]);
   });
 
   it('409 WITH the reason, AND the rejection is in the log — both halves', async () => {
@@ -714,6 +757,195 @@ describe('POST /api/tasks/:taskId/transitions — I7 over HTTP', () => {
 
     expect(response.status).toBe(404);
     expect(harness.tasksHead()).toBe(headBefore);
+  });
+});
+
+// ── S7·7c: dispatch-on-promotion, as seen from the wire (D53) ────────────────
+//
+// The predicate itself is exhaustively tested in core (`dispatchDecision.test.ts`
+// has the full stage × proposedBy truth table). What this file owns is the
+// ROUTE's three promises, and nothing else:
+//   1. it asks the predicate and dispatches EXACTLY ONCE, with the right taskId;
+//   2. it carries the dispatcher's result back VERBATIM on the 200;
+//   3. when the predicate says no — an outcome edge, an inert stage, a REJECTED
+//      transition — it does not call the dispatcher at all, and the envelope is
+//      byte-identical to the pre-S7·7c one (the KEY IS ABSENT, not `undefined`).
+//
+// The dispatcher is a FAKE here (`dispatchResult`), because "verbatim" is only
+// assertable against a value this file chose. A distinctive one is used on
+// purpose: `deferred` is an outcome the real dispatcher would never produce for
+// these tasks, so a route that quietly re-derived a result instead of relaying
+// one could not accidentally match it.
+
+const RELAYED_DISPATCH_RESULT: DispatchAttemptResult = {
+  outcome: 'deferred',
+  taskId: 'the-fake-decides-what-this-says',
+  reason: 'awaiting-meter-reset',
+  meterId: 'window-5h',
+};
+
+describe('POST /api/tasks/:taskId/transitions — the D53 dispatch rider (S7·7c)', () => {
+  it('a PROMOTION into planning (human) dispatches once and relays the result verbatim', async () => {
+    const harness = buildApiHarness({ dispatchResult: RELAYED_DISPATCH_RESULT });
+    const task = await createTaskThrough(harness);
+
+    const response = await harness.request(
+      `/api/tasks/${task.taskId}/transitions`,
+      postJson({ toStage: 'planning', proposedBy: 'human' }),
+    );
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as ProposeTransitionResponse;
+    expect(body).toEqual({
+      accepted: true,
+      task: { ...task, stage: 'planning' },
+      // VERBATIM — including a `taskId` the fake made up, which is the point: the
+      // route relays, it does not reconstruct.
+      dispatch: RELAYED_DISPATCH_RESULT,
+    });
+    expect(harness.dispatchedTaskIds()).toEqual([task.taskId]);
+  });
+
+  it('a PROMOTION plan-ready → implementing (orchestrator) dispatches too', async () => {
+    // The second promotion edge in D53's taxonomy: plan approval. Same rule, a
+    // different proposer, so neither value is hard-wired to one stage.
+    const harness = buildApiHarness({ dispatchResult: RELAYED_DISPATCH_RESULT });
+    const task = await createTaskThrough(harness, { stage: 'plan-ready' });
+
+    const response = await harness.request(
+      `/api/tasks/${task.taskId}/transitions`,
+      postJson({ toStage: 'implementing', proposedBy: 'orchestrator' }),
+    );
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as ProposeTransitionResponse;
+    expect(body).toEqual({
+      accepted: true,
+      task: { ...task, stage: 'implementing' },
+      dispatch: RELAYED_DISPATCH_RESULT,
+    });
+    expect(harness.dispatchedTaskIds()).toEqual([task.taskId]);
+  });
+
+  it('THE VERDICT BOUNCE: review → implementing by the DISPATCHER starts nothing', async () => {
+    // ⚠ D53's no-chaining rule, over HTTP. An OUTCOME never auto-dispatches, even
+    // though `implementing` is an active stage — so a bounced task lands there
+    // UN-dispatched and starting the fixer is the orchestrator's explicit call.
+    // (In production this edge is proposed IN-PROCESS by `recordReview` and never
+    // touches this route at all; the route is asserted anyway, because the MCP
+    // surface will be a thin client of it and could propose exactly this.)
+    const harness = buildApiHarness({ dispatchResult: RELAYED_DISPATCH_RESULT });
+    const task = await createTaskThrough(harness, { stage: 'review' });
+
+    const response = await harness.request(
+      `/api/tasks/${task.taskId}/transitions`,
+      postJson({ toStage: 'implementing', proposedBy: 'dispatcher' }),
+    );
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as ProposeTransitionResponse;
+    // KEY ABSENCE, not `undefined` — a present-but-undefined key would still show
+    // up in the JSON's shape discussions and would not be byte-identical.
+    expect(Object.keys(body).sort()).toEqual(['accepted', 'task']);
+    expect(body).toEqual({ accepted: true, task: { ...task, stage: 'implementing' } });
+    expect(harness.dispatchedTaskIds()).toEqual([]);
+  });
+
+  it('an accepted move into an INERT stage starts nothing (and review is one)', async () => {
+    // `planning → plan-ready` is the plan-capture OUTCOME edge; `implementing →
+    // review` puts the task in the HOLDING PEN. Both are accepted, neither is an
+    // active stage, so neither dispatches — even proposed by a human.
+    const inertCases: Array<{ startingStage: TaskRecord['stage']; toStage: string }> = [
+      { startingStage: 'planning', toStage: 'plan-ready' },
+      { startingStage: 'implementing', toStage: 'review' },
+      { startingStage: 'backlog', toStage: 'blocked-external' },
+    ];
+
+    for (const inertCase of inertCases) {
+      const harness = buildApiHarness({ dispatchResult: RELAYED_DISPATCH_RESULT });
+      const task = await createTaskThrough(harness, { stage: inertCase.startingStage });
+
+      const response = await harness.request(
+        `/api/tasks/${task.taskId}/transitions`,
+        postJson({ toStage: inertCase.toStage, proposedBy: 'human' }),
+      );
+
+      expect(response.status, inertCase.toStage).toBe(200);
+      const body = (await response.json()) as ProposeTransitionResponse;
+      expect(Object.keys(body).sort(), inertCase.toStage).toEqual(['accepted', 'task']);
+      expect(harness.dispatchedTaskIds(), inertCase.toStage).toEqual([]);
+    }
+  });
+
+  it('a REJECTED transition dispatches nothing — there was no promotion', async () => {
+    // The rejection is evented (I7) and the dispatcher is never reached. A route
+    // that dispatched on a refused move would start work the machine just refused.
+    const harness = buildApiHarness({ dispatchResult: RELAYED_DISPATCH_RESULT });
+    const task = await createTaskThrough(harness);
+
+    const response = await harness.request(
+      `/api/tasks/${task.taskId}/transitions`,
+      // backlog → implementing is not a legal edge.
+      postJson({ toStage: 'implementing', proposedBy: 'human' }),
+    );
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ accepted: false, reason: 'illegal-edge' });
+    expect(harness.taskEventTypes()).toEqual([
+      EVENT_TYPES.taskCreated,
+      EVENT_TYPES.taskTransitionRejected,
+    ]);
+    expect(harness.dispatchedTaskIds()).toEqual([]);
+  });
+
+  it('CREATION into an active stage does NOT auto-dispatch — transitions only', async () => {
+    // Explicitly out of D53's mechanics: a birth record is not a promotion.
+    // Nobody decided anything by writing one, so nothing starts.
+    const harness = buildApiHarness({ dispatchResult: RELAYED_DISPATCH_RESULT });
+    const task = await createTaskThrough(harness, { stage: 'planning' });
+
+    expect(task.stage).toBe('planning');
+    expect(harness.dispatchedTaskIds()).toEqual([]);
+    expect(harness.taskEventTypes()).toEqual([EVENT_TYPES.taskCreated]);
+  });
+
+  it('EVERY dispatch outcome rides the 200 verbatim — refusals are not HTTP errors', async () => {
+    // The transition was ACCEPTED and is in the log; what the dispatch did is a
+    // rider fact. 4xx-ing a refused dispatch would retroactively deny an evented
+    // transition and push clients into retry machinery for "here is what happened".
+    // `unknown-task` is unreachable in practice — the task just transitioned — but
+    // it is carried honestly rather than translated, so it is asserted too.
+    const outcomes: DispatchAttemptResult[] = [
+      { outcome: 'refused', taskId: 'x', reason: 'headroom-insufficient' },
+      { outcome: 'deferred', taskId: 'x', reason: 'reset-time-unknown', meterId: 'window-5h' },
+      { outcome: 'spawn-failed', taskId: 'x', reason: 'preflight-said-no' },
+      { outcome: 'worktree-failed', taskId: 'x', reason: 'not-a-repo:fatal' },
+      { outcome: 'in-flight', taskId: 'x' },
+      { outcome: 'unknown-task', taskId: 'x' },
+    ];
+
+    for (const dispatchResult of outcomes) {
+      const harness = buildApiHarness({ dispatchResult });
+      const task = await createTaskThrough(harness);
+
+      const response = await harness.request(
+        `/api/tasks/${task.taskId}/transitions`,
+        postJson({ toStage: 'planning', proposedBy: 'human' }),
+      );
+
+      expect(response.status, dispatchResult.outcome).toBe(200);
+      const body = (await response.json()) as ProposeTransitionResponse;
+      expect(body, dispatchResult.outcome).toEqual({
+        accepted: true,
+        task: { ...task, stage: 'planning' },
+        dispatch: dispatchResult,
+      });
+      // The transition is in the log regardless of what the dispatch said.
+      expect(harness.taskEventTypes(), dispatchResult.outcome).toEqual([
+        EVENT_TYPES.taskCreated,
+        EVENT_TYPES.taskTransitioned,
+      ]);
+    }
   });
 });
 
@@ -841,12 +1073,19 @@ describe('malformed input — 400, nothing evented, nothing crashes (I8)', () =>
     }
     // And the ones that were genuinely proposals were adjudicated by the machine,
     // never silently applied: nothing reached a stage nobody legally moved it to.
+    //
+    // ⚠ S7·7c ADDED `task_session_attached` TO THIS SET. One body in the barrage
+    // above is a VALID `backlog → planning` promotion by a human — a well-formed
+    // proposal that happens to be sitting in a hostile list — and D53 says that
+    // starts the work. Nothing about hostile input changed; the one legitimate
+    // proposal now has one more consequence.
     const finalTypes = harness.taskEventTypes();
     expect(new Set(finalTypes)).toEqual(
       new Set([
         EVENT_TYPES.taskCreated,
         EVENT_TYPES.taskTransitionRejected,
         EVENT_TYPES.taskTransitioned,
+        EVENT_TYPES.taskSessionAttached,
       ]),
     );
   });

@@ -28,7 +28,7 @@ import { z } from 'zod';
 import { evaluateHeadroomGate, type HeadroomGateResult } from '../meterDerivations.js';
 import type { MetersState } from '../projections/meters.js';
 import type { TaskRecord } from '../schemas.js';
-import { TASK_STAGES, type TaskStage } from './taskStateMachine.js';
+import { TASK_STAGES, type TaskStage, type TransitionProposedBy } from './taskStateMachine.js';
 
 // ── which stages actually run a worker ───────────────────────────────────────
 // Exported as DATA (the same discipline as `TASK_STAGE_EDGES`): it is the
@@ -63,6 +63,69 @@ export const NON_DISPATCHABLE_TASK_STAGES: readonly TaskStage[] = TASK_STAGES.fi
 // "we do not run workers for stages we do not recognize" is the same fact.
 export function isDispatchableStage(candidateStage: string): boolean {
   return DISPATCHABLE_TASK_STAGES.has(candidateStage as TaskStage);
+}
+
+// ── S7·7c — DOES THIS EDGE START WORK? (D53's third category, made pure) ─────
+//
+// **D53's movement taxonomy, restated where it is implemented.** Three kinds of
+// stage movement, owned differently:
+//   1. **Promotions are DECISIONS** — `backlog→planning` (priority) and
+//      `plan-ready→implementing` (plan approval). A human or the orchestrator
+//      makes them, and the decision is "this is ready to begin."
+//   2. **Outcomes are REPORTS** — the work reporting its own state:
+//      `planning→plan-ready` on plan capture, `implementing→review` on a reported
+//      completion, `review→done/implementing` on the verdict. The dispatcher
+//      proposes these through I7's choke point, always.
+//   3. **Dispatch is MECHANICS** — entering an ACTIVE stage starts the work.
+//      *"Why would you move it to Implementing and NOT want it to begin
+//      implementation?"* This function is that third category and nothing else.
+//
+// Two conditions, and BOTH must hold:
+//
+//   • **`toStage` is one of the two ACTIVE stages.** `planning` and `implementing`
+//     run work that a promotion is asking for. **`review` is a HOLDING PEN, not
+//     an active stage** — it is `DISPATCHABLE` (a reviewer *can* be run there;
+//     that is the partition above) but entering it starts NOTHING. Whether an
+//     independent reviewer is spawned or the task is bounced back with specific
+//     fixes is the orchestrator's judgement, made with the explicit dispatch call.
+//     Every other stage is inert: a queue, a park, a verdict, or terminal.
+//   • **`proposedBy` is a PROMOTION** — `human` or `orchestrator`. An OUTCOME
+//     (`dispatcher`) never auto-dispatches, because chaining is the thing D53
+//     forbids: a reported completion must not start a reviewer, and a bounced
+//     verdict (`review→implementing`, proposed by the dispatcher) must not start
+//     a fixer. Landing there UN-dispatched is correct — the orchestrator's
+//     explicit `POST /api/tasks/:taskId/dispatch` is its decision for that task.
+//
+// ⚠ **THE TWO PROMOTER VALUES ARE MATCHED EXPLICITLY, NOT AS `!== 'dispatcher'`.**
+// The negated form reads identically today and fails open tomorrow: a fourth
+// `TransitionProposedBy` (a watchdog, a scheduler, an MCP peer) would start
+// spawning Claude processes the moment it was added to the enum, with no diff on
+// this line to review. Fail-closed is the default here for the same reason it is
+// the default in `decideDispatch`'s headroom branch — a new value must EARN its
+// way into starting work.
+//
+// PURE, TOTAL, STATELESS (rule 0.3): no clock, no projection, no I/O. It answers
+// one question about one edge, and it is the ONE authority on that question —
+// the daemon consumes it and never re-derives it (principle 10). It is
+// deliberately NOT part of `decideDispatch`: that function answers "should this
+// TASK run right now" against meters and liveness; this one answers "does this
+// EDGE ask for a run at all", and the two questions have different inputs and
+// different callers. The route asks this one first; the dispatcher then asks
+// `decideDispatch`, which may still refuse or defer.
+//
+// SCOPE NOTE — TRANSITIONS ONLY. Task CREATION into an active stage
+// (`POST /api/tasks` with `stage: 'planning'`) does NOT come through here and
+// does NOT auto-dispatch; a birth record is not a promotion, and nobody decided
+// anything by writing one.
+export function shouldDispatchOnTransition(transition: {
+  readonly toStage: TaskStage;
+  readonly proposedBy: TransitionProposedBy;
+}): boolean {
+  const entersAnActiveStage =
+    transition.toStage === 'planning' || transition.toStage === 'implementing';
+  const isAPromotion =
+    transition.proposedBy === 'human' || transition.proposedBy === 'orchestrator';
+  return entersAnActiveStage && isAPromotion;
 }
 
 // ── the decision vocabulary ──────────────────────────────────────────────────

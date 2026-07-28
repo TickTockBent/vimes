@@ -15,6 +15,7 @@ import {
   type MetersState,
   type TaskRecord,
   type TasksState,
+  type TaskStage,
   type TransitionProposal,
 } from '@vimes/core';
 import type { ResumeResult, SendResult, SpawnResult } from './sessionHost.js';
@@ -79,6 +80,9 @@ class RecordingSessionHost {
     name?: string;
     permissionMode?: 'plan' | 'auto';
     dispatched?: boolean;
+    // S7·7d: recorded because the stage is what the host maps to a report-tool
+    // offer — a dispatch that forgets it silently re-widens the exposure.
+    stage?: TaskStage;
   }> = [];
   // Step 7's instruments, INVERTED BY D46. `resumeCalls` used to prove a fix went
   // to the hot author; it now proves the opposite — it must stay EMPTY on every
@@ -99,6 +103,7 @@ class RecordingSessionHost {
     name?: string;
     permissionMode?: 'plan' | 'auto';
     dispatched?: boolean;
+    stage?: TaskStage;
   }): SpawnResult {
     this.spawnCalls.push(options);
     if (this.spawnThrows !== null) {
@@ -253,6 +258,12 @@ function buildHarness(options: {
   // failed worktree without a real filesystem.
   withWorktreeManager?: boolean;
   worktreeFailure?: GitRunResult;
+  // S7·7c. A manager supplied WHOLE, replacing the git-backed one, so a case can
+  // hold `ensureWorktree` open on a promise it releases by hand. That is the only
+  // way to make the D54 window — the `await` between the decision and
+  // `task_session_attached` — wide enough to assert against rather than a
+  // microtask nobody can stand inside.
+  worktreeManagerOverride?: Pick<WorktreeManager, 'ensureWorktree'>;
 } = {}): Harness {
   const sessionHost = new RecordingSessionHost();
   const artifactStore = new MemoryArtifactStore();
@@ -299,14 +310,15 @@ function buildHarness(options: {
         })
       : undefined;
   const worktreeManager =
-    realManager === undefined
+    options.worktreeManagerOverride ??
+    (realManager === undefined
       ? undefined
       : {
           ensureWorktree: (task: TaskRecord) => {
             worktreeCalls.push(task.taskId);
             return realManager.ensureWorktree(task);
           },
-        };
+        });
 
   const deps: TaskDispatcherDeps = {
     sessionHost,
@@ -390,7 +402,7 @@ describe('TaskDispatcher — the spawn path', () => {
     const result = await harness.dispatcher.dispatchTask(TASK_ID);
 
     expect(harness.sessionHost.spawnCalls).toEqual([
-      { channel: 'sdk', cwd: PROJECT_ROOT, dispatched: true, permissionMode: 'auto' },
+      { channel: 'sdk', cwd: PROJECT_ROOT, dispatched: true, permissionMode: 'auto', stage: 'implementing' },
     ]);
     expect(harness.emitted).toHaveLength(1);
     const attachEvent = harness.emitted[0]!;
@@ -650,7 +662,7 @@ describe('TaskDispatcher — the isolation scope boundary (D32 vs step 8)', () =
     const result = await harness.dispatcher.dispatchTask(TASK_ID);
 
     expect(harness.sessionHost.spawnCalls).toEqual([
-      { channel: 'sdk', cwd: PROJECT_ROOT, dispatched: true, permissionMode: 'auto' },
+      { channel: 'sdk', cwd: PROJECT_ROOT, dispatched: true, permissionMode: 'auto', stage: 'implementing' },
     ]);
     expect(result).toMatchObject({ outcome: 'spawned', cwd: PROJECT_ROOT });
   });
@@ -682,7 +694,13 @@ describe('TaskDispatcher — the isolation scope boundary (D32 vs step 8)', () =
     expect(resolverCalls).toHaveLength(1);
     expect(resolverCalls[0]!.isolation).toBe('worktree');
     expect(harness.sessionHost.spawnCalls).toEqual([
-      { channel: 'sdk', cwd: `/var/lib/vimes/worktrees/${TASK_ID}`, dispatched: true, permissionMode: 'auto' },
+      {
+        channel: 'sdk',
+        cwd: `/var/lib/vimes/worktrees/${TASK_ID}`,
+        dispatched: true,
+        permissionMode: 'auto',
+        stage: 'implementing',
+      },
     ]);
     expect(result).toMatchObject({ cwd: `/var/lib/vimes/worktrees/${TASK_ID}` });
   });
@@ -772,7 +790,7 @@ describe('TaskDispatcher — D46 INVERSION: the FIX LOOP spawns FRESH (was: resu
     // ⚠ THE LOAD-BEARING LINE. The hot author is never touched.
     expect(harness.sessionHost.resumeCalls).toEqual([]);
     expect(harness.sessionHost.spawnCalls).toEqual([
-      { channel: 'sdk', cwd: PROJECT_ROOT, dispatched: true, permissionMode: 'auto' },
+      { channel: 'sdk', cwd: PROJECT_ROOT, dispatched: true, permissionMode: 'auto', stage: 'implementing' },
     ]);
 
     // The attach names the NEW session, not the author — this is what makes the
@@ -831,7 +849,7 @@ describe('TaskDispatcher — D46 INVERSION: the FIX LOOP spawns FRESH (was: resu
     const result = await harness.dispatcher.dispatchTask(TASK_ID);
 
     expect(harness.sessionHost.spawnCalls).toEqual([
-      { channel: 'sdk', cwd: PROJECT_ROOT, dispatched: true, permissionMode: 'auto' },
+      { channel: 'sdk', cwd: PROJECT_ROOT, dispatched: true, permissionMode: 'auto', stage: 'implementing' },
     ]);
     expect(harness.sessionHost.resumeCalls).toEqual([]);
     expect(result.outcome).toBe('spawned');
@@ -883,7 +901,7 @@ describe('TaskDispatcher — THE INDEPENDENCE RULE, executed', () => {
     const result = await harness.dispatcher.dispatchTask(TASK_ID);
 
     expect(harness.sessionHost.spawnCalls).toEqual([
-      { channel: 'sdk', cwd: PROJECT_ROOT, dispatched: true, permissionMode: 'auto' },
+      { channel: 'sdk', cwd: PROJECT_ROOT, dispatched: true, permissionMode: 'auto', stage: 'review' },
     ]);
     expect(harness.sessionHost.resumeCalls).toEqual([]);
     expect(result.outcome).toBe('spawned');
@@ -1385,7 +1403,7 @@ describe('TaskDispatcher — assertion 8: with the flag OFF, NOTHING changed', (
 
     return harness.dispatcher.dispatchTask(TASK_ID).then((result) => {
       expect(harness.sessionHost.spawnCalls).toEqual([
-        { channel: 'sdk', cwd: PROJECT_ROOT, dispatched: true, permissionMode: 'auto' },
+        { channel: 'sdk', cwd: PROJECT_ROOT, dispatched: true, permissionMode: 'auto', stage: 'implementing' },
       ]);
       expect(result).toMatchObject({ outcome: 'spawned', cwd: PROJECT_ROOT });
       expect(harness.worktreeCalls()).toEqual([]);
@@ -1457,7 +1475,7 @@ describe('TaskDispatcher — assertion 9: flag ON + worktree isolation', () => {
 
     // The session runs in the worktree, not the project root.
     expect(harness.sessionHost.spawnCalls).toEqual([
-      { channel: 'sdk', cwd: WORKTREE_PATH, dispatched: true, permissionMode: 'auto' },
+      { channel: 'sdk', cwd: WORKTREE_PATH, dispatched: true, permissionMode: 'auto', stage: 'implementing' },
     ]);
     expect(result).toMatchObject({ outcome: 'spawned', cwd: WORKTREE_PATH });
 
@@ -1526,7 +1544,7 @@ describe('TaskDispatcher — assertion 10: flag ON + shared-dir is still project
     const result = await harness.dispatcher.dispatchTask(TASK_ID);
 
     expect(harness.sessionHost.spawnCalls).toEqual([
-      { channel: 'sdk', cwd: PROJECT_ROOT, dispatched: true, permissionMode: 'auto' },
+      { channel: 'sdk', cwd: PROJECT_ROOT, dispatched: true, permissionMode: 'auto', stage: 'implementing' },
     ]);
     expect(result).toMatchObject({ outcome: 'spawned', cwd: PROJECT_ROOT });
     expect(harness.worktreeCalls()).toEqual([]);
@@ -1772,28 +1790,37 @@ describe('TaskDispatcher — assertion 13: I10 still holds through the ASYNC pat
 // session host for plan mode; every other stage spawns exactly as before. The
 // `spawnCalls` spy is the instrument — the presence/absence of `permissionMode`
 // on the recorded options is the whole assertion.
+//
+// S7·7d ADDED THE SECOND HALF: every dispatched spawn also NAMES ITS STAGE, which
+// is what lets the host scope the report-tool offer (the host-side map is asserted
+// in sessionHost.test.ts). Asserted here on every stage the dispatcher can spawn,
+// because `stage` reaching the host wrong is exactly the plumbing bug that would
+// re-open the planner gate this unit closed.
 
-describe('TaskDispatcher — planning spawns in plan mode (D48)', () => {
-  it('a planning-stage dispatch passes permissionMode plan to spawnSession', async () => {
+describe('TaskDispatcher — planning spawns in plan mode (D48) + every spawn names its stage (S7·7d)', () => {
+  it('a planning-stage dispatch passes permissionMode plan AND stage planning to spawnSession', async () => {
     const harness = buildHarness({ tasks: [taskRecord({ stage: 'planning' })] });
 
     const result = await harness.dispatcher.dispatchTask(TASK_ID);
 
     expect(result).toMatchObject({ outcome: 'spawned', stage: 'planning' });
     expect(harness.sessionHost.spawnCalls).toEqual([
-      { channel: 'sdk', cwd: PROJECT_ROOT, dispatched: true, permissionMode: 'plan' },
+      { channel: 'sdk', cwd: PROJECT_ROOT, dispatched: true, permissionMode: 'plan', stage: 'planning' },
     ]);
   });
 
-  it('implementing / review dispatches set permissionMode "auto" (dispatched classifier footing, spike 2026-07-26)', async () => {
+  it('implementing / review dispatches set permissionMode "auto" (dispatched classifier footing, spike 2026-07-26) and their own stage', async () => {
     for (const stage of ['implementing', 'review'] as const) {
       const harness = buildHarness({ tasks: [taskRecord({ stage })] });
 
       const result = await harness.dispatcher.dispatchTask(TASK_ID);
 
       expect(result).toMatchObject({ outcome: 'spawned', stage });
+      // `stage` is the LOOP VARIABLE, not a literal: the point of the case is that
+      // the dispatched stage travels through unchanged, so hard-coding one of them
+      // would let the other pass on the first one's name.
       expect(harness.sessionHost.spawnCalls).toEqual([
-        { channel: 'sdk', cwd: PROJECT_ROOT, dispatched: true, permissionMode: 'auto' },
+        { channel: 'sdk', cwd: PROJECT_ROOT, dispatched: true, permissionMode: 'auto', stage },
       ]);
     }
   });
@@ -2595,5 +2622,228 @@ describe('TaskDispatcher — S7·7b fix-seed threading', () => {
     await harness.dispatcher.dispatchTask(TASK_ID);
 
     expect(getBlobCalls).toEqual([]);
+  });
+});
+
+// ─── S7·7c — THE D54 PER-TASK IN-FLIGHT LOCK ─────────────────────────────────
+//
+// D54's finding: `already-running` is derived from the task's OWN refs against
+// live processes, so it cannot fire until `task_session_attached` has LANDED.
+// Since step 8 there is an `await` between the decision and that event (worktree
+// creation is a subprocess), and a second attempt arriving INSIDE that window
+// used to reach a second spawn — two live sessions on one task.
+//
+// ⚠ **THE HARD PART OF TESTING THIS IS PROVING THE OVERLAP IS REAL.** Two
+// `await`ed calls in sequence would pass against a dispatcher with no lock at all
+// — the first would have finished before the second started, and the test would
+// be asserting nothing. Every case below therefore does the same three things:
+//   1. FIRES both calls WITHOUT awaiting the first, so the first is suspended
+//      inside the window when the second's synchronous prefix runs;
+//   2. asserts, WHILE the first is still suspended, that no spawn has happened
+//      yet — the positive evidence that the window is genuinely open;
+//   3. only then releases the gate and awaits both.
+// The gate is a `worktreeManagerOverride` whose `ensureWorktree` parks on a
+// promise this file resolves by hand, which holds the exact `await` D54 named
+// open for as long as the assertions need.
+
+const SECOND_TASK_ID = 'task-dispatch-0002';
+
+function createGate(): { promise: Promise<void>; release: () => void } {
+  let release!: () => void;
+  const promise = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return { promise, release };
+}
+
+// A worktree manager that RECORDS and PARKS. `reused: true` on the way out, so it
+// emits no `task_worktree_created` and `emitted` stays a clean instrument for
+// "did the in-flight attempt write anything".
+function gatedWorktreeManager(): {
+  manager: Pick<WorktreeManager, 'ensureWorktree'>;
+  ensureCalls: string[];
+  release: () => void;
+} {
+  const gate = createGate();
+  const ensureCalls: string[] = [];
+  return {
+    manager: {
+      ensureWorktree: async (task: TaskRecord) => {
+        ensureCalls.push(task.taskId);
+        await gate.promise;
+        return {
+          ok: true as const,
+          path: `${WORKTREE_ROOT}/task-${task.taskId}`,
+          branch: `vimes/task-${task.taskId}`,
+          reused: true,
+          setupMs: 0,
+        };
+      },
+    },
+    ensureCalls,
+    release: gate.release,
+  };
+}
+
+describe('TaskDispatcher — the D54 in-flight lock (S7·7c)', () => {
+  it('two OVERLAPPING attempts on one task: exactly one spawn, the other is in-flight', async () => {
+    const gated = gatedWorktreeManager();
+    const harness = buildHarness({
+      worktreeIsolationEnabled: true,
+      worktreeManagerOverride: gated.manager,
+    });
+
+    // FIRE BOTH. Neither is awaited yet: the first runs its synchronous prefix,
+    // claims the lock, reaches `ensureWorktree` and PARKS there.
+    const firstAttempt = harness.dispatcher.dispatchTask(TASK_ID);
+    const secondAttempt = harness.dispatcher.dispatchTask(TASK_ID);
+
+    // ⚠ THE OVERLAP PROOF. The second attempt has already returned — its whole
+    // body is the lock check — while the first is still suspended: no session has
+    // been spawned, and nothing has been written. A dispatcher WITHOUT the lock
+    // would be parked twice inside `ensureWorktree` here, and would spawn twice
+    // the moment the gate opened.
+    expect(await secondAttempt).toEqual({ outcome: 'in-flight', taskId: TASK_ID });
+    expect(harness.sessionHost.spawnCalls).toEqual([]);
+    expect(harness.emitted).toEqual([]);
+    // Only ONE attempt ever reached the worktree — the loser never got past the
+    // lock, so it never touched the manager either.
+    expect(gated.ensureCalls).toEqual([TASK_ID]);
+
+    gated.release();
+    expect(await firstAttempt).toEqual({
+      outcome: 'spawned',
+      taskId: TASK_ID,
+      stage: 'implementing',
+      appSessionId: SPAWNED_SESSION_ID,
+      cwd: WORKTREE_PATH,
+    });
+
+    // ONE spawn, ONE event. The in-flight attempt is SILENT — no `dispatch_refused`
+    // (the decision function never saw it) and no event of its own (nothing
+    // happened and nothing changed; the winner's result is the record).
+    expect(harness.sessionHost.spawnCalls).toHaveLength(1);
+    expect(eventTypes(harness.emitted)).toEqual([EVENT_TYPES.taskSessionAttached]);
+  });
+
+  it('holds on the SHIPPED default path too (flag off, no manager at all)', async () => {
+    // The case above needs a manager to widen the window; production today runs
+    // with the flag OFF, where the only `await` is the resolver's own microtask.
+    // The lock must still serialise there, and the evidence is the same: at the
+    // instant both calls have been FIRED, the first has not yet spawned.
+    const harness = buildHarness();
+
+    const firstAttempt = harness.dispatcher.dispatchTask(TASK_ID);
+    const secondAttempt = harness.dispatcher.dispatchTask(TASK_ID);
+    expect(harness.sessionHost.spawnCalls).toEqual([]);
+
+    const [firstResult, secondResult] = await Promise.all([firstAttempt, secondAttempt]);
+    expect(firstResult).toMatchObject({ outcome: 'spawned', taskId: TASK_ID });
+    expect(secondResult).toEqual({ outcome: 'in-flight', taskId: TASK_ID });
+    expect(harness.sessionHost.spawnCalls).toHaveLength(1);
+    expect(eventTypes(harness.emitted)).toEqual([EVENT_TYPES.taskSessionAttached]);
+  });
+
+  it('RELEASES: a third attempt after both settle is never in-flight', async () => {
+    // The `finally` is the whole point — a lock that leaked would make this task
+    // permanently undispatchable for the life of the process, a silent stall that
+    // would look exactly like "the orchestrator stopped promoting things".
+    const harness = buildHarness();
+    const [, secondResult] = await Promise.all([
+      harness.dispatcher.dispatchTask(TASK_ID),
+      harness.dispatcher.dispatchTask(TASK_ID),
+    ]);
+    expect(secondResult).toEqual({ outcome: 'in-flight', taskId: TASK_ID });
+
+    const thirdResult = await harness.dispatcher.dispatchTask(TASK_ID);
+    // The HONEST outcome of this fake's config: `readTasks` returns a FIXED state
+    // (no projection feeds the attach event back), and the fake host marks nothing
+    // live, so `decideDispatch` sees no live run and spawns again. That is not a
+    // bug in the lock — it is D54's own point restated: `already-running` is the
+    // POST-ATTACH guard and it needs the projection to have caught up.
+    expect(thirdResult).toMatchObject({ outcome: 'spawned', taskId: TASK_ID });
+    expect(thirdResult.outcome).not.toBe('in-flight');
+  });
+
+  it('once the attach has LANDED, the post-attach guard speaks — not the lock', async () => {
+    // The other half of the release proof, and the shape production actually has:
+    // a task whose ref is live refuses `already-running`. The lock is not involved
+    // at all, which is exactly the division of labour the docstring claims — the
+    // lock covers the window BETWEEN the decision and the attach, `already-running`
+    // covers everything after it.
+    const harness = buildHarness({
+      tasks: [
+        taskRecord({ sessionRefs: [{ stage: 'implementing', appSessionId: EXISTING_SESSION_ID }] }),
+      ],
+    });
+    harness.sessionHost.markLive(EXISTING_SESSION_ID);
+
+    const firstResult = await harness.dispatcher.dispatchTask(TASK_ID);
+    const secondResult = await harness.dispatcher.dispatchTask(TASK_ID);
+
+    expect(firstResult).toEqual({
+      outcome: 'refused',
+      taskId: TASK_ID,
+      reason: 'already-running',
+    });
+    expect(secondResult).toEqual(firstResult);
+    expect(secondResult.outcome).not.toBe('in-flight');
+    // A refusal IS evented (I10), once per attempt — the lock released between
+    // them, so the second attempt really was adjudicated rather than short-circuited.
+    expect(eventTypes(harness.emitted)).toEqual([
+      EVENT_TYPES.dispatchRefused,
+      EVENT_TYPES.dispatchRefused,
+    ]);
+    expect(harness.sessionHost.spawnCalls).toEqual([]);
+  });
+
+  it('RELEASES ON THE FAILURE PATH — a spawn that THREW does not strand the lock', async () => {
+    // The path a hand-placed `delete` before each return forgets. `spawnSession`
+    // throwing unwinds past every release point except a `finally`.
+    const harness = buildHarness();
+    harness.sessionHost.throwOnSpawn(new Error('the host fell over'));
+
+    const firstResult = await dispatchWithoutRejecting(harness.dispatcher, TASK_ID);
+    expect(firstResult).toEqual({
+      outcome: 'spawn-failed',
+      taskId: TASK_ID,
+      reason: 'spawn-threw:the host fell over',
+    });
+
+    const secondResult = await dispatchWithoutRejecting(harness.dispatcher, TASK_ID);
+    expect(secondResult.outcome).not.toBe('in-flight');
+    expect(secondResult).toEqual(firstResult);
+    // Both attempts really reached the host — the second was not short-circuited.
+    expect(harness.sessionHost.spawnCalls).toHaveLength(2);
+  });
+
+  it('is PER TASK — two different tasks overlapping do not contend', async () => {
+    // A global lock would serialise the whole board, which is the opposite of what
+    // a task dispatcher is for. Both calls park inside the SAME gate, so their
+    // windows genuinely overlap; both must still spawn.
+    const gated = gatedWorktreeManager();
+    const harness = buildHarness({
+      tasks: [taskRecord(), taskRecord({ taskId: SECOND_TASK_ID })],
+      worktreeIsolationEnabled: true,
+      worktreeManagerOverride: gated.manager,
+    });
+
+    const firstAttempt = harness.dispatcher.dispatchTask(TASK_ID);
+    const secondAttempt = harness.dispatcher.dispatchTask(SECOND_TASK_ID);
+    // BOTH are suspended in the window at the same moment — the overlap is real,
+    // and neither was turned away.
+    expect(gated.ensureCalls).toEqual([TASK_ID, SECOND_TASK_ID]);
+    expect(harness.sessionHost.spawnCalls).toEqual([]);
+
+    gated.release();
+    const [firstResult, secondResult] = await Promise.all([firstAttempt, secondAttempt]);
+
+    expect(firstResult).toMatchObject({ outcome: 'spawned', taskId: TASK_ID });
+    expect(secondResult).toMatchObject({ outcome: 'spawned', taskId: SECOND_TASK_ID });
+    expect(harness.sessionHost.spawnCalls).toHaveLength(2);
+    expect(eventTypes(harness.emitted)).toEqual([
+      EVENT_TYPES.taskSessionAttached,
+      EVENT_TYPES.taskSessionAttached,
+    ]);
   });
 });

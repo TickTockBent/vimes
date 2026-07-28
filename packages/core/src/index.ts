@@ -115,6 +115,11 @@ export {
   dispatchDeferReasonSchema,
   isDispatchableStage,
   decideDispatch,
+  // S7·7c — the OTHER dispatch question: does this EDGE start work (D53's
+  // dispatch-as-mechanics), as opposed to `decideDispatch`'s "should this TASK
+  // run right now". The transitions route is its only caller; it must never
+  // re-derive the rule locally (principle 10).
+  shouldDispatchOnTransition,
   type DispatchInput,
   type DispatchDecision,
   type DispatchRefuseReason,

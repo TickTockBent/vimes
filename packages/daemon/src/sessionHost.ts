@@ -32,6 +32,7 @@ import {
   type ReportCompletionPayload,
   type ReportReviewPayload,
   type SessionRecord,
+  type TaskStage,
 } from '@vimes/core';
 import type { DaemonConfig } from './config.js';
 import { defaultProjectsRoot, transcriptFileFor } from './transcriptPaths.js';
@@ -148,10 +149,11 @@ export interface SdkQueryOptions {
   // D50: named sub-agent spawn surfaces removed from context (SDK `disallowedTools`
   // belt). Set together with `tools` on a dispatched spawn, or absent entirely.
   disallowedTools?: string[];
-  // S7·6b: in-process report tools exposed to this session — as of S7·7b BOTH
-  // `report_review` and `report_completion`, for every dispatched session. The
-  // factory wraps them into ONE `mcpServers` entry. Absent (the common case) = no
-  // custom tools, options byte-identical to before S7·6b.
+  // S7·6b: in-process report tools exposed to this session — as of S7·7d SCOPED
+  // TO THE DISPATCHED STAGE (`report_completion` for implementing, `report_review`
+  // for review, NEITHER for planning; see `reportToolsOptionFor`). The factory
+  // wraps them into ONE `mcpServers` entry. Absent (the common case, and every
+  // planning spawn) = no custom tools, options byte-identical to before S7·6b.
   reportTools?: SdkReportToolSpec[];
 }
 
@@ -264,6 +266,12 @@ interface AdapterSpawnContext {
   // clamps it to the closed tool allowlist + spawn-family denylist so it cannot fan
   // out sub-agents. Absent/false = today's behaviour. The PTY adapter ignores it.
   dispatched?: boolean;
+  // S7·7d: the task stage this dispatched session is running. Set by the
+  // dispatcher on dispatched spawns; selects which report tools the session is
+  // OFFERED (see `reportToolsOptionFor`). Absent on interactive spawns — and on a
+  // dispatched spawn that somehow omits it, which falls back to the pre-S7·7d
+  // both-tools exposure. The PTY adapter ignores it.
+  stage?: TaskStage;
 }
 
 export type InteractionAck = { ok: true; appSessionId: string } | { refused: true; reason: string };
@@ -574,24 +582,32 @@ class ClaudeSdkAdapter implements SessionAdapter {
         ...(context.dispatched === true
           ? { tools: [...DISPATCHED_SESSION_TOOLS], disallowedTools: [...SUBAGENT_SPAWN_TOOLS] }
           : {}),
-        // S7·6b/S7·7b: expose the in-process report tools to EVERY dispatched
-        // session (the spike proved `mcpServers` is orthogonal to the D50 `tools`
-        // clamp — no allowlist entry needed, no spawn hole; D52). BOTH tools go to
-        // EVERY dispatched session rather than one per stage, and that is deliberate
-        // rather than lazy: the guard lives in the DISPATCHER, where the task record
-        // is (`recordReview` no-ops without a `review` sessionRef, `recordCompletion`
-        // without an `implementing` one), so a stage-conditional exposure here would
-        // be a SECOND, weaker copy of a rule that is already enforced against real
-        // state. The handlers close over this session's id + the services callbacks
-        // and only OBSERVE + PROPOSE (I10) — they never touch task state. Set via the
-        // same spread idiom, so a non-dispatched spawn stays byte-identical.
+        // S7·6b/S7·7b/S7·7d: expose the in-process report tools to a dispatched
+        // session, SCOPED TO THE STAGE THAT CAN HONESTLY USE ONE (the spike proved
+        // `mcpServers` is orthogonal to the D50 `tools` clamp — no allowlist entry
+        // needed, no spawn hole; D52). The handlers close over this session's id +
+        // the services callbacks and only OBSERVE + PROPOSE (I10) — they never touch
+        // task state. Set via the same spread idiom, so a non-dispatched spawn stays
+        // byte-identical.
+        //
+        // ⚠ S7·7d NARROWED THIS FROM BOTH-TOOLS-ON-EVERY-DISPATCHED-SESSION, a
+        // recorded reversal. The old comment argued the wide exposure was deliberate
+        // rather than lazy because the guard lives in the DISPATCHER, where the task
+        // record is. That half is STILL TRUE and the guards STAY as defense in depth:
+        // `recordReview` no-ops without a `review` sessionRef and `recordCompletion`
+        // without an `implementing` one, both adjudicated against real state, and
+        // neither moved in this unit. What the argument missed is that EXPOSURE IS
+        // NOT FREE. Under D48 the planning stage runs `permissionMode: 'plan'`, and
+        // in plan mode the SDK routes MCP tool calls through `canUseTool` — so an
+        // offered tool is a tool the model may call, and a call is a PERMISSION GATE.
+        // Observed 2026-07-28 (task 25f9c558, planning session f35a77dd): the planner
+        // finished capturing its plan, called `report_completion`, and fired a gate.
+        // Wes happened to be attending and approved it; the dispatcher guard then
+        // correctly no-opped it. UNATTENDED that gate is a STALL — the fleet's planner
+        // sits waiting on an approval nobody will give. So the guard stays where it
+        // is, and the OFFER moves to where it is true.
         ...(context.dispatched === true
-          ? {
-              reportTools: [
-                this.buildReviewSpec(context.appSessionId),
-                this.buildCompletionSpec(context.appSessionId),
-              ],
-            }
+          ? this.reportToolsOptionFor(context.appSessionId, context.stage)
           : {}),
       },
     });
@@ -610,6 +626,43 @@ class ClaudeSdkAdapter implements SessionAdapter {
       sdkHandle: handle,
       sawResult: false,
     };
+  }
+
+  // S7·7d: WHICH report tools a dispatched session is offered, by stage. Returns
+  // the OPTION FRAGMENT rather than an array so the planning case can be the
+  // ABSENCE of the `reportTools` key rather than an empty array — the spread idiom
+  // this file uses everywhere else for "this key does not apply to this spawn".
+  //
+  // The map is exhaustive over `DISPATCHABLE_TASK_STAGES` (planning, implementing,
+  // review — the only three stages the dispatcher ever spawns for):
+  //   • planning     → NOTHING. The planner's deliverable travels via the
+  //                    ExitPlanMode interception (D48); it has nothing to report,
+  //                    and under plan mode an offered tool is a gate (see spawn()).
+  //   • implementing → `report_completion` only. It authors; it never reviews.
+  //   • review       → `report_review` only. It judges; it never claims authorship.
+  //   • anything else (stage absent, or a stage outside the dispatchable three) →
+  //     BOTH, the pre-S7·7d exposure. Fail-open-to-guarded, deliberately: an
+  //     unrecognized stage is a plumbing bug, and the failure mode we want from a
+  //     plumbing bug is "the session can still report and the dispatcher guard
+  //     adjudicates it", not "the loop silently loses its only way to finish".
+  //     Unreachable from `dispatchTask` today, which always passes its decision's
+  //     stage; it exists so that stops being load-bearing.
+  private reportToolsOptionFor(
+    appSessionId: string,
+    stage: TaskStage | undefined,
+  ): { reportTools?: SdkReportToolSpec[] } {
+    switch (stage) {
+      case 'planning':
+        return {};
+      case 'implementing':
+        return { reportTools: [this.buildCompletionSpec(appSessionId)] };
+      case 'review':
+        return { reportTools: [this.buildReviewSpec(appSessionId)] };
+      default:
+        return {
+          reportTools: [this.buildReviewSpec(appSessionId), this.buildCompletionSpec(appSessionId)],
+        };
+    }
   }
 
   // S7·6b: the SDK-agnostic `report_review` spec for this session. The handler
@@ -1073,6 +1126,10 @@ export class SessionHost implements HookHost {
     // D50: the dispatcher passes `true` for every dispatched task session; absent
     // for interactive spawns, which is today's behaviour exactly.
     dispatched?: boolean;
+    // S7·7d: set by the dispatcher on dispatched spawns; selects which report tools
+    // the session is offered. Absent for interactive spawns — today's behaviour
+    // exactly (same absence idiom as `permissionMode` and `dispatched`).
+    stage?: TaskStage;
   }): SpawnResult {
     const appSessionId = this.ids.uuid();
     const preflight = this.checkPreflight();
@@ -1108,6 +1165,7 @@ export class SessionHost implements HookHost {
       undefined,
       options.permissionMode,
       options.dispatched,
+      options.stage,
     );
     return { appSessionId };
   }
@@ -1392,11 +1450,15 @@ export class SessionHost implements HookHost {
     // marker is per-live-process state that a resumed session re-establishes only
     // if the dispatcher re-dispatches — resume today never sets it).
     dispatched?: boolean,
+    // S7·7d: only a fresh dispatched spawn passes a stage; resume never does, for
+    // the same reason `dispatched` does not — a resumed session re-establishes its
+    // dispatch context only through a re-dispatch.
+    stage?: TaskStage,
   ): void {
     const adapter: SessionAdapter = channel === 'sdk' ? this.sdkAdapter : this.ptyAdapter;
     const hookChannel = this.prepareHookChannel(appSessionId);
     const cause = resume === undefined ? 'spawn' : 'resume';
-    const live = adapter.spawn({ appSessionId, cwd, resume, hookChannel, permissionMode, dispatched });
+    const live = adapter.spawn({ appSessionId, cwd, resume, hookChannel, permissionMode, dispatched, stage });
     live.settingsPath = hookChannel?.settingsPath;
     this.liveProcesses.set(appSessionId, live);
     this.emitGuardedLiveness(appSessionId, 'running', cause);

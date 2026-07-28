@@ -1701,18 +1701,81 @@ describe('SessionHost — custody refusals, adoption, session ops (D10 / v0.2)',
   });
 });
 
-// ── S7·6b/S7·7b: report tool exposure + handlers + the SDK-boundary wrap ──────
+// ── S7·6b/S7·7b/S7·7d: report tool exposure + handlers + the SDK-boundary wrap ─
 //
 // The adapter exposes SDK-agnostic specs — `report_review` (S7·6b) and
-// `report_completion` (S7·7b) — to EVERY dispatched session. Safe because the
-// GUARD LIVES IN THE DISPATCHER: recordReview no-ops without a `review` sessionRef
-// and recordCompletion without an `implementing` one, both against real task state.
+// `report_completion` (S7·7b) — to a dispatched session, SCOPED TO ITS STAGE as of
+// S7·7d: implementing is offered the completion tool, review the review tool, and
+// planning NEITHER (its deliverable travels via ExitPlanMode, and under plan mode
+// an offered MCP tool is a permission gate — the f35a77dd stall). The dispatcher's
+// guards are unchanged and remain the state-facing authority: recordReview no-ops
+// without a `review` sessionRef and recordCompletion without an `implementing` one.
 // The factory wraps specs into `mcpServers` via the SDK — tested here through
 // `buildReportMcpServers` with a FAKE surface, so CI never loads the real SDK (the
 // SDK-boundary rule).
 
-describe('SessionHost — report tool exposure (S7·6b + S7·7b)', () => {
-  it('a dispatched spawn carries BOTH specs in reportTools, each with its minimal schema', async () => {
+describe('SessionHost — report tool exposure (S7·6b + S7·7b + S7·7d)', () => {
+  // The stage→tools map, asserted stage by stage. ⚠ These three cases REPLACE the
+  // pre-S7·7d "a dispatched spawn carries BOTH specs" case, which encoded the
+  // exposure decision this unit reverses; its schema assertions survive in the
+  // no-stage fallback case below, which is the only path that still sees both.
+  it('a dispatched PLANNING spawn carries NO reportTools key at all', async () => {
+    const { factory, calls } = makeSdkFactory(async function* () {
+      yield { type: 'system', subtype: 'init', session_id: 'claude-1' };
+      yield { type: 'result', subtype: 'success' };
+    });
+    const { host } = makeHarness({ sdkQueryFactory: factory });
+    try {
+      host.spawnSession({ channel: 'sdk', cwd: '/p', dispatched: true, permissionMode: 'plan', stage: 'planning' });
+      await waitFor(() => calls.length === 1);
+      // Absent, not an empty array: under plan mode the SDK routes MCP calls
+      // through canUseTool, so a tool the planner cannot honestly use is a gate
+      // nobody is there to answer.
+      expect('reportTools' in calls[0]!).toBe(false);
+    } finally {
+      host.stop();
+    }
+  });
+
+  it('a dispatched IMPLEMENTING spawn carries exactly [report_completion]', async () => {
+    const { factory, calls } = makeSdkFactory(async function* () {
+      yield { type: 'system', subtype: 'init', session_id: 'claude-1' };
+      yield { type: 'result', subtype: 'success' };
+    });
+    const { host } = makeHarness({ sdkQueryFactory: factory });
+    try {
+      host.spawnSession({ channel: 'sdk', cwd: '/p', dispatched: true, stage: 'implementing' });
+      await waitFor(() => calls.length === 1);
+      const specs = calls[0]!.reportTools;
+      // Present AND absent, both asserted: the author is offered its own tool and
+      // is NOT offered the reviewer's.
+      expect(specs!.map((spec) => spec.name)).toEqual(['report_completion']);
+      expect(Object.keys(specs![0]!.inputSchema)).toEqual(['worklog']);
+      expect(typeof specs![0]!.handler).toBe('function');
+    } finally {
+      host.stop();
+    }
+  });
+
+  it('a dispatched REVIEW spawn carries exactly [report_review]', async () => {
+    const { factory, calls } = makeSdkFactory(async function* () {
+      yield { type: 'system', subtype: 'init', session_id: 'claude-1' };
+      yield { type: 'result', subtype: 'success' };
+    });
+    const { host } = makeHarness({ sdkQueryFactory: factory });
+    try {
+      host.spawnSession({ channel: 'sdk', cwd: '/p', dispatched: true, stage: 'review' });
+      await waitFor(() => calls.length === 1);
+      const specs = calls[0]!.reportTools;
+      expect(specs!.map((spec) => spec.name)).toEqual(['report_review']);
+      expect(Object.keys(specs![0]!.inputSchema)).toEqual(['criteria']);
+      expect(typeof specs![0]!.handler).toBe('function');
+    } finally {
+      host.stop();
+    }
+  });
+
+  it('a dispatched spawn with NO stage falls back to BOTH specs (fail-open-to-guarded)', async () => {
     const { factory, calls } = makeSdkFactory(async function* () {
       yield { type: 'system', subtype: 'init', session_id: 'claude-1' };
       yield { type: 'result', subtype: 'success' };
@@ -1722,9 +1785,11 @@ describe('SessionHost — report tool exposure (S7·6b + S7·7b)', () => {
       host.spawnSession({ channel: 'sdk', cwd: '/p', dispatched: true });
       await waitFor(() => calls.length === 1);
       const specs = calls[0]!.reportTools;
-      // ⚠ S7·7b widened this from ONE spec to TWO. Order is asserted because the
-      // array order is the order the tools mount on the single `vimes_report`
-      // server, and a stable order keeps the prompt prefix stable (cache discipline).
+      // The pre-S7·7d exposure, kept for the plumbing-bug case only: a session that
+      // reached the host without a stage can still report, and the dispatcher guard
+      // decides whether the report counts. Order is asserted because the array order
+      // is the order the tools mount on the single `vimes_report` server, and a
+      // stable order keeps the prompt prefix stable (cache discipline).
       expect(specs).toHaveLength(2);
       expect(specs!.map((spec) => spec.name)).toEqual(['report_review', 'report_completion']);
       for (const spec of specs!) {
@@ -1766,10 +1831,13 @@ describe('SessionHost — report tool exposure (S7·6b + S7·7b)', () => {
       onReviewReported: (appSessionId, criteria) => captured.push({ appSessionId, criteria }),
     });
     try {
-      const spawn = host.spawnSession({ channel: 'sdk', cwd: '/p', dispatched: true });
+      // S7·7d: spawned as the stage that actually gets this tool, so the case
+      // exercises the real shape (one spec, at index 0) rather than the fallback.
+      const spawn = host.spawnSession({ channel: 'sdk', cwd: '/p', dispatched: true, stage: 'review' });
       const appSessionId = 'appSessionId' in spawn ? spawn.appSessionId : '';
       await waitFor(() => calls.length === 1);
       const spec = calls[0]!.reportTools![0]!;
+      expect(spec.name).toBe('report_review');
       const criteria = [{ criterionId: 'c1', verdict: 'pass' }];
       const result = await spec.handler({ criteria });
       // The handler closes over THIS session's id and forwards to the callback.
@@ -1792,10 +1860,12 @@ describe('SessionHost — report tool exposure (S7·6b + S7·7b)', () => {
       onCompletionReported: (appSessionId, worklog) => captured.push({ appSessionId, worklog }),
     });
     try {
-      const spawn = host.spawnSession({ channel: 'sdk', cwd: '/p', dispatched: true });
+      // S7·7d: the implementing stage is the one offered this tool, and it is the
+      // ONLY spec it is offered — hence index 0 where this used to read index 1.
+      const spawn = host.spawnSession({ channel: 'sdk', cwd: '/p', dispatched: true, stage: 'implementing' });
       const appSessionId = 'appSessionId' in spawn ? spawn.appSessionId : '';
       await waitFor(() => calls.length === 1);
-      const spec = calls[0]!.reportTools![1]!;
+      const spec = calls[0]!.reportTools![0]!;
       expect(spec.name).toBe('report_completion');
       const worklog = { decisionsMade: ['chose X over Y'], pathsRejected: ['tried Z, it deadlocks'] };
       const result = await spec.handler({ worklog });
@@ -1820,9 +1890,11 @@ describe('SessionHost — report tool exposure (S7·6b + S7·7b)', () => {
       onCompletionReported: (_appSessionId, worklog) => captured.push(worklog),
     });
     try {
-      host.spawnSession({ channel: 'sdk', cwd: '/p', dispatched: true });
+      host.spawnSession({ channel: 'sdk', cwd: '/p', dispatched: true, stage: 'implementing' });
       await waitFor(() => calls.length === 1);
-      const spec = calls[0]!.reportTools![1]!;
+      // S7·7d: sole spec on an implementing spawn (was index 1 of the both-tools array).
+      const spec = calls[0]!.reportTools![0]!;
+      expect(spec.name).toBe('report_completion');
       await expect(spec.handler({})).resolves.toEqual({ ok: true });
       expect(captured).toEqual([{ decisionsMade: [], pathsRejected: [] }]);
     } finally {

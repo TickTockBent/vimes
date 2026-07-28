@@ -275,6 +275,69 @@ function latestSessionOf(
   return null;
 }
 
+// One entry in a task's session trail (S7·7g). `latestSessionOf`'s SIBLING,
+// not its replacement: that function answers "what is the card's badge right
+// now" (the single most recent usable ref, walked backwards); this one
+// answers "what is the task's whole history" (every usable ref, walked
+// forwards, numbered per stage). Both share the same malformed-entry
+// tolerance because they read the identical wire field.
+export interface TaskSessionTrailEntry {
+  readonly appSessionId: string;
+  // '' when the ref is missing/malformed on stage — echoed empty rather than
+  // guessed, same posture as `latestSessionOf`'s `stage`.
+  readonly stage: string;
+  // 1-based ordinal AMONG THIS STAGE'S usable refs (a ref with `stage: ''`
+  // counts in its own '' bucket), matching how the dispatcher derives an
+  // attempt number from ref counts.
+  readonly attempt: number;
+  // Joined from `sessionsById`; null means "we have a ref but no session
+  // record for it" — a known unknown, never a guess.
+  readonly liveness: Liveness | null;
+}
+
+/**
+ * The task's full session trail, chronological (first dispatch → latest).
+ * TOTAL over `task.sessionRefs`: a non-array, or an array of nulls/numbers,
+ * never throws — a malformed entry with no usable `appSessionId` is skipped
+ * (it can neither be linked nor counted); a usable id with a malformed stage
+ * is kept with `stage: ''`.
+ *
+ * ⚠ NO PER-REF OUTCOME. `sessionRefs` does not carry one, and inventing one
+ * from stage position (e.g. "the run before a later stage must have
+ * succeeded") would be a guess dressed as a fact — exactly what this board
+ * exists not to do. The trail says WHO ran WHEN, not how each run ended.
+ */
+export function sessionTrailOf(
+  task: TaskBoardRecord,
+  sessionsById: Readonly<Record<string, SessionRecord>>,
+): TaskSessionTrailEntry[] {
+  if (!Array.isArray(task.sessionRefs)) {
+    return [];
+  }
+  const trail: TaskSessionTrailEntry[] = [];
+  const attemptByStage = new Map<string, number>();
+  // Walked FORWARDS — `sessionRefs` is append-only, so index order already is
+  // chronological order (contrast `latestSessionOf`'s backwards walk, which
+  // only needs the tail).
+  for (const raw of task.sessionRefs) {
+    const candidate = raw as { stage?: unknown; appSessionId?: unknown } | null;
+    const appSessionId = asString(candidate?.appSessionId);
+    if (appSessionId === null) {
+      continue;
+    }
+    const stage = asString(candidate?.stage) ?? '';
+    const attempt = (attemptByStage.get(stage) ?? 0) + 1;
+    attemptByStage.set(stage, attempt);
+    trail.push({
+      appSessionId,
+      stage,
+      attempt,
+      liveness: sessionsById[appSessionId]?.liveness ?? null,
+    });
+  }
+  return trail;
+}
+
 /**
  * Read the tasks projection body into a classified board.
  *
@@ -651,13 +714,21 @@ const NOTHING_TO_SAY_NOTE =
   'The session was started but told NOTHING — stage instructions are not written yet, so it will sit idle until you talk to it. That is the current design, not a hang.';
 
 /**
- * Classify the body of `POST /api/tasks/:taskId/dispatch`.
+ * Classify the body of `POST /api/tasks/:taskId/dispatch` (and, re-wrapped, a
+ * D53 promotion's `dispatch` rider — see `dispatchFollow.ts`).
  *
  * Every outcome the dispatcher can produce gets its OWN report — `spawned`,
- * `resumed`, `deferred`, `refused`, `spawn-failed`, `resume-failed`,
- * `worktree-failed` — because collapsing any two of them loses the distinction
- * the dispatcher went out of its way to keep (a DECISION not to run is not the
- * same fact as an ATTEMPT that failed).
+ * `deferred`, `refused`, `spawn-failed`, `worktree-failed`, `in-flight` —
+ * because collapsing any two of them loses the distinction the dispatcher
+ * went out of its way to keep (a DECISION not to run is not the same fact as
+ * an ATTEMPT that failed, and neither is the same fact as an attempt that
+ * never got to decide because a sibling attempt was already running).
+ *
+ * S7·7e removed `resumed` / `resume-failed` from this switch along with the
+ * daemon-side union variants they read — D46 (2026-07-27, S7·7b) deleted the
+ * resume path before this unit landed, so neither string has been producible
+ * since, and both now fall to the honest default branch below like any other
+ * retired or unrecognised outcome. See taskBoard.test.ts for the pinned degrade.
  *
  * TOTAL: an unrecognised outcome, a missing body, and a non-object body all
  * produce a report rather than a throw or a blank.
@@ -698,14 +769,6 @@ export function describeDispatchResponse(status: number, body: unknown): Dispatc
         detail: asString(result.cwd),
         idleNote: instructionNote(result),
       };
-    case 'resumed':
-      return {
-        outcome,
-        tone: 'ok',
-        headline: 'Resumed the session that authored the work',
-        detail: asString(result.appSessionId),
-        idleNote: instructionNote(result),
-      };
     case 'deferred':
       return {
         outcome,
@@ -739,17 +802,6 @@ export function describeDispatchResponse(status: number, body: unknown): Dispatc
         detail: reason,
         idleNote: null,
       };
-    case 'resume-failed':
-      return {
-        outcome,
-        tone: 'failed',
-        headline: 'The session host could not resume that session',
-        detail:
-          reason === null
-            ? asString(result.appSessionId)
-            : `${reason}${asString(result.appSessionId) === null ? '' : ` (session ${asString(result.appSessionId)})`}`,
-        idleNote: null,
-      };
     case 'worktree-failed':
       return {
         outcome,
@@ -759,6 +811,21 @@ export function describeDispatchResponse(status: number, body: unknown): Dispatc
         // running in projectRoot, and this is the only place the operator gets
         // to see why not.
         detail: reason,
+        idleNote: null,
+      };
+    case 'in-flight':
+      // D54's per-task lock. This attempt lost a race to a sibling attempt for
+      // the SAME task, arrived while the winner was still between its decision
+      // and its `task_session_attached` — see taskDispatcher.ts's own note on
+      // the window. Nothing was judged, spawned, or written for THIS attempt,
+      // so `waiting` (not `refused`, not `failed`) is the honest tone: exactly
+      // like `deferred`, this is the gate doing its job, not a denial.
+      return {
+        outcome,
+        tone: 'waiting',
+        headline: 'A dispatch for this task is already in flight',
+        detail:
+          'Nothing was attempted — another dispatch attempt is mid-flight right now, and its own result is the record. This clears itself when that attempt settles.',
         idleNote: null,
       };
     default:

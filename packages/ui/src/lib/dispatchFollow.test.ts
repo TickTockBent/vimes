@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { sessionToSubscribeAfterDispatch } from './dispatchFollow.js';
+import { sessionToSubscribeAfterDispatch, sessionToSubscribeAfterTransition } from './dispatchFollow.js';
 
 const SESSION_ID = 'sess-abc123';
 
@@ -10,7 +10,13 @@ describe('sessionToSubscribeAfterDispatch — only a genuine spawn hands back an
     ).toBe(SESSION_ID);
   });
 
-  it('a resumed outcome is NOT new — excluded even though it also carries an appSessionId', () => {
+  it('the RETIRED `resumed` outcome is never treated as new — D46 removed it, S7·7e pins the degrade', () => {
+    // `resumed` used to be excluded here on purpose (it reattached to a
+    // session that already existed, so it was never "new" even though it also
+    // carried an appSessionId). D46 removed the daemon's resume path and
+    // S7·7e removed the outcome from the union entirely; the string can no
+    // longer arrive, and this now exercises the SAME general `!== 'spawned'`
+    // rejection any unrecognised outcome gets — no special case left to test.
     expect(
       sessionToSubscribeAfterDispatch(200, { result: { outcome: 'resumed', appSessionId: SESSION_ID } }),
     ).toBeNull();
@@ -97,5 +103,81 @@ describe('sessionToSubscribeAfterDispatch — only a genuine spawn hands back an
       expect(() => sessionToSubscribeAfterDispatch(200, body)).not.toThrow();
       expect(sessionToSubscribeAfterDispatch(200, body), JSON.stringify(body)).toBeNull();
     }
+  });
+});
+
+// ── S7·7e — the D53 promotion rider's sibling guard ──────────────────────────
+//
+// SAME strict posture as `sessionToSubscribeAfterDispatch` (they share the one
+// inner check, `spawnedSessionIdFromResult`), reading `body.dispatch` — the
+// TOP-LEVEL rider on an accepted promotion's envelope — instead of `body.result`.
+describe('sessionToSubscribeAfterTransition — the D53 rider, same guard, different envelope key', () => {
+  it('a spawned rider with a real appSessionId returns that id', () => {
+    expect(
+      sessionToSubscribeAfterTransition(200, {
+        accepted: true,
+        task: {},
+        dispatch: { outcome: 'spawned', appSessionId: SESSION_ID, cwd: '/x' },
+      }),
+    ).toBe(SESSION_ID);
+  });
+
+  it('refused / deferred / in-flight riders spawn nothing', () => {
+    for (const outcome of ['refused', 'deferred', 'in-flight']) {
+      expect(
+        sessionToSubscribeAfterTransition(200, { accepted: true, task: {}, dispatch: { outcome } }),
+        outcome,
+      ).toBeNull();
+    }
+  });
+
+  it('an ABSENT `dispatch` key — every non-promotion accepted transition — returns null', () => {
+    // The common case: an ordinary move, or an outcome edge. No dispatch was
+    // attempted at all, and the key is omitted rather than `undefined` (see
+    // taskApi.ts's `ProposeTransitionResponse`) — the guard must read that
+    // absence as cleanly as it reads any other malformed shape.
+    expect(sessionToSubscribeAfterTransition(200, { accepted: true, task: {} })).toBeNull();
+  });
+
+  it('a `result` key (the DISPATCH route\'s shape, not this one\'s) is ignored — wrong key, no cross-talk', () => {
+    expect(
+      sessionToSubscribeAfterTransition(200, {
+        result: { outcome: 'spawned', appSessionId: SESSION_ID, cwd: '/x' },
+      }),
+    ).toBeNull();
+  });
+
+  it('malformed / hostile bodies never throw and always resolve to null', () => {
+    const hostileBodies: unknown[] = [
+      null,
+      undefined,
+      '',
+      'spawned',
+      42,
+      true,
+      [],
+      {},
+      { dispatch: null },
+      { dispatch: 'spawned' },
+      { dispatch: [] },
+      { dispatch: { outcome: null } },
+      { dispatch: { outcome: 'spawned', appSessionId: null } },
+    ];
+    for (const body of hostileBodies) {
+      expect(() => sessionToSubscribeAfterTransition(200, body)).not.toThrow();
+      expect(sessionToSubscribeAfterTransition(200, body), JSON.stringify(body)).toBeNull();
+    }
+  });
+
+  it('non-200 status is never trusted, even if the body looks spawned', () => {
+    expect(
+      sessionToSubscribeAfterTransition(409, {
+        dispatch: { outcome: 'spawned', appSessionId: SESSION_ID, cwd: '/x' },
+      }),
+    ).toBeNull();
+  });
+
+  it('status 0 — the request never reached the daemon', () => {
+    expect(sessionToSubscribeAfterTransition(0, null)).toBeNull();
   });
 });

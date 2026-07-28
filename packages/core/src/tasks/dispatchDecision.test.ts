@@ -6,10 +6,16 @@ import {
   dispatchDeferReasonSchema,
   dispatchRefuseReasonSchema,
   isDispatchableStage,
+  shouldDispatchOnTransition,
   type DispatchDecision,
   type DispatchInput,
 } from './dispatchDecision.js';
-import { TASK_STAGES, type TaskStage } from './taskStateMachine.js';
+import {
+  TASK_STAGES,
+  transitionProposedBySchema,
+  type TaskStage,
+  type TransitionProposedBy,
+} from './taskStateMachine.js';
 import { evaluateHeadroomGate } from '../meterDerivations.js';
 import type { MetersState } from '../projections/meters.js';
 import {
@@ -852,5 +858,119 @@ describe('refusals are recordable as dispatch_refused (I10 evidence)', () => {
       dispatchRefusedPayloadSchema.safeParse({ taskId: 'task-1', reason: 'headroom-unknown' })
         .success,
     ).toBe(true);
+  });
+});
+
+// ─── 10. shouldDispatchOnTransition — D53's FULL TRUTH TABLE (S7·7c) ──────────
+//
+// The whole function is one boolean over (stage × proposedBy), so it is tested
+// EXHAUSTIVELY rather than sampled: every stage in `TASK_STAGES` (itself derived
+// from `taskRecordSchema`) crossed with every value in
+// `transitionProposedBySchema`. Both axes are ENUMERATED from the schemas, never
+// transcribed — a stage or a proposer added later joins the sweep automatically
+// and lands in the FALSE column unless somebody deliberately moves it, which is
+// the fail-closed direction the function was written for.
+
+describe('shouldDispatchOnTransition — the D53 dispatch-on-promotion rule', () => {
+  const ALL_PROPOSED_BY: readonly TransitionProposedBy[] = transitionProposedBySchema.options;
+
+  // Every (stage, proposedBy) pair, in one place, so each case below is a
+  // statement about the WHOLE table rather than about the cells it remembered.
+  function everyCell(): Array<{ toStage: TaskStage; proposedBy: TransitionProposedBy }> {
+    return TASK_STAGES.flatMap((toStage) =>
+      ALL_PROPOSED_BY.map((proposedBy) => ({ toStage, proposedBy })),
+    );
+  }
+
+  it('is EXACTLY four true cells out of the full table', () => {
+    // The one place the design intent is spelled out as data — planning and
+    // implementing (the two ACTIVE stages) crossed with human and orchestrator
+    // (the two PROMOTERS). A deliberate change to what starts work is a diff
+    // against this literal; an accidental one reddens it.
+    const cells = everyCell();
+    expect(cells).toHaveLength(TASK_STAGES.length * ALL_PROPOSED_BY.length);
+
+    const dispatching = cells
+      .filter((cell) => shouldDispatchOnTransition(cell))
+      .map((cell) => `${cell.toStage}/${cell.proposedBy}`)
+      .sort();
+
+    expect(dispatching).toEqual(
+      [
+        'implementing/human',
+        'implementing/orchestrator',
+        'planning/human',
+        'planning/orchestrator',
+      ].sort(),
+    );
+  });
+
+  it('every OTHER cell is false — asserted cell by cell, not by counting', () => {
+    // The complement of the case above, written the other way round so a bug that
+    // made the filter itself wrong cannot pass both.
+    const expectedTrue = new Set([
+      'planning/human',
+      'planning/orchestrator',
+      'implementing/human',
+      'implementing/orchestrator',
+    ]);
+    for (const cell of everyCell()) {
+      const key = `${cell.toStage}/${cell.proposedBy}`;
+      expect(shouldDispatchOnTransition(cell), key).toBe(expectedTrue.has(key));
+    }
+  });
+
+  it('an OUTCOME never auto-dispatches, in any stage — D53 forbids chaining', () => {
+    // The `dispatcher` column is false EVERYWHERE, including the two active
+    // stages. This is the verdict bounce (`review → implementing`, proposed by the
+    // dispatcher) and the reported completion (`implementing → review`): both land
+    // the task where they land it and start NOTHING. Starting the next run is the
+    // orchestrator's explicit call.
+    for (const toStage of TASK_STAGES) {
+      expect(shouldDispatchOnTransition({ toStage, proposedBy: 'dispatcher' }), toStage).toBe(
+        false,
+      );
+    }
+  });
+
+  it('review is a HOLDING PEN even though it is a DISPATCHABLE stage', () => {
+    // The two partitions are deliberately different and this is the case that says
+    // so out loud: `review` is in `DISPATCHABLE_TASK_STAGES` (a reviewer CAN be run
+    // there, by the explicit dispatch call) and is NOT an active stage (entering it
+    // starts nothing). If these two facts ever collapse into one set, D53's
+    // "no chaining" rule collapses with them.
+    expect(DISPATCHABLE_TASK_STAGES.has('review')).toBe(true);
+    for (const proposedBy of ALL_PROPOSED_BY) {
+      expect(shouldDispatchOnTransition({ toStage: 'review', proposedBy }), proposedBy).toBe(false);
+    }
+  });
+
+  it('a proposedBy OUTSIDE the enum is fail-closed — the explicit-two-values point', () => {
+    // ⚠ THE ASSERTION THAT WOULD FAIL IF THE RULE WERE WRITTEN `!== 'dispatcher'`.
+    // A future proposer (a watchdog, a scheduler, an MCP peer) must not start
+    // spawning Claude processes by the mere act of being added to the enum. The
+    // cast is how a value the type system forbids is made to physically reach the
+    // function, exactly as the `stage: 'wat'` case does for stages.
+    const futureProposer = 'watchdog' as unknown as TransitionProposedBy;
+    expect(shouldDispatchOnTransition({ toStage: 'planning', proposedBy: futureProposer })).toBe(
+      false,
+    );
+    expect(
+      shouldDispatchOnTransition({ toStage: 'implementing', proposedBy: futureProposer }),
+    ).toBe(false);
+  });
+
+  it('a stage outside the schema enum is fail-closed too, and nothing throws', () => {
+    const unknownStage = 'shipped-it-lol' as unknown as TaskStage;
+    for (const proposedBy of ALL_PROPOSED_BY) {
+      expect(shouldDispatchOnTransition({ toStage: unknownStage, proposedBy })).toBe(false);
+    }
+  });
+
+  it('is pure — no clock, no mutation, same answer every time', () => {
+    const promotion = deepFreeze({ toStage: 'planning', proposedBy: 'human' } as const);
+    expect(shouldDispatchOnTransition(promotion)).toBe(true);
+    expect(shouldDispatchOnTransition(promotion)).toBe(true);
+    expect(promotion).toEqual({ toStage: 'planning', proposedBy: 'human' });
   });
 });

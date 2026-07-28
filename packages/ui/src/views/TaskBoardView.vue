@@ -9,12 +9,16 @@ import {
   findTaskCard,
   groupTasksForBoard,
   moveOptionsFor,
+  sessionTrailOf,
   stageLabel,
   type DispatchReport,
   type MoveOption,
+  type TaskBoardRecord,
   type TaskCard,
+  type TaskSessionTrailEntry,
 } from '../lib/taskBoard.js';
-import { sessionToSubscribeAfterDispatch } from '../lib/dispatchFollow.js';
+import { sessionToSubscribeAfterDispatch, sessionToSubscribeAfterTransition } from '../lib/dispatchFollow.js';
+import { SHORT_SESSION_ID_LENGTH } from '../lib/sessionLabel.js';
 import { buildHash } from '../lib/route.js';
 
 // ─── slice 6 step 9 — THE TASK BOARD, MOBILE ────────────────────────────────
@@ -101,6 +105,29 @@ const moveOptions = computed<readonly MoveOption[]>(() =>
   openCard.value === null ? [] : moveOptionsFor(openCard.value.stage, store.stageEdges),
 );
 
+// S7·7g — the open card's SESSION TRAIL. `sessionTrailOf` reads `sessionRefs`
+// off the wire record, which `TaskCard` deliberately does not carry (see
+// lib/taskBoard.ts's note on why the trail sits standalone rather than
+// widening every card). So this looks the raw record back up out of the
+// projection body by the open taskId, using the SAME key-vs-own-taskId
+// precedence `readTaskCards` uses internally — the two agree in every
+// projection the daemon serializes (see that function's own comment).
+const openTaskRecord = computed<TaskBoardRecord | null>(() => {
+  const taskId = openCardId.value;
+  const body = store.tasksProjectionBody as { tasks?: Record<string, unknown> } | null | undefined;
+  const raw = taskId === null ? undefined : body?.tasks?.[taskId];
+  return typeof raw === 'object' && raw !== null ? ({ ...raw, taskId } as TaskBoardRecord) : null;
+});
+const sessionTrail = computed<readonly TaskSessionTrailEntry[]>(() =>
+  openTaskRecord.value === null ? [] : sessionTrailOf(openTaskRecord.value, store.sessions),
+);
+// `attempt N` is noise for a stage that only ran once — shown only when this
+// entry's stage bucket holds more than one usable ref. The trail is tiny
+// (a handful of dispatches per task), so a linear scan per row costs nothing.
+function stageHasMultipleAttempts(entry: TaskSessionTrailEntry): boolean {
+  return sessionTrail.value.filter((other) => other.stage === entry.stage).length > 1;
+}
+
 function openSheet(card: TaskCard): void {
   openCardId.value = card.taskId;
   moveNotice.value = null;
@@ -118,6 +145,7 @@ async function proposeMove(toStage: string): Promise<void> {
   }
   moveInFlight.value = true;
   dispatchNotice.value = null;
+  dispatchedSessionId.value = null;
   try {
     const answer = await store.proposeTaskTransition(card.taskId, toStage);
     const outcome = describeMoveResponse(answer.status, answer.body);
@@ -125,6 +153,24 @@ async function proposeMove(toStage: string): Promise<void> {
     // ⚠ NOTHING MOVES HERE. Not even on `accepted` — the sheet stays open with
     // the machine's answer on it, and the board redraws when the projection
     // catches up.
+
+    // S7·7e — THE D53 DISPATCH RIDER. A promotion into an active stage makes
+    // its own dispatch attempt (taskApi.ts's transitions route), and an
+    // accepted envelope carries that attempt's result on a top-level
+    // `dispatch` field — see `ProposeTransitionResponse`. When it is present,
+    // re-wrap it in the `{ result }` shape `describeDispatchResponse` already
+    // reads and hand it to that SAME describer, rather than writing a second
+    // one for a field that carries the identical `DispatchAttemptResult`
+    // shape (principle 9: one description per fact, not one per call site).
+    // `dispatchedSessionId` reuses its own strict guard the same way, which is
+    // what lets the existing notice markup below grow the "Open session" link
+    // for a promotion exactly as it already does for an explicit dispatch —
+    // no markup change needed, the link derives from the same report shape.
+    const body = answer.body;
+    if (typeof body === 'object' && body !== null && 'dispatch' in body) {
+      dispatchNotice.value = describeDispatchResponse(200, { result: (body as { dispatch: unknown }).dispatch });
+      dispatchedSessionId.value = sessionToSubscribeAfterTransition(answer.status, answer.body);
+    }
   } finally {
     moveInFlight.value = false;
   }
@@ -666,6 +712,42 @@ function livenessClass(liveness: string): string {
         <p class="mt-2 text-[11px] text-ink-dim">
           One attempt, no retry. The worker is told its task, stage and directory.
         </p>
+
+        <!-- ── THE SESSION TRAIL (S7·7g) ─────────────────────────────────────
+             Every dispatched run for this task, oldest first — each id links to
+             its stream, same affordance as "Open session" above. Rendered only
+             when the trail is non-empty: a task never dispatched shows nothing
+             here rather than an empty heading. Per-ref OUTCOME is deliberately
+             absent (see `sessionTrailOf`'s own note) — this is a log of WHO ran
+             WHEN, not a verdict history. -->
+        <template v-if="sessionTrail.length > 0">
+          <h3 class="mt-4 text-sm font-semibold font-mono uppercase tracking-[0.08em]">Sessions</h3>
+          <ul class="flex flex-col gap-1.5">
+            <li
+              v-for="entry in sessionTrail"
+              :key="`${entry.stage}:${entry.attempt}:${entry.appSessionId}`"
+              class="flex flex-wrap items-center gap-1.5 rounded-md border border-line px-3 py-2 text-[11px] text-ink-dim"
+            >
+              <span class="font-medium text-ink">
+                {{ entry.stage === '' ? '(no stage recorded)' : stageLabel(entry.stage) }}
+              </span>
+              <span v-if="stageHasMultipleAttempts(entry)">attempt {{ entry.attempt }}</span>
+              <span
+                v-if="entry.liveness !== null"
+                class="rounded-full px-1.5 py-0.5 font-semibold"
+                :class="livenessClass(entry.liveness)"
+              >
+                {{ entry.liveness }}
+              </span>
+              <a
+                :href="buildHash({ view: 'stream', appSessionId: entry.appSessionId })"
+                class="font-mono underline decoration-dotted break-all"
+              >
+                {{ entry.appSessionId.slice(0, SHORT_SESSION_ID_LENGTH) }}
+              </a>
+            </li>
+          </ul>
+        </template>
       </div>
     </div>
 

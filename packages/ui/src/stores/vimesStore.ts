@@ -9,7 +9,7 @@ import type { DerivedUsageBody, UsageRefreshOutcome, UsageSnapshot } from '../li
 import type { CostLedgerBody } from '../lib/costDisplay.js';
 import type { TaskApiAnswer } from '../lib/taskBoard.js';
 import type { WorkOrderBody, WorkOrderFieldDescriptor } from '../lib/workOrderForm.js';
-import { sessionToSubscribeAfterDispatch } from '../lib/dispatchFollow.js';
+import { sessionToSubscribeAfterDispatch, sessionToSubscribeAfterTransition } from '../lib/dispatchFollow.js';
 import type { GitStatus, GitFileDiff, GitRepoEntry, GitDiffContext } from '../lib/gitReview.js';
 import type { EventRecord, SessionRecord } from '../lib/types.js';
 import { derivePushState, type PushUiState } from '../lib/pushState.js';
@@ -551,11 +551,31 @@ export const useVimesStore = defineStore('vimes', () => {
   }
 
   // PROPOSE a transition. The name is the contract: this does not move anything.
-  function proposeTaskTransition(taskId: string, toStage: string): Promise<TaskApiAnswer> {
-    return postTaskApi(`/api/tasks/${encodeURIComponent(taskId)}/transitions`, {
+  //
+  // S7·7e — mirrors `dispatchTask`'s subscribe glue below, for the SAME reason:
+  // D53 made a promotion into an active stage make its own dispatch attempt
+  // (taskApi.ts's transitions route), and an accepted promotion carries that
+  // attempt's result on a top-level `dispatch` field. A `spawned` result there
+  // mints a brand-new session exactly like an explicit dispatch does, and the
+  // client still only gets live events for streams it is subscribed to — so
+  // without this glue, a promotion's `session_created` would be just as
+  // invisible as a bare dispatch's used to be. `sessionToSubscribeAfterTransition`
+  // makes the strict spawned+id decision from the `dispatch` rider (its sibling,
+  // `sessionToSubscribeAfterDispatch`, reads `dispatchTask`'s `result` field
+  // instead — same guard, different envelope shape); this glue only acts on
+  // it. The returned `TaskApiAnswer` is UNCHANGED — this adds a side effect,
+  // it does not reinterpret what the caller renders.
+  async function proposeTaskTransition(taskId: string, toStage: string): Promise<TaskApiAnswer> {
+    const answer = await postTaskApi(`/api/tasks/${encodeURIComponent(taskId)}/transitions`, {
       toStage,
       proposedBy: 'human',
     });
+    const spawnedSessionId = sessionToSubscribeAfterTransition(answer.status, answer.body);
+    if (spawnedSessionId !== null) {
+      subscribe(spawnedSessionId);
+      scheduleSessionsRefresh();
+    }
+    return answer;
   }
 
   // ONE explicit dispatch attempt — no retry, no loop, mirroring the route.
