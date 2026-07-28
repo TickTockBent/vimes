@@ -373,6 +373,96 @@ discipline adopted).
 - **Kill:** a fresh fix-seed can't carry enough (worklog insufficient) to converge in
   the harness → finding; revisit D46's cost stance.
 
+### S7·7c — Dispatch-on-promotion + the D54 in-flight lock — `opus` *(core + daemon)*
+
+**BUILT + ORCHESTRATOR-VERIFIED 2026-07-28 (pending commit; deploys with S7·7d in
+one restart).** D53's third category (dispatch = MECHANICS) made real, with the
+guard D54 demanded riding in the same unit:
+- **Core:** `shouldDispatchOnTransition` (dispatchDecision.ts) — pure, fail-closed:
+  true iff `toStage` ∈ {planning, implementing} AND `proposedBy` ∈ {human,
+  orchestrator}, both matched explicitly (a fourth proposedBy value must EARN its
+  way into starting work). Review stays a holding pen; outcomes never chain — the
+  verdict bounce lands `implementing` UN-dispatched and the explicit dispatch call
+  remains the orchestrator's decision for it.
+- **Daemon:** the transitions route follows an ACCEPTED promotion with AT MOST ONE
+  `dispatchTask` call; the result rides the 200 as an optional `dispatch` field
+  (absent stays absent — non-promoting envelopes byte-identical). Creation never
+  auto-dispatches. `TaskDispatcher` gained the **D54 per-task in-flight lock**
+  (sync-prefix claim, `finally` release, new silent `in-flight` execution outcome)
+  — full record decisions.md **D54** (moved from open-questions).
+- **Verification:** suite 2595 green (orchestrator's own run, exit-code-checked);
+  agent's three sabotages + orchestrator's independent route-predicate inversion
+  (reddened exactly the seven guard-measuring cases, both directions; snapshot
+  restore byte-identical). Two pre-existing route tests deliberately repointed —
+  they pinned the pre-D53 world (a human promotion NOT dispatching); one now runs
+  the real dispatcher as the end-to-end proof. UI follow-ups queued (in-flight
+  sentence + rider surfacing — QUEUE, dead-branches entry).
+
+### S7·7d — Stage-scoped report tools (the planner-gate fix) — `opus` *(daemon)*
+
+**BUILT + ORCHESTRATOR-VERIFIED 2026-07-28 (pending commit; deploys with S7·7c in
+one restart). Decision record: D55** (a recorded reversal of D52's exposure half).
+The observed f35a77dd planner gate (plan mode routes MCP calls through
+`canUseTool` → an offered tool is a gate → unattended stall) narrowed the OFFER:
+`spawnSession` carries the dispatched `stage`; the adapter offers planning →
+NOTHING, implementing → `report_completion`, review → `report_review`, absent/
+unknown stage → both (fail-open-to-guarded, unreachable today). The dispatcher
+guards stay untouched as defense in depth; tool names/shapes/handlers/
+acknowledgements byte-identical. Suite 2598 green (orchestrator's own run);
+verify-by-broke on both sides (agent: planning forced back to both; orchestrator:
+review cross-wired to the completion spec — both reddened exactly their
+measuring tests, snapshot-restored). Finding logged: `startProcess` is at seven
+positional params — next spawn attribute should convert it to an options object
+(QUEUE).
+
+### S7·7e — Dispatch-surface cleanup (dead branches, `in-flight`, the rider) — `sonnet` *(UI + daemon types)*
+
+**BUILT + ORCHESTRATOR-VERIFIED 2026-07-28 (pending commit; UI half ships on the
+next ci-gate, daemon half is type-only).** Three things, one unit: (1) the D46
+dead branches removed together — `resumed`/`resume-failed` UI cases AND the
+daemon union variants, exactly as the union's own comment said would happen;
+retired strings now pin the honest default-branch degrade. (2) `in-flight`
+(D54) got its board sentence, tone `waiting` — like `deferred`, the gate doing
+its job, not a denial. (3) The D53 rider is surfaced end-to-end:
+`sessionToSubscribeAfterTransition` (shared inner guard with its dispatch
+sibling — one guard, two envelope keys), the store's promotion path gained the
+same subscribe+refresh glue as explicit dispatch, and the board re-wraps the
+rider into the ONE describer so a promotion shows the same notice + open-session
+link a manual dispatch does. Suite 2607 green (orchestrator's own run);
+orchestrator sabotage (guard cross-wired to the wrong envelope key) reddened
+exactly the two key-measuring tests, both directions. One orchestrator
+comment-date fix (D46 is a day old, not "months").
+
+### S7·7f — Briefing prose pass (unwrap + no-criteria clause) — `sonnet` *(core)*
+
+**BUILT + ORCHESTRATOR-VERIFIED 2026-07-28 (pending commit; reaches dispatched
+prompts at the next daemon restart).** All 11 hard-wrapped prose passages in
+`stageInstruction.ts` unwrapped — one paragraph per source line, verified
+content-identical modulo whitespace (agent's mechanical check + the
+orchestrator's line-by-line diff read); a "don't re-wrap" comment guards the
+constants section. The ONE content addition: the no-criteria review clause, a
+separate conditional block (so `REVIEW_BRIEFING_CLOSING` stays a byte-stable
+suffix) blessing the observed johnny-run behaviour — a reviewer on a bare task
+derives its own criteria and reports each with a minted id. `deriveReviewOutcome`
+untouched. Goldens refreshed deliberately, core only (daemon/UI pin no briefing
+bytes — confirmed by grep). Suite 2609 green; orchestrator sabotage (clause
+removed) reddened exactly the three clause-measuring tests.
+
+### S7·7g — The task's session trail with click-to-open links — `sonnet` *(UI-only)*
+
+**BUILT + ORCHESTRATOR-VERIFIED 2026-07-28 (pending commit; ships on the next
+ci-gate, no restart).** Wes's 2026-07-27 ask ("a list of each associated session
+dispatched from a task with easy links in the task itself"), reduced by the
+orchestrator's spike to a UI-only unit (`sessionRefs` already ride the tasks
+projection). `sessionTrailOf` (standalone sibling of `latestSessionOf` — kept
+off `TaskCard` so the board never computes a trail only the open sheet reads):
+chronological walk, per-stage 1-based attempts, liveness joined never guessed,
+per-ref outcome deliberately absent (the refs don't carry one). Card sheet
+gained a "Sessions" section — stage + attempt (only when a stage ran more than
+once) + liveness chip + short-id link via the same S9 `buildHash` affordance.
+Suite 2614 green; orchestrator sabotage (attempt counter pinned to 1) reddened
+exactly the two attempt-measuring tests.
+
 ### S7·8 — The two-door board UX — `sonnet` *(UI-only)*
 - **Scope:** steer (same rev, new attempt) vs amend (new rev) as a **labeled, visible**
   choice (T7's lesson: the doors weren't labeled).

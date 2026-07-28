@@ -1930,3 +1930,88 @@ diff text into the briefing — zero prompt bytes, never truncated, never stale.
 A refinement of D46's carrier, not a reversal of its content: the fixer still
 HAS the diff; the briefing carries review feedback + worklog inline (small
 structured data with no on-disk home) and points at the diff.
+
+## D54 — The per-task in-flight dispatch lock: D53's sharper exposure carries its own guard — DECIDED 2026-07-28
+
+*(Settled by S7·7c, the dispatch-on-promotion unit — exactly the trigger the
+open question named. Moved from open-questions.md D54.)*
+
+**The hazard, restated.** D46 made every stage run a fresh spawn, which left
+`decideDispatch`'s `already-running` refusal as the ONLY double-dispatch guard
+— and that refusal is derived from the task's own `sessionRefs` against live
+processes, so it cannot fire until `task_session_attached` has LANDED. Since
+step 8 there is an `await` between the decision and that event (worktree
+creation is a subprocess); a second attempt arriving inside the window sailed
+through to a second live session on one task. Tolerable while dispatch was
+human-clicked; S7·7c makes dispatch machine-initiated (a promotion is a
+dispatch), which is precisely the sharpening the open question predicted.
+
+**Decided: the lean, as leaned — a per-task in-flight lock in `TaskDispatcher`,
+built into the same unit that created the exposure.**
+
+- `inFlightDispatches: Set<string>`, claimed in `dispatchTask`'s SYNCHRONOUS
+  prefix (after the unknown-task lookup, before the decision), released in a
+  `finally` so every path — refuse, defer, spawn, worktree-failed, spawn-threw
+  — releases. Correctness rests on the single JS thread: no `await` stands
+  between check and claim.
+- The loser returns a NEW `in-flight` execution outcome: a sibling of
+  `spawn-failed` / `worktree-failed`, NOT a `DispatchRefuseReason` (the
+  decision function never saw the attempt — a `dispatch_refused` record would
+  claim a judgment that never happened), and SILENT like `defer` (nothing
+  happened; the concurrent attempt's own result is the record).
+- NOT the alternative lean (`already-attached-live-session` inside
+  `decideDispatch`): in-flight-ness is process state — live promises in one
+  daemon — not projection state, so a pure replayable function can never see
+  it. This is the one recorded exception to "WHETHER-ifs belong in
+  `decideDispatch`", and the module header now says so.
+- What it does NOT guard, recorded: another process. In-memory, cleared by
+  restart (correctly — the promises died with the process). No scheduler, no
+  cross-process lease. The post-attach guards (`already-running`, I11 on the
+  human resume path) are unchanged and still do the other half of the job.
+
+Verified by breaking: disabling the check, widening the promoter match to
+`!== 'dispatcher'`, and deleting the `finally` each redden their own distinct
+test set (agent's three sabotages + the orchestrator's independent route-level
+inversion, which reddened exactly the seven guard-measuring cases in both
+directions).
+
+## D55 — Report tools are OFFERED per stage, not to every dispatched session: exposure is not free under plan mode — DECIDED 2026-07-28
+
+*(Settled by S7·7d. A recorded reversal of the exposure half of D52's build —
+the sessionHost comment that argued both-tools-everywhere was "deliberate
+rather than lazy".)*
+
+**The observed incident (rule 0.7 — this is why the reversal earned its
+record).** 2026-07-28, task `25f9c558`, planning session `f35a77dd`: the
+planner finished capturing its plan and then called `report_completion`. Under
+D48 planning runs `permissionMode: 'plan'`, and in plan mode the SDK routes
+MCP tool calls through `canUseTool` — so the call FIRED A HUMAN GATE. Wes was
+attending and approved it; the dispatcher guard then correctly no-opped the
+report (no `implementing` sessionRef). Unattended, that gate is a stall: a
+fleet planner waiting forever on an approval nobody will give. The johnny run
+could not have shown this — its auto-mode legs bypass `canUseTool` for MCP
+tools entirely; the asymmetry only appears in plan mode.
+
+**What was reversed, and what deliberately was NOT.**
+- REVERSED: the OFFER. `spawnSession` now carries the dispatched `stage`
+  (threaded dispatcher → host → SDK spawn context), and the adapter offers:
+  planning → NOTHING (its deliverable travels via ExitPlanMode; an offered
+  tool under plan mode is a gate); implementing → `report_completion` only;
+  review → `report_review` only; stage absent/unrecognized → both (fail-open-
+  to-guarded — a plumbing bug must not silently remove the loop's only way to
+  finish; unreachable from `dispatchTask` today).
+- NOT REVERSED: the GUARD. `recordReview` / `recordCompletion` still adjudicate
+  against the task's real sessionRefs and still no-op a wrong-stage caller.
+  The old comment's argument — the dispatcher, where the task record lives, is
+  the authority — was half right, and that half stands as defense in depth.
+  What it missed is that exposure has a COST independent of the guard.
+- UNTOUCHED: tool names, input shapes, handler bodies, acknowledgement strings
+  (verbatim), the MCP server mechanics, and all gate behavior — the fix is
+  what is offered, never how a call is judged.
+
+Old sessionHost tests pinning both-tools-everywhere were repointed to the new
+map (the deleted case's schema/order assertions live on in the no-stage
+fallback case). Verified by breaking on both sides: the agent forced planning
+back to both tools (reddened exactly the planning-has-none case); the
+orchestrator cross-wired review to the completion spec (independent sabotage,
+snapshot-restored).
