@@ -369,6 +369,25 @@ function readTaskCards(
   return cards;
 }
 
+/**
+ * The card for one taskId in a freshly-derived board, or null when the board has
+ * no such task. The move sheet remembers a taskId — NOT a card snapshot — and
+ * re-reads the live card through this on every projection change, so a task that
+ * moves stage while its sheet is open re-derives its own move options instead of
+ * freezing on the stage it had at open. Walks `board.groups` (flow + exceptions +
+ * unknown — every card the board holds). Total; never throws.
+ */
+export function findTaskCard(board: TaskBoard, taskId: string): TaskCard | null {
+  for (const group of board.groups) {
+    for (const card of group.tasks) {
+      if (card.taskId === taskId) {
+        return card;
+      }
+    }
+  }
+  return null;
+}
+
 // One answer from the task API, exactly as it came back. The store returns this
 // VERBATIM and classifies nothing — every interpretation happens in the
 // `describe*` functions below, where it is testable, and nowhere else.
