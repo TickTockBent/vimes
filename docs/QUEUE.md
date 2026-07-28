@@ -20,6 +20,20 @@ list a reactive derivation of the current `task.stage` (from `TASK_STAGE_EDGES` 
 whatever the UI mirror is), not a value captured at open. UI-only (`packages/ui`),
 no daemon change → ships on the next ci-gate, no restart. Small.
 
+## FIX — stage-scope the report tools (planner called report_completion → spurious human gate)
+
+*(Observed 2026-07-28, planner f35a77dd on task 25f9c558.)* Report tools are exposed
+to ALL dispatched sessions (S7·6b: "guards make it safe"). The guards DID hold — the
+planner's post-plan `report_completion` call no-opped (no implementing ref) — but the
+call FIRED A HUMAN GATE first, because of a permission-mode asymmetry the johnny run
+couldn't show: `auto` (implementing/review) bypasses `canUseTool` for MCP tools
+(handler capture, 0 gates), while **`plan` (planning) routes MCP calls through
+`canUseTool`** → gate_fired → phone. Unattended, that's a STALL: a planning session
+hanging on a gate nobody answers. **Fix: scope `reportTools` by stage at spawn** —
+planning gets NONE (it finishes via ExitPlanMode), implementing gets
+`report_completion`, review gets `report_review`. The recordX guards stay as belt.
+Daemon change (restart). Small; do before any unattended fleet run.
+
 ## CLEANUP — UI dead branches: `resumed`/`resume-failed` dispatch outcomes (post-D46)
 
 *(S7·7b-daemon finding, 2026-07-27.)* D46 removed the resume path; the daemon can no

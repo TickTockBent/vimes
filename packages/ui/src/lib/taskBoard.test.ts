@@ -9,6 +9,7 @@ import {
   describeMoveResponse,
   describeRejectionReason,
   deriveTaskCard,
+  findTaskCard,
   groupTasksForBoard,
   moveOptionsFor,
   shortTaskId,
@@ -376,6 +377,38 @@ describe('moveOptionsFor — the UI reflects the served edge table, the machine 
     expect(options.find((option) => option.stage === 'plan-ready')?.label).toBe('Plan ready');
     expect(options.find((option) => option.stage === 'quarantined')?.kind).toBe('exception');
     expect(options.find((option) => option.stage === 'backlog')?.kind).toBe('flow');
+  });
+});
+
+// ── The move sheet follows the LIVE task, not a snapshot taken at open ───────
+
+describe('findTaskCard + moveOptionsFor — the sheet follows the LIVE task, not a snapshot', () => {
+  it('re-derives destinations when the task moves stage under an open sheet', () => {
+    // The sheet opens over the task while it is in `implementing`.
+    const boardBefore = groupTasksForBoard(
+      projectionBody(taskRecord({ taskId: TASK_ONE, stage: 'implementing' })),
+    );
+    const snapshot = findTaskCard(boardBefore, TASK_ONE)!; // what openSheet captured
+    const optionsAtOpen = moveOptionsFor(snapshot.stage, STAGE_EDGES_FIXTURE).map((option) => option.stage);
+    expect(new Set(optionsAtOpen)).toEqual(new Set(STAGE_EDGES_FIXTURE.implementing));
+
+    // The transition streams back: the projection now has the task in `review`.
+    const boardAfter = groupTasksForBoard(
+      projectionBody(taskRecord({ taskId: TASK_ONE, stage: 'review' })),
+    );
+
+    // OLD (snapshot) behavior would keep offering `implementing`'s destinations.
+    // The fix re-reads the LIVE card by id, so the options are `review`'s.
+    const liveCard = findTaskCard(boardAfter, TASK_ONE)!;
+    const optionsAfterMove = moveOptionsFor(liveCard.stage, STAGE_EDGES_FIXTURE).map((option) => option.stage);
+    expect(liveCard.stage).toBe('review');
+    expect(new Set(optionsAfterMove)).toEqual(new Set(STAGE_EDGES_FIXTURE.review));
+    expect(new Set(optionsAfterMove)).not.toEqual(new Set(optionsAtOpen)); // the bug this fixes
+  });
+
+  it('returns null when the taskId is not in the board (sheet closes over a gone task)', () => {
+    const board = groupTasksForBoard(projectionBody(taskRecord({ taskId: TASK_ONE, stage: 'backlog' })));
+    expect(findTaskCard(board, 'no-such-id')).toBeNull();
   });
 });
 

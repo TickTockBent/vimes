@@ -332,7 +332,16 @@ both want a criteria-bearing task.
   reconsider acceptance-list identity (D43 feedback).
 
 ### S7·7 — Plan→implement handoff + D46 fix-loop (resume DIES) — `opus` *(dispatcher behavior change + a decided reversal)*
-**S7·7b DONE 2026-07-27 (core + daemon), pending deploy.** The fix loop is real:
+**S7·7b DONE 2026-07-27 (core + daemon), deployed `ac39a6e`. ✅ LIVE-VERIFIED
+2026-07-28 (task `25f9c558`, the task-toast reactive-move-options fix — VIMES's
+FIRST self-improvement):** full loop 13:34→13:46Z, human touched only the two
+promotions + the reviewer dispatch. Firsts proven live: `report_completion` from
+the implementer (real worklog incl. paths-rejected) → **implementing→review
+auto-hop** (5ms, dispatcher); reviewer reported **all 5 REAL criterion UUIDs**
+(primary-path coverage semantics, not invented ids) → review→done (2ms). 0 gates
+on both auto-mode legs. One seam found: the PLANNER called `report_completion`
+under plan-mode's `canUseTool` seat → spurious human gate (guards no-opped it;
+unattended = stall risk) → QUEUE "stage-scope the report tools". The fix loop is real:
 `report_completion` MCP tool (worklog: decisionsMade/pathsRejected) → `recordCompletion`
 (mirror of recordReview) → emit `completion_reported` → propose **implementing→review
 (a D53 OUTCOME)**. D46 flip landed: `resolveStageRunner` always spawns, the resume

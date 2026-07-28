@@ -6,6 +6,7 @@ import {
   describeCreateResponse,
   describeDispatchResponse,
   describeMoveResponse,
+  findTaskCard,
   groupTasksForBoard,
   moveOptionsFor,
   stageLabel,
@@ -75,7 +76,14 @@ const visibleUnknown = computed(() => board.value.unknown.filter((group) => isVi
 // One sheet per card, opened by tapping the card. Tap → sheet is the whole
 // interaction; drag-and-drop is a desktop affordance that fights a phone and
 // would need its own accessibility story.
-const openCard = ref<TaskCard | null>(null);
+// Remember only the taskId; the live card (and its stage) is derived from the
+// board so the sheet reacts when the projection moves the task. A task that
+// vanishes from the board closes its sheet — projection is truth, no stale
+// sheet over a gone task.
+const openCardId = ref<string | null>(null);
+const openCard = computed<TaskCard | null>(() =>
+  openCardId.value === null ? null : findTaskCard(board.value, openCardId.value),
+);
 const moveInFlight = ref(false);
 const dispatchInFlight = ref(false);
 // The last answer from the machine, kept until the operator dismisses it. A 409
@@ -94,13 +102,13 @@ const moveOptions = computed<readonly MoveOption[]>(() =>
 );
 
 function openSheet(card: TaskCard): void {
-  openCard.value = card;
+  openCardId.value = card.taskId;
   moveNotice.value = null;
   dispatchNotice.value = null;
   dispatchedSessionId.value = null;
 }
 function closeSheet(): void {
-  openCard.value = null;
+  openCardId.value = null;
 }
 
 async function proposeMove(toStage: string): Promise<void> {
