@@ -71,6 +71,22 @@ thing — landing the author verb on a disposable session would rebuild it.
   needs identity semantics the event log can't give (rename/merge of roots) →
   halt, decision record.
 
+**✅ BUILT + ORCHESTRATOR-VERIFIED 2026-07-29** (deploys with S8·2 in one
+restart). The `'projects'` stream lands whole: created/updated/archived + the
+RESERVED `project_initialized` (no emitter, D42's onboarding hook); the
+stream-local fold (archive flags, never deletes — history stays attributable);
+`projectForCwd` as the SOLE attribution authority (longest-prefix, segment-
+boundary-aware — `vimes` never swallows `vimes-2`; archived excluded; ties
+unrepresentable because the writer refuses exact-duplicate live roots);
+`ProjectWriter` (refusals emit nothing; archived roots reusable → NEW minted
+id); routes validating against the STATIC config roots (D60 — the route
+comment names the worktree-cwd escalation this prevents). Suite 2682 → 2766
+(+84). Verification: agent's four sabotages (bare-startsWith, archived-skip,
+fence-widening, validation-order) + orchestrator's independent
+shallowest-wins inversion — each reddened exactly its measuring tests,
+snapshot-restored byte-identical. Root is deliberately NOT patchable (a
+different directory is a different project).
+
 ### S8·2 — Picker + project-rooted URLs (UI + one daemon route) — `sonnet`/`opus` *(D61 — restart on deploy, NOT UI-only)*
 - **Scope (widened by D61, 2026-07-29):**
   - **Daemon:** the SPA fallback route — any non-`/api`, non-asset GET serves

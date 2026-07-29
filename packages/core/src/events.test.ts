@@ -28,6 +28,14 @@ import {
   taskCreatedPayloadSchema,
   workOrderAmended,
   workOrderAmendedPayloadSchema,
+  projectCreated,
+  projectCreatedPayloadSchema,
+  projectUpdated,
+  projectUpdatedPayloadSchema,
+  projectArchived,
+  projectArchivedPayloadSchema,
+  projectInitialized,
+  projectInitializedPayloadSchema,
 } from './events.js';
 import { sessionRecordSchema } from './schemas.js';
 import {
@@ -436,6 +444,129 @@ describe('completion_reported (S7·7b — payload REUSED, folds, emitter in 7b-d
   it('is registered under the completion_reported type string, IDENTICAL to reportCompletionPayloadSchema', () => {
     expect(EVENT_TYPES.completionReported).toBe('completion_reported');
     expect(EVENT_PAYLOAD_SCHEMAS[EVENT_TYPES.completionReported]).toBe(reportCompletionPayloadSchema);
+  });
+});
+
+// ── S8·1 D42 — the project-registry vocabulary, on its own 'projects' stream ──
+
+describe('project_created (S8·1 — the declared boundary D42 settled)', () => {
+  const declarationPayload = {
+    projectId: 'project-aaaa-0001',
+    root: '/home/user/projects/vimes',
+    name: 'VIMES',
+    description: 'agent-first remote IDE for Claude Code',
+  };
+
+  it('constructs on the projects stream and validates', () => {
+    expect(projectCreated(declarationPayload)).toEqual({
+      stream: 'projects',
+      type: 'project_created',
+      payload: declarationPayload,
+    });
+    expect(projectCreatedPayloadSchema.safeParse(declarationPayload).success).toBe(true);
+    expect(EVENT_PAYLOAD_SCHEMAS[EVENT_TYPES.projectCreated]).toBe(projectCreatedPayloadSchema);
+  });
+
+  it('is registered under the project_created type string', () => {
+    expect(EVENT_TYPES.projectCreated).toBe('project_created');
+  });
+
+  it('accepts a birth record with NO name and NO description (absent stays absent)', () => {
+    // D42: an unnamed project displays its directory BASENAME, and that fallback
+    // is a READ-TIME derivation — never stored. So the minimal birth record is
+    // projectId + root, and it must validate on its own.
+    const unnamedPayload = { projectId: 'project-aaaa-0002', root: '/home/user/projects/dao-tree' };
+    expect(projectCreatedPayloadSchema.safeParse(unnamedPayload).success).toBe(true);
+  });
+
+  it('requires both projectId and root — a boundary with no directory is not one', () => {
+    const { root: _omittedRoot, ...rootlessPayload } = declarationPayload;
+    expect(projectCreatedPayloadSchema.safeParse(rootlessPayload).success).toBe(false);
+    const { projectId: _omittedId, ...idlessPayload } = declarationPayload;
+    expect(projectCreatedPayloadSchema.safeParse(idlessPayload).success).toBe(false);
+  });
+});
+
+describe('project_updated (S8·1 — the metadata PATCH, work_order_amended discipline)', () => {
+  it('constructs on the projects stream and validates', () => {
+    const patchPayload = { projectId: 'project-aaaa-0001', name: 'VIMES (the session host)' };
+    expect(projectUpdated(patchPayload)).toEqual({
+      stream: 'projects',
+      type: 'project_updated',
+      payload: patchPayload,
+    });
+    expect(projectUpdatedPayloadSchema.safeParse(patchPayload).success).toBe(true);
+    expect(EVENT_TYPES.projectUpdated).toBe('project_updated');
+    expect(EVENT_PAYLOAD_SCHEMAS[EVENT_TYPES.projectUpdated]).toBe(projectUpdatedPayloadSchema);
+  });
+
+  it('tolerates a patch that touches only the description — both fields are optional', () => {
+    // The patch half of the amendment precedent: an update that rewrites only the
+    // description omits the name, and the fold leaves the name untouched.
+    expect(
+      projectUpdatedPayloadSchema.safeParse({
+        projectId: 'project-aaaa-0001',
+        description: 'a description, and nothing else',
+      }).success,
+    ).toBe(true);
+  });
+
+  it('REFUSES a `root` patch — a different directory is a different project (D42)', () => {
+    // The absence of `root` from this payload is the DESIGN, not an oversight, so
+    // it is asserted rather than only documented: zod strips unknown keys, so the
+    // proof is that a "moved" root does not survive the parse.
+    const parsed = projectUpdatedPayloadSchema.safeParse({
+      projectId: 'project-aaaa-0001',
+      root: '/somewhere/else/entirely',
+    });
+    expect(parsed.success).toBe(true);
+    expect(parsed.success && 'root' in parsed.data).toBe(false);
+  });
+});
+
+describe('project_archived (S8·1 — archive, NOT delete)', () => {
+  it('constructs on the projects stream and carries only the projectId', () => {
+    const archivalPayload = { projectId: 'project-aaaa-0001' };
+    expect(projectArchived(archivalPayload)).toEqual({
+      stream: 'projects',
+      type: 'project_archived',
+      payload: archivalPayload,
+    });
+    expect(projectArchivedPayloadSchema.safeParse(archivalPayload).success).toBe(true);
+    expect(EVENT_TYPES.projectArchived).toBe('project_archived');
+    expect(EVENT_PAYLOAD_SCHEMAS[EVENT_TYPES.projectArchived]).toBe(projectArchivedPayloadSchema);
+  });
+
+  it('requires a projectId', () => {
+    expect(projectArchivedPayloadSchema.safeParse({}).success).toBe(false);
+  });
+});
+
+describe('project_initialized (S8·1 — RESERVED, rule 0.5, NOTHING EMITS IT)', () => {
+  // Precedent: `dispatch_refused` (reserved slice 0 → emitted slice 6),
+  // `work_order_amended` (S7·1 → S7·2b) and the `meter_alert` `disposition: 'hold'`
+  // reservation. D42 reserves this one for the project ONBOARDING HOOK
+  // (`design-directions.md` → "Project onboarding"); the workflow is built when it
+  // has a consumer, not before. **PARSE-ONLY: nothing in the tree calls the
+  // constructor and `projections/projects.ts` deliberately does not fold it.**
+  const initializationPayload = { projectId: 'project-aaaa-0001' };
+
+  it('constructs on the projects stream and validates', () => {
+    expect(projectInitialized(initializationPayload)).toEqual({
+      stream: 'projects',
+      type: 'project_initialized',
+      payload: initializationPayload,
+    });
+    expect(projectInitializedPayloadSchema.safeParse(initializationPayload).success).toBe(true);
+  });
+
+  it('is registered in the payload table like its siblings, despite having no emitter', () => {
+    // A reserved shape absent from the table is a shape no future consumer can
+    // validate against, which defeats the point of reserving it.
+    expect(EVENT_TYPES.projectInitialized).toBe('project_initialized');
+    expect(EVENT_PAYLOAD_SCHEMAS[EVENT_TYPES.projectInitialized]).toBe(
+      projectInitializedPayloadSchema,
+    );
   });
 });
 
