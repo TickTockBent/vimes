@@ -109,6 +109,23 @@ different directory is a different project).
 - **Kill:** scoping the board breaks the global view Wes still needs →
   design a both-views answer before proceeding.
 
+**✅ BUILT + ORCHESTRATOR-VERIFIED 2026-07-29** (deployed with S8·1, one
+restart — awaiting Wes's phone walk for the human exit half). D61 made real:
+`shouldServeAppShell` (the extracted fallback rule — /api NEVER falls back, a
+deliberate fix to the pre-existing extension-less fallback that served 200 HTML
+for unknown API paths; asset detection by STATIC_CONTENT_TYPES membership so a
+dotted project dir stays URL-addressable); `pathSegment`/`rootsBases` decorate
+the projects list at read time; `lib/projectContext.ts` (path parsing hardened
+against traversal, the `cwdWithinProject` MIRROR with the lockstep comment +
+the vimes/vimes-2 trap pinned on both sides, display-name basename fallback,
+layout memory with deep-link-wins); the picker (real `<a href>` rows,
+declare-prefill mode, unreachable-registry retry); board + session list scoped,
+spawn/create defaulting into the project. Suite 2766 → 2818 (+52). Agent
+verified .vue types via vue-tsc + compiled all touched SFCs; two agent
+sabotages + orchestrator's /api-exclusion removal (2 reds exact), all
+snapshot-restored. Segment-less projects (base root declared as project)
+render as honest non-link picker rows.
+
 ## Phase B — the standing orchestrator (D56)
 
 ### S8·3 — The entity + maintenance lifecycle (daemon) — `opus` *(the heart)*

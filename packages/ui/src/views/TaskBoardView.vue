@@ -18,6 +18,7 @@ import {
   type TaskSessionTrailEntry,
 } from '../lib/taskBoard.js';
 import { sessionToSubscribeAfterDispatch, sessionToSubscribeAfterTransition } from '../lib/dispatchFollow.js';
+import { projectDisplayName } from '../lib/projectContext.js';
 import { SHORT_SESSION_ID_LENGTH } from '../lib/sessionLabel.js';
 import { buildHash } from '../lib/route.js';
 import {
@@ -67,7 +68,17 @@ onMounted(() => {
   store.watchTasks();
 });
 
-const board = computed(() => groupTasksForBoard(store.tasksProjectionBody, store.sessions));
+// S8·2 — SCOPED TO THE OPEN PROJECT when this tab has one (D42's read-time
+// derivation over each task's own `projectRoot`). `groupTasksForBoard` applies
+// the scope, so the group counts describe the board on screen. Null project →
+// the whole board, exactly as before.
+const board = computed(() =>
+  groupTasksForBoard(
+    store.tasksProjectionBody,
+    store.sessions,
+    store.currentProject?.root ?? null,
+  ),
+);
 
 // Focus: tapping a section header (or a tray count) narrows the board to that
 // one stage; tapping the focused header again clears it. Purely presentational,
@@ -466,6 +477,15 @@ const rootOptions = computed(() => store.roots ?? []);
 
 function openCreate(): void {
   createNotice.value = null;
+  // ⚠ THE OPEN PROJECT IS THE DEFAULT projectRoot (S8·2). Inside johnny, "new
+  // task" means a task in johnny — and a task created against the wrong root
+  // spawns its session in the wrong directory AND vanishes from the board that
+  // created it. This REPLACES whatever the box held, deliberately: a stale
+  // hand-typed path from a previous project is the exact value to overwrite.
+  const openProjectRoot = store.currentProject?.root;
+  if (openProjectRoot !== undefined) {
+    createProjectRoot.value = openProjectRoot;
+  }
   // Seed the work-order form from the served descriptor (fetched on mount by
   // watchTasks, the same place stage-edges is fetched). Falls back to no fields
   // until the descriptor lands — never a hard-coded list.
@@ -572,7 +592,18 @@ function livenessClass(liveness: string): string {
         >
           {{ props.backKind === 'close' ? '✕' : '‹ Back' }}
         </button>
-        <h1 class="text-lg font-semibold uppercase tracking-[0.08em] text-ink">Tasks</h1>
+        <h1 class="flex min-w-0 items-baseline gap-2 text-lg font-semibold uppercase tracking-[0.08em] text-ink">
+          Tasks
+          <!-- The scope indicator (S8·2): this board is FILTERED, and every count
+               on it is scoped too. A filtered board that does not say so reads as
+               a project with no work in it. -->
+          <span
+            v-if="store.currentProject"
+            class="min-w-0 truncate text-xs font-medium normal-case tracking-normal text-ink-dim"
+          >
+            in {{ projectDisplayName(store.currentProject) }}
+          </span>
+        </h1>
       </div>
       <div class="flex items-center gap-2">
         <button

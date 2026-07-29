@@ -51,6 +51,15 @@ builds VIMES is the recursion the whole project is aimed at.
 
 ## UI shape evolution (Wes notes 2026-07-20, live desktop+mobile use — parked, not scheduled)
 
+**Standing stance (Wes, 2026-07-29): nothing is sacred in the UI space right
+now — expect large redesigns as the product finds its shape** (the D61
+project-rooted URLs, the picker landing, the coming orchestrator surface, the
+D51 workflow graphs). Consequence for orchestration: don't over-defend current
+layouts or argue for UI stability when a design conversation points at a
+reshape; UI units are cheap to redo by construction (lib/ logic tested, .vue
+manual, ships via the gate). The things that ARE sacred live below the UI:
+the event spine, the invariants, the design principles.
+
 - **Bespoke desktop and mobile layouts, not one responsive layout.** The
   current UI is mobile-coded and looks it on desktop (a widened phone view).
   Desktop should get its own layout that uses the width (multi-pane: session

@@ -40,6 +40,11 @@
 // and the taskApi/taskDispatcher envelopes NARROWLY. Unknown keys are tolerated.
 
 import type { Liveness, SessionRecord } from './types.js';
+// The project-scope predicate — the ONE browser-side mirror of core's attribution
+// authority (lib/projectContext.ts). Imported rather than re-spelled here: two
+// prefix matchers in one package would be the drift that file's ⚠ block exists to
+// prevent.
+import { cwdWithinProject } from './projectContext.js';
 
 // ── Mirrored wire vocabulary ────────────────────────────────────────────────
 //
@@ -154,6 +159,14 @@ export interface TaskCard {
   // never the string "unknown", which would look like a directory called
   // "unknown".
   readonly projectName: string | null;
+  // The FULL `projectRoot` the record carries, null when it carries no usable
+  // one. Kept ALONGSIDE the basename rather than replacing it (S8·2): the
+  // basename is what a card RENDERS, the full path is what project scoping
+  // MATCHES on (`cwdWithinProject`, lib/projectContext.ts). Matching on the
+  // basename would attribute every `~/anything/vimes` to the vimes project —
+  // which is the same mistake the segment-boundary guard exists to prevent, one
+  // level up.
+  readonly projectRoot: string | null;
   readonly createdBy: string | null;
   // Rendered only when the task really asked for worktree isolation; a
   // `shared-dir` task shows nothing rather than a "shared" badge nobody asked
@@ -240,6 +253,7 @@ export function deriveTaskCard(
     stage,
     stageKind: stageKind(stage),
     projectName: projectRoot === null ? null : basenameOf(projectRoot),
+    projectRoot,
     createdBy: asString(task.createdBy),
     isolatedInWorktree: task.isolation === 'worktree',
     manualReviewRequired: task.manualReviewRequired === true,
@@ -358,8 +372,22 @@ export function sessionTrailOf(
 export function groupTasksForBoard(
   body: unknown,
   sessionsById: Readonly<Record<string, SessionRecord>> = {},
+  // S8·2 — the project scope, or null for the whole board. Applied HERE rather
+  // than in the view so `count` and `totalTasks` describe the board actually on
+  // screen: a "review 3" header over one visible card would be a meter that lies.
+  //
+  // A task with NO usable projectRoot is EXCLUDED from a scoped board, and
+  // included in an unscoped one. It cannot be shown to belong here, and D42's
+  // whole posture is that a boundary is proved, never assumed.
+  projectRoot: string | null = null,
 ): TaskBoard {
-  const cards = readTaskCards(body, sessionsById);
+  const allCards = readTaskCards(body, sessionsById);
+  const cards =
+    projectRoot === null
+      ? allCards
+      : allCards.filter(
+          (card) => card.projectRoot !== null && cwdWithinProject(card.projectRoot, projectRoot),
+        );
 
   const cardsByStage = new Map<string, TaskCard[]>();
   for (const card of cards) {

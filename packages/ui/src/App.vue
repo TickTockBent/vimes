@@ -14,6 +14,15 @@ import { panelLinkClick } from './lib/panelLinkClick.js';
 import { useLayoutMode } from './lib/useLayoutMode.js';
 import ThemePicker from './components/ThemePicker.vue';
 import UsageGauge from './components/UsageGauge.vue';
+import ProjectPickerView from './views/ProjectPickerView.vue';
+import {
+  declarePrefill,
+  initialHashFor,
+  layoutStorageKey,
+  parseProjectPath,
+  projectDisplayName,
+  resolveProject,
+} from './lib/projectContext.js';
 
 const store = useVimesStore();
 
@@ -83,6 +92,126 @@ const panelStack = ref<PanelStack>(seedStackFromHash(window.location.hash));
 // re-seed producing a shallow stack (back then floors) is the accepted
 // behaviour for those external entries.
 let lastWrittenHash = window.location.hash;
+
+// ── the project context (S8·2, D61) ─────────────────────────────────────────
+//
+// THE PATH CARRIES THE PROJECT; THE HASH CARRIES THE VIEW. Both are read ONCE, at
+// boot, before anything in this file writes either: `bootHash` in particular has
+// to be captured ahead of the first `applyStack`, or a remembered layout would
+// overwrite the deep link the user actually followed.
+//
+// The pathname is NOT reactive here on purpose. Changing project is a REAL
+// navigation (a full document load — see ProjectPickerView), so within one
+// document's life the segment is a constant. Making it a ref would imply a
+// project switch this build does not do and cannot do without swapping the whole
+// panel stack, the WS subscriptions and the store's scope in one step.
+const bootProjectSegment = parseProjectPath(window.location.pathname);
+const bootHash = window.location.hash;
+
+// Which surface this document shows. Three outcomes, exactly D61's:
+//   • a segment that RESOLVES → the app, scoped (`store.currentProject`);
+//   • bare `/` → the picker;
+//   • a segment nothing claims → the picker, in declare-prefill mode.
+// Plus one that is not a D61 outcome but a compatibility guarantee: a deep link
+// with NO project segment (`/#/session/x`, which is what every push notification
+// still sends, and every bookmark made before today) renders the app IMMEDIATELY,
+// unscoped — never the picker, and never blocked on the registry fetch.
+const bootHasDeepLink = bootHash !== '' && bootHash !== '#';
+const surface = computed<'loading' | 'picker' | 'app'>(() => {
+  if (bootProjectSegment === null && bootHasDeepLink) {
+    return 'app';
+  }
+  if (!store.projectsLoaded && !store.projectsUnreachable) {
+    // We have not looked at the registry yet, so we do not yet know whether this
+    // path is a project. Rendering the picker here would flash a "no such
+    // project" at someone whose project is about to resolve.
+    //
+    // ⚠ A FAILED read counts as HAVING LOOKED. Gating only on `projectsLoaded`
+    // would leave the whole app parked on a spinner forever the one time the
+    // registry fetch fails — the picker, which can say so and offer a retry, is
+    // strictly better than a screen with nothing on it.
+    return 'loading';
+  }
+  return store.currentProject === null ? 'picker' : 'app';
+});
+
+// The absolute path the picker's declare form pre-fills when the URL named a
+// segment no project claims — D61's onboarding door.
+const declarePrefillRoot = computed(() =>
+  store.projectsLoaded && store.currentProject === null
+    ? declarePrefill(bootProjectSegment, store.rootsBases)
+    : null,
+);
+// The segment to SAY is undeclared. Only once we have a REGISTRY (not merely an
+// attempt) and only when it really resolved to nothing — offering to declare a
+// directory because the fetch failed would be an invitation to declare a
+// duplicate.
+const unclaimedSegment = computed(() =>
+  store.projectsLoaded && store.currentProject === null ? bootProjectSegment : null,
+);
+
+// Resolve the URL against the registry, then root the stack. Runs whenever a
+// registry lands and this document has not resolved yet — the resolution is
+// against DECLARED records (D42), so it cannot happen before they do, and a
+// retry after a failed first read has to get a second chance at it.
+//
+// ONE-WAY. Once a project has resolved, nothing re-runs this: changing project is
+// a full navigation (D61), never a re-resolution under a live panel stack.
+function applyProjectContext(): void {
+  if (store.currentProject !== null) {
+    return;
+  }
+  const resolvedProject = resolveProject(bootProjectSegment, store.projects);
+  store.setCurrentProject(resolvedProject);
+  if (resolvedProject === null) {
+    return;
+  }
+  // D61's third leg: the remembered layout, unless the URL carried a deep link,
+  // which always wins. `initialHashFor` owns that precedence.
+  const openingHash = initialHashFor(bootHash, readStoredLayout(resolvedProject.projectId));
+  panelStack.value = seedStackFromHash(openingHash);
+  focusedIndex.value = panelStack.value.length - 1;
+  if (openingHash !== window.location.hash) {
+    lastWrittenHash = openingHash;
+    window.location.hash = openingHash;
+  }
+}
+
+// Per-project panel-stack memory. Best-effort on BOTH sides (localStorage throws
+// in private mode / when disabled): a lost layout is a cosmetic loss, and it must
+// never take the app down with it. The pure precedence lives in
+// lib/projectContext.ts; these two are the glue that touches the browser.
+function readStoredLayout(projectId: string): string | null {
+  try {
+    return window.localStorage.getItem(layoutStorageKey(projectId));
+  } catch {
+    return null;
+  }
+}
+
+// Called from every place that writes the hash (applyStack, the resize
+// re-mirror, and an external hashchange) so the memory tracks what the URL
+// actually shows. A no-op without a project context — an unscoped tab has no
+// project to remember a layout FOR.
+function rememberLayout(hashValue: string): void {
+  const project = store.currentProject;
+  if (project === null) {
+    return;
+  }
+  try {
+    window.localStorage.setItem(layoutStorageKey(project.projectId), hashValue);
+  } catch {
+    // Persisting is best-effort; this session's in-memory stack is unaffected.
+  }
+}
+
+// The scope chip in the top bar: the one always-visible statement of which
+// project this tab is, and the way back to the picker. A REAL link to `/`, for
+// the same reason the picker's rows are real links — switching project is a
+// navigation, not a state change.
+const scopeLabel = computed(() =>
+  store.currentProject === null ? null : projectDisplayName(store.currentProject),
+);
 
 // Focus (D39 #4): the last-interacted panel takes the focus ring. Default is the
 // tail (the freshest panel). A mousedown anywhere in a column sets it; a pop
@@ -164,6 +293,7 @@ function applyStack(newStack: PanelStack): void {
   const windowedHash = mirroredHashFor(newStack);
   lastWrittenHash = windowedHash;
   window.location.hash = windowedHash;
+  rememberLayout(windowedHash);
 }
 
 // Re-mirror the hash when a resize crosses a layout boundary. applyStack only
@@ -181,6 +311,7 @@ watch([showSidebar, panelCount], () => {
   }
   lastWrittenHash = reMirroredHash;
   window.location.hash = reMirroredHash;
+  rememberLayout(reMirroredHash);
 });
 
 function onHashChange(): void {
@@ -195,12 +326,28 @@ function onHashChange(): void {
   panelStack.value = seedStackFromHash(currentHash);
   focusedIndex.value = panelStack.value.length - 1;
   lastWrittenHash = currentHash;
+  // Browser back/forward and hand-edited URLs move the layout too, so the memory
+  // follows them — otherwise "where I left off" would only track in-app taps.
+  rememberLayout(currentHash);
 }
 
 onMounted(() => {
   store.init();
   window.addEventListener('hashchange', onHashChange);
+  // The registry, then the resolution. D42's boundaries are DECLARED records, so
+  // there is nothing to resolve a URL against until this lands.
+  void store.fetchProjects();
 });
+
+// Every registry read re-attempts the resolution (applyProjectContext is a no-op
+// once resolved). That is what makes the picker's retry — and a declaration made
+// against this very URL — open the project instead of leaving the tab parked.
+watch(
+  () => store.projects,
+  () => {
+    applyProjectContext();
+  },
+);
 onUnmounted(() => {
   window.removeEventListener('hashchange', onHashChange);
 });
@@ -355,6 +502,17 @@ function toggleSidebarCollapsed(): void {
         <span aria-hidden="true">☰</span>
       </button>
       <span class="font-mono text-sm font-bold tracking-[0.14em] text-ink">VIMES</span>
+      <!-- The scope chip (S8·2): which project this tab IS, and the door back to
+           the picker. A real `<a href="/">` — switching project is a navigation
+           (D61), so this must not be a click handler that swaps state. -->
+      <a
+        v-if="scopeLabel"
+        href="/"
+        class="min-w-0 truncate rounded-md border border-line px-2 py-1 text-xs text-ink-dim transition-colors hover:bg-panel-sunken hover:text-ink"
+        title="Switch project"
+      >
+        {{ scopeLabel }}
+      </a>
       <span class="flex-1"></span>
       <!-- usage gauge (unit 3b): the account-usage instrument — binding constraint
            always visible, click to expand every window. Right region so it shows in
@@ -381,13 +539,32 @@ function toggleSidebarCollapsed(): void {
       </button>
     </div>
 
+    <!-- THE PICKER IS THE ROOT SURFACE (D42's landing, D61's resolution rules):
+         bare `/`, or a path that names no declared project. It REPLACES the panel
+         shell rather than sitting inside it — this document is not in a project,
+         so there is no stack to render. -->
+    <ProjectPickerView
+      v-if="surface === 'picker'"
+      :unknown-segment="unclaimedSegment"
+      :prefill-root="declarePrefillRoot"
+    />
+    <!-- Between the registry fetch and its answer we do not yet know whether this
+         path is a project. Saying so beats flashing a picker at someone whose
+         project is one round trip from resolving. -->
+    <div
+      v-else-if="surface === 'loading'"
+      class="flex min-h-0 flex-1 items-center justify-center p-8 text-sm text-ink-dim"
+    >
+      Loading projects…
+    </div>
+
     <!-- DESKTOP (D39 #3): the session list becomes ambient LEFT-HAND CHROME. This
          is not a new list — it is stack[0] (already the stack root, D40) rendered
          as a fixed-width sidebar via the SAME PanelHost/SessionListView instead of
          as a windowed panel column. To its right, the CONTENT window (stack.slice(1)
          trailing panelCount-1). Meters / new-session / nav ride along inside
          SessionListView for free, so there is nothing to drift. -->
-    <div v-if="showSidebar" class="flex min-h-0 flex-1">
+    <div v-else-if="showSidebar" class="flex min-h-0 flex-1">
       <!-- The sidebar column: fixed width, its own scroll, a right divider. It is
            CHROME, so it takes NO focus ring (:focused=false) and no @mousedown. It
            carries the SAME nav/@open handlers a content panel does (a click in the

@@ -329,6 +329,44 @@ export function cacheControlForStaticPath(servedPath: string): string {
   return DEFAULT_STATIC_CACHE;
 }
 
+// ─── the SPA fallback rule (D61) ─────────────────────────────────────────────
+//
+// D61 made the PATH the project identity — `/infrastructure/johnny/` is a real,
+// bookmarkable, new-tab-able URL that the daemon must answer with the app shell,
+// because only the client knows what to do with it. This predicate is the whole
+// rule, extracted so it is assertable without a listener.
+//
+// GET ONLY — the caller is the `app.get('*')` arm, so a POST to an unknown path
+// never reaches here and stays a 404 (a stray POST must not be answered with a
+// 200 page).
+//
+// TWO EXCLUSIONS, both load-bearing:
+//
+//   1. **`/api/...` NEVER falls back.** An unknown API path is a caller's
+//      mistake, and answering it with 200 + HTML turns a typo into a JSON parse
+//      error three layers away. ⚠ This is the ONE behaviour change this unit
+//      makes to an existing surface: before D61 an extension-less `/api/nope`
+//      fell through to the shell. It was always wrong; D61 (which makes every
+//      unmatched path meaningful) is what makes it worth fixing.
+//   2. **Anything that LOOKS LIKE AN ASSET never falls back** — a missing
+//      `/assets/index-abc.js` must 404 loudly, not return HTML that the browser
+//      then fails to execute. "Looks like an asset" is `STATIC_CONTENT_TYPES`
+//      membership, deliberately NOT "has any extension at all": a project
+//      directory may legitimately contain a dot (`~/projects/my.tool`), and
+//      `extname('/my.tool/')` is `.tool`, so an extension test alone would make
+//      that project the one project unreachable by its own URL.
+//
+// `/hooks/*` needs no exclusion: hook ingress is a SEPARATE listener on
+// `config.hookPort` (createHookIngress, 127.0.0.1 only) and this Hono app
+// registers no `/hooks` route at all.
+export function shouldServeAppShell(requestPath: string): boolean {
+  if (requestPath === '/api' || requestPath.startsWith('/api/')) {
+    return false;
+  }
+  const extension = extname(requestPath);
+  return extension === '' || STATIC_CONTENT_TYPES[extension] === undefined;
+}
+
 // Read a file within staticRoot, denying path traversal at the boundary. Returns
 // null when the resolved path escapes the root or is not a readable file.
 async function readStaticFile(staticRoot: string, requestPath: string): Promise<StaticFile | null> {
@@ -643,9 +681,10 @@ export function createDaemon(deps: DaemonDeps): Daemon {
           'cache-control': cacheControlForStaticPath(context.req.path),
         });
       }
-      // SPA fallback: extension-less paths fall back to index.html — which is
-      // the app shell, so it carries the shell's no-cache directive.
-      if (extname(context.req.path) === '') {
+      // SPA fallback (D61): the PATH carries the project, so
+      // `/infrastructure/johnny/` has to serve the app shell — which carries the
+      // shell's no-cache directive. `shouldServeAppShell` owns the rule.
+      if (shouldServeAppShell(context.req.path)) {
         const indexFile = await readStaticFile(staticDir, '/index.html');
         if (indexFile !== null) {
           return context.body(indexFile.body, 200, {
