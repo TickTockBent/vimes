@@ -143,6 +143,26 @@ export const sessionRecordSchema = z.object({
   // after, so a long session does not re-title itself on every prompt and a
   // replay produces the same value as a live fold (I6).
   derivedTitle: z.string().optional(),
+  // ── D56 (S8·3): this session IS the standing orchestrator for that project ──
+  //
+  // OPTIONAL-only, exactly like the five fields above and for the same reason: a
+  // record written before this field existed must still load and serialize
+  // identically (I6), so the sessions projection leaves it ABSENT unless the
+  // birth record carried it. **ABSENT STAYS ABSENT, NEVER `''`** — an ordinary
+  // session is not "the orchestrator of nothing", it simply has no such key.
+  //
+  // ⚠ **PRESENCE IS THE KIND.** There is no `kind: 'orchestrator'` companion
+  // field: the projectId this session stands for and the fact that it stands for
+  // one are ONE fact, and splitting them would create a pair that can disagree.
+  // Readers ask `record.orchestratorForProjectId === projectId`, which is both
+  // the identity test and the D56 singleton's key.
+  //
+  // WRITE-ONCE BY CONSTRUCTION: `session_created` is the only event that carries
+  // it, and a session is born once. A transcript that rotates (D56/D57) does so
+  // by FOUNDING A NEW SESSION carrying the same projectId — the previous record
+  // keeps its own marking, which is exactly what makes the rotation legible in
+  // the log rather than a field that quietly moved.
+  orchestratorForProjectId: z.string().optional(),
 });
 export type SessionRecord = z.infer<typeof sessionRecordSchema>;
 

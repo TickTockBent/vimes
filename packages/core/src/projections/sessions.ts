@@ -157,6 +157,18 @@ export const sessionsProjection: Projection<SessionsState> = {
           // D10: default 'host' when the payload omits custody, so old
           // session_created events project as host-owned; discovery sets 'external'.
           custody: payload.custody ?? 'host',
+          // ── D56 (S8·3): the standing-orchestrator marking ────────────────────
+          //
+          // ⚠ SPREAD RATHER THAN DEFAULTED, and the difference is the point (the
+          // same distinction `projects.ts` draws for `name`/`description`):
+          // `custody` above folds to a documented starting value because every
+          // session HAS a custody; being-an-orchestrator has no neutral value.
+          // ABSENT STAYS ABSENT — an ordinary `session_created` folds to a record
+          // with NO such key, byte-identical to every record folded before this
+          // field existed (I6).
+          ...(payload.orchestratorForProjectId === undefined
+            ? {}
+            : { orchestratorForProjectId: payload.orchestratorForProjectId }),
         };
         return { sessions: { ...state.sessions, [payload.appSessionId]: bornSession } };
       }

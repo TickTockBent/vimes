@@ -233,6 +233,8 @@ export function projectForCwd(state: ProjectsState, cwd: string): ProjectRecord 
 // comes from node:path rather than a hard-coded '/' for the same reason the
 // daemon's does — it is a pure constant, not I/O, so rule 0.3 has nothing to say
 // about it.
-function isWithinProjectRoot(cwd: string, root: string): boolean {
+// EXPORTED by S8·3 so the orchestrator's board scoping asks THIS question rather
+// than spelling a second `startsWith` (principle 9 — one containment rule, not two).
+export function isWithinProjectRoot(cwd: string, root: string): boolean {
   return cwd === root || cwd.startsWith(root + sep);
 }
