@@ -3,6 +3,7 @@ import {
   taskCreated,
   taskTransitioned,
   taskTransitionRejected,
+  workOrderAmended,
   type EventInput,
   type IdSource,
   type TaskRecord,
@@ -86,6 +87,57 @@ export interface CreateTaskInput {
   readonly acceptanceCriteria?: { text: string }[];
   readonly killCriterion?: string;
 }
+
+// ── S7·2b: what an AMENDER names (D43 — work orders are revisioned, not mutated)
+//
+// The patch half of `CreateTaskInput`: the SAME four authored work-order fields,
+// every one optional, plus the author. Deliberately NOT a `Partial<TaskRecord>` —
+// `title`, `gates`, `isolation`, `projectRoot` and `stage` are not amendable
+// through this door (a title is set at creation by documented decision; a stage
+// moves through I7's transition choke and nowhere else), and a `Partial` would
+// quietly offer all of them.
+export interface AmendWorkOrderInput {
+  // WHO decided this amendment. Two values, never `dispatcher` — see the payload
+  // schema's note in events.ts: an amendment is a D53 DECISION, and the mechanics
+  // have no business authoring one.
+  readonly amendedBy: 'human' | 'orchestrator';
+  readonly scope?: string;
+  readonly explicitlyOut?: string[];
+  // ⚠ THE CRITERION SHAPE HERE IS `{ id?, text }`, AND THE OPTIONAL id IS THE
+  // WHOLE DESIGN. WITH an id → this entry KEEPS/RESTATES an EXISTING criterion,
+  // and the id must match one currently on the record; criterion ids are STABLE
+  // IDENTITY that `report_review` (S7·6) keys per-criterion pass/fail to, so an
+  // amendment that reworded a criterion while silently re-minting its id would
+  // orphan every verdict ever recorded against it. WITHOUT an id → a NEW
+  // criterion, its id MINTED SERVER-SIDE from the injected source, exactly as
+  // `createTask` mints them: the caller never types an id that does not already
+  // exist.
+  //
+  // The array is a REPLACEMENT LIST, not a delta — what it contains is what the
+  // record will carry, so dropping an entry deletes that criterion and an
+  // explicit `[]` clears them all.
+  readonly acceptanceCriteria?: { id?: string; text: string }[];
+  readonly killCriterion?: string;
+}
+
+// The outcome of ONE amendment, in the same discriminated-union idiom as
+// `ProposeTransitionResult` below: callers must tell the cases apart WITHOUT
+// inspecting HTTP semantics, because slice 7's MCP client has no status codes.
+export type AmendWorkOrderResult =
+  | { readonly outcome: 'amended'; readonly task: TaskRecord }
+  // Nothing emitted. Same reasoning as `ProposeTransitionResult`'s case: there was
+  // no task to amend, and writing an amendment for a taskId no `task_created` ever
+  // introduced would put a phantom task in the log.
+  | { readonly outcome: 'unknown-task'; readonly taskId: string }
+  // A supplied criterion id is not on the record's CURRENT acceptance list (a
+  // record with no criteria at all has no valid ids). Nothing emitted — same "the
+  // machine never saw it" posture as `unknown-task`, and refusing WHOLE means a
+  // half-applied amendment is not a state this class can produce.
+  | { readonly outcome: 'unknown-criterion'; readonly criterionId: string }
+  // All four patch fields absent. Nothing emitted: a rev bump that changes nothing
+  // is log noise, not an amendment, and it would invalidate every in-flight stage
+  // run's `workOrderRev` for no recorded reason.
+  | { readonly outcome: 'empty-amendment' };
 
 // The outcome of ONE proposal. A discriminated union in the same idiom as
 // `DispatchAttemptResult` (step 4a), because callers must be able to tell the
@@ -269,5 +321,122 @@ export class TaskWriter {
       );
     }
     return { outcome: 'accepted', task: movedTask };
+  }
+
+  /**
+   * Amend a work order: emit ONE `work_order_amended` carrying only the fields the
+   * amender named plus the rev the record will reflect afterwards, and return the
+   * record **as the projection folded it** (same I12 read-back reasoning as
+   * `createTask`).
+   *
+   * **THE REV IS COMPUTED HERE, AND ONLY HERE.** `(task.workOrderRev ?? 0) + 1` —
+   * the payload states the rev AFTER the amendment and the fold records it
+   * verbatim, so nothing downstream ever counts amendment events to derive one. A
+   * second place that computed a rev would be a second authority over the identity
+   * `(taskId, stage, attempt, workOrderRev)` that D43 and D46 both hang on.
+   *
+   * TOTAL OVER ITS INPUT SPACE, like `proposeTaskTransition`: no (taskId, input)
+   * pair throws. The one throw below is not input-driven — it is the
+   * projection/log divergence that is a rule-0.1 finding.
+   *
+   * ⚠ **NO STAGE ADJUDICATION, DELIBERATELY — THIS IS NOT A MISSING CHECK.** A
+   * task in ANY stage may be amended, including `done`, `cancelled` and
+   * `quarantined`. Amendments are RECORD FACTS, not transitions: the state machine
+   * is never consulted, no edge is traversed, and `TASK_STAGE_EDGES` has nothing to
+   * say about them (adding a guard here would be exactly the second adjudicator the
+   * file header forbids). Correcting the written scope of finished work is a
+   * legitimate act — the log keeps every revision — and nothing dangerous follows
+   * from it, because dispatch is a separate decision and `decideDispatch` already
+   * refuses a task whose stage does not run a worker.
+   *
+   * ⚠ **NO DISPATCH COUPLING.** An amendment never spawns, kills, resumes or steers
+   * a session, and never proposes a transition. D53: the explicit dispatch IS the
+   * decision, and D46's amend door is "a FRESH dispatch against a new
+   * `workOrderRev`" — *fresh*, i.e. one somebody asks for afterwards. Whoever
+   * amends decides separately whether the running attempt should be re-run.
+   */
+  amendWorkOrder(taskId: string, input: AmendWorkOrderInput): AmendWorkOrderResult {
+    // Fresh read, every call. See `TaskWriterDeps.readTasks` — an amender working
+    // from a stale board would compute its rev off a rev that has since moved.
+    const task = this.deps.readTasks().tasks[taskId];
+    if (task === undefined) {
+      return { outcome: 'unknown-task', taskId };
+    }
+
+    // The empty case is checked BEFORE any id is minted or validated, so a caller
+    // that named nothing at all burns nothing and writes nothing.
+    if (
+      input.scope === undefined &&
+      input.explicitlyOut === undefined &&
+      input.acceptanceCriteria === undefined &&
+      input.killCriterion === undefined
+    ) {
+      return { outcome: 'empty-amendment' };
+    }
+
+    // ── the criterion pass, in two halves, VALIDATE-THEN-MINT ─────────────────
+    //
+    // Every supplied id is checked against the record's CURRENT list FIRST, and
+    // only then are ids minted for the entries that carry none. The order is
+    // deliberate: a refused amendment must consume no ids from the injected
+    // source, so the id sequence a later successful amendment mints from is the
+    // one it would have had if the bad request had never arrived (rule 0.3 —
+    // determinism is the point of injecting the source at all).
+    let resolvedAcceptanceCriteria: { id: string; text: string }[] | undefined;
+    if (input.acceptanceCriteria !== undefined) {
+      const currentCriterionIds = new Set(
+        (task.acceptanceCriteria ?? []).map((criterion) => criterion.id),
+      );
+      for (const suppliedCriterion of input.acceptanceCriteria) {
+        if (suppliedCriterion.id !== undefined && !currentCriterionIds.has(suppliedCriterion.id)) {
+          // The FIRST unknown id refuses the WHOLE amendment and emits nothing;
+          // a partially-applied criteria list is not a state this class can
+          // produce.
+          return { outcome: 'unknown-criterion', criterionId: suppliedCriterion.id };
+        }
+      }
+      resolvedAcceptanceCriteria = input.acceptanceCriteria.map((criterion) =>
+        criterion.id === undefined
+          ? { id: this.deps.ids.uuid(), text: criterion.text }
+          : { id: criterion.id, text: criterion.text },
+      );
+    }
+
+    this.deps.emit([
+      workOrderAmended({
+        taskId: task.taskId,
+        // The rev AFTER this amendment. Absent on the record until the first
+        // amendment, so the first one writes rev 1 — matching the `?? 0` every
+        // reader of an un-amended task already spells out.
+        workOrderRev: (task.workOrderRev ?? 0) + 1,
+        amendedBy: input.amendedBy,
+        // Each field omitted rather than sent as `undefined` when the amender left
+        // it alone — the same byte discipline `createTask` follows, and here it is
+        // load-bearing rather than merely tidy: the FOLD reads presence to decide
+        // what to replace, so an `undefined`-valued key would be the difference
+        // between "leave scope as it was" and "clear it".
+        ...(input.scope === undefined ? {} : { scope: input.scope }),
+        ...(input.explicitlyOut === undefined ? {} : { explicitlyOut: input.explicitlyOut }),
+        // The FULL `{ id, text }` replacement list (minted ids included), never the
+        // `{ id?, text }` input shape — the fold reads the stored ids back and
+        // never re-mints, which is what makes replay deterministic (I6).
+        ...(resolvedAcceptanceCriteria === undefined
+          ? {}
+          : { acceptanceCriteria: resolvedAcceptanceCriteria }),
+        ...(input.killCriterion === undefined ? {} : { killCriterion: input.killCriterion }),
+      }),
+    ]);
+
+    const amendedTask = this.deps.readTasks().tasks[taskId];
+    if (amendedTask === undefined) {
+      // Unreachable through any request shape (the task existed a moment ago and
+      // nothing deletes tasks) — see TaskProjectionDisagreementError. Echoing a
+      // hand-built record here would hide exactly the divergence the read-back
+      // exists to expose.
+      throw new TaskProjectionDisagreementError(
+        `work_order_amended was written for ${taskId} but the tasks projection no longer holds it`,
+      );
+    }
+    return { outcome: 'amended', task: amendedTask };
   }
 }

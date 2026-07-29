@@ -178,12 +178,16 @@ export const EVENT_TYPES = {
   correctionDelivered: 'correction_delivered',
   // Slice-7 D43: a work order was AMENDED — a scope/acceptance/kill-criterion
   // change, recorded as an APPENDED event (I12) that bumps `workOrderRev`,
-  // never a mutation of the existing record. RULE-0.5 RESERVATION, following
-  // the same precedent `dispatch_refused` set (type + schema + constructor
-  // landed slice 0, emitted slice 6) and the `meterAlert` `disposition: 'hold'`
-  // reservation: the vocabulary lands NOW so S7·2b needs no migration, but
-  // **NOTHING IN THIS UNIT EMITS IT.** If you are grepping for the code path
-  // that emits an amendment, there isn't one yet, and that is deliberate.
+  // never a mutation of the existing record. It landed in S7·1 as a RULE-0.5
+  // RESERVATION (type + schema + constructor, deliberately no emitter),
+  // following the precedent `dispatch_refused` set (reserved slice 0, emitted
+  // slice 6) and the `meterAlert` `disposition: 'hold'` reservation.
+  //
+  // **S7·2b SPENT THE RESERVATION AND LANDED THE EMITTER:
+  // `TaskWriter.amendWorkOrder` (packages/daemon — the SOLE writer of task
+  // state, I7), reached over HTTP by `POST /api/tasks/:taskId/amendments`.** The
+  // grep that used to come up empty now lands there, and `projections/tasks.ts`
+  // folds the patch onto the record. D46's second correction door is this event.
   workOrderAmended: 'work_order_amended',
   // Slice-7 D48: a plan crossed the tool boundary. RESERVED, no emitter yet
   // (S7·5b — the daemon's SDK adapter — intercepts `ExitPlanMode` and emits
@@ -703,10 +707,11 @@ export const correctionDeliveredPayloadSchema = z.object({
   enqueuedAt: z.string().optional(),
 });
 
-// work_order_amended (S7·1, RESERVED — see the note on EVENT_TYPES.workOrderAmended
-// above; S7·2b is the writer). A PATCH of the amendable work-order fields plus the
-// rev the record reflects AFTER this amendment — never the whole record, and
-// never a mutation of it (D43: revisioned, not mutated; I12: append-only).
+// work_order_amended (S7·1 reserved the shape; S7·2b landed the writer — see the
+// note on EVENT_TYPES.workOrderAmended above). A PATCH of the amendable
+// work-order fields plus the rev the record reflects AFTER this amendment —
+// never the whole record, and never a mutation of it (D43: revisioned, not
+// mutated; I12: append-only).
 //
 // Each patch field is DERIVED from `taskRecordSchema.shape.*` rather than
 // re-typed, so the event and the record can never drift on the shape (the same
@@ -714,10 +719,31 @@ export const correctionDeliveredPayloadSchema = z.object({
 // `.optional()` on the record, so they ride through optional here too — an
 // amendment that touches only `scope` simply omits the rest; it is not required
 // to restate fields it left alone.
+//
+// ⚠ `amendedBy` WAS ADDED IN S7·2b, REQUIRED, AND THAT WIDENING IS I6-SAFE ONLY
+// BECAUSE THE RESERVATION HAD NO EMITTER: not one `work_order_amended` had ever
+// been written when it landed, so there is no stored payload for a new required
+// field to invalidate. Do NOT read this as a precedent for widening a payload
+// that HAS been emitted — that is a migration, and rule 0.5's reservations exist
+// precisely so this window is the only one where it is free.
 export const workOrderAmendedPayloadSchema = z.object({
   taskId: z.string(),
   // The rev AFTER this amendment is applied.
   workOrderRev: z.number().int().nonnegative(),
+  // WHO amended the work order. **TWO VALUES, NOT `transitionProposedBySchema`'s
+  // THREE**, and the missing one is the point: `dispatcher` NEVER amends. D53
+  // partitions movement into decisions (a human/orchestrator judgment), outcomes
+  // (the work reporting itself) and mechanics (dispatch) — an amendment is
+  // squarely a DECISION, so the machinery has no business authoring one. Reusing
+  // the transition enum whole would make `amendedBy: 'dispatcher'` a recordable
+  // fact and invite a future dispatcher branch to rewrite the very work order it
+  // was dispatched against.
+  //
+  // Enumerated explicitly for the same fail-closed reason `shouldDispatchOnTransition`
+  // matches its two promoter values rather than testing `!== 'dispatcher'`: a
+  // fourth actor added to the transition vocabulary must EARN its way into
+  // amending, in a diff someone reviews.
+  amendedBy: z.enum(['human', 'orchestrator']),
   scope: taskRecordSchema.shape.scope,
   explicitlyOut: taskRecordSchema.shape.explicitlyOut,
   acceptanceCriteria: taskRecordSchema.shape.acceptanceCriteria,
@@ -987,11 +1013,15 @@ export function taskTransitioned(payload: TaskTransitionedPayload): EventInput {
 export function taskTransitionRejected(payload: TaskTransitionRejectedPayload): EventInput {
   return { stream: 'tasks', type: EVENT_TYPES.taskTransitionRejected, payload };
 }
-// work_order_amended (S7·1, RESERVED — see EVENT_TYPES.workOrderAmended and
-// workOrderAmendedPayloadSchema above). Same 'tasks' stream as its siblings,
-// literal `'tasks'` for the same reason the other task constructors use one:
-// the vocabulary module stays free-standing. NO CALLER INVOKES THIS YET — it
-// exists so S7·2b needs no migration when it lands the writer.
+// work_order_amended (S7·1 reserved it, S7·2b landed the writer — see
+// EVENT_TYPES.workOrderAmended and workOrderAmendedPayloadSchema above). Same
+// 'tasks' stream as its siblings, literal `'tasks'` for the same reason the
+// other task constructors use one: the vocabulary module stays free-standing.
+//
+// ITS ONE CALLER IS `TaskWriter.amendWorkOrder` (packages/daemon), which is the
+// SOLE writer of task state (I7) and the only place `workOrderRev` is computed;
+// the fold in `projections/tasks.ts` records the rev this payload states rather
+// than deriving one of its own, which is what keeps replay deterministic (I6).
 export function workOrderAmended(payload: WorkOrderAmendedPayload): EventInput {
   return { stream: 'tasks', type: EVENT_TYPES.workOrderAmended, payload };
 }

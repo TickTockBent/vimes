@@ -8,6 +8,7 @@ import {
   type TransitionProposal,
   type TransitionProposedBy,
   type TransitionRejectionReason,
+  type WorkOrderAmendedPayload,
 } from '@vimes/core';
 import { resolveWithinRoots, realpathProbe, type RealpathProbe } from './filePaths.js';
 import { TaskProjectionDisagreementError, type TaskWriter } from './taskWriter.js';
@@ -82,6 +83,13 @@ export type ProposeTransitionResponse =
 export interface DispatchResponse {
   result: DispatchAttemptResult;
 }
+// S7·2b. The SAME `{ task }` shape the create route returns, and for the same
+// reason: the body is the record **as the projection folded it**, so a client
+// reads the amendment's real effect (including the bumped `workOrderRev`) rather
+// than an echo of what it asked for.
+export interface AmendWorkOrderResponse {
+  task: TaskRecord;
+}
 // S8: the legal-edge table, served so the move sheet can filter to legal next
 // stages without the UI copying `TASK_STAGE_EDGES` (the drift `taskBoard.ts`'s
 // comment used to warn against). Static and read-only — `taskStageEdgesRecord()`
@@ -151,6 +159,15 @@ const PROPOSED_BY_VALUES = exhaustiveVocabulary<TransitionProposedBy>()([
   'human',
   'orchestrator',
   'dispatcher',
+]);
+// S7·2b. **TWO VALUES, one fewer than `PROPOSED_BY_VALUES` above**, and the gap is
+// the design: `dispatcher` cannot amend (D53 — an amendment is a decision, and the
+// mechanics never author one). Bound to the EVENT payload's own union rather than
+// re-typed, so widening `amendedBy` in core fails the build here instead of
+// silently leaving a new author un-proposable over HTTP.
+const AMENDED_BY_VALUES = exhaustiveVocabulary<WorkOrderAmendedPayload['amendedBy']>()([
+  'human',
+  'orchestrator',
 ]);
 
 // The gates a creator may name, mirroring `taskRecordSchema.gates`. Both halves
@@ -331,6 +348,38 @@ const proposeTransitionBodySchema = z.object({
   note: z.string().optional(),
 });
 
+// POST /api/tasks/:taskId/amendments body (S7·2b).
+//
+// The PATCH half of `createTaskBodySchema`, bounded by the SAME caps — one policy
+// for work-order text, whichever door it arrives through, so an amendment cannot
+// smuggle in a scope the create route would have refused. Every work-order field
+// is optional here; naming NONE of them is not a schema error but an
+// `empty-amendment` (the writer's outcome, a 400 below), because "you sent a
+// well-formed request that asks for nothing" is a different fact from "your body
+// was not a request".
+//
+// ⚠ THE CRITERION SHAPE IS `{ id?, text }` — DIFFERENT FROM THE CREATE ROUTE'S
+// `{ text }`, deliberately. On create there is nothing to keep, so every id is
+// minted; on amend the caller RESTATES the criteria it is keeping, by the ids the
+// record already carries, and the writer mints only for entries without one. That
+// is what lets a reworded work order preserve the per-criterion identity
+// `report_review` keys its verdicts to (see `AmendWorkOrderInput`).
+const amendWorkOrderBodySchema = z.object({
+  amendedBy: z.enum(AMENDED_BY_VALUES),
+  scope: z.string().min(1).max(MAX_WORK_ORDER_TEXT).optional(),
+  explicitlyOut: z.array(z.string().min(1).max(MAX_WORK_ORDER_LINE)).max(MAX_LIST_ITEMS).optional(),
+  acceptanceCriteria: z
+    .array(
+      z.object({
+        id: z.string().min(1).optional(),
+        text: z.string().min(1).max(MAX_WORK_ORDER_LINE),
+      }),
+    )
+    .max(MAX_LIST_ITEMS)
+    .optional(),
+  killCriterion: z.string().min(1).max(MAX_WORK_ORDER_TEXT).optional(),
+});
+
 export function registerTaskApi(app: Hono, deps: TaskApiDeps): void {
   const realpath = deps.realpath ?? realpathProbe;
 
@@ -502,6 +551,77 @@ export function registerTaskApi(app: Hono, deps: TaskApiDeps): void {
             // transition, so its envelope is byte-identical to the pre-S7·7c one.
             ...(dispatch === undefined ? {} : { dispatch }),
           };
+          return context.json(response, 200);
+        }
+      }
+    } catch (error) {
+      return findingResponse(context, error);
+    }
+  });
+
+  // ── POST /api/tasks/:taskId/amendments — amend the work order (S7·2b, D43) ──
+  //
+  // Plural noun, a sibling of `/transitions`: the collection this POST appends to
+  // is the task's amendment history, and D43's whole discipline is that a work
+  // order is corrected by APPENDING a revision rather than editing the record —
+  // which is also why this is not a PATCH on `/api/tasks/:taskId`.
+  //
+  // The status codes, in the same vocabulary the transitions route established:
+  //   • **200 + `{ task }`** — amended, and the record is the FOLD (see
+  //     `AmendWorkOrderResponse`). Not a 201: the thing a client cares about is the
+  //     task's new state, and there is no per-amendment resource to point a
+  //     `Location` at — the event lives in the log, which is not addressable here.
+  //   • **404** — no such task, nothing written.
+  //   • **400 + the offending id** — a criterion id that is not on the record's
+  //     current list. The id IS echoed, unlike the 403's path suppression on the
+  //     create route: it came from the caller's own body and names nothing outside
+  //     the task, so returning it is how a form tells the human WHICH row is stale.
+  //   • **400** — an amendment that names no work-order field at all. A rev bump
+  //     that changes nothing is log noise; the writer refuses it and writes nothing.
+  //
+  // ⚠ **NO DISPATCH CALL ANYWHERE IN THIS ROUTE, AND THAT IS THE POINT** (D53).
+  // Its sibling above calls `shouldDispatchOnTransition` because a promotion IS a
+  // decision to start work; an amendment is not — it changes what the work order
+  // SAYS, and whether the running (or next) attempt should be re-run against the
+  // new revision is a separate decision, taken with an explicit
+  // `POST /api/tasks/:taskId/dispatch`. No chaining, here or anywhere.
+  app.post('/api/tasks/:taskId/amendments', async (context) => {
+    const parsedBody = await parseJsonBody(context.req.raw, amendWorkOrderBodySchema);
+    if (!parsedBody.ok) {
+      // 400: this was never an amendment. Nothing reached the writer, so there is
+      // nothing to record — the same idiom as the create/transitions routes.
+      return context.json({ error: 'bad request', detail: parsedBody.reason }, 400);
+    }
+
+    try {
+      const result = deps.taskWriter.amendWorkOrder(context.req.param('taskId'), {
+        amendedBy: parsedBody.value.amendedBy,
+        // Absent stays absent all the way down to the event — and here the fold
+        // READS that absence to decide what to leave alone, so an `undefined`-valued
+        // key would not merely be untidy, it would change the amendment's meaning.
+        ...(parsedBody.value.scope === undefined ? {} : { scope: parsedBody.value.scope }),
+        ...(parsedBody.value.explicitlyOut === undefined
+          ? {}
+          : { explicitlyOut: parsedBody.value.explicitlyOut }),
+        ...(parsedBody.value.acceptanceCriteria === undefined
+          ? {}
+          : { acceptanceCriteria: parsedBody.value.acceptanceCriteria }),
+        ...(parsedBody.value.killCriterion === undefined
+          ? {}
+          : { killCriterion: parsedBody.value.killCriterion }),
+      });
+      switch (result.outcome) {
+        case 'unknown-task':
+          return context.json({ error: 'not found' }, 404);
+        case 'unknown-criterion':
+          return context.json(
+            { error: 'bad request', detail: 'unknown-criterion', criterionId: result.criterionId },
+            400,
+          );
+        case 'empty-amendment':
+          return context.json({ error: 'bad request', detail: 'empty-amendment' }, 400);
+        case 'amended': {
+          const response: AmendWorkOrderResponse = { task: result.task };
           return context.json(response, 200);
         }
       }

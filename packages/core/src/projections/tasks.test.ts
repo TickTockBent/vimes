@@ -13,6 +13,7 @@ import {
   taskSessionAttached,
   taskTransitioned,
   taskTransitionRejected,
+  workOrderAmended,
 } from '../events.js';
 import { readAllStreamsGrouped, replayFromEmpty } from './projection.js';
 import { tasksProjection, type TasksState } from './tasks.js';
@@ -370,6 +371,260 @@ describe('tasks projection — S7·2a, a carrying task_created folds the work-or
     const firstFold = stateFromLog([[createTaskWithWorkOrder()]]);
     const secondFold = stateFromLog([[createTaskWithWorkOrder()]]);
     expect(tasksProjection.serialize(secondFold)).toBe(tasksProjection.serialize(firstFold));
+  });
+});
+
+// ── S7·2b — an amendment PATCHES the work order (D43: revisioned, not mutated) ─
+//
+// The fold's job here is narrow and easy to get subtly wrong: a present field
+// REPLACES, an absent field is LEFT ALONE, and the rev is RECORDED rather than
+// counted. Every case below separates those three, because an implementation that
+// spread the whole payload (turning omitted fields into `undefined` keys) or that
+// incremented a rev of its own would still look right on the happy path.
+describe('tasks projection — S7·2b, work_order_amended patches the record', () => {
+  const AUTHORED_WORK_ORDER = {
+    scope: 'the scope as first authored',
+    explicitlyOut: ['the amend path', 'the two-door UI'],
+    acceptanceCriteria: [
+      { id: 'crit-id-alpha', text: 'the first criterion' },
+      { id: 'crit-id-beta', text: 'the second criterion' },
+    ],
+    killCriterion: 'the kill criterion as first authored',
+  };
+
+  function createAuthoredTaskA(): EventInput {
+    return taskCreated({
+      taskId: TASK_A,
+      projectRoot: '/home/user/projects/vimes',
+      createdBy: 'human',
+      isolation: 'worktree',
+      stage: 'backlog',
+      ...AUTHORED_WORK_ORDER,
+    });
+  }
+
+  it('a scope-only amendment replaces scope, sets the rev, and touches NOTHING else', () => {
+    const state = stateFromLog([
+      [createAuthoredTaskA()],
+      [
+        workOrderAmended({
+          taskId: TASK_A,
+          workOrderRev: 1,
+          amendedBy: 'human',
+          scope: 'the narrowed scope',
+        }),
+      ],
+    ]);
+    const amendedTask = state.tasks[TASK_A]!;
+
+    expect(amendedTask.scope).toBe('the narrowed scope');
+    expect(amendedTask.workOrderRev).toBe(1);
+    // The three fields the amendment never mentioned are exactly as the birth
+    // record left them — not cleared, and not present-but-`undefined`.
+    expect(amendedTask.explicitlyOut).toEqual(AUTHORED_WORK_ORDER.explicitlyOut);
+    expect(amendedTask.acceptanceCriteria).toEqual(AUTHORED_WORK_ORDER.acceptanceCriteria);
+    expect(amendedTask.killCriterion).toBe(AUTHORED_WORK_ORDER.killCriterion);
+    expect(taskRecordSchema.safeParse(amendedTask).success).toBe(true);
+  });
+
+  it('`amendedBy` stays on the EVENT — the record grows no such key', () => {
+    // The record is current state; who authored a revision is audit, and it lives
+    // in the log exactly as `task_transitioned`'s `proposedBy` does.
+    const state = stateFromLog([
+      [createAuthoredTaskA()],
+      [
+        workOrderAmended({
+          taskId: TASK_A,
+          workOrderRev: 1,
+          amendedBy: 'orchestrator',
+          scope: 'amended by the orchestrator',
+        }),
+      ],
+    ]);
+    expect('amendedBy' in state.tasks[TASK_A]!).toBe(false);
+  });
+
+  it('two amendments: the LATEST rev and the LATEST value of each field win', () => {
+    const state = stateFromLog([
+      [createAuthoredTaskA()],
+      [
+        workOrderAmended({
+          taskId: TASK_A,
+          workOrderRev: 1,
+          amendedBy: 'human',
+          scope: 'scope after the first amendment',
+          killCriterion: 'kill criterion after the first amendment',
+        }),
+      ],
+      [
+        workOrderAmended({
+          taskId: TASK_A,
+          workOrderRev: 2,
+          amendedBy: 'orchestrator',
+          scope: 'scope after the second amendment',
+        }),
+      ],
+    ]);
+    const amendedTask = state.tasks[TASK_A]!;
+
+    expect(amendedTask.workOrderRev).toBe(2);
+    expect(amendedTask.scope).toBe('scope after the second amendment');
+    // ⚠ THE CASE THAT SEPARATES "PATCH" FROM "REPLACE THE WHOLE WORK ORDER": the
+    // second amendment omitted `killCriterion`, so the FIRST amendment's value
+    // survives. A fold that rebuilt the work order from each payload would have
+    // dropped it back to the birth record's value (or to nothing).
+    expect(amendedTask.killCriterion).toBe('kill criterion after the first amendment');
+    expect(amendedTask.explicitlyOut).toEqual(AUTHORED_WORK_ORDER.explicitlyOut);
+  });
+
+  it('an EXPLICIT empty acceptanceCriteria CLEARS the list — distinct from omitting it', () => {
+    // Clearing the criteria is a legal amendment (a work order that stops claiming
+    // checkable outcomes). The two cases are asserted side by side, because they are
+    // the pair a fold keyed on truthiness rather than presence would conflate.
+    const cleared = stateFromLog([
+      [createAuthoredTaskA()],
+      [workOrderAmended({ taskId: TASK_A, workOrderRev: 1, amendedBy: 'human', acceptanceCriteria: [] })],
+    ]);
+    expect(cleared.tasks[TASK_A]!.acceptanceCriteria).toEqual([]);
+
+    const untouched = stateFromLog([
+      [createAuthoredTaskA()],
+      [workOrderAmended({ taskId: TASK_A, workOrderRev: 1, amendedBy: 'human', scope: 'elsewhere' })],
+    ]);
+    expect(untouched.tasks[TASK_A]!.acceptanceCriteria).toEqual(
+      AUTHORED_WORK_ORDER.acceptanceCriteria,
+    );
+  });
+
+  it('amends a task that was created with NO work order at all', () => {
+    // The absent-stays-absent birth record is where an amendment most plausibly
+    // trips: there is nothing to patch over, so the amended fields appear for the
+    // first time and the untouched ones must STILL be absent afterwards.
+    const state = stateFromLog([
+      [createTaskA()],
+      [
+        workOrderAmended({
+          taskId: TASK_A,
+          workOrderRev: 1,
+          amendedBy: 'human',
+          scope: 'a scope the birth record never had',
+        }),
+      ],
+    ]);
+    const amendedTask = state.tasks[TASK_A]!;
+
+    expect(amendedTask.scope).toBe('a scope the birth record never had');
+    expect(amendedTask.workOrderRev).toBe(1);
+    expect('explicitlyOut' in amendedTask).toBe(false);
+    expect('acceptanceCriteria' in amendedTask).toBe(false);
+    expect('killCriterion' in amendedTask).toBe(false);
+  });
+
+  it('RECORDS the rev the payload states — it never counts amendment events', () => {
+    // A log whose revs are not 1,2,3… (a snapshot boot that starts mid-history is
+    // the real-world shape). The fold must land on 7 because the event says 7; a
+    // fold that counted amendments would say 1.
+    const state = stateFromLog([
+      [createAuthoredTaskA()],
+      [workOrderAmended({ taskId: TASK_A, workOrderRev: 7, amendedBy: 'human', scope: 'rev seven' })],
+    ]);
+    expect(state.tasks[TASK_A]!.workOrderRev).toBe(7);
+  });
+
+  it('ignores an amendment for an unknown task — it never fabricates a record', () => {
+    const state = stateFromLog([
+      [createAuthoredTaskA()],
+      [
+        workOrderAmended({
+          taskId: TASK_B,
+          workOrderRev: 1,
+          amendedBy: 'human',
+          scope: 'an amendment for a task nobody created',
+        }),
+      ],
+    ]);
+    expect(state.tasks[TASK_B]).toBeUndefined();
+    expect(Object.keys(state.tasks)).toEqual([TASK_A]);
+    // ...and the task that DOES exist was not touched by it either.
+    expect(state.tasks[TASK_A]!.scope).toBe(AUTHORED_WORK_ORDER.scope);
+    expect('workOrderRev' in state.tasks[TASK_A]!).toBe(false);
+  });
+
+  it('a malformed work_order_amended payload is a no-op and never throws', () => {
+    // I8's spirit: a hostile or truncated payload must not crash a fold. A negative
+    // rev fails `nonnegative()`, so the whole event is skipped and the record keeps
+    // whatever it had.
+    const priorState = stateFromLog([[createAuthoredTaskA()]]);
+    const malformedRecord = recordOf({
+      stream: 'tasks',
+      type: 'work_order_amended',
+      payload: { taskId: TASK_A, workOrderRev: -1, amendedBy: 'human', scope: 'nope' },
+    });
+    let nextState: TasksState | undefined;
+    expect(() => {
+      nextState = tasksProjection.apply(priorState, malformedRecord);
+    }).not.toThrow();
+    expect(nextState).toBe(priorState);
+  });
+
+  it('I6 replay-equivalence: creation + two amendments folds byte-identically twice', () => {
+    // The determinism the whole design rests on: the rev and the criterion ids are
+    // both STORED, never derived, so a second fold of the same log produces the same
+    // bytes. If either were computed during the fold, this would drift.
+    const amendmentLog: EventInput[][] = [
+      [createAuthoredTaskA()],
+      [
+        workOrderAmended({
+          taskId: TASK_A,
+          workOrderRev: 1,
+          amendedBy: 'human',
+          scope: 'scope after the first amendment',
+          acceptanceCriteria: [
+            { id: 'crit-id-alpha', text: 'the first criterion, reworded' },
+            { id: 'crit-id-gamma', text: 'a criterion minted by the amendment' },
+          ],
+        }),
+      ],
+      [
+        workOrderAmended({
+          taskId: TASK_A,
+          workOrderRev: 2,
+          amendedBy: 'orchestrator',
+          explicitlyOut: [],
+        }),
+      ],
+    ];
+    const firstFold = stateFromLog(amendmentLog);
+    const secondFold = stateFromLog(amendmentLog);
+    expect(tasksProjection.serialize(secondFold)).toBe(tasksProjection.serialize(firstFold));
+    // Not vacuous: the twice-folded record really carries the amended shape.
+    expect(firstFold.tasks[TASK_A]!.workOrderRev).toBe(2);
+    expect(firstFold.tasks[TASK_A]!.explicitlyOut).toEqual([]);
+    expect(firstFold.tasks[TASK_A]!.acceptanceCriteria).toEqual([
+      { id: 'crit-id-alpha', text: 'the first criterion, reworded' },
+      { id: 'crit-id-gamma', text: 'a criterion minted by the amendment' },
+    ]);
+  });
+
+  it('does not mutate the state it was handed (I12)', () => {
+    const priorState = stateFromLog([[createAuthoredTaskA()]]);
+    const serializedBefore = tasksProjection.serialize(priorState);
+
+    const nextState = tasksProjection.apply(
+      priorState,
+      recordOf(
+        workOrderAmended({
+          taskId: TASK_A,
+          workOrderRev: 1,
+          amendedBy: 'human',
+          scope: 'a scope the prior state must never learn about',
+        }),
+      ),
+    );
+
+    expect(tasksProjection.serialize(priorState)).toBe(serializedBefore);
+    expect(nextState).not.toBe(priorState);
+    expect(nextState.tasks[TASK_A]).not.toBe(priorState.tasks[TASK_A]);
   });
 });
 

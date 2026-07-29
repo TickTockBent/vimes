@@ -20,6 +20,16 @@ import {
 import { sessionToSubscribeAfterDispatch, sessionToSubscribeAfterTransition } from '../lib/dispatchFollow.js';
 import { SHORT_SESSION_ID_LENGTH } from '../lib/sessionLabel.js';
 import { buildHash } from '../lib/route.js';
+import {
+  buildAmendmentBody,
+  correctionDoors,
+  correctionDoorsAvailable,
+  seedAmendFormModel,
+  type AmendableTaskRecord,
+  type AmendCriterionRow,
+  type AmendFormModel,
+  type CorrectionDoor,
+} from '../lib/correctionDoors.js';
 
 // ─── slice 6 step 9 — THE TASK BOARD, MOBILE ────────────────────────────────
 //
@@ -133,9 +143,12 @@ function openSheet(card: TaskCard): void {
   moveNotice.value = null;
   dispatchNotice.value = null;
   dispatchedSessionId.value = null;
+  amendOpen.value = false;
+  amendNotice.value = null;
 }
 function closeSheet(): void {
   openCardId.value = null;
+  amendOpen.value = false;
 }
 
 async function proposeMove(toStage: string): Promise<void> {
@@ -203,6 +216,193 @@ const dispatchedSessionHref = computed(() =>
     // fallback route instead of opening the session.
     : buildHash({ view: 'stream', appSessionId: dispatchedSessionId.value }),
 );
+
+// ── The two correction doors (S7·8, D46/D53) ────────────────────────────────
+// D46 gave stage-run corrections exactly two legitimate doors, and named the
+// T7 failure as the doors not being LABELED, not being absent — so this
+// section renders `correctionDoors`' descriptors verbatim rather than a bare
+// button. `correctionTaskRecord` re-reads the SAME raw record `openTaskRecord`
+// already resolved (S7·7g), cast to `correctionDoors.ts`'s own narrow mirror:
+// `TaskBoardRecord` is the CARD's inputs and does not carry `workOrderRev` /
+// `scope` / etc, so this is a second narrow VIEW of the identical wire object,
+// not a second lookup.
+const correctionTaskRecord = computed<AmendableTaskRecord | null>(() =>
+  openTaskRecord.value === null ? null : (openTaskRecord.value as unknown as AmendableTaskRecord),
+);
+const correctionAvailable = computed<boolean>(
+  () => correctionTaskRecord.value !== null && correctionDoorsAvailable(correctionTaskRecord.value),
+);
+const correctionDoorList = computed<readonly CorrectionDoor[]>(() =>
+  correctionTaskRecord.value === null ? [] : correctionDoors(correctionTaskRecord.value),
+);
+// Shown near the doors only when the record actually carries a numeric rev —
+// absent/malformed stays silent rather than printing a guessed "rev 0" next
+// to doors that already say so in their own detail strings.
+const correctionRevDisplay = computed<number | null>(() => {
+  const rev = correctionTaskRecord.value?.workOrderRev;
+  return typeof rev === 'number' ? rev : null;
+});
+
+function openCorrectionDoor(kind: CorrectionDoor['kind']): void {
+  if (kind === 'steer') {
+    // The steer door IS the existing dispatch handler, relabeled with its
+    // meaning (D46: same workOrderRev, a fresh attempt) — not a new action.
+    void dispatch();
+  } else {
+    openAmend();
+  }
+}
+
+// ── The amend sheet (S7·8) ──────────────────────────────────────────────────
+// D46's second door: writes a NEW workOrderRev via `POST
+// /api/tasks/:taskId/amendments` (S7·2b) and dispatches NOTHING (D53 — no
+// chaining; whether to re-run against the new revision is a later, explicit
+// act). Reuses the create sheet's own field-rendering pattern (driven by the
+// SAME `store.workOrderSchema` descriptor) rather than inventing a parallel
+// one, seeded from the record via `seedAmendFormModel` instead of starting
+// blank.
+const amendOpen = ref(false);
+// The form as it was PREFILLED at open — the diff base `buildAmendmentBody`
+// compares the edited model against. Frozen at open time so an in-flight edit
+// is diffed against what the operator actually started from, not against a
+// record the projection may have moved underneath the open sheet.
+const amendSeedModel = ref<AmendFormModel | null>(null);
+// `scope` / `killCriterion` — the two `longtext` fields.
+const amendText = reactive<Record<string, string>>({});
+// `explicitlyOut` / `acceptanceCriteria` — both repeatable fields, represented
+// UNIFORMLY as `AmendCriterionRow[]` so one add/remove/update row family
+// serves both: a plain list row's `id` is always `null` and dropped on submit,
+// a criterion row's `id` rides invisibly through edits (rewording keeps it).
+const amendRows = reactive<Record<string, AmendCriterionRow[]>>({});
+const amendInFlight = ref(false);
+// The last refusal's message, or null. A 200 closes the sheet outright — this
+// only ever holds an ERROR (matching the create sheet's `createNotice`, which
+// also only surfaces on a non-success path here, unlike the card sheet's
+// notices which show the accepted case too — amending has nothing further to
+// report once it worked, since the amended record itself is the news).
+const amendNotice = ref<string | null>(null);
+
+function openAmend(): void {
+  const record = correctionTaskRecord.value;
+  if (record === null) {
+    return;
+  }
+  const seed = seedAmendFormModel(record);
+  amendSeedModel.value = seed;
+  amendText.scope = seed.scope;
+  amendText.killCriterion = seed.killCriterion;
+  // Start an empty list from ONE blank row to type into, same idiom as the
+  // create sheet's `resetWorkOrderForm` — an untouched row is dropped by
+  // `buildAmendmentBody`'s cleaning step, so this costs nothing.
+  amendRows.explicitlyOut =
+    seed.explicitlyOut.length > 0 ? seed.explicitlyOut.map((text) => ({ id: null, text })) : [{ id: null, text: '' }];
+  amendRows.acceptanceCriteria =
+    seed.acceptanceCriteria.length > 0 ? seed.acceptanceCriteria.map((row) => ({ ...row })) : [{ id: null, text: '' }];
+  amendNotice.value = null;
+  amendOpen.value = true;
+}
+
+function closeAmend(): void {
+  amendOpen.value = false;
+}
+
+function addAmendRow(fieldKey: string): void {
+  (amendRows[fieldKey] ??= []).push({ id: null, text: '' });
+}
+
+function removeAmendRow(fieldKey: string, rowIndex: number): void {
+  const rows = amendRows[fieldKey];
+  if (rows === undefined) {
+    return;
+  }
+  rows.splice(rowIndex, 1);
+  // Always leave one row present so the field never disappears entirely.
+  if (rows.length === 0) {
+    rows.push({ id: null, text: '' });
+  }
+}
+
+// Write one row's TEXT back into the model, preserving its `id` — the same
+// explicit-setter idiom `updateRow` uses on the create sheet, for the same
+// `noUncheckedIndexedAccess` reason, plus the one thing that idiom did not
+// need to protect: a rewording must never touch the id it is keyed to.
+function updateAmendRowText(fieldKey: string, rowIndex: number, value: string): void {
+  const rows = amendRows[fieldKey];
+  if (rows === undefined) {
+    return;
+  }
+  const row = rows[rowIndex];
+  if (row === undefined) {
+    return;
+  }
+  rows[rowIndex] = { id: row.id, text: value };
+}
+
+// The amend route's error vocabulary, in plain words. Not exported/tested
+// (house rule — the .vue is manual): every branch here is presentation of an
+// already-classified daemon answer, not a decision.
+function amendErrorMessage(status: number, body: unknown): string {
+  if (status === 0) {
+    return 'The request never reached the daemon. Nothing was amended.';
+  }
+  if (status === 404) {
+    return 'The daemon has no task with that id — nothing was amended.';
+  }
+  const parsed = (typeof body === 'object' && body !== null ? body : {}) as Record<string, unknown>;
+  const detail = typeof parsed.detail === 'string' ? parsed.detail : null;
+  if (detail === 'unknown-criterion') {
+    const criterionId = typeof parsed.criterionId === 'string' ? parsed.criterionId : '(id not given)';
+    return `That criteria row is stale — the record no longer has a criterion with id "${criterionId}". Close and reopen Amend to pick up the current list, then redo the edit.`;
+  }
+  if (detail === 'empty-amendment') {
+    // Reachable only if the daemon and this form's own client-side mirror
+    // (buildAmendmentBody returning null) somehow disagree — kept honest
+    // rather than assumed unreachable.
+    return 'The daemon read that as changing nothing, so nothing was written.';
+  }
+  return `The daemon answered ${status}${detail === null ? '' : `: ${detail}`}. Nothing was amended.`;
+}
+
+async function submitAmend(): Promise<void> {
+  const record = correctionTaskRecord.value;
+  const seed = amendSeedModel.value;
+  if (record === null || seed === null || amendInFlight.value) {
+    return;
+  }
+  const edited: AmendFormModel = {
+    scope: amendText.scope ?? '',
+    killCriterion: amendText.killCriterion ?? '',
+    explicitlyOut: (amendRows.explicitlyOut ?? []).map((row) => row.text),
+    acceptanceCriteria: amendRows.acceptanceCriteria ?? [],
+  };
+  const body = buildAmendmentBody(seed, edited);
+  if (body === null) {
+    // Nothing changed — close with no POST. The client-side mirror of the
+    // amendments route's own `empty-amendment` refusal, so a no-op submit
+    // never reaches the network (and never bumps a rev for nothing).
+    amendOpen.value = false;
+    return;
+  }
+  amendInFlight.value = true;
+  try {
+    const answer = await store.amendTask(record.taskId, body);
+    if (answer.status === 200) {
+      // ⚠ NO LOCAL PATCH, same NO-OPTIMISTIC-UI posture as every other write in
+      // this file. The 'tasks' stream carries the amendment's fold, the store
+      // re-reads the projection, and `openTaskRecord`/`correctionTaskRecord`
+      // re-derive from it — the sheet closes back to the (already-reactive)
+      // card sheet rather than hand-patching anything.
+      amendOpen.value = false;
+      return;
+    }
+    // ⚠ NO DISPATCH CALL, HERE OR ANYWHERE IN THIS FLOW (D53). The amend
+    // door's own detail string already told the operator dispatch is a
+    // separate, later step.
+    amendNotice.value = amendErrorMessage(answer.status, answer.body);
+  } finally {
+    amendInFlight.value = false;
+  }
+}
 
 // ── The create sheet ────────────────────────────────────────────────────────
 // The board has to be able to get its first card without leaving the phone.
@@ -701,7 +901,33 @@ function livenessClass(liveness: string): string {
         </ul>
 
         <h3 class="mt-4 text-sm font-semibold font-mono uppercase tracking-[0.08em]">Run it</h3>
+
+        <!-- S7·8 — THE TWO LABELED CORRECTION DOORS (D46/D53), once the task
+             has run at least once. A never-dispatched task has nothing to
+             steer or amend against yet, so it keeps the plain Dispatch button
+             in the `v-else` branch below, unchanged. -->
+        <template v-if="correctionAvailable">
+          <p v-if="correctionRevDisplay !== null" class="mt-1 text-[11px] text-ink-dim">
+            work-order rev {{ correctionRevDisplay }}
+          </p>
+          <ul class="mt-2 flex flex-col gap-1.5">
+            <li v-for="door in correctionDoorList" :key="door.kind">
+              <button
+                type="button"
+                class="flex min-h-[44px] w-full flex-col items-start gap-0.5 rounded-md border border-line px-3 py-2 text-left disabled:opacity-50"
+                :disabled="door.kind === 'steer' ? dispatchInFlight : amendInFlight"
+                @click="openCorrectionDoor(door.kind)"
+              >
+                <span class="text-sm font-semibold">
+                  {{ door.kind === 'steer' && dispatchInFlight ? 'Dispatching…' : door.title }}
+                </span>
+                <span class="text-[11px] text-ink-dim">{{ door.detail }}</span>
+              </button>
+            </li>
+          </ul>
+        </template>
         <button
+          v-else
           type="button"
           class="mt-2 min-h-[44px] w-full rounded-md bg-accent px-3 text-sm font-semibold text-accent-fg active:bg-accent/90 disabled:opacity-50"
           :disabled="dispatchInFlight"
@@ -748,6 +974,112 @@ function livenessClass(liveness: string): string {
             </li>
           </ul>
         </template>
+      </div>
+    </div>
+
+    <!-- ── THE AMEND SHEET (S7·8) ──────────────────────────────────────────────
+         D46's second door: writes a NEW workOrderRev, dispatches NOTHING
+         (D53 — no chaining). Opened by the Amend door in the card sheet above,
+         so it stacks OVER it (z-50 vs the card sheet's z-40). Reuses the
+         create sheet's own field-rendering pattern below, driven by the same
+         `store.workOrderSchema` descriptor, seeded from the record rather than
+         starting blank. -->
+    <div
+      v-if="amendOpen"
+      class="fixed inset-0 z-50 flex items-end bg-black/40"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Amend work order"
+      @click.self="closeAmend"
+    >
+      <div class="max-h-[88vh] w-full overflow-y-auto rounded-t-2xl bg-panel p-4">
+        <div class="flex items-center justify-between gap-3">
+          <h2 class="text-base font-semibold">Amend work order</h2>
+          <button
+            type="button"
+            class="min-h-[44px] rounded-md border border-line px-3 text-sm font-medium"
+            @click="closeAmend"
+          >
+            Close
+          </button>
+        </div>
+        <p class="mt-1 text-[11px] text-ink-dim">
+          Writes a new work-order revision. Dispatch is a separate, later step — amending never starts a run.
+        </p>
+        <p class="mt-1 text-[11px] text-ink-dim">
+          Leaving Scope or Kill criterion blank keeps it UNCHANGED — the wire cannot express clearing prose. Emptying
+          Explicitly out or Acceptance criteria really does clear it.
+        </p>
+
+        <!-- The AUTHORED work-order fields, rendered from `store.workOrderSchema`
+             (S7·3's descriptor) — the SAME source the create sheet renders from,
+             never a second hard-coded field list. Repeatable rows are
+             `AmendCriterionRow`s here rather than plain strings: a criterion
+             row's id rides invisibly through `updateAmendRowText`, a plain list
+             row's id is always null and dropped on submit. -->
+        <template v-for="field in store.workOrderSchema ?? []" :key="field.key">
+          <label
+            class="mt-3 block text-xs font-medium font-mono uppercase tracking-[0.08em] text-ink-dim"
+            :for="`amend-wo-${field.key}`"
+          >
+            {{ field.label }}
+          </label>
+
+          <textarea
+            v-if="field.kind === 'longtext'"
+            :id="`amend-wo-${field.key}`"
+            v-model="amendText[field.key]"
+            :maxlength="field.maxLength"
+            rows="3"
+            class="mt-1 w-full resize-y rounded-md border border-line bg-panel-sunken px-3 py-2 text-sm"
+          ></textarea>
+
+          <div v-else class="mt-1 space-y-2">
+            <div
+              v-for="(_row, rowIndex) in amendRows[field.key] ?? []"
+              :key="rowIndex"
+              class="flex items-center gap-2"
+            >
+              <input
+                :value="amendRows[field.key]?.[rowIndex]?.text ?? ''"
+                type="text"
+                :maxlength="field.itemMaxLength"
+                class="min-h-[44px] w-full flex-1 rounded-md border border-line bg-panel-sunken px-3 text-sm"
+                placeholder="one per line"
+                @input="updateAmendRowText(field.key, rowIndex, ($event.target as HTMLInputElement).value)"
+              />
+              <button
+                type="button"
+                class="min-h-[44px] shrink-0 rounded-md border border-line px-3 text-sm text-ink-dim"
+                :aria-label="`Remove ${field.label} row`"
+                @click="removeAmendRow(field.key, rowIndex)"
+              >
+                −
+              </button>
+            </div>
+            <button
+              type="button"
+              class="min-h-[44px] w-full rounded-md border border-line px-3 text-sm text-ink-dim"
+              @click="addAmendRow(field.key)"
+            >
+              + Add row
+            </button>
+          </div>
+
+          <p class="mt-1 text-[11px] text-ink-dim">{{ field.help }}</p>
+        </template>
+
+        <button
+          type="button"
+          class="mt-3 min-h-[44px] w-full rounded-md bg-accent px-3 text-sm font-semibold text-accent-fg active:bg-accent/90 disabled:opacity-50"
+          :disabled="amendInFlight"
+          @click="submitAmend"
+        >
+          {{ amendInFlight ? 'Amending…' : 'Save amendment' }}
+        </button>
+        <p v-if="amendNotice !== null" class="mt-2 rounded-md border border-warn/30 bg-warn/10 p-3 text-sm text-warn" role="status">
+          {{ amendNotice }}
+        </p>
       </div>
     </div>
 
