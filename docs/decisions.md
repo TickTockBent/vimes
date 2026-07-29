@@ -2015,3 +2015,90 @@ fallback case). Verified by breaking on both sides: the agent forced planning
 back to both tools (reddened exactly the planning-has-none case); the
 orchestrator cross-wired review to the completion spec (independent sabotage,
 snapshot-restored).
+
+## D56 — The orchestrator is a STANDING PER-PROJECT ENTITY the daemon maintains, never "just another session" — DECIDED 2026-07-29
+
+*(Wes + Fable design pass, mid-slice-7 phase two. Supersedes the S7·9 skeleton's
+`role: 'orchestrator'` spawn-option approach before any of it was built — recorded
+here as considered-and-rejected. This decision re-frames slice 7's phase two into
+slice 8; see `slice-8.md`.)*
+
+**Wes's framing (the spec, verbatim in spirit):** the orchestrator is a global
+top-level chat interface that persists without parking, because it will do the job
+the CLI orchestrator (Fable) does now: the human opens a project and talks to ONE
+persistent interface; that interface authors work orders, dispatches targeted
+agents, checks results, keeps the books. "It will be you, running in a slightly
+different window."
+
+**The identity model (the crux).** No transcript persists forever — context fills,
+compaction is lossy, long transcripts accumulate sediment. What CAN persist is what
+already persists for the CLI orchestrator: **durable state — the event-sourced
+board, the project's doctrine docs, and a standing-notes anchor — with the
+transcript as a rotating vessel around it.** The park/resume ritual the CLI
+workflow performs by hand becomes a SYSTEM PROPERTY: every (re)founding of the
+orchestrator's transcript opens with a composed re-anchoring briefing built from
+durable state, so continuity is a property of the entity, not of any one process.
+
+**What "maintained by the daemon" means:**
+- **Singleton per project** (D42's declared boundary is the key). Not spawned from
+  a session list — maintained: the daemon respawns/resumes it across restarts.
+  This also defuses the recursion hazard (a deploy that kills the orchestrator's
+  process is recoverable by construction — it re-anchors on respawn).
+- **Excluded from the ordinary session surfaces.** It gets its own top-level chat
+  surface bound to the global project pointer (design-directions' "home =
+  project/orchestrator view"), while remaining a Claude process under the hood.
+- **Verbs are GRANTS on the standing entity** — author (`create_task`) first;
+  promote / dispatch / review / amend later, each individually revertible
+  (unchanged from the phase-two plan). Board events delivered to it as turns (the
+  orchestrator reacting to completions/verdicts) is the FAR grant: the seam is
+  reserved, nothing is built.
+- **Propose-never-transition from birth** (principle 10 / I7): its tools call the
+  sole writer's proposal paths; nothing it does moves the board until a drive
+  verb is deliberately granted.
+
+**Sequencing consequence.** A standing per-project entity cannot be built before
+"project" is first-class: **D42's build (registry + picker + global project
+pointer) is a prerequisite, not a parallel track.** Slice-8 order: D42 build →
+orchestrator foundation → author grant → Gate-2 authorship trial (the ~10-task
+pivot criterion carries forward unchanged).
+
+**What survives from the rejected S7·9 skeleton** (so the thinking isn't lost):
+the in-process tool-exposure seam (D52's channel), in-run payload validation
+(retry locality), server-side forced project binding (the tool can never author
+across the project fence), the text-only criteria shape (ids minted server-side),
+the `task_commented` reservation, and the briefing-composer pattern — all of it
+moves into the standing-entity frame intact.
+
+## D57 — The orchestrator transcript lifecycle: capture-then-compact via hook, with agency and escalating nudges — DECIDED 2026-07-29 (mechanics ⟨tune⟩, spike-gated)
+
+*(Wes, same design pass as D56 — his lived numbers from months of driving the CLI
+orchestrator, recorded as the design bands. Rule 0.7 applies to the mechanics:
+hook behavior is classified by observation before anything is built on it.)*
+
+**The policy.** The transcript problem D56 names is solved with a **compaction
+hook at a reasonable token threshold (~⟨tune⟩ 250–300k)**: before compaction, the
+orchestrator performs a precompaction capture (the `/precompaction` discipline —
+flush context-only state to its standing notes / durable docs), THEN compacts.
+Capture-then-compact makes compaction lossless-in-practice: what the summary
+drops was already banked.
+
+**Agency (deliberate).** The orchestrator may DELAY compaction when it is about
+to land something — mid-test, mid-feature, mid-verification — rather than being
+interrupted at a mechanical threshold. The hook nudges on an **escalating
+series** (so it isn't constantly firing): gentle at the threshold, firmer as fill
+grows. Wes's lived bands, recorded with their assumption (CLI workflow, one
+orchestrator, heavy tool traffic): **keep fill generally below ~40%; up to ~60%
+is acceptable when rolling hot.** These are design bands, not FAIL-able
+assertions — Gate-D applies before any of them is pinned in a test.
+
+**Spike rows this creates (front-loaded into slice 8, rule 0.6/0.7):**
+1. **PreCompact-hook observed behavior** — does the runtime's compaction hook
+   fire where documentation claims, and what can it actually see/do there?
+2. **Deferability** — can a hook DELAY/decline compaction (the agency mechanism),
+   or must the nudge live a level up (e.g., VIMES watching context fill from
+   stream events and messaging the orchestrator)? Build on whichever is OBSERVED
+   to work; the fallback (VIMES-side nudges) is acceptable and may be preferable
+   (it keeps policy in VIMES rather than in runtime hook semantics).
+3. **Resume-across-restart fidelity** — the D56 respawn path leans on session
+   resume surviving daemon restarts; verify the re-anchor + resume combination
+   on a real transcript before the foundation unit builds on it.

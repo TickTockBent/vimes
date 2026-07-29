@@ -628,6 +628,17 @@ labeled — S7·9 builds on a finished phase-one machine.)
 - **S7·10+ — drive verbs (promote / move / dispatch)** added **one at a time**, each an
   individually-revertible grant, only after authorship proves the schema.
 
+> **⚠ PHASE TWO SUPERSEDED → SLICE 8 (2026-07-29, D56/D57).** The S7·9 skeleton
+> was drafted (orchestrator as a session with a `role` flag) and REJECTED in the
+> same design pass: Wes's frame is a **standing per-project entity** — a global
+> top-level chat that persists without parking, maintained by the daemon,
+> doing the job the CLI orchestrator does today. That makes D42's build
+> (registry + picker + global pointer) a prerequisite. The re-cut plan —
+> including everything that survives from the S7·9 skeleton (tool-exposure
+> seam, forced project binding, text-only criteria, `task_commented`
+> reservation, the pivot criterion verbatim) — is **`slice-8.md`**. Slice 7
+> closes here: Gate 1 passed, behind-gate machinery complete, phase two moved.
+
 ## Scope resolved (2026-07-25)
 
 Both scope forks decided — see "Gate-1 membership" above. Q1: human-verify for the

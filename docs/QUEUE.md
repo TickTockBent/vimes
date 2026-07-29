@@ -11,21 +11,19 @@ reason `slice-6-test-plan.md` lives here. Delete an entry when it ships.
 cleanup, dispatch-on-promotion, briefing prose pass, session trail — deleted per
 the header rule; see slice-7.md S7·7c–7g and decisions D53/D54/D55.)*
 
-## ▶ NEXT SESSION STARTS HERE (updated 2026-07-25 eve — read `scratchpad/HANDOFF.md` first)
+## ▶ NEXT SESSION STARTS HERE (updated 2026-07-29 — read `scratchpad/HANDOFF.md` first)
 
-**SLICE 6b — DONE** (UI foundation + full re-skin; deployed). **SLICE 7 (task model)
-— GATE-1 BUILD SPINE ~COMPLETE, all deployed** (HEAD `6af9ecb`). Built this session:
-S7·0 spike, S7·1, S7·2a, S7·3, S7·4, S7·5a, S7·5b-i, S7·5b-ii — **native plan capture
-is LIVE end-to-end** (plan-mode planning spawn → ExitPlanMode interception → artifact
-store → plan-ready). Gate-D signed off (**D48**: native plan mode adopted, R-a
-accepted).
+**SLICE 7 — CLOSED 2026-07-29.** Gate 1 passed (2026-07-26); full loop live-verified
+by the bounce-path test (2026-07-28, task `2f83c29a`); behind-gate machinery complete
+(S7·2b amendments + S7·8 two-door UX shipped 2026-07-29); phase two SUPERSEDED by the
+D56 reframe.
 
-**RESUME AT: `S7·7a`** — the fresh-implementer handoff (`composeStageInstruction` for
-`implementing`, seed = work-order + plan-by-hash). It's the LAST Gate-1 build unit;
-then **Wes's human exit gate** (one real work-order end-to-end, zero steers) closes
-Gate 1. Full detail + resume path in `scratchpad/HANDOFF.md`; unit statuses in
-`slice-7.md`. After Gate 1: post-gate units S7·2b / S7·6 / S7·7b / S7·8, then phase
-two (orchestrator, S7·9+).
+**RESUME AT: `slice-8.md`** — project-centric VIMES + the standing orchestrator
+(D56/D57). Order: SP8·1/SP8·2 spikes → Phase A (D42 build: registry S8·1, picker +
+global pointer S8·2) → Phase B (standing-entity foundation S8·3, transcript
+lifecycle S8·4, surface S8·5) → Phase C (author grant S8·6 → **Gate-2 trial**,
+~10-task pivot). Open calls riding with it: **D58** (orchestrator permission mode,
+lean `auto`) + **D59** (comment emitter, lean reserve-only) in open-questions.
 
 **Parked odds:** **D45** slug fix; liveness-table dedup (tech-debt); advisory-gate pin
 (brace-expansion, parked); **usage-endpoint 401/429** observed 2026-07-25 (meters may
