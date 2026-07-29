@@ -1,6 +1,6 @@
 import { canonicalJson } from '../canonicalJson.js';
 import type { EventRecord } from '../schemas.js';
-import { EVENT_TYPES, usageBlockPayloadSchema } from '../events.js';
+import { EVENT_TYPES, compactionObservedPayloadSchema, usageBlockPayloadSchema } from '../events.js';
 import {
   cacheHitRate,
   classifyTtlTier,
@@ -58,6 +58,22 @@ export interface CacheObservabilityRecord {
   // dedupe key set. Blocks with no messageId are counted but leave no entry
   // here (they cannot be deduped).
   countedMessageIds: string[];
+  // The MOST RECENTLY OBSERVED `/compact` for this session (S8·4a). LATEST-WINS
+  // — the S8·4 nudge policy wants "most recent observed window pressure", not
+  // history; the event log itself keeps the full history, so this is not a
+  // second store of it. Absent (key omitted) until the first compaction is
+  // observed on EITHER ingestion path (mapper.ts's transcript recognizer or
+  // sessionHost.ts's SDK-stream branch — never both; see the one-source-of-
+  // record note on EVENT_TYPES.compactionObserved). `preTokens` is the
+  // rule-0.7-clean answer to "how full was this model's window" — the reason
+  // this field exists is to make a declared model→context-limit table
+  // unnecessary.
+  latestCompaction?: {
+    trigger: string;
+    preTokens?: number;
+    postTokens?: number;
+    durationMs?: number;
+  };
 }
 
 export interface CacheObservabilityState {
@@ -88,10 +104,34 @@ export const cacheObservabilityProjection: Projection<CacheObservabilityState> =
     return { perSession: {} };
   },
 
-  // TOTAL: only usage_block events matter; everything else is a no-op. A
-  // malformed usage_block payload is ignored (safeParse). apply NEVER mutates
-  // `state` — snapshots share references with live state.
+  // TOTAL: only usage_block and compaction_observed events matter; everything
+  // else is a no-op. A malformed payload of either is ignored (safeParse).
+  // apply NEVER mutates `state` — snapshots share references with live state.
   apply(state: CacheObservabilityState, event: EventRecord): CacheObservabilityState {
+    if (event.type === EVENT_TYPES.compactionObserved) {
+      const parsedCompaction = compactionObservedPayloadSchema.safeParse(event.payload);
+      if (!parsedCompaction.success) {
+        return state;
+      }
+      const compactionPayload = parsedCompaction.data;
+      const priorForCompaction =
+        state.perSession[compactionPayload.appSessionId] ?? emptyRecord(compactionPayload.appSessionId);
+      const recordWithCompaction: CacheObservabilityRecord = {
+        ...priorForCompaction,
+        // LATEST-WINS, unconditionally — a fresh compaction REPLACES the prior
+        // one, mirroring latestContextTokens's fold below (never accumulated;
+        // the log itself is the history).
+        latestCompaction: {
+          trigger: compactionPayload.trigger,
+          preTokens: compactionPayload.preTokens,
+          postTokens: compactionPayload.postTokens,
+          durationMs: compactionPayload.durationMs,
+        },
+      };
+      return {
+        perSession: { ...state.perSession, [compactionPayload.appSessionId]: recordWithCompaction },
+      };
+    }
     if (event.type !== EVENT_TYPES.usageBlock) {
       return state;
     }

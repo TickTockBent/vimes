@@ -1,6 +1,7 @@
 import type { EventInput } from '../schemas.js';
 import {
   claudeSessionMapped,
+  compactionObserved,
   correctionDelivered,
   lineQuarantined,
   message,
@@ -12,7 +13,14 @@ import type { TailOutput } from './tail.js';
 // without insisting on a full shape. Unknown fields are tolerated.
 interface LooseTranscriptRecord {
   type?: unknown;
+  subtype?: unknown;
   attachment?: unknown;
+  compactMetadata?: unknown;
+  // ⚠ `isCompactSummary` sits on the RECORD ITSELF, a SIBLING of `message` —
+  // NOT nested inside it (verbatim, SP8·1's q6-after-compact.jsonl line index
+  // 33: `{"type":"user","message":{"role":"user",...},...,
+  // "isCompactSummary":true,...}`).
+  isCompactSummary?: unknown;
   message?: { role?: unknown; content?: unknown; usage?: unknown };
 }
 
@@ -65,6 +73,12 @@ function optionalString(candidate: unknown): string | undefined {
   return typeof candidate === 'string' ? candidate : undefined;
 }
 
+function optionalNonnegativeInt(candidate: unknown): number | undefined {
+  return typeof candidate === 'number' && Number.isInteger(candidate) && candidate >= 0
+    ? candidate
+    : undefined;
+}
+
 // Recognize ONE record. Returns null for anything that is not a delivered
 // correction — a different record type, a different attachment subtype, a
 // task-notification, an unknown mode, or a malformed body.
@@ -94,6 +108,47 @@ function correctionDeliveredFromRecord(
     // The ENQUEUE time. Absent in ~20% of real records, so `undefined` here is
     // an ordinary observation and never an error.
     enqueuedAt: optionalString(attachment.timestamp),
+  });
+}
+
+// ─── the `compact_boundary` system record (S8·4a) ────────────────────────────
+//
+// Same placement discipline as `queued_command` above: `compact_boundary` has
+// NO `message` field (verbatim, SP8·1's scratchpad/sp8-1-evidence/logs/
+// q6-after-compact.jsonl, line index 32 — `type:"system",
+// subtype:"compact_boundary"`, no `message` key at all), so it must be
+// recognized BEFORE the role early-out below or it falls into the
+// "non-message record" break and is dropped, exactly as `queued_command` was
+// before slice 6 step 6a.
+//
+// `compactMetadata` is camelCase in the TRANSCRIPT (contrast sessionHost.ts's
+// SDK-stream path, where the SAME fact arrives as snake_case
+// `compact_metadata` — q1b-stream.jsonl line 11). Two casings for one fact is
+// the CLI's own inconsistency, observed rather than normalized away: each path
+// reads its own casing verbatim.
+//
+// Recognize ONE record. Returns null for anything that is not an observed
+// compaction boundary. A `compact_boundary` with missing or malformed
+// `compactMetadata` STILL returns an event — the boundary itself is the fact;
+// the numbers are decoration (I8: a partial/alien metadata body degrades
+// field-by-field, never a dropped event and never a throw).
+function compactionObservedFromRecord(
+  appSessionId: string,
+  record: LooseTranscriptRecord,
+): EventInput | null {
+  if (record.type !== 'system' || record.subtype !== 'compact_boundary') {
+    return null;
+  }
+  const metadata = isObject(record.compactMetadata) ? record.compactMetadata : {};
+  return compactionObserved({
+    appSessionId,
+    // A missing/non-string trigger degrades to '' rather than dropping the
+    // event: the boundary is the fact being witnessed, the trigger label is
+    // (like the numbers) decoration on top of it.
+    trigger: optionalString(metadata.trigger) ?? '',
+    preTokens: optionalNonnegativeInt(metadata.preTokens),
+    postTokens: optionalNonnegativeInt(metadata.postTokens),
+    durationMs: optionalNonnegativeInt(metadata.durationMs),
   });
 }
 
@@ -154,6 +209,15 @@ export function mapTranscriptOutputs(
           events.push(correctionEvent);
         }
 
+        // Same placement reasoning as the correction recognizer just above:
+        // `compact_boundary` has no `message` field either, so it too must be
+        // recognized before the early-out below or it is silently dropped. See
+        // compactionObservedFromRecord's own comment.
+        const compactionEvent = compactionObservedFromRecord(appSessionId, record);
+        if (compactionEvent !== null) {
+          events.push(compactionEvent);
+        }
+
         const messageBody = record.message;
         if (messageBody === undefined || typeof messageBody.role !== 'string') {
           // Non-message records (mode, snapshots, attachments, alien shapes)
@@ -165,6 +229,12 @@ export function mapTranscriptOutputs(
             appSessionId,
             role: messageBody.role,
             content: messageBody.content ?? null,
+            // S8·4a: present ONLY for the transcript's compaction-summary
+            // record (`record.isCompactSummary === true`, observed verbatim —
+            // see LooseTranscriptRecord's note). Every ordinary message omits
+            // the key entirely (absent-stays-absent, I6) rather than carrying
+            // `isCompactSummary: false`.
+            ...(record.isCompactSummary === true ? { isCompactSummary: true as const } : {}),
           }),
         );
         // Assistant records carrying a usage object additionally emit usage_block.

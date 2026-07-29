@@ -308,3 +308,189 @@ describe('mapper — records are emitted in READ order, never sorted (assertion 
     ]);
   });
 });
+
+// ─── S8·4a — compaction visibility ────────────────────────────────────────────
+//
+// ⚠ UNLIKE the queued_command cases above (hand-written, borrowed SHAPE only),
+// these fixtures carry the REAL numbers OBSERVED at SP8·1 (rule 0.7 — the WO
+// requires it): scratchpad/sp8-1-evidence/logs/q6-after-compact.jsonl, line
+// index 32 (the `compact_boundary`, trigger:"manual", preTokens:37645,
+// durationMs:16849, postTokens:1534) and line index 33 (the
+// `isCompactSummary:true` summary that immediately follows it). Line index 2
+// (an ordinary user record, no `isCompactSummary` key) is the absent-baseline.
+
+describe('mapper — compact_boundary becomes compaction_observed (S8·4a, assertion 1)', () => {
+  it('the boundary observed at SP8·1 — real numbers, camelCase compactMetadata', () => {
+    const events = map([
+      record({
+        parentUuid: null,
+        logicalParentUuid: '2fb3f321-f789-42cb-8c2c-b848c44a4437',
+        type: 'system',
+        subtype: 'compact_boundary',
+        content: 'Conversation compacted',
+        compactMetadata: {
+          trigger: 'manual',
+          preTokens: 37645,
+          durationMs: 16849,
+          preservedSegment: {
+            headUuid: '59b665c2-46da-4d8f-8547-1e214fe6cee6',
+            anchorUuid: '2183c7f0-4e80-4855-97be-08efee8d6735',
+            tailUuid: '59b665c2-46da-4d8f-8547-1e214fe6cee6',
+          },
+          preservedMessages: {
+            anchorUuid: '2183c7f0-4e80-4855-97be-08efee8d6735',
+            uuids: ['59b665c2-46da-4d8f-8547-1e214fe6cee6'],
+            allUuids: ['59b665c2-46da-4d8f-8547-1e214fe6cee6', '2fb3f321-f789-42cb-8c2c-b848c44a4437'],
+          },
+          postTokens: 1534,
+          cumulativeDroppedTokens: 36111,
+        },
+        uuid: '7080aeb9-6fb4-477d-a6cf-671fe89d1ee9',
+      }),
+    ]);
+    expect(events).toEqual([
+      {
+        stream: APP_SESSION_ID,
+        type: EVENT_TYPES.compactionObserved,
+        payload: {
+          appSessionId: APP_SESSION_ID,
+          trigger: 'manual',
+          preTokens: 37645,
+          postTokens: 1534,
+          durationMs: 16849,
+        },
+      },
+    ]);
+  });
+
+  it('a compact_boundary with NO compactMetadata still emits — the boundary itself is the fact', () => {
+    const events = map([
+      record({ type: 'system', subtype: 'compact_boundary', content: 'Conversation compacted' }),
+    ]);
+    expect(events).toEqual([
+      {
+        stream: APP_SESSION_ID,
+        type: EVENT_TYPES.compactionObserved,
+        payload: { appSessionId: APP_SESSION_ID, trigger: '' },
+      },
+    ]);
+  });
+
+  it('a non-object compactMetadata degrades to trigger-absent, no throw (I8)', () => {
+    const hostile = record({
+      type: 'system',
+      subtype: 'compact_boundary',
+      compactMetadata: 'not-an-object',
+    });
+    expect(() => map([hostile])).not.toThrow();
+    expect(map([hostile])).toEqual([
+      {
+        stream: APP_SESSION_ID,
+        type: EVENT_TYPES.compactionObserved,
+        payload: { appSessionId: APP_SESSION_ID, trigger: '' },
+      },
+    ]);
+  });
+
+  it('partial metadata (trigger only, no numbers) carries only what is present', () => {
+    const events = map([
+      record({ type: 'system', subtype: 'compact_boundary', compactMetadata: { trigger: 'auto' } }),
+    ]);
+    expect(events).toEqual([
+      {
+        stream: APP_SESSION_ID,
+        type: EVENT_TYPES.compactionObserved,
+        payload: { appSessionId: APP_SESSION_ID, trigger: 'auto' },
+      },
+    ]);
+  });
+
+  it('alien numeric fields (negative, non-integer, non-numeric) are dropped, never fabricated', () => {
+    const events = map([
+      record({
+        type: 'system',
+        subtype: 'compact_boundary',
+        compactMetadata: { trigger: 'manual', preTokens: -5, postTokens: 1.5, durationMs: 'seven' },
+      }),
+    ]);
+    expect(events).toEqual([
+      {
+        stream: APP_SESSION_ID,
+        type: EVENT_TYPES.compactionObserved,
+        payload: { appSessionId: APP_SESSION_ID, trigger: 'manual' },
+      },
+    ]);
+  });
+
+  it('a compact_boundary emits NO message and NO usage_block of its own (it has no message field)', () => {
+    const events = map([
+      record({ type: 'system', subtype: 'compact_boundary', compactMetadata: { trigger: 'manual' } }),
+    ]);
+    expect(events.filter((event) => event.type === EVENT_TYPES.message)).toEqual([]);
+    expect(events.filter((event) => event.type === EVENT_TYPES.usageBlock)).toEqual([]);
+  });
+
+  it('a different system subtype (e.g. init) is not recognized as a boundary', () => {
+    expect(
+      map([record({ type: 'system', subtype: 'init', compactMetadata: { trigger: 'manual' } })]),
+    ).toEqual([]);
+  });
+});
+
+describe('mapper — the compaction summary is distinguishable via isCompactSummary (S8·4a, assertion 2)', () => {
+  it('the summary record observed at SP8·1 (q6-after-compact.jsonl line index 33) carries isCompactSummary:true', () => {
+    const events = map([
+      record({
+        parentUuid: '7080aeb9-6fb4-477d-a6cf-671fe89d1ee9',
+        type: 'user',
+        message: { role: 'user', content: 'This session is being continued from a previous conversation.' },
+        isVisibleInTranscriptOnly: true,
+        isCompactSummary: true,
+        uuid: '2183c7f0-4e80-4855-97be-08efee8d6735',
+      }),
+    ]);
+    expect(events).toEqual([
+      {
+        stream: APP_SESSION_ID,
+        type: EVENT_TYPES.message,
+        payload: {
+          appSessionId: APP_SESSION_ID,
+          role: 'user',
+          content: 'This session is being continued from a previous conversation.',
+          isCompactSummary: true,
+        },
+      },
+    ]);
+  });
+
+  it('an ordinary user message (the line-2 baseline) carries NO isCompactSummary key at all — absent-stays-absent', () => {
+    const events = map([
+      record({
+        type: 'user',
+        message: {
+          role: 'user',
+          content: 'Run these as EIGHT separate Bash tool calls, one at a time.',
+        },
+      }),
+    ]);
+    expect(events).toEqual([
+      {
+        stream: APP_SESSION_ID,
+        type: EVENT_TYPES.message,
+        payload: {
+          appSessionId: APP_SESSION_ID,
+          role: 'user',
+          content: 'Run these as EIGHT separate Bash tool calls, one at a time.',
+        },
+      },
+    ]);
+    expect(events[0]!.payload).not.toHaveProperty('isCompactSummary');
+  });
+
+  it('isCompactSummary:false (never actually observed, but a hostile input) is treated as absent, not carried', () => {
+    const events = map([
+      record({ type: 'user', message: { role: 'user', content: 'x' }, isCompactSummary: false }),
+    ]);
+    expect(events[0]!.payload).not.toHaveProperty('isCompactSummary');
+  });
+});

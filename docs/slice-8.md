@@ -199,6 +199,22 @@ orchestrator's dead-adoption sabotage (2 reds exact, incl. the agent's own
   its token metadata. **Kill:** the record shapes vary across CLI versions in
   ways a loose-zod recognizer can't absorb → risk-register escalation.
 
+**✅ BUILT + ORCHESTRATOR-VERIFIED 2026-07-29** (deploys with Phase B's one
+restart). Built across the usage-window boundary: first agent stopped clean in
+context-gathering at wind-down (checkpoint banked its fixture parse); the
+wake-up run's fresh agent completed the implementation but was killed by the
+headless wrapper's 600s background ceiling before reporting — the orchestrator
+gated the left-behind tree directly (diff-as-testimony: green at 2901, +30).
+`compaction_observed` witnessed from BOTH paths with the CLI's own casing
+inconsistency observed-not-normalized (transcript camelCase vs SDK snake_case,
+each cited to its spike fixture line); recognizer placed per the
+`queued_command` precedent; boundary-is-the-fact degradation (missing metadata
+still events); `isCompactSummary` read as a SIBLING of `message` (per the
+fixture, where a nested guess would have silently never matched);
+`latestCompaction` latest-wins on cacheObservability; no-double-ingest cited
+to the tailer's SDK-file skip. Orchestrator sabotage: recognizer dropped →
+exactly the 5 fixture tests reddened; restored byte-identical.
+
 ### S8·4 — The transcript lifecycle (D57) — `opus` *(spike answered; mechanism below awaits Wes's sign-off)*
 - **Scope:** capture-then-compact per D57: threshold ⟨tune⟩ (~250–300k
   tokens), escalating nudges, the orchestrator's delay agency, precompaction
