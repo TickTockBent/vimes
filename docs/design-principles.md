@@ -103,6 +103,34 @@ principle before recommending. Seeded at kickoff from the spec's ground rules
     it governs the desktop layout too — the multi-pane desktop view earns its
     panes by showing content, not by mimicking VSCode's furniture.
 
+*(12–14 from the agentswarms decomposition; ratified by Wes 2026-07-29.)*
+
+12. **Completion is an explicit event, never inferred from output.**
+    *(agentswarms decomp §2.1.)* A stage/step is done when a completion
+    record says so — never because output exists, and never NOT-done because
+    the output was empty (an empty result is still a result). Already true by
+    construction (`report_completion`, the D53 outcome events); this rule
+    pins it against regression, and it is what makes derived resume-state
+    safe if D51's graph ever lands.
+13. **No tool or API parameter may assert a decision the daemon should read
+    from the record.** *(agentswarms decomp §2.2 — their stated reason kept:
+    accepting an `approved` flag from the caller lets anyone who can reach
+    the function approve anything.)* Authority derives from persisted state —
+    the task's stage, the filed review, the gate's own decision — never from
+    a payload field claiming the decision happened. Embodied today
+    (`deriveReviewOutcome` reads the filed report; `create_task`'s forced
+    fields); BINDING on every future tool surface, and checked in every
+    drive-verb work order (S8·6+), which is exactly where a convenience
+    parameter would erode it.
+14. **Meter/budget gates fail OPEN attended, fail CLOSED unattended —
+    selected by session class.** *(agentswarms fail-open guard × AgenC
+    fail-closed kernel; the synthesis is ours because VIMES is both and
+    knows which at runtime.)* A stale meter must never block the human's own
+    interactive work (worst case: overspend, and a human is watching); a
+    stale meter in an unattended dispatched run means STOP (worst case:
+    the 5-hour window is the human's tomorrow). One branch, when unattended
+    operation lands.
+
 ## Standing consequences worth restating
 
 - **Security is core, not product** (finding A): the PTY endpoint is RCE as
