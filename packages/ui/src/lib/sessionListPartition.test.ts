@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { partitionSessionsByRecency } from './sessionListPartition.js';
+import { isOrchestratorSession, partitionSessionsByRecency } from './sessionListPartition.js';
 
 // A fixed "now" and rows built by SUBTRACTING an explicit age, so every case
 // reads as plain arithmetic — same convention cacheBadge.test.ts uses. The ISO
@@ -137,5 +137,29 @@ describe('partitionSessionsByRecency', () => {
     const result = partitionSessionsByRecency(rows, NOW_MS, { recencyWindowMs: SEVEN_DAYS_MS, minVisible: 0 });
     expect(result.older).toHaveLength(1);
     expect(result.visible).toHaveLength(0);
+  });
+});
+
+describe('isOrchestratorSession — D56/S8·5, FAILS OPEN TO VISIBLE', () => {
+  it('a record marked with a usable orchestratorForProjectId string is excluded', () => {
+    expect(isOrchestratorSession({ orchestratorForProjectId: 'project-1' })).toBe(true);
+  });
+
+  it('an ordinary session — no key at all — is NOT excluded (the overwhelming common case)', () => {
+    expect(isOrchestratorSession({})).toBe(false);
+  });
+
+  it('an explicit undefined is NOT excluded', () => {
+    expect(isOrchestratorSession({ orchestratorForProjectId: undefined })).toBe(false);
+  });
+
+  it('an empty string is NOT excluded — presence-of-a-USABLE-string is the marking, not merely the key', () => {
+    expect(isOrchestratorSession({ orchestratorForProjectId: '' })).toBe(false);
+  });
+
+  it('null, a number, and other junk shapes are NOT excluded — fail open, never hide a session on a hunch', () => {
+    expect(isOrchestratorSession({ orchestratorForProjectId: null as unknown as string })).toBe(false);
+    expect(isOrchestratorSession({ orchestratorForProjectId: 17 as unknown as string })).toBe(false);
+    expect(isOrchestratorSession({ orchestratorForProjectId: {} as unknown as string })).toBe(false);
   });
 });

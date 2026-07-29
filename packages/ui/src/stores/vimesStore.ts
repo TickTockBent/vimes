@@ -12,6 +12,7 @@ import type { ProjectView } from '../lib/projectContext.js';
 import type { WorkOrderBody, WorkOrderFieldDescriptor } from '../lib/workOrderForm.js';
 import type { AmendmentBody } from '../lib/correctionDoors.js';
 import { sessionToSubscribeAfterDispatch, sessionToSubscribeAfterTransition } from '../lib/dispatchFollow.js';
+import { sessionToOpenAfterEnsure } from '../lib/orchestratorEntry.js';
 import type { GitStatus, GitFileDiff, GitRepoEntry, GitDiffContext } from '../lib/gitReview.js';
 import type { EventRecord, SessionRecord } from '../lib/types.js';
 import { derivePushState, type PushUiState } from '../lib/pushState.js';
@@ -709,6 +710,31 @@ export const useVimesStore = defineStore('vimes', () => {
     const spawnedSessionId = sessionToSubscribeAfterDispatch(answer.status, answer.body);
     if (spawnedSessionId !== null) {
       subscribe(spawnedSessionId);
+      scheduleSessionsRefresh();
+    }
+    return answer;
+  }
+
+  // S8·5 (D56) — ensure this project's standing orchestrator exists and is
+  // live. `POST /api/projects/:projectId/orchestrator` with an empty body, the
+  // daemon's ENSURE endpoint verbatim (get-or-create-or-resume, idempotent —
+  // see orchestratorApi.ts).
+  //
+  // ⚠ THE THIRD MINT-PATH. A founded/resumed orchestrator is a session this
+  // client has never subscribed to, exactly the gap `dispatchTask` and
+  // `proposeTaskTransition` close for a dispatch/promotion — this is their
+  // twin, using `sessionToOpenAfterEnsure` (orchestratorEntry.ts) in place of
+  // `sessionToSubscribeAfterDispatch`/`sessionToSubscribeAfterTransition`
+  // because the envelope shape differs, but the glue is identical: subscribe
+  // to the WS stream so the founding/reorientation turn (and everything
+  // after) is not invisible, then schedule a sessions refresh so the new
+  // record itself lands. The raw answer goes back to the caller VERBATIM —
+  // this adds a side effect, it does not reinterpret what App.vue renders.
+  async function ensureOrchestrator(projectId: string): Promise<TaskApiAnswer> {
+    const answer = await postJsonApi(`/api/projects/${encodeURIComponent(projectId)}/orchestrator`, {});
+    const sessionId = sessionToOpenAfterEnsure(answer.status, answer.body);
+    if (sessionId !== null) {
+      subscribe(sessionId);
       scheduleSessionsRefresh();
     }
     return answer;
@@ -1554,6 +1580,8 @@ export const useVimesStore = defineStore('vimes', () => {
     amendTask,
     proposeTaskTransition,
     dispatchTask,
+    // The standing orchestrator (slice 8 step 5, D56)
+    ensureOrchestrator,
     // Git review (slice 4 step 3)
     gitStatus,
     gitDiffFiles,

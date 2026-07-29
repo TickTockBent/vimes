@@ -252,6 +252,25 @@ exactly the 5 fixture tests reddened; restored byte-identical.
 - **Exit:** Wes talks to a project's orchestrator from the phone without
   touching the session list.
 
+**✅ BUILT + ORCHESTRATOR-VERIFIED 2026-07-29** (deploys with Phase B's one
+restart; human exit — the phone walk — pending that deploy). Ships the DOOR,
+not a bespoke chat (nothing-sacred stance): a header Orchestrator button beside
+the scope chip (project-gated, busy-guarded) that calls S8·3's ensure endpoint
+and opens the ordinary stream panel on the returned session. `packages/ui`
+only, zero daemon/core. `lib/orchestratorEntry.ts` is the dispatchFollow
+sibling asked of the ensure envelope — `sessionToOpenAfterEnsure` (outcome
+gate decides, never id-presence) + `describeEnsureOutcome` (pinned strings:
+founded/refounded info, refusals + undelivered-briefing warn; plain
+already-live/dormant-resume say NOTHING — opening the chat is the feedback);
+loose mirror, hostile shapes degrade, never throw. Store `ensureOrchestrator`
+is the THIRD mint-path (subscribe + refresh glue, twin of dispatch/transition).
+Session list excludes marked rows in both scoped and unscoped cases —
+`isOrchestratorSession` FAILS OPEN TO VISIBLE (only a well-typed non-empty
+string excludes; both directions pinned); stream view verified decoupled from
+the partition (opens by id). +33 tests (2934 total). Orchestrator sabotage:
+fail-open guard widened to key-presence → exactly the 2 fail-open tests
+reddened, orchestratorEntry's stayed green; restored byte-identical, re-green.
+
 ## Phase C — the author grant
 
 ### S8·6 — `create_task` exposure + doctrine briefing — `opus` *(opens Gate 2)*

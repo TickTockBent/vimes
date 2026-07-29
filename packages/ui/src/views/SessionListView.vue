@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useVimesStore } from '../stores/vimesStore.js';
 import { deriveSessionRow, type SessionRow } from '../lib/sessionRow.js';
-import { partitionSessionsByRecency } from '../lib/sessionListPartition.js';
+import { isOrchestratorSession, partitionSessionsByRecency } from '../lib/sessionListPartition.js';
 import type { SessionRecord } from '../lib/types.js';
 import {
   initialKillConfirmState,
@@ -110,9 +110,18 @@ const scopedSessions = computed<SessionRecord[]>(() => {
 // re-sorts the whole list. Kept as raw SessionRecords (not yet derived to
 // SessionRow) because the Q2 age-out partition needs `createdAt`, which
 // SessionRow does not carry — deriving happens AFTER partitioning, below.
+//
+// D56/S8·5 — the orchestrator exclusion filters HERE, not into `scopedSessions`
+// above: the cwd-scope filter is a SEPARATE, orthogonal concern (which project
+// a session belongs to) from "does this session get its own list row at all"
+// (the orchestrator never does — its door is the header button), and keeping
+// scopedSessions' own "NO FILTER" byte-identity comment literally true for the
+// unscoped case matters more than saving one `.filter()` call. Applied in BOTH
+// the scoped and unscoped case: an orchestrator session is never an ordinary
+// row, project tab or not. `isOrchestratorSession` fails open to visible.
 const sortedSessions = computed<SessionRecord[]>(() =>
   scopedSessions.value
-    .slice()
+    .filter((session) => !isOrchestratorSession(session))
     .sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0)),
 );
 
