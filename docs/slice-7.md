@@ -9,8 +9,9 @@
 driven, with zero mid-turn steers — see the "GATE 1 PASSED" block below. Getting
 there also earned **D50** (dispatched sessions can't spawn sub-agents; fix S7·5c
 built+deployed) and left one open residual (permission-gate spam → the `auto`-mode
-footing spike). **Phase two may begin;** behind-gate machinery (S7·2b/6/7b/8) still
-pending. History of the build spine follows.
+footing spike). **Phase two may begin — and nothing blocks it now:** the last two
+behind-gate units (S7·2b amendments, S7·8 two-door UX) landed 2026-07-29; S7·6 and
+S7·7b landed 2026-07-27/28. History of the build spine follows.
 
 **Status: GATE-1 BUILD SPINE ~COMPLETE (2026-07-25).** Built + committed +
 deployed: **S7·0** spike, **S7·1** (schemas), **S7·2a** (work-order on create_task),
@@ -252,6 +253,42 @@ first bites at S7·5). One shape refinement from the work-order: `report_review`
 - **Exit:** core+daemon green, double-run identical.
 - **Kill:** revisioning needs a global-order column the log lacks (see architecture.md
   ordering caveat) → halt.
+
+### S7·2b — Work-order amendments (the reserved event gets its emitter) — `opus` — **DONE 2026-07-29**
+
+**BUILT + ORCHESTRATOR-VERIFIED 2026-07-29.** D46's second correction door made
+real: `work_order_amended` (reserved S7·1) emitted, folded, and reachable.
+- **Core:** the amendment fold in `projections/tasks.ts` — present-field-replaces /
+  absent-untouched by conditional spread, explicit `[]` clears a list,
+  `workOrderRev` RECORDED from the payload never computed (a fold that counted
+  events would be a second authority and break snapshot-forward replay).
+  `amendedBy` deliberately not folded (record is current state; authorship is
+  audit, it lives in the log).
+- **Schema call (made at the emitter window):** `amendedBy: 'human'|'orchestrator'`
+  added REQUIRED to the payload — I6-safe **only** because the reservation had no
+  emitter (fixture grep verified: not one event ever written). Two values, not
+  `transitionProposedBySchema`'s three: the dispatcher never amends (D53 —
+  amendments are decisions), pinned by a test making `'dispatcher'`
+  unrepresentable.
+- **Daemon:** `TaskWriter.amendWorkOrder` — the sole writer's fourth method; rev
+  computed in exactly one place (`(current ?? 0) + 1`); criteria pass is
+  VALIDATE-THEN-MINT so a refused amendment consumes nothing from the injected id
+  source; supplied criterion ids must match the record (identity that
+  `report_review` keys to — rewording keeps the id); outcomes `amended` /
+  `unknown-task` / `unknown-criterion` / `empty-amendment`, the refusals emitting
+  NOTHING. **No stage guard** (amendments are record facts, not transitions —
+  documented as deliberate, any stage amendable incl. terminal) and **no dispatch
+  coupling** (D53: the explicit dispatch stays the decision).
+  `POST /api/tasks/:taskId/amendments` → 200 `{task}` (the fold, bumped rev) /
+  404 / 400+criterionId / 400 empty.
+- **Verification:** suite 2614 → 2657 (+43), orchestrator's own typecheck+test
+  run exit 0. Agent sabotage (validate/mint order swapped → exactly the
+  mint-nothing test reddens) + orchestrator's two independents: fold drops the
+  rev → exactly the 5 fold tests redden; route wired to dispatch → exactly the 3
+  no-dispatch tests redden. Snapshot-restored byte-identical, re-greened. New
+  end-to-end link test: real writer → real fold → `recordPlan` stamps
+  `workOrderRev: 1` on payload + artifact envelope (the "stage-run identity
+  carries rev" slice assertion, proven on the real chain).
 
 ### S7·3 — Schema-driven board authoring form — `sonnet` *(UI-only, no restart)*
 - **Scope:** create/amend form as a **renderer of the zod schema** (one definition,
@@ -508,10 +545,39 @@ Also proven en route: the session trail (S7·7g) accumulated the full history
 change sits COMPLETE and UNCOMMITTED in `~/projects/infrastructure/johnny`
 (version bumped 0.5.0) — publishing it is Wes's call.
 
-### S7·8 — The two-door board UX — `sonnet` *(UI-only)*
+### S7·8 — The two-door board UX — `sonnet` *(UI-only)* — **DONE 2026-07-29**
 - **Scope:** steer (same rev, new attempt) vs amend (new rev) as a **labeled, visible**
   choice (T7's lesson: the doors weren't labeled).
 - **Assertions:** lib logic tested (door → dispatch shape); `.vue` manual.
+
+**BUILT + ORCHESTRATOR-VERIFIED 2026-07-29** (same session as S7·2b; ships via the
+gate, no restart needed for this half). D46's doors, labeled at last:
+- **`lib/correctionDoors.ts` (pure core):** `correctionDoors(task)` renders the two
+  descriptors — "Steer — same work-order / rev N, fresh attempt — dispatches now"
+  and "Amend — revise the work-order / writes rev N+1 — dispatch is a separate
+  step" — steer always first; `correctionDoorsAvailable` gates the section on
+  `sessionRefs` non-empty (a never-dispatched task keeps today's plain Dispatch).
+  `buildAmendmentBody(seed, edited)` is a DIFF builder, not a from-scratch
+  builder: only changed fields ride the wire; nothing-changed → `null` (the
+  client-side mirror of `empty-amendment`, no POST). **Prose vs list clearing
+  asymmetry pinned:** the wire cannot express clearing prose (blank scope/kill =
+  UNCHANGED, omitted), while an explicit `[]` genuinely clears a list — the sheet
+  says so to the operator in its own help text. A reworded criterion keeps its id
+  (per-criterion review keying survives rewording); a new row carries none.
+- **Store:** `amendTask` mirrors `createTask`'s idiom; **no subscribe glue** —
+  amendments can never mint a session (D53), documented in contrast to the
+  transition/dispatch glue.
+- **View:** the card sheet's Run-it section becomes the two labeled doors once
+  the task has run (steer invokes the UNCHANGED dispatch handler); the amend
+  sheet stacks over it, rendered from the same `store.workOrderSchema`
+  descriptor as the create sheet (no second field list), rows uniformly
+  `AmendCriterionRow` so ids ride invisibly. 200 → close, no local patch
+  (projection is truth); `unknown-criterion` → inline message naming the stale
+  id. **No dispatch call anywhere in the amend flow.**
+- **Verification:** suite 2657 → 2682 (+25), orchestrator's own typecheck+test
+  run exit 0 (`vue-tsc` genuinely covers the .vue via project refs). Orchestrator
+  sabotage: id-stripping in the diff builder reddened exactly the three id-shape
+  tests; snapshot-restored byte-identical, re-greened 25/25.
 
 ### ══ GATE 1 ══  (the exit gate for phase one)
 The minimal loop **work-order → planner → structured plan → fresh implementer →
@@ -549,8 +615,10 @@ stages are by-design for the human-driven Gate 1, not steers).
   the codebase-map direction (`design-directions.md`). Also noted: an MCP surface to
   expose VIMES-native tools to workers/orchestrator (`design-directions.md`).
 
-**Phase two may begin.** (Behind-gate machinery — S7·2b, S7·6, S7·7b, S7·8 — still
-pending; the review stage in particular is only half-built, see the note below.)
+**Phase two may begin.** (Behind-gate machinery COMPLETE as of 2026-07-29: S7·6 +
+S7·7b landed 2026-07-27/28 with the full loop live-verified by the bounce-path
+test; S7·2b + S7·8 landed 2026-07-29. Both correction doors now exist and are
+labeled — S7·9 builds on a finished phase-one machine.)
 
 ### Phase two (post-Gate-1) — the orchestrator, author first
 - **S7·9 — Orchestrator session (author) — `opus`.** `create_task` + comment as
