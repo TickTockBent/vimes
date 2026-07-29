@@ -451,6 +451,136 @@ describe('SessionHost — SDK channel', () => {
   });
 });
 
+// ── compaction visibility (S8·4a) ────────────────────────────────────────────
+//
+// Fixture shape is the REAL SDK stream OBSERVED at SP8·1 (rule 0.7):
+// scratchpad/sp8-1-evidence/logs/q1b-stream.jsonl line 11 — snake_case
+// `compact_metadata` (CONTRAST mapper.ts's camelCase for the transcript path).
+describe('SessionHost — compaction visibility (S8·4a)', () => {
+  it('a compact_boundary in the SDK stream becomes compaction_observed with the real numbers, init untouched', async () => {
+    const barrier = makeBarrier();
+    const { factory } = makeSdkFactory(async function* () {
+      yield { type: 'system', subtype: 'init', session_id: 'claude-1' };
+      yield {
+        type: 'system',
+        subtype: 'compact_boundary',
+        session_id: 'claude-1',
+        uuid: '7080aeb9-6fb4-477d-a6cf-671fe89d1ee9',
+        compact_metadata: {
+          trigger: 'manual',
+          pre_tokens: 37645,
+          post_tokens: 1534,
+          cumulative_dropped_tokens: 36111,
+          duration_ms: 16849,
+        },
+        logical_parent_uuid: '2fb3f321-f789-42cb-8c2c-b848c44a4437',
+      };
+      await barrier.promise;
+    });
+    const { host, store } = makeHarness({ sdkQueryFactory: factory });
+    try {
+      const spawn = host.spawnSession({ channel: 'sdk', cwd: '/p' });
+      const appSessionId = 'appSessionId' in spawn ? spawn.appSessionId : '';
+      await waitFor(() => types(store, appSessionId).includes('compaction_observed'));
+
+      // init handling is UNTOUCHED: still exactly session_created, liveness,
+      // claude_session_mapped BEFORE the boundary event.
+      expect(types(store, appSessionId)).toEqual([
+        'session_created',
+        'liveness_changed',
+        'claude_session_mapped',
+        'compaction_observed',
+      ]);
+      const boundary = records(store, appSessionId).find((record) => record.type === 'compaction_observed')!;
+      expect(boundary.payload).toEqual({
+        appSessionId,
+        trigger: 'manual',
+        preTokens: 37645,
+        postTokens: 1534,
+        durationMs: 16849,
+      });
+    } finally {
+      barrier.release();
+      host.stop();
+    }
+  });
+
+  it('a compact_boundary with NO compact_metadata still emits — the boundary itself is the fact', async () => {
+    const barrier = makeBarrier();
+    const { factory } = makeSdkFactory(async function* () {
+      yield { type: 'system', subtype: 'init', session_id: 'claude-1' };
+      yield { type: 'system', subtype: 'compact_boundary', session_id: 'claude-1' };
+      await barrier.promise;
+    });
+    const { host, store } = makeHarness({ sdkQueryFactory: factory });
+    try {
+      const spawn = host.spawnSession({ channel: 'sdk', cwd: '/p' });
+      const appSessionId = 'appSessionId' in spawn ? spawn.appSessionId : '';
+      await waitFor(() => types(store, appSessionId).includes('compaction_observed'));
+      const boundary = records(store, appSessionId).find((record) => record.type === 'compaction_observed')!;
+      expect(boundary.payload).toEqual({ appSessionId, trigger: '' });
+    } finally {
+      barrier.release();
+      host.stop();
+    }
+  });
+
+  it('a hostile (non-object) compact_metadata degrades to trigger-absent, never throws', async () => {
+    const barrier = makeBarrier();
+    const { factory } = makeSdkFactory(async function* () {
+      yield { type: 'system', subtype: 'init', session_id: 'claude-1' };
+      yield {
+        type: 'system',
+        subtype: 'compact_boundary',
+        session_id: 'claude-1',
+        compact_metadata: 'not-an-object',
+      };
+      await barrier.promise;
+    });
+    const { host, store } = makeHarness({ sdkQueryFactory: factory });
+    try {
+      const spawn = host.spawnSession({ channel: 'sdk', cwd: '/p' });
+      const appSessionId = 'appSessionId' in spawn ? spawn.appSessionId : '';
+      await waitFor(() => types(store, appSessionId).includes('compaction_observed'));
+      const boundary = records(store, appSessionId).find((record) => record.type === 'compaction_observed')!;
+      expect(boundary.payload).toEqual({ appSessionId, trigger: '' });
+    } finally {
+      barrier.release();
+      host.stop();
+    }
+  });
+
+  it('the SDK-stream compaction summary (isSynthetic:true, no isCompactSummary key) is NOT widened — observed-absence guard', async () => {
+    // ⚠ VERIFY-BY-BREAKING anchor. q1b-stream.jsonl line 12 is a `type:"user"`
+    // stream message carrying `isSynthetic:true`/`isReplay:false` — NEVER
+    // `isCompactSummary`. If a future edit widens the assistant/user branch to
+    // infer `isCompactSummary` from `isSynthetic`, this case reddens: rule 0.7
+    // forbids building for a shape SP8·1 did not observe.
+    const barrier = makeBarrier();
+    const { factory } = makeSdkFactory(async function* () {
+      yield { type: 'system', subtype: 'init', session_id: 'claude-1' };
+      yield {
+        type: 'user',
+        message: { role: 'user', content: 'This session is being continued from a previous conversation.' },
+        isReplay: false,
+        isSynthetic: true,
+      };
+      await barrier.promise;
+    });
+    const { host, store } = makeHarness({ sdkQueryFactory: factory });
+    try {
+      const spawn = host.spawnSession({ channel: 'sdk', cwd: '/p' });
+      const appSessionId = 'appSessionId' in spawn ? spawn.appSessionId : '';
+      await waitFor(() => types(store, appSessionId).includes('message'));
+      const messageRecord = records(store, appSessionId).find((record) => record.type === 'message')!;
+      expect(messageRecord.payload).not.toHaveProperty('isCompactSummary');
+    } finally {
+      barrier.release();
+      host.stop();
+    }
+  });
+});
+
 // ── native plan capture (D48, S7·5b-ii) ──────────────────────────────────────
 
 describe('SessionHost — plan capture (D48)', () => {

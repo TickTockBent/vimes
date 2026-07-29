@@ -36,6 +36,9 @@ import {
   projectArchivedPayloadSchema,
   projectInitialized,
   projectInitializedPayloadSchema,
+  compactionObserved,
+  compactionObservedPayloadSchema,
+  messagePayloadSchema,
 } from './events.js';
 import { sessionRecordSchema } from './schemas.js';
 import {
@@ -567,6 +570,102 @@ describe('project_initialized (S8·1 — RESERVED, rule 0.5, NOTHING EMITS IT)',
     expect(EVENT_PAYLOAD_SCHEMAS[EVENT_TYPES.projectInitialized]).toBe(
       projectInitializedPayloadSchema,
     );
+  });
+});
+
+describe('compaction_observed (S8·4a — the witness of an observed `/compact`)', () => {
+  // The real numbers OBSERVED at SP8·1 (rule 0.7):
+  // scratchpad/sp8-1-evidence/logs/q6-after-compact.jsonl.
+  const observedPayload = {
+    appSessionId: 'aaaaaaaa-0000-4000-8000-000000000001',
+    trigger: 'manual',
+    preTokens: 37645,
+    postTokens: 1534,
+    durationMs: 16849,
+  };
+
+  it('constructs on the SESSION\'s own stream (sibling posture to usage_block)', () => {
+    expect(compactionObserved(observedPayload)).toEqual({
+      stream: observedPayload.appSessionId,
+      type: 'compaction_observed',
+      payload: observedPayload,
+    });
+    expect(compactionObservedPayloadSchema.safeParse(observedPayload).success).toBe(true);
+    expect(EVENT_TYPES.compactionObserved).toBe('compaction_observed');
+    expect(EVENT_PAYLOAD_SCHEMAS[EVENT_TYPES.compactionObserved]).toBe(
+      compactionObservedPayloadSchema,
+    );
+  });
+
+  it('accepts the minimal shape — appSessionId + trigger only (numbers are decoration)', () => {
+    expect(
+      compactionObservedPayloadSchema.safeParse({
+        appSessionId: observedPayload.appSessionId,
+        trigger: 'manual',
+      }).success,
+    ).toBe(true);
+  });
+
+  it('requires appSessionId and trigger — a witness with no session or no label is not a fact', () => {
+    const { appSessionId: _omittedSession, ...sessionlessPayload } = observedPayload;
+    expect(compactionObservedPayloadSchema.safeParse(sessionlessPayload).success).toBe(false);
+    const { trigger: _omittedTrigger, ...triggerlessPayload } = observedPayload;
+    expect(compactionObservedPayloadSchema.safeParse(triggerlessPayload).success).toBe(false);
+  });
+
+  it('trigger is a LOOSE z.string(), not an enum — an unforeseen future trigger still validates', () => {
+    // Mirrors correctionDeliveredPayloadSchema.commandMode's reasoning exactly:
+    // this records what the CLI reported, not a closed vocabulary VIMES declares.
+    expect(
+      compactionObservedPayloadSchema.safeParse({
+        ...observedPayload,
+        trigger: 'a-future-cli-trigger-nobody-has-seen-yet',
+      }).success,
+    ).toBe(true);
+  });
+
+  it('rejects negative or non-integer token/duration counts — evidence, never a fabricated shape', () => {
+    expect(
+      compactionObservedPayloadSchema.safeParse({ ...observedPayload, preTokens: -1 }).success,
+    ).toBe(false);
+    expect(
+      compactionObservedPayloadSchema.safeParse({ ...observedPayload, postTokens: 1.5 }).success,
+    ).toBe(false);
+    expect(
+      compactionObservedPayloadSchema.safeParse({ ...observedPayload, durationMs: 'seven' }).success,
+    ).toBe(false);
+  });
+});
+
+describe('messagePayloadSchema — the S8·4a isCompactSummary widening (OPTIONAL-only, I6)', () => {
+  // The base message payload every case starts from — the pre-S8·4a shape that
+  // must keep validating unchanged.
+  const baseMessagePayload = {
+    appSessionId: 'aaaaaaaa-0000-4000-8000-000000000001',
+    role: 'user',
+    content: 'an ordinary turn',
+  };
+
+  it('still accepts a payload that omits isCompactSummary (the pre-S8·4a shape is unchanged)', () => {
+    // The load-bearing I6 half at the event layer: every `message` event ever
+    // written omits this key and must validate exactly as it did before the
+    // widening landed, so old logs replay untouched.
+    expect(messagePayloadSchema.safeParse(baseMessagePayload).success).toBe(true);
+  });
+
+  it('accepts isCompactSummary: true — the transcript compaction-summary record', () => {
+    expect(
+      messagePayloadSchema.safeParse({ ...baseMessagePayload, isCompactSummary: true }).success,
+    ).toBe(true);
+  });
+
+  it('rejects isCompactSummary: false — never observed, and the field is a `z.literal(true)`', () => {
+    // Absent-stays-absent means the ordinary case OMITS the key; it never
+    // carries a literal `false`. A writer that ever sent `false` would be
+    // signalling a shape nobody has actually seen at SP8·1.
+    expect(
+      messagePayloadSchema.safeParse({ ...baseMessagePayload, isCompactSummary: false }).success,
+    ).toBe(false);
   });
 });
 

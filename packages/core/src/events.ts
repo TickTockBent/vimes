@@ -259,6 +259,26 @@ export const EVENT_TYPES = {
   // grepping for the code path that writes one of these, there isn't one, and
   // that is the point — see the constructor's own note at the bottom of this file.
   projectInitialized: 'project_initialized',
+  // ── S8·4a: compaction visibility, on the SESSION's own stream ──────────────
+  //
+  // A `/compact` OBSERVED in either of the two ingestion paths — the transcript
+  // mapper's `compact_boundary` system record (packages/core/src/transcript/
+  // mapper.ts) or the SDK stream's `system`/`compact_boundary` message
+  // (packages/daemon/src/sessionHost.ts). Exactly one event per observed
+  // boundary: the tailer SKIPS any jsonl `markSdkJsonl` has marked
+  // (packages/daemon/src/tailer.ts's `skipPaths`, set from sessionHost.ts's
+  // `system`/`init` handling) — one source of record per compaction (principle
+  // 9), so an SDK-spawned session's boundary is never double-ingested by the
+  // transcript path too.
+  //
+  // Like `correction_delivered`, we are the WITNESS of this fact, not its
+  // author — every field is evidence copied off the CLI's own record, never
+  // something VIMES decided. Fixtures for both paths are real SP8·1 spike
+  // captures: scratchpad/sp8-1-evidence/logs/q6-after-compact.jsonl (the
+  // transcript, camelCase `compactMetadata`) and q1b-stream.jsonl (the SDK
+  // stream, snake_case `compact_metadata`) — two casings for one fact, the
+  // CLI's own inconsistency, each path reads its own verbatim.
+  compactionObserved: 'compaction_observed',
 } as const;
 
 export const SYSTEM_STREAM = 'system';
@@ -416,6 +436,26 @@ export const messagePayloadSchema = z.object({
   appSessionId: z.string(),
   role: z.string(),
   content: z.unknown(),
+  // ⚠ WIDENED IN S8·4a, OPTIONAL-only — the same discipline
+  // `taskCreatedPayloadSchema.title` documents. Every `message` already written
+  // omits this key, still validates, and still folds/serializes byte-identical
+  // (I6).
+  //
+  // The transcript's compaction summary is an ORDINARY `user` message carrying
+  // `isCompactSummary: true` — the ONLY thing that distinguishes it from any
+  // other 4KB user turn (observed verbatim, SP8·1's
+  // scratchpad/sp8-1-evidence/logs/q6-after-compact.jsonl, the record right
+  // after the `compact_boundary`). TRUE for that one record only; every
+  // ordinary message omits the key entirely — absent-stays-absent, never
+  // `false`.
+  //
+  // ⚠ NOT WIDENED ON THE SDK PATH (sessionHost.ts). The SAME summary DOES
+  // arrive there as a stream message (q1b-stream.jsonl line 12, `type:"user"`)
+  // — but it carries NO `isCompactSummary` key at all; it carries
+  // `isSynthetic:true`/`isReplay:false` instead. Rule 0.7: we do not build for
+  // a shape we did not observe, so the SDK path's message handling is left
+  // unchanged. See the comment on sessionHost.ts's assistant/user branch.
+  isCompactSummary: z.literal(true).optional(),
 });
 
 export const usageBlockPayloadSchema = z.object({
@@ -879,6 +919,29 @@ export const projectInitializedPayloadSchema = z.object({
   projectId: z.string(),
 });
 
+// compaction_observed (S8·4a) — see EVENT_TYPES.compactionObserved above for
+// the full rule-0.7 / one-source-of-record note. Every field is EVIDENCE of
+// what the CLI reported for one `/compact`.
+export const compactionObservedPayloadSchema = z.object({
+  appSessionId: z.string(),
+  // ⚠ DELIBERATELY `z.string()`, NOT AN ENUM — same posture as
+  // `correctionDeliveredPayloadSchema.commandMode`: this records what the CLI
+  // reported (`'manual'` is the only value SP8·1's real captures observed)
+  // rather than a closed vocabulary VIMES declares. The recognizer copies the
+  // value verbatim off the record, so a future CLI's trigger vocabulary needs
+  // no schema change to be read back out of the log.
+  trigger: z.string(),
+  // The observed pre/post-compaction token counts and wall-clock duration, off
+  // `compactMetadata`/`compact_metadata`. ALL OPTIONAL: the boundary itself is
+  // the fact being witnessed; a boundary observed with missing or malformed
+  // metadata still emits an event — these numbers are decoration, never the
+  // event's reason to exist. Nonnegative integers because they are copied
+  // verbatim off counts/a duration that can never be negative.
+  preTokens: z.number().int().nonnegative().optional(),
+  postTokens: z.number().int().nonnegative().optional(),
+  durationMs: z.number().int().nonnegative().optional(),
+});
+
 export const EVENT_PAYLOAD_SCHEMAS = {
   [EVENT_TYPES.sessionCreated]: sessionCreatedPayloadSchema,
   [EVENT_TYPES.livenessChanged]: livenessChangedPayloadSchema,
@@ -937,6 +1000,7 @@ export const EVENT_PAYLOAD_SCHEMAS = {
   [EVENT_TYPES.projectUpdated]: projectUpdatedPayloadSchema,
   [EVENT_TYPES.projectArchived]: projectArchivedPayloadSchema,
   [EVENT_TYPES.projectInitialized]: projectInitializedPayloadSchema,
+  [EVENT_TYPES.compactionObserved]: compactionObservedPayloadSchema,
 } as const;
 
 export type SessionCreatedPayload = z.infer<typeof sessionCreatedPayloadSchema>;
@@ -978,6 +1042,7 @@ export type ProjectCreatedPayload = z.infer<typeof projectCreatedPayloadSchema>;
 export type ProjectUpdatedPayload = z.infer<typeof projectUpdatedPayloadSchema>;
 export type ProjectArchivedPayload = z.infer<typeof projectArchivedPayloadSchema>;
 export type ProjectInitializedPayload = z.infer<typeof projectInitializedPayloadSchema>;
+export type CompactionObservedPayload = z.infer<typeof compactionObservedPayloadSchema>;
 // WorkOrderAmendedPayload is exported alongside `workOrderAmendedPayloadSchema`
 // above, adjacent to its schema rather than grouped down here with the rest —
 // no functional difference, kept next to the RESERVATION note it belongs with.
@@ -1032,7 +1097,8 @@ export type DomainEvent =
   | { type: typeof EVENT_TYPES.projectCreated; payload: ProjectCreatedPayload }
   | { type: typeof EVENT_TYPES.projectUpdated; payload: ProjectUpdatedPayload }
   | { type: typeof EVENT_TYPES.projectArchived; payload: ProjectArchivedPayload }
-  | { type: typeof EVENT_TYPES.projectInitialized; payload: ProjectInitializedPayload };
+  | { type: typeof EVENT_TYPES.projectInitialized; payload: ProjectInitializedPayload }
+  | { type: typeof EVENT_TYPES.compactionObserved; payload: CompactionObservedPayload };
 
 // Maps each attention-setting event type to the needsAttention reason it sets.
 const ATTENTION_SETTER_REASON: Readonly<Record<string, AttentionReason>> = {
@@ -1225,6 +1291,14 @@ export function projectArchived(payload: ProjectArchivedPayload): EventInput {
 // is the expected result.
 export function projectInitialized(payload: ProjectInitializedPayload): EventInput {
   return { stream: 'projects', type: EVENT_TYPES.projectInitialized, payload };
+}
+
+// compaction_observed (S8·4a — see EVENT_TYPES.compactionObserved above). Same
+// stream posture as `usage_block`: the session's OWN stream
+// (payload.appSessionId) — a compaction is a fact about that session's context
+// window, sibling to the token/cache facts `usage_block` already carries there.
+export function compactionObserved(payload: CompactionObservedPayload): EventInput {
+  return { stream: payload.appSessionId, type: EVENT_TYPES.compactionObserved, payload };
 }
 
 // The task↔session link (step 4a). On the 'tasks' stream and NOT the session's

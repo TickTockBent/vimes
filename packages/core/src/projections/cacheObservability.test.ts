@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { CountingIdSource, SteppingClock } from '../ids.js';
 import { MemoryEventStore } from '../memoryEventStore.js';
 import type { EventInput } from '../schemas.js';
-import { sessionRenamed, usageBlock } from '../events.js';
+import { compactionObserved, sessionRenamed, usageBlock } from '../events.js';
 import {
   MemorySnapshotStore,
   bootFromSnapshot,
@@ -274,5 +274,122 @@ describe('cacheObservabilityProjection', () => {
       bootFromSnapshot(cacheObservabilityProjection, snapshotStore, store),
     );
     expect(bootSerialized).toBe(replaySerialized);
+  });
+});
+
+// ─── S8·4a — latestCompaction fold (latest-wins) ──────────────────────────────
+describe('cacheObservabilityProjection — latestCompaction (S8·4a)', () => {
+  it('a session with no compaction_observed has no latestCompaction key (absent until observed)', () => {
+    const state = stateFromLog([
+      [usageBlock({ appSessionId: APP_SESSION_ID, usage: spikeCUsage, messageId: 'msg-1' })],
+    ]);
+    const record = state.perSession[APP_SESSION_ID]!;
+    expect(record).not.toHaveProperty('latestCompaction');
+  });
+
+  it('one compaction_observed sets latestCompaction with the observed numbers (real SP8·1 values)', () => {
+    const state = stateFromLog([
+      [compactionObserved({ appSessionId: APP_SESSION_ID, trigger: 'manual', preTokens: 37645, postTokens: 1534, durationMs: 16849 })],
+    ]);
+    const record = state.perSession[APP_SESSION_ID]!;
+    expect(record.latestCompaction).toEqual({
+      trigger: 'manual',
+      preTokens: 37645,
+      postTokens: 1534,
+      durationMs: 16849,
+    });
+  });
+
+  it('a compaction_observed with no session record yet still creates one via emptyRecord (sample/cache fields stay at their empty defaults)', () => {
+    const state = stateFromLog([
+      [compactionObserved({ appSessionId: APP_SESSION_ID, trigger: 'manual' })],
+    ]);
+    const record = state.perSession[APP_SESSION_ID]!;
+    expect(record.sampleCount).toBe(0);
+    expect(record.cacheReadTokens).toBe(0);
+    expect(record.latestCompaction).toEqual({ trigger: 'manual' });
+  });
+
+  it('a SECOND compaction_observed REPLACES latestCompaction — latest-wins, not accumulated (sabotage guard)', () => {
+    const state = stateFromLog([
+      [
+        compactionObserved({ appSessionId: APP_SESSION_ID, trigger: 'manual', preTokens: 37645, postTokens: 1534, durationMs: 16849 }),
+        compactionObserved({ appSessionId: APP_SESSION_ID, trigger: 'auto', preTokens: 90000, postTokens: 2000, durationMs: 9000 }),
+      ],
+    ]);
+    const record = state.perSession[APP_SESSION_ID]!;
+    // The SECOND compaction alone — if it accumulated, trigger or the numbers
+    // would somehow reflect both observations rather than replacing cleanly.
+    expect(record.latestCompaction).toEqual({
+      trigger: 'auto',
+      preTokens: 90000,
+      postTokens: 2000,
+      durationMs: 9000,
+    });
+  });
+
+  it('latestCompaction and the usage_block totals are independent — a compaction never touches cache token accumulation', () => {
+    const state = stateFromLog([
+      [
+        usageBlock({ appSessionId: APP_SESSION_ID, usage: spikeCUsage, messageId: 'turn-a' }),
+        compactionObserved({ appSessionId: APP_SESSION_ID, trigger: 'manual', preTokens: 37645, postTokens: 1534 }),
+      ],
+    ]);
+    const record = state.perSession[APP_SESSION_ID]!;
+    expect(record.sampleCount).toBe(1);
+    expect(record.cacheReadTokens).toBe(39044);
+    expect(record.latestCompaction).toEqual({ trigger: 'manual', preTokens: 37645, postTokens: 1534 });
+  });
+
+  it('ignores a compaction_observed whose payload fails schema validation (missing appSessionId)', () => {
+    const store = makeStore();
+    store.append([{ stream: APP_SESSION_ID, type: 'compaction_observed', payload: { trigger: 'manual' } }]);
+    const state = replayFromEmpty(cacheObservabilityProjection, readAllStreamsGrouped(store));
+    expect(state.perSession).toEqual({});
+  });
+
+  it('is a no-op on a hostile/malformed compaction_observed payload, never throws', () => {
+    const store = makeStore();
+    expect(() =>
+      store.append([{ stream: APP_SESSION_ID, type: 'compaction_observed', payload: 'not-an-object' }]),
+    ).not.toThrow();
+    expect(() =>
+      replayFromEmpty(cacheObservabilityProjection, readAllStreamsGrouped(store)),
+    ).not.toThrow();
+  });
+
+  it('snapshot + tail replay is byte-identical to replay-from-empty across a usage_block + compaction mix (I6)', () => {
+    const store = makeStore();
+    store.append([
+      usageBlock({ appSessionId: APP_SESSION_ID, usage: spikeCUsage, messageId: 'turn-a' }),
+    ]);
+    store.append([
+      compactionObserved({ appSessionId: APP_SESSION_ID, trigger: 'manual', preTokens: 37645, postTokens: 1534, durationMs: 16849 }),
+      usageBlock({ appSessionId: APP_SESSION_ID, usage: spikeCUsage, messageId: 'turn-b' }),
+      compactionObserved({ appSessionId: APP_SESSION_ID, trigger: 'auto', preTokens: 90000 }),
+    ]);
+    const grouped = readAllStreamsGrouped(store);
+    const replaySerialized = cacheObservabilityProjection.serialize(
+      replayFromEmpty(cacheObservabilityProjection, grouped),
+    );
+
+    const snapshotStore = new MemorySnapshotStore();
+    const midCut = Math.floor(grouped.length / 2);
+    snapshotStore.save(
+      snapshotAfter(cacheObservabilityProjection, grouped.slice(0, midCut), {
+        now: () => '2026-01-01T00:00:10.000Z',
+      }),
+    );
+    const bootSerialized = cacheObservabilityProjection.serialize(
+      bootFromSnapshot(cacheObservabilityProjection, snapshotStore, store),
+    );
+    expect(bootSerialized).toBe(replaySerialized);
+
+    // Replaying the SAME log twice from empty is also byte-identical (the
+    // standard I6 double-fold check for the new event type).
+    const secondReplaySerialized = cacheObservabilityProjection.serialize(
+      replayFromEmpty(cacheObservabilityProjection, readAllStreamsGrouped(store)),
+    );
+    expect(secondReplaySerialized).toBe(replaySerialized);
   });
 });

@@ -7,6 +7,7 @@ import {
   attentionCleared,
   canTransition,
   claudeSessionMapped,
+  compactionObserved,
   gateFired,
   hostStarted,
   hostStopped,
@@ -449,6 +450,20 @@ export function extractGateTarget(
   return typeof candidateField === 'string' ? candidateField : undefined;
 }
 
+// ── S8·4a compaction-metadata guards (fragile-adapter boundary, rule 0.6) ────
+// Mirrors mapper.ts's `isObject`/`optionalNonnegativeInt` exactly (this file
+// stays free-standing rather than importing a transcript-path helper for one
+// small guard). A malformed or missing `compact_metadata` body degrades
+// field-by-field — see handleSdkMessage's `system`/`compact_boundary` branch.
+function isRecordLike(candidate: unknown): candidate is Record<string, unknown> {
+  return candidate !== null && typeof candidate === 'object' && !Array.isArray(candidate);
+}
+function optionalNonnegativeInt(candidate: unknown): number | undefined {
+  return typeof candidate === 'number' && Number.isInteger(candidate) && candidate >= 0
+    ? candidate
+    : undefined;
+}
+
 // Preflight cache TTL — a spawn burst re-uses one probe result (E3). Short, so a
 // credential change is picked up promptly.
 const PREFLIGHT_CACHE_TTL_MS = 5_000;
@@ -790,10 +805,50 @@ class ClaudeSdkAdapter implements SessionAdapter {
       return false;
     }
 
+    // S8·4a: the SDK stream's OWN compaction-boundary message, alongside
+    // `init` above. Verbatim shape observed in SP8·1's
+    // scratchpad/sp8-1-evidence/logs/q1b-stream.jsonl line 11 —
+    // `type:"system", subtype:"compact_boundary"`, metadata SNAKE_CASE
+    // (`compact_metadata`/`pre_tokens`/`post_tokens`/`duration_ms`; CONTRAST
+    // mapper.ts's camelCase for the same fact off the transcript).
+    //
+    // ⚠ NO DOUBLE-INGEST (principle 9, one source of record): this session's
+    // transcript jsonl was marked via `markSdkJsonl()` in the `init` branch
+    // above, and tailer.ts's `skipPaths` (`onFileEvent`) skips any marked path
+    // outright — so mapper.ts's OWN `compact_boundary` recognizer never sees
+    // this same boundary for an SDK-spawned session. Exactly one
+    // `compaction_observed` per compaction, from whichever path actually reads
+    // this session (SDK sessions read HERE; PTY sessions read the transcript).
+    if (sdkMessage.type === 'system' && sdkMessage.subtype === 'compact_boundary') {
+      const metadata = isRecordLike(sdkMessage.compact_metadata) ? sdkMessage.compact_metadata : {};
+      this.services.emit([
+        compactionObserved({
+          appSessionId,
+          // A missing/non-string trigger degrades to '' rather than dropping
+          // the event — see mapper.ts's compactionObservedFromRecord for the
+          // identical reasoning.
+          trigger: typeof metadata.trigger === 'string' ? metadata.trigger : '',
+          preTokens: optionalNonnegativeInt(metadata.pre_tokens),
+          postTokens: optionalNonnegativeInt(metadata.post_tokens),
+          durationMs: optionalNonnegativeInt(metadata.duration_ms),
+        }),
+      ]);
+      return false;
+    }
+
     if (sdkMessage.type === 'assistant' || sdkMessage.type === 'user') {
       const body = sdkMessage.message;
       if (body !== undefined && body !== null) {
         const role = typeof body.role === 'string' ? body.role : sdkMessage.type;
+        // ⚠ S8·4a OBSERVED-ABSENCE NOTE: the compaction SUMMARY message DOES
+        // arrive here as an ordinary `type:"user"` stream message
+        // (q1b-stream.jsonl line 12) — but it carries NO `isCompactSummary`
+        // key at all; it carries `isSynthetic:true`/`isReplay:false` instead.
+        // Rule 0.7 — never build for an unobserved shape — so this branch is
+        // deliberately NOT widened to set `isCompactSummary`. Only the
+        // transcript path (mapper.ts, off the real `isCompactSummary:true`
+        // key) populates it. See messagePayloadSchema's note in events.ts.
+        //
         // Content stored INLINE (D12).
         this.services.emit([messageEvent({ appSessionId, role, content: body.content ?? null })]);
         if (body.usage !== null && typeof body.usage === 'object') {
