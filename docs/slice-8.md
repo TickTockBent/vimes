@@ -27,14 +27,34 @@ thing — landing the author verb on a disposable session would rebuild it.
 
 ## Spikes (front-loaded, before Phase B builds on the answers — D57 names them)
 
-- **SP8·1 — PreCompact-hook observed behavior** (rule 0.7): does the hook fire
-  as documented; what does it see; can it defer/decline (the agency mechanism)?
-  If deferral is impossible at the hook layer, the fallback is VIMES-side
-  nudges (daemon watches context fill from stream events, messages the
-  orchestrator) — acceptable, possibly preferable (policy stays in VIMES).
-- **SP8·2 — Resume-across-restart fidelity**: the maintained-singleton respawn
-  path leans on resume surviving a daemon restart; verify re-anchor + resume on
-  a real long transcript before S8·4 builds the lifecycle.
+- **SP8·1 — PreCompact-hook observed behavior** — ✅ **RUN 2026-07-29** (findings:
+  `scratchpad/spike-sp8-1-precompact-FINDINGS.md`, CLI 2.1.220, all seven
+  questions OBSERVED). Headlines: the hook is a **real veto — exit code 2 ONLY**
+  (JSON `decision:"block"`/`continue:false` are accepted and silently IGNORED;
+  no `additionalContext` channel exists for PreCompact); a blocked auto-compact
+  is **re-offered every turn** (5× observed, across separate processes); the
+  hook runs to completion **before** summarization with no observed time cap
+  (capture-then-compact is mechanically supported without the veto in the
+  common case); `trigger` distinguishes auto/manual; `DISABLE_AUTO_COMPACT=1`
+  suppresses auto-compaction entirely; the transcript is **append-only** across
+  compaction (`compact_boundary` + `isCompactSummary` records, with OBSERVED
+  `preTokens`/`postTokens`). Bonus finding: **compaction is currently invisible
+  to VIMES** (both ingestion paths drop `compact_boundary`; the summary lands
+  as an ordinary user message) → new unit S8·4a below. Four risk-register rows
+  added (blocking semantics per CLI bump; circuit-breaker strings in the
+  binary — single-process sustained deferral UNVERIFIED; env knobs read as test
+  hooks; summary fidelity on real state).
+- **SP8·2 — Resume-across-restart fidelity** — ✅ **RUN 2026-07-29** (findings:
+  `scratchpad/spike-sp8-2-resume-FINDINGS.md`, all six questions OBSERVED).
+  Headlines: **perfect planted-fact recall through every kill shape** (early/
+  mid-stream SIGTERM, repeated cycles, SIGKILL, post-compaction — 8/8 every
+  time); the CLI **auto-normalizes dead turns on resume** (synthetic "Continue
+  from where you left off" pair, fires for marked SIGTERM and markerless
+  SIGKILL deaths alike — S8·3 must NOT reinvent this); **`--resume` requires an
+  EXACT cwd match** (wrong cwd = hard failure, no fallback, no override flag);
+  the model spontaneously and correctly reads its own interrupted-turn wreckage.
+  Consequence: the re-anchor briefing's real job is "a restart just happened —
+  check for in-flight dispatched work", not fact-recall insurance.
 
 ## Phase A — D42 build (project-centric VIMES, minimal-first)
 
@@ -78,18 +98,63 @@ thing — landing the author verb on a disposable session would rebuild it.
   same project is refused + evented); restart reconciliation (fixture: daemon
   boot with a live-orchestrator record → resume attempted); re-anchor briefing
   composition golden; exclusion from default session list pinned.
+- **SP8·2 consequences (build against these):** the orchestrator's **cwd is
+  persisted verbatim and read back on every respawn, never re-derived** —
+  `--resume` hard-fails from any other cwd, no fallback. Do NOT build
+  interrupted-turn detection — the CLI auto-normalizes dead turns (SIGTERM and
+  SIGKILL alike) with a synthetic recovery pair on the next resume. The
+  re-anchor briefing's job is restart ORIENTATION ("check for in-flight
+  dispatched work"), not fact recall — the transcript carries facts fine.
+  SIGKILL needs no special handling for resume (only messier on disk).
 - **Exit:** kill the daemon mid-conversation; on restart the orchestrator
   comes back re-anchored and the conversation continues sensibly (HUMAN
   half: Wes judges "continues sensibly"). **Kill:** SP8·2 shows resume cannot
   be made reliable across restarts → the lifecycle needs a redesign (fresh
   transcript + re-anchor every restart), decision record first.
+  *(SP8·2 ran: resume is reliable in every scratch scenario tried — the kill
+  criterion now guards the VIMES-context integration, not the CLI mechanics.)*
 
-### S8·4 — The transcript lifecycle (D57) — `opus` *(spike-gated)*
-- **Scope:** capture-then-compact per D57 on whichever mechanism SP8·1
-  validated: threshold ⟨tune⟩ (~250–300k tokens), escalating nudges, the
-  orchestrator's delay agency, precompaction capture into standing notes
-  before any compaction. Bands (<40% general / ~60% rolling) recorded as
-  design bands — NOT pinned as FAIL-able assertions (Gate-D).
+### S8·4a — Compaction visibility (core + daemon) — `sonnet` *(SP8·1 unprompted finding)*
+- **Scope:** VIMES currently cannot see a compaction happen. Recognize the
+  `compact_boundary` record in BOTH ingestion paths (transcript mapper's
+  early-out drops any record without `message.role` — the `queued_command`
+  recognizer is the placement precedent; the SDK path handles only
+  `system/init`), and mark the `isCompactSummary: true` record so the summary
+  stops masquerading as an ordinary 4KB user message. Fold what
+  `compact_metadata` carries — **observed `preTokens`/`postTokens`** — into a
+  projection the nudge policy (S8·4) and the UI can read.
+- **Why it matters beyond hygiene:** observed `preTokens` at real compactions
+  is the rule-0.7-clean answer to "how full is this model's window" — it makes
+  the declared model→limit table (`contextFill.ts`'s known gap) unnecessary.
+- **Assertions:** both paths emit the new event from fixture transcripts
+  (capture real ones from the spike logs); summary record distinguishable; I6
+  replay; existing transcripts without compactions fold byte-identically.
+- **Exit:** a `/compact` in a live session shows up in VIMES's event log with
+  its token metadata. **Kill:** the record shapes vary across CLI versions in
+  ways a loose-zod recognizer can't absorb → risk-register escalation.
+
+### S8·4 — The transcript lifecycle (D57) — `opus` *(spike answered; mechanism below awaits Wes's sign-off)*
+- **Scope:** capture-then-compact per D57: threshold ⟨tune⟩ (~250–300k
+  tokens), escalating nudges, the orchestrator's delay agency, precompaction
+  capture into standing notes before any compaction. Bands (<40% general /
+  ~60% rolling) recorded as design bands — NOT pinned as FAIL-able assertions
+  (Gate-D).
+- **⟸ Gate-D pause — the SP8·1-recommended mechanism shape (sign-off needed):**
+  **the hook holds the door, the daemon nudges early.** The PreCompact hook
+  vetoes via **exit 2 only** (never a JSON decision — observed to be silently
+  ignored; risk-register row pins this per CLI bump) while state is unbanked,
+  exits 0 once banked; because the hook also runs to completion BEFORE
+  summarization, a synchronous file-level bank needs no veto at all — the veto
+  covers banking that needs a MODEL turn. The daemon nudges the orchestrator
+  at the ⟨tune⟩ thresholds using `latestContextTokens` (already folded in
+  `cacheObservability`, per-turn granularity — fill is known between turns,
+  never mid-turn), so the veto rarely fires. Banked state re-enters via the
+  session's own notes or a `SessionStart:compact` hook (observed to fire) —
+  PreCompact itself CANNOT inject context. Optional strongest form:
+  `DISABLE_AUTO_COMPACT=1` + VIMES-driven deliberate `/compact` (env var is a
+  rule-0.6 fragile surface — boot-time canary probe if adopted). One
+  spike-row remains before relying on LONG deferral: sustained veto in a
+  single long-lived process (breaker strings exist in the binary).
 - **Exit:** an orchestrator driven past threshold captures, compacts, and
   demonstrably retains the banked state post-compaction (verify by asking it).
 - **Kill:** neither hook-deferral nor VIMES-side nudging can sequence capture
