@@ -13,7 +13,11 @@ import {
   type TransitionProposal,
   type TransitionRejectionReason,
 } from '@vimes/core';
-import { TaskWriter, type ProposeTransitionResult } from './taskWriter.js';
+import {
+  TaskWriter,
+  type AmendWorkOrderResult,
+  type ProposeTransitionResult,
+} from './taskWriter.js';
 
 // ─── slice 6 step 4b — the SOLE task writer ──────────────────────────────────
 //
@@ -268,6 +272,290 @@ describe('TaskWriter — createTask', () => {
     expect('explicitlyOut' in created).toBe(false);
     expect('acceptanceCriteria' in created).toBe(false);
     expect('killCriterion' in created).toBe(false);
+  });
+});
+
+// ─── S7·2b — amendWorkOrder (D43: revisioned, not mutated) ───────────────────
+//
+// Same instrument discipline as the rejection cases below: for every outcome that
+// writes NOTHING, the assertion is on `harness.emitted` first and the returned
+// outcome second. A writer that returned `unknown-criterion` while emitting an
+// amendment anyway would satisfy every return-value check in this describe while
+// putting a revision in the log that nobody's request produced.
+
+// A task carrying a two-criterion work order — the record the amendment cases
+// patch, and the source of the criterion ids they are allowed to restate. Under
+// the CountingIdSource the taskId is #1 and the criteria are #2 and #3, so the
+// ids below are byte-deterministic rather than looked up.
+const FIRST_CRITERION_ID = '00000000-0000-4000-8000-000000000002';
+const SECOND_CRITERION_ID = '00000000-0000-4000-8000-000000000003';
+
+function harnessWithAuthoredTask(stage: TaskRecord['stage'] = 'backlog'): {
+  harness: WriterHarness;
+  taskId: string;
+} {
+  const harness = buildHarness();
+  const created = harness.writer.createTask({
+    projectRoot: PROJECT_ROOT,
+    createdBy: 'human',
+    isolation: 'worktree',
+    stage,
+    scope: 'the scope as first authored',
+    explicitlyOut: ['the two-door UI'],
+    acceptanceCriteria: [{ text: 'the first criterion' }, { text: 'the second criterion' }],
+    killCriterion: 'the kill criterion as first authored',
+  });
+  harness.emitted.length = 0;
+  return { harness, taskId: created.taskId };
+}
+
+describe('TaskWriter — amendWorkOrder', () => {
+  it('emits exactly ONE work_order_amended carrying only the named fields, and returns the FOLD', () => {
+    const { harness, taskId } = harnessWithAuthoredTask();
+    const result = harness.writer.amendWorkOrder(taskId, {
+      amendedBy: 'human',
+      scope: 'the narrowed scope',
+    });
+
+    // One event, on the tasks stream, carrying the envelope + ONLY the field the
+    // amender named. The key-set assertion is the byte discipline: an
+    // `undefined`-valued `killCriterion` here would tell the fold to clear a field
+    // nobody touched.
+    expect(eventTypes(harness.emitted)).toEqual([EVENT_TYPES.workOrderAmended]);
+    expect(harness.emitted[0]!.stream).toBe('tasks');
+    expect(harness.emitted[0]!.payload).toEqual({
+      taskId,
+      workOrderRev: 1,
+      amendedBy: 'human',
+      scope: 'the narrowed scope',
+    });
+
+    // I12: the returned record IS the projection's fold of the log, not an echo.
+    const foldedTask = harness.currentTasks().tasks[taskId]!;
+    expect(result).toEqual({ outcome: 'amended', task: foldedTask });
+    expect(foldedTask.scope).toBe('the narrowed scope');
+    expect(foldedTask.workOrderRev).toBe(1);
+    // Untouched fields survived the patch.
+    expect(foldedTask.killCriterion).toBe('the kill criterion as first authored');
+  });
+
+  it('bumps the rev 1 → 2 → 3 across successive amendments, starting from ABSENT', () => {
+    // The rev is computed HERE and nowhere else, off `(task.workOrderRev ?? 0) + 1`
+    // read FRESH each call — so the third amendment can only say 3 if the second
+    // one's event was really folded back onto the record in between.
+    const { harness, taskId } = harnessWithAuthoredTask();
+    expect('workOrderRev' in harness.currentTasks().tasks[taskId]!).toBe(false);
+
+    for (const expectedRev of [1, 2, 3]) {
+      const result = harness.writer.amendWorkOrder(taskId, {
+        amendedBy: 'orchestrator',
+        scope: `scope at rev ${expectedRev}`,
+      });
+      expect(result).toMatchObject({ outcome: 'amended' });
+      expect(harness.currentTasks().tasks[taskId]!.workOrderRev).toBe(expectedRev);
+    }
+
+    expect(eventTypes(harness.emitted)).toEqual([
+      EVENT_TYPES.workOrderAmended,
+      EVENT_TYPES.workOrderAmended,
+      EVENT_TYPES.workOrderAmended,
+    ]);
+    expect(harness.emitted.map((event) => (event.payload as { workOrderRev: number }).workOrderRev)).toEqual([
+      1, 2, 3,
+    ]);
+  });
+
+  it('KEEPS a supplied criterion id verbatim and MINTS one for an id-less entry', () => {
+    // The identity rule, exercised: a restated criterion keeps the id
+    // `report_review` keys its verdicts to, even when its TEXT changes, while a new
+    // criterion gets its id from the INJECTED source (rule 0.3 — nothing here
+    // reaches for randomUUID, so the minted id is byte-deterministic). The task
+    // burned counters #1–#3 at creation, so the next mint is #4.
+    const { harness, taskId } = harnessWithAuthoredTask();
+    const result = harness.writer.amendWorkOrder(taskId, {
+      amendedBy: 'human',
+      acceptanceCriteria: [
+        { id: FIRST_CRITERION_ID, text: 'the first criterion, reworded' },
+        { text: 'a criterion the amendment introduces' },
+      ],
+    });
+
+    const mintedCriteria = [
+      { id: FIRST_CRITERION_ID, text: 'the first criterion, reworded' },
+      { id: '00000000-0000-4000-8000-000000000004', text: 'a criterion the amendment introduces' },
+    ];
+    // The FULL {id,text} replacement list is what got written into the event, so
+    // replay reads the stored ids back and never re-mints.
+    expect(harness.emitted[0]!.payload).toEqual({
+      taskId,
+      workOrderRev: 1,
+      amendedBy: 'human',
+      acceptanceCriteria: mintedCriteria,
+    });
+    expect(result).toMatchObject({ outcome: 'amended' });
+    // The list is a REPLACEMENT: the second criterion, left out of the amendment,
+    // is gone from the record.
+    expect(harness.currentTasks().tasks[taskId]!.acceptanceCriteria).toEqual(mintedCriteria);
+  });
+
+  it('an UNKNOWN criterion id → unknown-criterion, and NOTHING is emitted', () => {
+    // The invariant is the empty log, not the returned outcome. Refusing WHOLE is
+    // also what keeps a half-applied criteria list unreachable: the good entry
+    // beside the bad one is not written either.
+    const { harness, taskId } = harnessWithAuthoredTask();
+    const result = harness.writer.amendWorkOrder(taskId, {
+      amendedBy: 'human',
+      scope: 'a scope that must not land',
+      acceptanceCriteria: [
+        { id: FIRST_CRITERION_ID, text: 'a legitimate restatement' },
+        { id: 'crit-id-that-was-never-minted', text: 'keyed to nothing' },
+      ],
+    });
+
+    expect(harness.emitted).toEqual([]);
+    expect(result).toEqual({
+      outcome: 'unknown-criterion',
+      criterionId: 'crit-id-that-was-never-minted',
+    });
+    // The record is untouched — no rev, no new scope.
+    const untouchedTask = harness.currentTasks().tasks[taskId]!;
+    expect('workOrderRev' in untouchedTask).toBe(false);
+    expect(untouchedTask.scope).toBe('the scope as first authored');
+  });
+
+  it('a task with NO criteria has no valid ids — any supplied id is unknown', () => {
+    // The edge the `?? []` covers: an unauthored task cannot have a criterion
+    // restated against it, because there is nothing to restate.
+    const { harness, taskId } = harnessWithTaskAt('backlog');
+    const result = harness.writer.amendWorkOrder(taskId, {
+      amendedBy: 'orchestrator',
+      acceptanceCriteria: [{ id: FIRST_CRITERION_ID, text: 'keyed to a list that does not exist' }],
+    });
+
+    expect(harness.emitted).toEqual([]);
+    expect(result).toEqual({ outcome: 'unknown-criterion', criterionId: FIRST_CRITERION_ID });
+  });
+
+  it('a refused amendment MINTS NOTHING — the id source is untouched', () => {
+    // Validate-then-mint, asserted rather than only documented. The refusal below
+    // carries an id-less entry that WOULD have minted #4; because validation runs
+    // first, the amendment that follows still gets #4 and the id sequence is exactly
+    // what it would have been had the bad request never arrived.
+    const { harness, taskId } = harnessWithAuthoredTask();
+    harness.writer.amendWorkOrder(taskId, {
+      amendedBy: 'human',
+      acceptanceCriteria: [
+        { text: 'an entry that would mint' },
+        { id: 'crit-id-that-was-never-minted', text: 'the entry that refuses' },
+      ],
+    });
+    expect(harness.emitted).toEqual([]);
+
+    harness.writer.amendWorkOrder(taskId, {
+      amendedBy: 'human',
+      acceptanceCriteria: [{ text: 'the first id actually minted' }],
+    });
+    expect(harness.emitted[0]!.payload).toMatchObject({
+      acceptanceCriteria: [
+        { id: '00000000-0000-4000-8000-000000000004', text: 'the first id actually minted' },
+      ],
+    });
+  });
+
+  it('an amendment that names NO work-order field → empty-amendment, nothing emitted', () => {
+    // A rev bump that changes nothing is log noise, and it would invalidate every
+    // in-flight stage run's `workOrderRev` for no recorded reason.
+    const { harness, taskId } = harnessWithAuthoredTask();
+    const result = harness.writer.amendWorkOrder(taskId, { amendedBy: 'human' });
+
+    expect(harness.emitted).toEqual([]);
+    expect(result).toEqual({ outcome: 'empty-amendment' });
+    expect('workOrderRev' in harness.currentTasks().tasks[taskId]!).toBe(false);
+  });
+
+  it('an EXPLICIT empty acceptanceCriteria is an amendment, NOT an empty one', () => {
+    // The pair the empty check must not conflate: clearing the criteria list is a
+    // real, recorded amendment; naming nothing at all is not.
+    const { harness, taskId } = harnessWithAuthoredTask();
+    const result = harness.writer.amendWorkOrder(taskId, {
+      amendedBy: 'human',
+      acceptanceCriteria: [],
+    });
+
+    expect(eventTypes(harness.emitted)).toEqual([EVENT_TYPES.workOrderAmended]);
+    expect(harness.emitted[0]!.payload).toEqual({
+      taskId,
+      workOrderRev: 1,
+      amendedBy: 'human',
+      acceptanceCriteria: [],
+    });
+    expect(result).toMatchObject({ outcome: 'amended' });
+    expect(harness.currentTasks().tasks[taskId]!.acceptanceCriteria).toEqual([]);
+  });
+
+  it('an unknown taskId emits NOTHING and never throws', () => {
+    // Same posture as `proposeTaskTransition`'s unknown task: writing an amendment
+    // for a taskId no `task_created` introduced would put a phantom in the log.
+    const harness = buildHarness();
+    let result: AmendWorkOrderResult | undefined;
+    expect(() => {
+      result = harness.writer.amendWorkOrder('task-that-never-existed', {
+        amendedBy: 'human',
+        scope: 'an amendment to nothing',
+      });
+    }).not.toThrow();
+
+    expect(harness.emitted).toEqual([]);
+    expect(result).toEqual({ outcome: 'unknown-task', taskId: 'task-that-never-existed' });
+    expect(Object.keys(harness.currentTasks().tasks)).toEqual([]);
+  });
+
+  it('a task in a TERMINAL stage amends successfully — the missing guard is deliberate', () => {
+    // ⚠ PINNED ON PURPOSE. An amendment is a RECORD FACT, not a transition: the
+    // state machine is never consulted, so `done` (and `cancelled`, and
+    // `quarantined`) are amendable, unlike the `terminal-stage` REJECTION the
+    // transition cases below assert. Correcting the written scope of finished work
+    // is legitimate, and nothing dangerous follows — dispatch is a separate decision
+    // and `decideDispatch` already refuses a task whose stage runs no worker. If a
+    // future edit adds a stage check here, this test reddens and the reader is sent
+    // to `amendWorkOrder`'s note rather than to a silent behaviour change.
+    for (const terminalStage of ['done', 'cancelled'] as const) {
+      const { harness, taskId } = harnessWithAuthoredTask(terminalStage);
+      const result = harness.writer.amendWorkOrder(taskId, {
+        amendedBy: 'orchestrator',
+        scope: `amended while ${terminalStage}`,
+      });
+
+      expect(result, terminalStage).toMatchObject({ outcome: 'amended' });
+      expect(eventTypes(harness.emitted)).toEqual([EVENT_TYPES.workOrderAmended]);
+      const amendedTask = harness.currentTasks().tasks[taskId]!;
+      expect(amendedTask.stage).toBe(terminalStage);
+      expect(amendedTask.workOrderRev).toBe(1);
+    }
+  });
+
+  it('proposes NO transition and never emits anything but the amendment (D53)', () => {
+    // No dispatch coupling, no stage movement: an amendment changes what the work
+    // order SAYS and nothing else. `task_transitioned` appearing here would mean the
+    // amend door had quietly grown a second consequence.
+    const { harness, taskId } = harnessWithAuthoredTask('implementing');
+    harness.writer.amendWorkOrder(taskId, { amendedBy: 'human', scope: 'a fresh scope' });
+
+    expect(eventTypes(harness.emitted)).toEqual([EVENT_TYPES.workOrderAmended]);
+    expect(harness.currentTasks().tasks[taskId]!.stage).toBe('implementing');
+  });
+
+  it('reads the projection FRESH and never mutates the state it was handed', () => {
+    const { harness, taskId } = harnessWithAuthoredTask();
+    const handedOutState = harness.currentTasks();
+    const serializedBefore = tasksProjection.serialize(handedOutState);
+    const readsBefore = harness.readTasksCallCount();
+
+    harness.writer.amendWorkOrder(taskId, { amendedBy: 'human', scope: 'a fresh scope' });
+
+    expect(harness.readTasksCallCount()).toBeGreaterThan(readsBefore);
+    expect(tasksProjection.serialize(handedOutState)).toBe(serializedBefore);
+    expect(tasksProjection.serialize(harness.currentTasks())).not.toBe(serializedBefore);
   });
 });
 

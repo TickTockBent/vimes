@@ -11,6 +11,7 @@ import {
   taskCreatedPayloadSchema,
   taskSessionAttachedPayloadSchema,
   taskTransitionedPayloadSchema,
+  workOrderAmendedPayloadSchema,
 } from '../events.js';
 // S7·5a: `plan_submitted`'s payload is the reserved `submit_plan` tool payload
 // (D48) — imported from its owning module rather than restated, exactly as
@@ -277,6 +278,59 @@ export const tasksProjection: Projection<TasksState> = {
         }
         const payload = parsed.data;
         return withTask(state, payload.taskId, (task) => ({ ...task, lastCompletion: payload }));
+      }
+
+      // ── S7·2b: the AMENDMENT fold (D43 — revisioned, never mutated) ─────────
+      //
+      // The one case in this fold that rewrites what the BIRTH RECORD said. D43's
+      // discipline is that a work order is corrected by APPENDING an amendment,
+      // never by editing the `task_created` that started it, so the log keeps
+      // every revision the task ever had and the record keeps the current one.
+      //
+      // PATCH SEMANTICS, field by field: **present in the payload → REPLACES the
+      // record's field; absent → the record's field is left exactly as it was.**
+      // An amendment that narrows only `scope` omits the other three and they
+      // survive untouched — restating them would be the only alternative, and it
+      // would make every amendment a full rewrite that silently clobbers whatever
+      // a concurrent one just changed.
+      //
+      // ⚠ AN EXPLICIT `acceptanceCriteria: []` IS A REPLACEMENT, NOT AN OMISSION.
+      // Clearing the criteria list is a legal amendment (a work order that stops
+      // claiming checkable outcomes), and it is a DIFFERENT fact from an
+      // amendment that never mentioned the list — which is exactly why the writer
+      // is careful to omit absent fields rather than send `undefined` for them.
+      //
+      // ⚠ `workOrderRev` IS RECORDED, NEVER COMPUTED. The payload carries the rev
+      // the record reflects AFTER this amendment, and this fold writes down what
+      // the event says. A fold that incremented a counter of its own would be a
+      // second authority over the rev (principle 9) and would break replay the
+      // first time a log was folded from a snapshot rather than from empty (I6):
+      // the stored number is the truth.
+      //
+      // `amendedBy` is deliberately NOT folded onto the record, exactly as
+      // `task_transitioned`'s `proposedBy` is not: the record is CURRENT STATE,
+      // and who authored a given revision is audit — it lives in the log, where a
+      // reviewer reads the whole amendment history rather than only its last line.
+      case EVENT_TYPES.workOrderAmended: {
+        const parsed = workOrderAmendedPayloadSchema.safeParse(event.payload);
+        if (!parsed.success) {
+          return state;
+        }
+        const payload = parsed.data;
+        // Unknown task → no-op (I8 totality), exactly like every case above: an
+        // amendment for a task we never saw created must never fabricate a record.
+        return withTask(state, payload.taskId, (task) => ({
+          // I12: a NEW record by spread — the previous one is never mutated in
+          // place, because snapshots share references with live state.
+          ...task,
+          ...(payload.scope === undefined ? {} : { scope: payload.scope }),
+          ...(payload.explicitlyOut === undefined ? {} : { explicitlyOut: payload.explicitlyOut }),
+          ...(payload.acceptanceCriteria === undefined
+            ? {}
+            : { acceptanceCriteria: payload.acceptanceCriteria }),
+          ...(payload.killCriterion === undefined ? {} : { killCriterion: payload.killCriterion }),
+          workOrderRev: payload.workOrderRev,
+        }));
       }
 
       // ── deliberately NOT folded ────────────────────────────────────────────

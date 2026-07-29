@@ -9,6 +9,7 @@ import type { DerivedUsageBody, UsageRefreshOutcome, UsageSnapshot } from '../li
 import type { CostLedgerBody } from '../lib/costDisplay.js';
 import type { TaskApiAnswer } from '../lib/taskBoard.js';
 import type { WorkOrderBody, WorkOrderFieldDescriptor } from '../lib/workOrderForm.js';
+import type { AmendmentBody } from '../lib/correctionDoors.js';
 import { sessionToSubscribeAfterDispatch, sessionToSubscribeAfterTransition } from '../lib/dispatchFollow.js';
 import type { GitStatus, GitFileDiff, GitRepoEntry, GitDiffContext } from '../lib/gitReview.js';
 import type { EventRecord, SessionRecord } from '../lib/types.js';
@@ -548,6 +549,21 @@ export const useVimesStore = defineStore('vimes', () => {
         : { acceptanceCriteria: input.acceptanceCriteria }),
       ...(input.killCriterion === undefined ? {} : { killCriterion: input.killCriterion }),
     });
+  }
+
+  // S7·8 — amend the work order (D46's amend door). Mirrors `createTask`'s
+  // plain fetch/parse/answer idiom exactly: `postTaskApi` returns the daemon's
+  // status and body VERBATIM, and this adds nothing on top.
+  //
+  // ⚠ NO SUBSCRIBE GLUE, UNLIKE `proposeTaskTransition`/`dispatchTask` BELOW.
+  // Those two glue a spawned session onto the WS subscription because a
+  // promotion or a dispatch can mint a live session the client would otherwise
+  // never see events for. An amendment can never spawn anything (D53 — amending
+  // changes what the work order SAYS; whether to re-run against the new
+  // revision is a later, separate, explicit `dispatchTask` call) — so there is
+  // nothing here to subscribe to, and nothing schedules a sessions refresh.
+  function amendTask(taskId: string, body: AmendmentBody): Promise<TaskApiAnswer> {
+    return postTaskApi(`/api/tasks/${encodeURIComponent(taskId)}/amendments`, body);
   }
 
   // PROPOSE a transition. The name is the contract: this does not move anything.
@@ -1426,6 +1442,7 @@ export const useVimesStore = defineStore('vimes', () => {
     fetchStageEdges,
     fetchWorkOrderSchema,
     createTask,
+    amendTask,
     proposeTaskTransition,
     dispatchTask,
     // Git review (slice 4 step 3)

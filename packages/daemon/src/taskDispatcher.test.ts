@@ -19,7 +19,7 @@ import {
   type TransitionProposal,
 } from '@vimes/core';
 import type { ResumeResult, SendResult, SpawnResult } from './sessionHost.js';
-import type { ProposeTransitionResult } from './taskWriter.js';
+import { TaskWriter, type ProposeTransitionResult } from './taskWriter.js';
 import type { GitRunResult, GitRunner } from './gitAdapter.js';
 import { loadConfigFromEnv } from './config.js';
 import { WorktreeManager } from './worktreeManager.js';
@@ -1982,6 +1982,64 @@ describe('TaskDispatcher — recordPlan: the native plan-capture seam (S7·5b-i)
     expect((withRev.emitted[0]!.payload as { workOrderRev: number }).workOrderRev).toBe(3);
     // The artifact envelope is stamped with the same rev the plan was produced against.
     expect(withRev.artifactStore.listByTask(TASK_ID)[0]!.rev).toBe(3);
+  });
+
+  it('S7·2b end-to-end: an AMENDMENT bumps the record to rev 1, and the plan records rev 1', () => {
+    // **THE SLICE ASSERTION "STAGE-RUN IDENTITY CARRIES REV", PROVED THROUGH THE
+    // REAL PARTS.** The case above pins the READ (a hand-built record carrying
+    // rev 3); this one pins the whole chain that PRODUCES the number — a real
+    // `TaskWriter.amendWorkOrder` emits `work_order_amended`, the real projection
+    // folds it onto the record, and `recordPlan` reads the rev back off that fold.
+    // Without it, the `?? 0` sites are only ever exercised against revs a test
+    // typed in by hand, and nothing would catch a writer/fold pair that agreed
+    // with each other but not with the dispatcher.
+    const store = new MemoryEventStore({
+      clock: new SteppingClock(FIXED_NOW, 1000),
+      ids: new CountingIdSource(),
+    });
+    const readTasks = (): TasksState =>
+      replayFromEmpty(tasksProjection, readAllStreamsGrouped(store));
+    const emit = (events: EventInput[]): void => {
+      store.append(events);
+    };
+    store.append([
+      taskCreated({
+        taskId: TASK_ID,
+        projectRoot: PROJECT_ROOT,
+        createdBy: 'human',
+        isolation: 'shared-dir',
+        stage: 'planning',
+        scope: 'the scope as first authored',
+      }),
+      taskSessionAttached({ taskId: TASK_ID, stage: 'planning', appSessionId: PLANNER_SESSION_ID }),
+    ]);
+
+    const amendResult = new TaskWriter({ emit, readTasks, ids: new CountingIdSource() }).amendWorkOrder(
+      TASK_ID,
+      { amendedBy: 'human', scope: 'the scope as amended mid-planning' },
+    );
+    expect(amendResult).toMatchObject({ outcome: 'amended' });
+    expect(readTasks().tasks[TASK_ID]!.workOrderRev).toBe(1);
+
+    const artifactStore = new MemoryArtifactStore();
+    new TaskDispatcher({
+      sessionHost: new RecordingSessionHost(),
+      emit,
+      readTasks,
+      readMeters: () => ({ meters: {}, history: {} }),
+      nowIso: () => FIXED_NOW,
+      staleAfterMs: STALE_AFTER_MS,
+      artifactStore,
+      // The transition is the writer's business and irrelevant here; the fake keeps
+      // it out of the log so the only events below are the amendment and the plan.
+      taskWriter: new RecordingTaskWriter(),
+    }).recordPlan(PLANNER_SESSION_ID, PLAN_TEXT);
+
+    const planEvent = store.read('tasks', 1).find((record) => record.type === EVENT_TYPES.planSubmitted)!;
+    expect((planEvent.payload as { workOrderRev: number }).workOrderRev).toBe(1);
+    // The artifact envelope is stamped with the SAME rev, so the stored plan is
+    // attributable to the revision it was produced against.
+    expect(artifactStore.listByTask(TASK_ID)[0]!.rev).toBe(1);
   });
 
   it('the injected clock is the artifact envelope’s only createdAt source', () => {

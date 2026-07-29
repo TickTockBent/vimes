@@ -277,15 +277,17 @@ describe('meter_alert (slice-5 step 4a — account-wide, not session-shaped)', (
   });
 });
 
-describe('work_order_amended (S7·1 — RESERVED, no emitter)', () => {
+describe('work_order_amended (S7·1 reserved the shape; S7·2b landed the emitter)', () => {
   // Precedent: `dispatch_refused` was reserved with its type+schema+constructor
   // ahead of any emitter (slice 0 -> emitted slice 6); the meter_alert
-  // `disposition: 'hold'` reservation is the same posture. This event follows
-  // it — the vocabulary lands now, S7·2b is the writer, and nothing in this
-  // slice emits it.
+  // `disposition: 'hold'` reservation is the same posture. This event followed
+  // it — the vocabulary landed in S7·1 with nothing emitting it, and S7·2b spent
+  // the reservation: `TaskWriter.amendWorkOrder` is the writer, and it is the
+  // one that adds the REQUIRED `amendedBy` below.
   const amendmentPayload = {
     taskId: 'task-aaaa-0001',
     workOrderRev: 1,
+    amendedBy: 'human' as const,
     scope: 'add the S7·1 reserved schemas',
     explicitlyOut: ['wiring any consumer'],
     acceptanceCriteria: [{ id: 'crit-1', text: 'typecheck is green' }],
@@ -308,8 +310,16 @@ describe('work_order_amended (S7·1 — RESERVED, no emitter)', () => {
     expect(EVENT_TYPES.workOrderAmended).toBe('work_order_amended');
   });
 
-  it('tolerates a patch that touches only scope — every other field is optional', () => {
-    const minimalPayload = { taskId: 'task-aaaa-0001', workOrderRev: 2, scope: 'narrowed scope' };
+  it('tolerates a patch that touches only scope — every PATCH field is optional', () => {
+    // `taskId` / `workOrderRev` / `amendedBy` are the envelope, always present;
+    // the four work-order fields are the patch, and omitting three of them is the
+    // ordinary case (the fold leaves an omitted field untouched).
+    const minimalPayload = {
+      taskId: 'task-aaaa-0001',
+      workOrderRev: 2,
+      amendedBy: 'orchestrator' as const,
+      scope: 'narrowed scope',
+    };
     expect(workOrderAmendedPayloadSchema.safeParse(minimalPayload).success).toBe(true);
   });
 
@@ -317,6 +327,20 @@ describe('work_order_amended (S7·1 — RESERVED, no emitter)', () => {
     expect(
       workOrderAmendedPayloadSchema.safeParse({ ...amendmentPayload, workOrderRev: -1 }).success,
     ).toBe(false);
+  });
+
+  it('REFUSES `amendedBy: dispatcher` — the machinery never amends (D53)', () => {
+    // The two-value enum, asserted rather than only documented. An amendment is a
+    // DECISION; letting the dispatcher author one would put a judgment nobody made
+    // in the log, and the whole point of the narrower enum is that the third
+    // transition-proposer value is unrepresentable here.
+    expect(
+      workOrderAmendedPayloadSchema.safeParse({ ...amendmentPayload, amendedBy: 'dispatcher' })
+        .success,
+    ).toBe(false);
+    // ...and it is REQUIRED: an amendment with no author is not recordable.
+    const { amendedBy: _omitted, ...authorlessPayload } = amendmentPayload;
+    expect(workOrderAmendedPayloadSchema.safeParse(authorlessPayload).success).toBe(false);
   });
 });
 

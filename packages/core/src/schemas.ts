@@ -305,23 +305,27 @@ export const taskRecordSchema = z.object({
   // discipline that keeps I6 assertable.
   //
   // ⚠ **ABSENT STAYS ABSENT.** Unlike `gates`, which the projection defaults to
-  // `{}` because an ungated task and a task with no gates are the same fact,
-  // this unit deliberately does NOT touch `projections/tasks.ts` at all — there
-  // is no fold, no default, nothing that could turn an absent field present on
-  // replay. A pre-slice-7 `task_created` folds to a record with NONE of these
-  // keys, exactly as it did before this widening landed.
+  // `{}` because an ungated task and a task with no gates are the same fact, no
+  // fold ever turns one of these from absent to present on its own: S7·1 shipped
+  // the reservation with no fold at all, and the folds that followed (S7·2a's
+  // birth-record spread, S7·2b's amendment patch) each SPREAD a field only when
+  // the event carries it. A pre-slice-7 `task_created` still folds to a record
+  // with NONE of these keys, exactly as it did before the widening landed.
   //
-  // The consumer for all five is S7·2a (`create_task`), not this unit — this is
-  // a schema reservation, not a working feature. `workOrderRev` additionally
-  // waits on S7·2b (`work_order_amended`, reserved below in events.ts) as its
-  // writer.
+  // The first consumer of the four authored fields was S7·2a (`create_task`);
+  // S7·2b (`work_order_amended`) is the second, and the only one that can change
+  // them after birth.
   scope: z.string().optional(),
   explicitlyOut: z.array(z.string()).optional(),
   acceptanceCriteria: z.array(acceptanceCriterionSchema).optional(),
   killCriterion: z.string().optional(),
   // The work-order revision this record currently reflects (D43: revisioned,
-  // not mutated). Absent until the first amendment; S7·2b bumps it via the
-  // reserved `work_order_amended` event. Reserved here, no writer yet.
+  // not mutated). ABSENT UNTIL THE FIRST AMENDMENT — a never-amended task has no
+  // such key, and the readers that need a number (`recordPlan`, `recordReview`,
+  // `recordCompletion`) spell that as `?? 0` rather than the record defaulting it.
+  // The writer is S7·2b: `TaskWriter.amendWorkOrder` computes the next rev and
+  // states it on the `work_order_amended` payload, and the fold records what the
+  // payload says — this field is never derived by counting events.
   workOrderRev: z.number().int().nonnegative().optional(),
   // The content hash of the CURRENT plan artifact submitted for this task (D48,
   // S7·5a). The plan BLOB lives in the artifact store; the record carries only the

@@ -27,6 +27,7 @@ import {
   createTaskBodySchema,
   registerTaskApi,
   WORK_ORDER_FIELD_DESCRIPTORS,
+  type AmendWorkOrderResponse,
   type CreateTaskResponse,
   type DispatchResponse,
   type ProposeTransitionResponse,
@@ -951,6 +952,192 @@ describe('POST /api/tasks/:taskId/transitions — the D53 dispatch rider (S7·7c
 
 // ── assertion 11: malformed bodies ───────────────────────────────────────────
 
+// ── S7·2b: work-order amendments over the wire (D43) ─────────────────────────
+//
+// The route's promises, and nothing else (the patch semantics themselves belong to
+// the fold, the rev arithmetic to the writer):
+//   1. an accepted amendment answers 200 with the FOLDED record, bumped rev and all;
+//   2. every refusal writes NOTHING — the tasks head is the instrument, not the
+//      status code;
+//   3. **it never dispatches.** `dispatchCallCount` staying at 0 is the assertable
+//      form of D53's "an amendment is not a promotion".
+
+describe('POST /api/tasks/:taskId/amendments — amend the work order (S7·2b)', () => {
+  it('200 + the folded record with a bumped rev, ONE event, and NO dispatch', async () => {
+    const harness = buildApiHarness();
+    const task = await createTaskThrough(harness, {
+      scope: 'the scope as first authored',
+      killCriterion: 'the kill criterion as first authored',
+    });
+
+    const response = await harness.request(
+      `/api/tasks/${task.taskId}/amendments`,
+      postJson({ amendedBy: 'human', scope: 'the narrowed scope' }),
+    );
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as AmendWorkOrderResponse;
+    // The RECORD as folded — the response is the read-back, not an echo of the
+    // request, which is why the untouched `killCriterion` rides along on it.
+    expect(body.task).toEqual({
+      ...task,
+      scope: 'the narrowed scope',
+      workOrderRev: 1,
+    });
+
+    expect(harness.taskEventTypes()).toEqual([
+      EVENT_TYPES.taskCreated,
+      EVENT_TYPES.workOrderAmended,
+    ]);
+    expect(harness.taskEvents()[1]!.payload).toEqual({
+      taskId: task.taskId,
+      workOrderRev: 1,
+      amendedBy: 'human',
+      scope: 'the narrowed scope',
+    });
+
+    // ⚠ THE D53 HALF. Its sibling route dispatches on a promotion; this one must
+    // not, ever — an amendment changes what the work order SAYS, and whether to
+    // re-run against the new revision is a separate, explicit decision.
+    expect(harness.dispatchCallCount()).toBe(0);
+    expect(harness.sessionHost.spawnCalls).toEqual([]);
+  });
+
+  it('restates a criterion by id and mints one for an id-less entry', async () => {
+    const harness = buildApiHarness();
+    const task = await createTaskThrough(harness, {
+      acceptanceCriteria: [{ text: 'the first criterion' }, { text: 'the second criterion' }],
+    });
+    const firstCriterionId = task.acceptanceCriteria![0]!.id;
+
+    const response = await harness.request(
+      `/api/tasks/${task.taskId}/amendments`,
+      postJson({
+        amendedBy: 'orchestrator',
+        acceptanceCriteria: [
+          { id: firstCriterionId, text: 'the first criterion, reworded' },
+          { text: 'a criterion the amendment introduces' },
+        ],
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    const amendedCriteria = ((await response.json()) as AmendWorkOrderResponse).task
+      .acceptanceCriteria!;
+    // The restated criterion KEPT its id — that stability is what `report_review`
+    // keys its per-criterion verdicts to. The new one got a server-minted id, and
+    // the dropped one is gone (the list is a replacement, not a delta).
+    expect(amendedCriteria[0]).toEqual({
+      id: firstCriterionId,
+      text: 'the first criterion, reworded',
+    });
+    expect(amendedCriteria[1]!.text).toBe('a criterion the amendment introduces');
+    expect(amendedCriteria[1]!.id).not.toBe(firstCriterionId);
+    expect(amendedCriteria).toHaveLength(2);
+  });
+
+  it('404 for an unknown taskId, and NOTHING is written', async () => {
+    const harness = buildApiHarness();
+    const headBefore = harness.tasksHead();
+
+    const response = await harness.request(
+      '/api/tasks/task-that-never-existed/amendments',
+      postJson({ amendedBy: 'human', scope: 'an amendment to nothing' }),
+    );
+
+    expect(response.status).toBe(404);
+    expect(harness.tasksHead()).toBe(headBefore);
+    expect(harness.dispatchCallCount()).toBe(0);
+  });
+
+  it('400 + the OFFENDING id for a criterion the record does not carry', async () => {
+    // The id IS echoed, unlike the create route's 403 path suppression: it came from
+    // the caller's own body and names nothing outside the task, so returning it is
+    // how a form tells the human WHICH row went stale under them.
+    const harness = buildApiHarness();
+    const task = await createTaskThrough(harness, {
+      acceptanceCriteria: [{ text: 'the only criterion' }],
+    });
+    const headAfterCreate = harness.tasksHead();
+
+    const response = await harness.request(
+      `/api/tasks/${task.taskId}/amendments`,
+      postJson({
+        amendedBy: 'human',
+        scope: 'a scope that must not land',
+        acceptanceCriteria: [{ id: 'crit-id-that-was-never-minted', text: 'keyed to nothing' }],
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error: 'bad request',
+      detail: 'unknown-criterion',
+      criterionId: 'crit-id-that-was-never-minted',
+    });
+    // Refused WHOLE: the `scope` that rode along with it was not written either.
+    expect(harness.tasksHead()).toBe(headAfterCreate);
+    expect(harness.taskEventTypes()).toEqual([EVENT_TYPES.taskCreated]);
+  });
+
+  it('400 for an amendment that names no work-order field at all', async () => {
+    // Well-formed, and asks for nothing. A rev bump that changes nothing is log
+    // noise, so the writer refuses it and the log stays where it was.
+    const harness = buildApiHarness();
+    const task = await createTaskThrough(harness);
+    const headAfterCreate = harness.tasksHead();
+
+    const response = await harness.request(
+      `/api/tasks/${task.taskId}/amendments`,
+      postJson({ amendedBy: 'human' }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: 'bad request', detail: 'empty-amendment' });
+    expect(harness.tasksHead()).toBe(headAfterCreate);
+  });
+
+  it('an explicit empty acceptanceCriteria is an amendment, not an empty one', async () => {
+    // The pair the empty check must not conflate — clearing the criteria list is a
+    // real, recorded amendment.
+    const harness = buildApiHarness();
+    const task = await createTaskThrough(harness, {
+      acceptanceCriteria: [{ text: 'the only criterion' }],
+    });
+
+    const response = await harness.request(
+      `/api/tasks/${task.taskId}/amendments`,
+      postJson({ amendedBy: 'human', acceptanceCriteria: [] }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(((await response.json()) as AmendWorkOrderResponse).task.acceptanceCriteria).toEqual([]);
+    expect(harness.taskEventTypes()).toEqual([
+      EVENT_TYPES.taskCreated,
+      EVENT_TYPES.workOrderAmended,
+    ]);
+  });
+
+  it('never dispatches, whatever stage the task is in (D53)', async () => {
+    // Run against a task sitting in an ACTIVE stage — the one shape where a reader
+    // might expect the amendment to restart the work. It does not: `planning` is
+    // exactly where the temptation to chain lives, and the count stays 0.
+    const harness = buildApiHarness({ dispatchResult: RELAYED_DISPATCH_RESULT });
+    const task = await createTaskThrough(harness, { stage: 'planning' });
+
+    const response = await harness.request(
+      `/api/tasks/${task.taskId}/amendments`,
+      postJson({ amendedBy: 'orchestrator', scope: 'a scope amended mid-planning' }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(harness.dispatchedTaskIds()).toEqual([]);
+    expect(harness.sessionHost.spawnCalls).toEqual([]);
+    // The stage did not move either — an amendment is a record fact, not a transition.
+    expect(((await response.json()) as AmendWorkOrderResponse).task.stage).toBe('planning');
+  });
+});
+
 describe('malformed input — 400, nothing evented, nothing crashes (I8)', () => {
   // ⚠ THE 400/409 LINE, WRITTEN DOWN: **409 means "the machine said no"** and the
   // rejection IS in the log. **400 means "this was not a proposal"** — the body
@@ -1014,6 +1201,58 @@ describe('malformed input — 400, nothing evented, nothing crashes (I8)', () =>
     },
     { caseName: 'null body', body: null },
   ];
+
+  const malformedAmendmentBodies: Array<{ caseName: string; body: unknown }> = [
+    { caseName: 'unparseable JSON', body: '{ nope' },
+    { caseName: 'missing required amendedBy', body: { scope: 'a scope with no author' } },
+    {
+      // ⚠ THE ONE THAT ENCODES A DECISION RATHER THAN A TYPO. `dispatcher` is a
+      // legal `proposedBy` on the transitions route and is deliberately NOT a legal
+      // `amendedBy` here: D53 makes an amendment a DECISION, and the mechanics never
+      // author one. A 400 is the wire form of that two-value enum.
+      caseName: 'amendedBy: dispatcher — the machinery never amends (D53)',
+      body: { amendedBy: 'dispatcher', scope: 'a scope the dispatcher wants' },
+    },
+    { caseName: 'wrong-typed scope (number)', body: { amendedBy: 'human', scope: 7 } },
+    { caseName: 'empty-string scope', body: { amendedBy: 'human', scope: '' } },
+    {
+      caseName: 'scope over MAX_WORK_ORDER_TEXT — the same cap the create route enforces',
+      body: { amendedBy: 'human', scope: 'x'.repeat(8001) },
+    },
+    {
+      caseName: 'an acceptance criterion with no text',
+      body: { amendedBy: 'human', acceptanceCriteria: [{ id: 'crit-1' }] },
+    },
+    {
+      caseName: 'more acceptance criteria than MAX_LIST_ITEMS',
+      body: {
+        amendedBy: 'human',
+        acceptanceCriteria: Array.from({ length: 101 }, (_unused, index) => ({
+          text: `criterion ${index}`,
+        })),
+      },
+    },
+    { caseName: 'a JSON array rather than an object', body: [1, 2, 3] },
+    { caseName: 'null body', body: null },
+  ];
+
+  for (const malformedCase of malformedAmendmentBodies) {
+    it(`amendments: ${malformedCase.caseName} → 400, no event`, async () => {
+      const harness = buildApiHarness();
+      const task = await createTaskThrough(harness, { scope: 'the scope as first authored' });
+      const headAfterCreate = harness.tasksHead();
+
+      const response = await harness.request(
+        `/api/tasks/${task.taskId}/amendments`,
+        postJson(malformedCase.body),
+      );
+
+      expect(response.status).toBe(400);
+      expect(harness.tasksHead()).toBe(headAfterCreate);
+      expect(harness.taskEventTypes()).toEqual([EVENT_TYPES.taskCreated]);
+      expect(harness.dispatchCallCount()).toBe(0);
+    });
+  }
 
   for (const malformedCase of malformedCreateBodies) {
     it(`create: ${malformedCase.caseName} → 400, no event`, async () => {
@@ -1106,6 +1345,11 @@ describe('I14 — every task route is behind the auth wall', () => {
       body: { toStage: 'planning', proposedBy: 'human' },
     },
     { routeName: 'dispatch', path: '/api/tasks/any-task/dispatch', body: {} },
+    {
+      routeName: 'amendments',
+      path: '/api/tasks/any-task/amendments',
+      body: { amendedBy: 'human', scope: 'a scope nobody authenticated to write' },
+    },
   ];
 
   for (const taskRoute of taskRoutes) {
