@@ -10,6 +10,8 @@ tracker is the ledger of what has and hasn't been.
 | [jinn-decompose.md](jinn-decompose.md) | hristo2612/jinn | org-metaphor orchestration; hooks channel; the landmine list |
 | [agent-teams-ai-decompose.md](agent-teams-ai-decompose.md) | 777genius/agent-teams-ai | worker-side control protocol; MCP verb families |
 | [codor-decompose.md](codor-decompose.md) | rjx18/codor | sibling design; custody trio; assumption ledger; brakes |
+| [agenc-core-decompose.md](agenc-core-decompose.md) | agenc-core | admission kernel (fail-closed budgets); deadline propagation |
+| [agentswarms-decompose.md](agentswarms-decompose.md) | AgentSwarms-fyi/agentswarms | **checkpoint anatomy** (the resumability checklist); attended/unattended failure-semantics synthesis; quality trends above the verdict |
 
 **Strongest signal of the series:** four-repo independent convergence on the
 Vimes bones (daemon-owned sessions, event journal, pure-function core,
@@ -52,3 +54,17 @@ the right doc, no action due yet), **pending** (waits for its slice/trigger).
 | Env-inheritance invariant stated on spawn path (codor 7) | spawn-path design | pending |
 | Read codor's `adapters-cli-only-no-sdk` rationale (codor 9) | pre-slice-6 | pending |
 | Hygiene: exact-address proxy trust (codor 10; fail-closed already shipped) | daemon config | pending |
+
+### AgentSwarms carry-overs (added 2026-07-29 — agentswarms-decompose.md §6)
+
+| Item (source) | Lands in | Status 2026-07-29 |
+|---|---|---|
+| Checkpoint anatomy as D51's resumability checklist: completed / ruled-out / dead-edge / resume-point / suspended-at — DERIVED from the spine, never stored; verify the taxonomy can distinguish "ruled out" from "not yet reached" (as 2.1) | D51 design pass | **noted** — annotated onto open-questions D51 (the checklist rides with the decision, not reserved as schema: the graph shape isn't designed enough to reserve honestly) |
+| Rule: completion is an explicit EVENT, never inferred from output presence/emptiness (as 2.1) | design-principles | **proposed to Wes 2026-07-29** — already true by construction (`report_completion`, D53 outcomes); rule pins it against regression |
+| Rule: no tool/API accepts a parameter asserting a decision the daemon should read from the record (as 2.2) | design-principles + every future tool WO | **proposed to Wes 2026-07-29** — already embodied (deriveReviewOutcome, forced fields on create_task); S8·6+ drive verbs are where it would erode |
+| Rule: budget/meter gates fail OPEN attended, fail CLOSED unattended — selected by session class (as 2.4, the AgenC synthesis) | dispatch gates / unattended era | **proposed to Wes 2026-07-29** — one branch when unattended operation lands |
+| Risk/urgency tier on attention reasons (not permission on gates); low-risk may auto-proceed when unattended (as 2.3/§5.2) | attention model | pending — trigger: unattended operation |
+| Explicit convergence bound: max attempts → quarantine, before unattended fix loops (as 2.6; 4th corroboration) | drive-verbs era (S8·7+) | pending — the state machine already reserves the landing (`done`+manual-review) |
+| Per-criterion outcome aggregation over the spine (failure rate by criterion/stage/model/author) (as 2.5) | insights read-model | pending — **natural instrument for the Gate-2 pivot criterion** (authored-vs-hand-made rewrite rate) |
+| Defensive-skip discipline for model-shaped text VIMES doesn't control (as 2.5) | as encountered | noted |
+| ELv2 packaging shape as the commercial-model reference (as §7) | the someday-conversation | noted, zero action |

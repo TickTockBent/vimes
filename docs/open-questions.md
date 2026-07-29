@@ -287,6 +287,23 @@ revisit as its own design pass, likely alongside the orchestrator/project-loop w
 (where dispatch paths get exercised for real). Relates to `taskStateMachine.ts`
 (`TASK_STAGE_EDGES`), D43/D44, and the slice-7 loop.
 
+**Annotation 2026-07-29 — the resumability checklist rides with this decision
+(agentswarms decomposition 2.1, Wes: "the checkpoint anatomy is the real haul").**
+The moment stages form a graph (parallel/conditional edges, a review routing to one
+of several destinations), a paused run's full state is: completed stages / stages
+RULED OUT by routing / dead edges / the resume point / the suspended-at gate — and
+two of those (ruled-out, dead edges) are ROUTING DECISIONS that cannot be re-derived
+after the fact. Their three paid-for findings, kept whole: losing routing decisions
+resumes into branches already ruled out; losing the completed set re-runs
+non-idempotent side effects; completion must be an EXPLICIT record because a stage
+whose output was empty is still done. VIMES derivation posture: the spine derives
+the checkpoint (never stored — I6, one source of record), which is safe ONLY if the
+event taxonomy can distinguish "ruled out" from "not yet reached" — a distinction
+that doesn't exist in the linear machine and likely costs ONE new event type at
+graph time. Check that against the taxonomy FIRST when this reopens; and pull the
+agentswarms repo to read `swarmCheckpoint.ts`'s inline findings first-hand during
+the design pass (ELv2: ideas only, never code).
+
 ## D43 — task spec source — ✅ DECIDED 2026-07-25 → decisions.md D43
 A task IS a work-order: structured fields (scope / explicitly-out / acceptance-as-list
 / kill) for what the machine reads, attached artifacts by reference for what only an
