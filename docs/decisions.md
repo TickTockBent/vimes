@@ -2102,3 +2102,16 @@ assertions — Gate-D applies before any of them is pinned in a test.
 3. **Resume-across-restart fidelity** — the D56 respawn path leans on session
    resume surviving daemon restarts; verify the re-anchor + resume combination
    on a real transcript before the foundation unit builds on it.
+
+## D60 — Project declaration is CONSTRAINED WITHIN `VIMES_PROJECT_ROOTS` — DECIDED 2026-07-29
+
+*(Wes, at the S8·1 gate. This is D42's one explicitly-deferred sub-decision —
+"the only piece not settled here, and it gates the work order" — now settled as
+the lean.)*
+
+Declaring a project does NOT extend the file/git allow-list. D21's
+`VIMES_PROJECT_ROOTS` stays the safety fence; the picker may only declare
+directories inside it (validated against the STATIC config roots, not the live
+session-cwd union — a session's transient cwd is not a declarable boundary).
+Widening the fence remains a separate, deliberate act (`/etc/vimes/env` edit +
+restart), never a side effect of clicking in a picker.
