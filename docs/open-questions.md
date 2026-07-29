@@ -304,6 +304,63 @@ graph time. Check that against the taxonomy FIRST when this reopens; and pull th
 agentswarms repo to read `swarmCheckpoint.ts`'s inline findings first-hand during
 the design pass (ELv2: ideas only, never code).
 
+**Annotation 2026-07-29 (same day, hours later) — the killer use case arrived,
+and a worked design sketch with it. This is no longer a flag; it is a QUEUED
+DESIGN PASS with a driving requirement.**
+
+**Wes's use case (verbatim in spirit):** non-coding projects — books. "What is a
+review task in a book? What is a coding task with criteria?" The want: a
+**customizable per-project node graph** with configurable edges instead of the
+baked-in pipeline. Each node carries: a defined acceptance, a defined
+first-message injection (the briefing), and an auto-dispatch on/off flag for
+tasks dropped into the state. Example book workflow: pattern scanning → prose
+review → beta readers.
+
+**Why this is tractable (the seams are already data):** the three per-node
+properties map 1:1 onto existing machinery — acceptance = the criteria list
+(already per-task data, already what `report_review` keys against);
+first-message injection = `composeStageInstruction`'s composition context;
+auto-dispatch = `shouldDispatchOnTransition` reading a node flag instead of a
+hard-coded stage pair. D53's taxonomy (decisions / outcomes / mechanics) is
+already stage-agnostic; I7, the event spine, fix-seed, and attempt identity all
+carry unchanged. The transition machine already treats `toStage` as an open
+string at the wire.
+
+**The sketch (Fable, discussed with Wes 2026-07-29):**
+- **Nodes pick from a KIT OF KINDS; config supplies the rest.** Kind = `plan` /
+  `work` / `review` / `hold` / `terminal` — each kind brings its mechanics
+  (tool exposure per D55's pattern, permission mode, outcome vocabulary,
+  routing slots: a review-kind node has on-pass and on-fail edges pointed
+  wherever the workflow says). Config supplies: node name, briefing injection,
+  acceptance handling, auto-dispatch flag, edges. Custom nodes cannot invent
+  mechanics — they compose them. (Book flow: pattern scanning = work-kind,
+  prose review = review-kind with prose criteria, beta readers = hold-kind —
+  `blocked-external` is the ancestor.)
+- **Workflow definitions are event-sourced** (their own stream) and **a task
+  PINS the workflow rev it was created under** — the `workOrderRev` pattern
+  reused, so redefining a workflow never orphans a mid-flight task.
+- **Migration story = the default definition:** today's pipeline becomes the
+  built-in `software` workflow; existing events replay under it byte-identically
+  (I6), and stage-name validation moves from parse-time enum to proposal-time
+  adjudication against the task's pinned definition.
+- **Where the real work is:** the stage vocabulary is compile-time in ~a dozen
+  places (core enum + daemon/UI mirrors) and three subsystems have per-stage
+  SEMANTICS baked in — dispatcher (permission mode, tool exposure), briefing
+  composer, `deriveReviewOutcome`'s hard-coded pass→done / fail→implementing
+  routing. Slice-sized (slice-7-scale), not a unit.
+- **The deep risk to inventory FIRST: semantics leakage** — behaviors that look
+  per-stage but are load-bearing invariants (plan capture exists via plan-mode
+  `ExitPlanMode` interception; D55 exists because plan mode gates MCP tools).
+  The design pass opens with that inventory, plus the checkpoint-anatomy
+  taxonomy check above (routing decisions must be evented once edges are
+  conditional).
+
+**Sequencing (Wes-agreed lean, 2026-07-29):** do NOT preempt slice 8 — the
+slice-7 aliasing argument (never change the schema and the orchestrator in the
+same motion) applies in full. Land slice 8 Phases A–C, run the Gate-2 trial on
+the linear machine, then this becomes **the slice-9 design pass**, with the
+book workflow as the driving use case and trial data informing node design.
+
 ## D43 — task spec source — ✅ DECIDED 2026-07-25 → decisions.md D43
 A task IS a work-order: structured fields (scope / explicitly-out / acceptance-as-list
 / kill) for what the machine reads, attached artifacts by reference for what only an
