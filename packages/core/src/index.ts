@@ -98,7 +98,30 @@ export { tasksProjection, type TasksState } from './projections/tasks.js';
 // `projectRecordSchema`/`ProjectRecord` arrive via the `export * from
 // './schemas.js'` above, and the four `project_*` constructors/payload schemas via
 // `export * from './events.js'` below; nothing redundant is re-exported here.
-export { projectsProjection, projectForCwd, type ProjectsState } from './projections/projects.js';
+// `isWithinProjectRoot` is the containment rule `projectForCwd` matches on,
+// exported for S8·3's board scoping (which has a projectRoot in hand rather than a
+// cwd to attribute) so there is still only ONE spelling of the segment-boundary
+// guard in the codebase.
+export {
+  projectsProjection,
+  projectForCwd,
+  isWithinProjectRoot,
+  type ProjectsState,
+} from './projections/projects.js';
+// S8·3 D56 — the standing orchestrator's briefing composers. A separate module
+// (and export) from `composeStageInstruction` for the reason those two are apart
+// from each other: this composes what a PERSISTENT CONVERSATION PARTNER is told at
+// (re)founding and at resume, which is a different job from what a dispatched
+// worker is told about one task.
+export {
+  composeOrchestratorFounding,
+  composeOrchestratorReorientation,
+  summarizeBoardForOrchestrator,
+  type OrchestratorBoardSummary,
+  type OrchestratorBoardTask,
+  type OrchestratorFoundingInput,
+  type OrchestratorReorientationInput,
+} from './orchestrator/founding.js';
 export {
   TASK_STAGES,
   TASK_STAGE_EDGES,

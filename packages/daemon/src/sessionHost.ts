@@ -1130,6 +1130,17 @@ export class SessionHost implements HookHost {
     // the session is offered. Absent for interactive spawns — today's behaviour
     // exactly (same absence idiom as `permissionMode` and `dispatched`).
     stage?: TaskStage;
+    // S8·3 (D56): set ONLY by the orchestrator ensure path, which founds the
+    // standing entity for one project. It rides into `session_created` and is
+    // never read back by the host — the marking exists so the ENSURE path can
+    // find this session again after a restart, and so the record says what this
+    // session IS. Absent everywhere else, which is today's behaviour exactly.
+    //
+    // ⚠ It does NOT imply `dispatched`, a `stage`, or a permission mode: the
+    // orchestrator is an INTERACTIVE session (D56 — a conversation partner, not
+    // an unattended run), so it takes the SDK default footing like a human's own
+    // spawn does.
+    orchestratorForProjectId?: string;
   }): SpawnResult {
     const appSessionId = this.ids.uuid();
     const preflight = this.checkPreflight();
@@ -1155,18 +1166,26 @@ export class SessionHost implements HookHost {
         forkedFrom: null,
         taskRef: null,
         provider: CLAUDE_PROVIDER,
+        // S8·3: spread rather than set — an ordinary spawn's birth record is
+        // byte-identical to the pre-S8·3 one, and the projection reads ABSENCE to
+        // mean "not an orchestrator" (a present-but-undefined key is a different
+        // fact from an absent one).
+        ...(options.orchestratorForProjectId === undefined
+          ? {}
+          : { orchestratorForProjectId: options.orchestratorForProjectId }),
       }),
     ]);
     this.onSessionCreated?.(appSessionId);
-    this.startProcess(
+    // No `resume` key — a fresh spawn has nothing to resume into, and the absence
+    // is what makes the liveness cause `spawn`.
+    this.startProcess({
       appSessionId,
-      options.channel,
-      options.cwd,
-      undefined,
-      options.permissionMode,
-      options.dispatched,
-      options.stage,
-    );
+      channel: options.channel,
+      cwd: options.cwd,
+      permissionMode: options.permissionMode,
+      dispatched: options.dispatched,
+      stage: options.stage,
+    });
     return { appSessionId };
   }
 
@@ -1277,7 +1296,15 @@ export class SessionHost implements HookHost {
     // claudeSessionId; no new appSessionId, no fork.
     this.emitGuardedLiveness(appSessionId, 'spawning', 'resume');
     const lastClaudeSessionId = session.claudeSessionIds.at(-1)?.id;
-    this.startProcess(appSessionId, session.channel, session.cwd, lastClaudeSessionId);
+    // No `permissionMode`, no `dispatched`, no `stage` — the three deliberate
+    // absences the parameter comments spell out, now visible as omissions rather
+    // than as trailing arguments nobody wrote.
+    this.startProcess({
+      appSessionId,
+      channel: session.channel,
+      cwd: session.cwd,
+      resume: lastClaudeSessionId,
+    });
     return { appSessionId };
   }
 
@@ -1436,25 +1463,40 @@ export class SessionHost implements HookHost {
   }
 
   // ── internals ────────────────────────────────────────────────────────────
-  private startProcess(
-    appSessionId: string,
-    channel: 'sdk' | 'pty',
-    cwd: string,
-    resume: string | undefined,
+  //
+  // ⚠ **ONE OPTIONS OBJECT, NOT A POSITIONAL LIST** (the QUEUE'd finding, taken at
+  // the top of S8·3 because the spawn path grows again here). This signature had
+  // reached SEVEN positional params — three of them optional and adjacent — so a
+  // new spawn fact could only be added by appending yet another trailing slot, and
+  // every call site had to spell `undefined` for the ones it did not care about
+  // (`this.startProcess(id, channel, cwd, undefined, mode, …)`). Named keys make
+  // the resume path's deliberate ABSENCES readable at the call site rather than
+  // countable, and adding a fact is a key rather than a position.
+  //
+  // The conversion is BEHAVIOR-NEUTRAL: the same values reach `adapter.spawn` in
+  // the same shape, and both call sites below carry the same facts they always did.
+  private startProcess(options: {
+    appSessionId: string;
+    channel: 'sdk' | 'pty';
+    cwd: string;
+    // Absent = a FRESH spawn; present = the Claude session id to resume into. The
+    // `cause` on the liveness event is derived from this and nothing else.
+    resume?: string;
     // D48: only the planning-stage spawn passes 'plan'; resume never does (a
     // resumed session keeps its recorded mode, and planning never resumes).
     // 'plan' = plan-capture (D48); 'auto' = dispatched classifier footing (spike
     // 2026-07-26); absent = SDK default, unchanged.
-    permissionMode?: 'plan' | 'auto',
+    permissionMode?: 'plan' | 'auto';
     // D50: only a fresh dispatched spawn passes `true`; resume never does (the
     // marker is per-live-process state that a resumed session re-establishes only
     // if the dispatcher re-dispatches — resume today never sets it).
-    dispatched?: boolean,
+    dispatched?: boolean;
     // S7·7d: only a fresh dispatched spawn passes a stage; resume never does, for
     // the same reason `dispatched` does not — a resumed session re-establishes its
     // dispatch context only through a re-dispatch.
-    stage?: TaskStage,
-  ): void {
+    stage?: TaskStage;
+  }): void {
+    const { appSessionId, channel, cwd, resume, permissionMode, dispatched, stage } = options;
     const adapter: SessionAdapter = channel === 'sdk' ? this.sdkAdapter : this.ptyAdapter;
     const hookChannel = this.prepareHookChannel(appSessionId);
     const cause = resume === undefined ? 'spawn' : 'resume';

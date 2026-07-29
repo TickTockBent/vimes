@@ -1,6 +1,11 @@
 import { z } from 'zod';
 import type { EventInput } from './schemas.js';
-import { meterRecordSchema, projectRecordSchema, taskRecordSchema } from './schemas.js';
+import {
+  meterRecordSchema,
+  projectRecordSchema,
+  sessionRecordSchema,
+  taskRecordSchema,
+} from './schemas.js';
 // The task-event payloads validate against the STATE MACHINE's own vocabulary
 // (stages, refusal reasons, proposer) rather than re-declaring it — one source of
 // record per fact (principle 9). Direction is events.ts → tasks/ → schemas.ts;
@@ -295,6 +300,18 @@ export const sessionCreatedPayloadSchema = z.object({
   // so old session_created events (predating the field) project as host-owned.
   // Discovery mints external sessions by setting this to 'external'.
   custody: z.enum(['host', 'external']).optional(),
+  // ⚠ WIDENED IN S8·3 with `orchestratorForProjectId`, OPTIONAL-only — the same
+  // widening discipline `taskCreatedPayloadSchema.title` documents. Every
+  // `session_created` already written omits it, still validates, and still folds
+  // to a byte-identical SessionRecord (I6).
+  //
+  // D56: the STANDING ORCHESTRATOR for one project. **Presence IS the kind** —
+  // there is deliberately no separate `kind: 'orchestrator'` field, because a
+  // kind that did not name its project would let two facts (this is an
+  // orchestrator / this is whose orchestrator) drift apart, and the singleton
+  // invariant is stated over the pairing of the two. Derived from the record's
+  // own field so the event and the record cannot drift on the shape.
+  orchestratorForProjectId: sessionRecordSchema.shape.orchestratorForProjectId,
 });
 
 export const livenessChangedPayloadSchema = z.object({

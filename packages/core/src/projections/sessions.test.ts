@@ -119,6 +119,77 @@ describe('sessions projection — session_created', () => {
   });
 });
 
+// D56 (S8·3): the standing-orchestrator marking. An OPTIONAL-only widening, so the
+// instrument that matters is the SERIALIZED BYTES — a field that is merely
+// `undefined` on the record would still be invisible to `toMatchObject` while
+// having already broken I6 for every session ever written.
+describe('sessions projection — orchestratorForProjectId (D56)', () => {
+  it('leaves the key ABSENT on an ordinary session_created (I6 — absent stays absent)', () => {
+    const state = stateFromLog([[createInput()]]);
+    const record = state.sessions[APP_SESSION_ID]!;
+    expect(Object.keys(record)).not.toContain('orchestratorForProjectId');
+    // The bytes, not just the shape: the name must not appear anywhere in the
+    // serialized projection of a log that contains no orchestrator.
+    expect(sessionsProjection.serialize(state)).not.toContain('orchestratorForProjectId');
+  });
+
+  it('carries an explicit projectId through (the founding spawn)', () => {
+    const state = stateFromLog([
+      [
+        sessionCreated({
+          appSessionId: APP_SESSION_ID,
+          channel: 'sdk',
+          cwd: '/home/user/project',
+          name: 'Orchestrator — project',
+          forkedFrom: null,
+          taskRef: null,
+          orchestratorForProjectId: 'project-1',
+        }),
+      ],
+    ]);
+    expect(state.sessions[APP_SESSION_ID]!.orchestratorForProjectId).toBe('project-1');
+  });
+
+  it('an OLD snapshot predating the field boots and serializes IDENTICALLY', () => {
+    const store = makeStore();
+    store.append([createInput()]);
+    const preWideningState = replayFromEmpty(sessionsProjection, readAllStreamsGrouped(store));
+    const snapshotStore = new MemorySnapshotStore();
+    snapshotStore.save({
+      projectionId: sessionsProjection.id,
+      lastAppliedSeq: { [APP_SESSION_ID]: 1 },
+      state: preWideningState,
+      savedAt: '2026-01-01T00:00:00.000Z',
+    });
+    expect(
+      sessionsProjection.serialize(bootFromSnapshot(sessionsProjection, snapshotStore, store)),
+    ).toBe(sessionsProjection.serialize(preWideningState));
+  });
+
+  it('a session_created carrying a NON-STRING marking is refused whole (I8)', () => {
+    // The payload schema types it `string | undefined`; a hostile log line must
+    // fail the parse and fold to NOTHING, never to a half-built record.
+    const state = stateFromLog([
+      [
+        {
+          stream: APP_SESSION_ID,
+          type: EVENT_TYPES.sessionCreated,
+          payload: {
+            appSessionId: APP_SESSION_ID,
+            channel: 'sdk',
+            cwd: '/p',
+            name: null,
+            forkedFrom: null,
+            taskRef: null,
+            orchestratorForProjectId: 17,
+          },
+        },
+      ],
+    ]);
+    expect(state.sessions[APP_SESSION_ID]).toBeUndefined();
+  });
+});
+
 // D10 custody: default, adoption flip, rename, resync no-op, old-log tolerance.
 describe('sessions projection — custody (D10)', () => {
   it('defaults custody to host when session_created omits it (old logs tolerate)', () => {

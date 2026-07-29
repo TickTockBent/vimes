@@ -159,6 +159,27 @@ render as honest non-link picker rows.
   *(SP8·2 ran: resume is reliable in every scratch scenario tried — the kill
   criterion now guards the VIMES-context integration, not the CLI mechanics.)*
 
+**✅ BUILT + ORCHESTRATOR-VERIFIED 2026-07-29** (machine half; the human
+kill-daemon walk waits for S8·5's surface; deploys with the rest of Phase B).
+Three skeleton calls locked: **lazy maintenance** (no boot respawn — the
+record knows, ensure reconstructs on contact, refounding carries notes),
+**file-based standing notes** (`~/.vimes/orchestrator-notes/<projectId>.md`,
+written by the orchestrator's NATIVE file tools, read into every founding —
+no Phase-B tool surface), **ensure-idempotent** (singleton by construction:
+the handler is synchronous end-to-end, with the D54-reopening condition named
+in a comment). The QUEUE'd `startProcess` options-object conversion landed
+first, behavior-neutral (baseline 2818 untouched, no test edits). Widening:
+`orchestratorForProjectId?` on the session record (presence IS the kind).
+Composers pure + golden (founding: identity, notes contract with D56 stated
+plainly, deterministic board summary, notes verbatim-or-omitted;
+reorientation: interrupted-resume ONLY — a dormant resume has no restart
+story, pinned). cwd spawned VERBATIM off the record — pinned with a SYMLINK
+test (SP8·2). Ensure envelope: already-live (no turn) / resumed / founded
+(+refounded) / spawn-refused / resume-refused + briefingDelivery (both agent
+deviations ratified). Suite 2818 → 2871 (+53). Agent's four sabotages +
+orchestrator's dead-adoption sabotage (2 reds exact, incl. the agent's own
+"dead newest must not shadow resumable older" case), restored byte-identical.
+
 ### S8·4a — Compaction visibility (core + daemon) — `sonnet` *(SP8·1 unprompted finding)*
 - **Scope:** VIMES currently cannot see a compaction happen. Recognize the
   `compact_boundary` record in BOTH ingestion paths (transcript mapper's

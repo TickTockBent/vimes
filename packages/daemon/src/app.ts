@@ -1,7 +1,7 @@
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { readFile, stat } from 'node:fs/promises';
-import { extname, normalize, resolve, sep } from 'node:path';
+import { extname, join, normalize, resolve, sep } from 'node:path';
 import { Hono } from 'hono';
 import { createAdaptorServer } from '@hono/node-server';
 import {
@@ -50,6 +50,7 @@ import { registerFileApi } from './fileApi.js';
 import { registerGitApi } from './gitApi.js';
 import { registerTaskApi } from './taskApi.js';
 import { registerProjectApi } from './projectApi.js';
+import { registerOrchestratorApi } from './orchestratorApi.js';
 import { TaskWriter } from './taskWriter.js';
 import { ProjectWriter } from './projectWriter.js';
 import { TaskDispatcher } from './taskDispatcher.js';
@@ -586,6 +587,35 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     // cwd is not a declarable boundary. This asymmetry is deliberate and is the
     // whole security content of the unit; see `ProjectApiDeps`.
     getConfiguredProjectRoots: () => config.projectRoots,
+  });
+
+  // ─── the standing orchestrator (S8·3, D56) ─────────────────────────────────
+  //
+  // Behind the same auth wall, beside the registry it binds to. ONE endpoint —
+  // ensure — and no boot hook: maintenance is LAZY by decision, so nothing here
+  // runs until somebody asks a project for its orchestrator. See
+  // orchestratorApi.ts's header for why that is the whole of "daemon-maintained".
+  //
+  // `sessionHost` is constructed further down; these thunks only run per request,
+  // the same deferral `registerFileApi` above already relies on.
+  registerOrchestratorApi(app, {
+    readProjects: () => bootFromSnapshot(projectsProjection, snapshotStore, store),
+    readSessions: () => bootFromSnapshot(sessionsProjection, snapshotStore, store),
+    readTasks: () => bootFromSnapshot(tasksProjection, snapshotStore, store),
+    sessionHost: {
+      spawnSession: (options) => sessionHost.spawnSession(options),
+      // The EXISTING resume op, the same instance wsHub drives for a human's own
+      // resume — never a second resume path (the dispatcher's `sessionHost`
+      // composition above draws the same line for its own methods).
+      resumeSession: (appSessionId) => sessionHost.resumeSession(appSessionId),
+      sendMessage: (appSessionId, text) => sessionHost.sendMessage(appSessionId, text),
+    },
+    // Under the SAME `~/.vimes` home the daemon already owns (`config.dataDir` —
+    // the events.db's directory unless `VIMES_DATA_DIR` says otherwise), so the
+    // orchestrator's durable anchor lives beside the log it re-anchors from. The
+    // orchestrator WRITES this file with its own file tools (D56, Phase B: no new
+    // tool surface); the daemon only reads it back into a founding briefing.
+    standingNotesDir: join(config.dataDir, 'orchestrator-notes'),
   });
 
   // ─── the stage-run watchdog (slice 6 step 5b) ──────────────────────────────
