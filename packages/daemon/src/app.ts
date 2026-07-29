@@ -16,6 +16,7 @@ import {
   meterAlert,
   meterSample,
   metersProjection,
+  projectsProjection,
   sessionsProjection,
   tasksProjection,
   SYSTEM_STREAM,
@@ -48,7 +49,9 @@ import { WsHub, type WsHubDeps } from './wsHub.js';
 import { registerFileApi } from './fileApi.js';
 import { registerGitApi } from './gitApi.js';
 import { registerTaskApi } from './taskApi.js';
+import { registerProjectApi } from './projectApi.js';
 import { TaskWriter } from './taskWriter.js';
+import { ProjectWriter } from './projectWriter.js';
 import { TaskDispatcher } from './taskDispatcher.js';
 import { TaskWatchdog } from './taskWatchdog.js';
 import { defaultGitRunner, type GitRunner } from './gitAdapter.js';
@@ -140,6 +143,11 @@ const DAEMON_PROJECTIONS: ReadonlyArray<Projection<unknown>> = [
   metersProjection as Projection<unknown>,
   tasksProjection as Projection<unknown>,
   cacheObservabilityProjection as Projection<unknown>,
+  // S8·1 D42 — the project registry. Registered like its siblings so it is
+  // snapshotted on the same cadence: the writer and the API both read it FRESH
+  // per request through `bootFromSnapshot`, and a projection with no snapshots
+  // would replay the whole log on every one of those reads.
+  projectsProjection as Projection<unknown>,
 ];
 const PROJECTION_BY_ID = new Map<string, Projection<unknown>>(
   DAEMON_PROJECTIONS.map((projection) => [projection.id, projection]),
@@ -514,6 +522,32 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     // request. A task's projectRoot is a durable instruction to spawn a process
     // in a directory, so it is walled by exactly the same allowlist a file read is.
     getAllowedRoots: () => [...config.projectRoots, ...sessionHost.liveSessionCwds()],
+  });
+
+  // ─── the project registry (S8·1, D42) ──────────────────────────────────────
+  //
+  // Behind the same auth wall and before the static catch-all, in the same region
+  // as the other registerXApi calls.
+  //
+  // ⚠ ONE WRITER, exactly as `TaskWriter` is for tasks: this instance is the ONLY
+  // thing in the daemon that writes `project_created` / `project_updated` /
+  // `project_archived`, and any later caller (the picker's own bookkeeping, an
+  // onboarding workflow) takes THIS instance rather than growing a second path.
+  const projectWriter = new ProjectWriter({
+    emit: (events) => router.emit(events),
+    readProjects: () => bootFromSnapshot(projectsProjection, snapshotStore, store),
+    ids,
+  });
+
+  registerProjectApi(app, {
+    projectWriter,
+    readProjects: () => bootFromSnapshot(projectsProjection, snapshotStore, store),
+    // ⚠ **THE STATIC CONFIG ROOTS — NOT the `config.projectRoots ∪
+    // liveSessionCwds()` union every other registerXApi above is handed.** D60:
+    // declaring a project may not widen D21's fence, and a session's transient
+    // cwd is not a declarable boundary. This asymmetry is deliberate and is the
+    // whole security content of the unit; see `ProjectApiDeps`.
+    getConfiguredProjectRoots: () => config.projectRoots,
   });
 
   // ─── the stage-run watchdog (slice 6 step 5b) ──────────────────────────────

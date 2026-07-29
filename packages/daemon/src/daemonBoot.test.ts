@@ -162,9 +162,16 @@ describe('daemon boot — snapshot+tail cold start over a real sqlite file', () 
       const snapshotRows = rawDatabase
         .prepare('SELECT projectionId, savedAt FROM snapshots ORDER BY projectionId')
         .all() as Array<{ projectionId: string; savedAt: string }>;
+      // The INVENTORY of snapshotted projections — one row per entry in
+      // `DAEMON_PROJECTIONS`. It is spelled out rather than derived from the
+      // constant on purpose: adding a projection to the daemon is a change that
+      // should be visible in a diff somebody reads, not one that silently
+      // satisfies its own assertion. `projects` arrived with S8·1 (D42's
+      // registry); the other four predate it.
       expect(snapshotRows.map((row) => row.projectionId)).toEqual([
         'cache-observability',
         'meters',
+        'projects',
         'sessions',
         'tasks',
       ]);

@@ -92,6 +92,13 @@ export {
   type HeadroomGateResult,
 } from './meterDerivations.js';
 export { tasksProjection, type TasksState } from './projections/tasks.js';
+// S8·1 D42 — the project registry: the fold, and `projectForCwd`, which is THE
+// ONLY ATTRIBUTION AUTHORITY (see its note). A consumer that needs "which project
+// owns this cwd?" imports it from here and never re-derives prefix matching.
+// `projectRecordSchema`/`ProjectRecord` arrive via the `export * from
+// './schemas.js'` above, and the four `project_*` constructors/payload schemas via
+// `export * from './events.js'` below; nothing redundant is re-exported here.
+export { projectsProjection, projectForCwd, type ProjectsState } from './projections/projects.js';
 export {
   TASK_STAGES,
   TASK_STAGE_EDGES,

@@ -399,6 +399,46 @@ export const taskRecordSchema = z.object({
 });
 export type TaskRecord = z.infer<typeof taskRecordSchema>;
 
+// ── the PROJECT record (S8·1, D42) ───────────────────────────────────────────
+//
+// D42: a project is a **DECLARED** boundary — a directory the user picked — and
+// never an inferred one (D37 refused inference on Wes's own objection, and this
+// record is the boundary D37 withheld, supplied by a human instead of a
+// heuristic). The registry is EVENT-SOURCED rather than config: projects are
+// created at runtime, carry mutable user metadata, and have a lifecycle
+// (created → optionally initialized → optionally archived), which is event-log
+// state (rule 0.3, I12), not something an operator edits into a file.
+//
+// ⚠ **`root` IS THE BOUNDARY, AND IT IS THE ONE FIELD NOTHING PATCHES.** The
+// directory IS the project (D42), so a different directory is a different
+// project — see `project_updated`'s note in events.ts. Everything a user may
+// change afterwards is metadata.
+//
+// ⚠ **ABSENT STAYS ABSENT for `name`/`description`, NEVER `''`** — the same
+// discipline `taskRecordSchema.title` documents, and here it is load-bearing
+// twice over. D42 says an unnamed project displays its directory BASENAME, and
+// that fallback is a **READ-TIME derivation, never stored**: writing the
+// basename into the record at creation would make "named after its folder" and
+// "deliberately named the same as its folder" the same fact, and a later folder
+// rename would leave a stale name nobody typed. An empty string is a name
+// someone chose; an absent key is a project nobody named.
+//
+// `archived` is REQUIRED and always present: D42's lifecycle is archive, NOT
+// delete — nothing is ever removed from the log, and the projection keeps an
+// archived project's record in the map with the flag raised (history
+// attribution over its cwd prefix has to keep working after archiving). A
+// boolean that is always written is a different shape from the optional
+// metadata above precisely because "not archived" is a fact about every project,
+// where "no description" is the absence of one.
+export const projectRecordSchema = z.object({
+  projectId: z.string(),
+  root: z.string(),
+  name: z.string().optional(),
+  description: z.string().optional(),
+  archived: z.boolean(),
+});
+export type ProjectRecord = z.infer<typeof projectRecordSchema>;
+
 // D26 (2026-07-21, signed off): the authoritative usage source reports
 // PERCENTAGES ONLY. `percent` + `unit` are explicit; `used`/`limit` are optional
 // and present ONLY when a source actually supplies absolutes. A percentage is

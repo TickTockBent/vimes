@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { EventInput } from './schemas.js';
-import { meterRecordSchema, taskRecordSchema } from './schemas.js';
+import { meterRecordSchema, projectRecordSchema, taskRecordSchema } from './schemas.js';
 // The task-event payloads validate against the STATE MACHINE's own vocabulary
 // (stages, refusal reasons, proposer) rather than re-declaring it — one source of
 // record per fact (principle 9). Direction is events.ts → tasks/ → schemas.ts;
@@ -223,6 +223,37 @@ export const EVENT_TYPES = {
   // one is 7b-daemon's job, and `implementing → review` on capture is D53's outcome
   // rule. The constructor below is real; the caller is the next unit.
   completionReported: 'completion_reported',
+  // ── S8·1 D42: the PROJECT REGISTRY vocabulary, on the 'projects' stream ─────
+  //
+  // The first stream in the vocabulary that belongs to no session and no task. A
+  // project is a **DECLARED** boundary — the directory a human picked in the
+  // picker — and D42 makes the registry EVENT-SOURCED rather than config for the
+  // reason rule 0.3/I12 always give: it is created at runtime, it carries mutable
+  // metadata, and it has a lifecycle. Config would have made every one of those a
+  // file edit plus a restart.
+  //
+  // ⚠ **DECLARATION IS FENCED BY `VIMES_PROJECT_ROOTS` (D60).** Declaring a
+  // project does NOT widen the file/git allow-list; the picker may only name
+  // directories inside the STATIC config roots, checked at the ROUTE
+  // (packages/daemon/src/projectApi.ts) before any of these events is written.
+  // The vocabulary itself holds no path policy — it records what was declared.
+  //
+  // ⚠ **NOTHING HERE IS EVER STAMPED ONTO ANOTHER EVENT.** D42's attribution is a
+  // READ-TIME derivation over cwd (`projectForCwd`, projections/projects.ts), so
+  // no session, cost row or task gains a `projectId` field: declaring a project
+  // retroactively scopes its whole history for free, and that only works because
+  // nothing was ever stamped.
+  projectCreated: 'project_created',
+  projectUpdated: 'project_updated',
+  projectArchived: 'project_archived',
+  // ⚠ **RESERVED (rule 0.5) — NOTHING EMITS THIS.** D42 reserves the shape for
+  // the project ONBOARDING HOOK (`design-directions.md` → "Project onboarding"),
+  // whose workflow is deliberately built when it has a consumer and not before.
+  // The posture is `work_order_amended`'s before S7·2b, verbatim: type + payload
+  // schema + constructor land now, the emitter lands with the feature. If you are
+  // grepping for the code path that writes one of these, there isn't one, and
+  // that is the point — see the constructor's own note at the bottom of this file.
+  projectInitialized: 'project_initialized',
 } as const;
 
 export const SYSTEM_STREAM = 'system';
@@ -763,6 +794,74 @@ export type WorkOrderAmendedPayload = z.infer<typeof workOrderAmendedPayloadSche
 // either changed alone. No new payload type is minted either: `SubmitPlanPayload`
 // (from `tasks/workOrder.js`) is the type used everywhere below.
 
+// ——— project-registry payloads (S8·1, D42), all on the 'projects' stream ———
+//
+// project_created — the BIRTH RECORD of a declared boundary. `root` is the
+// directory the user picked, already resolved and allow-list-checked by the route
+// (D60), so what is persisted is what was checked.
+//
+// `name` / `description` are DERIVED from the record's own fields rather than
+// re-typed, so the event and the record can never drift on the shape (the same
+// discipline `taskCreatedPayloadSchema.title` follows); both are already
+// `.optional()` there, so they ride through optional here without a further
+// `.optional()` call.
+//
+// ⚠ **AN UNNAMED PROJECT'S BIRTH RECORD CARRIES NO `name` KEY AT ALL** — not
+// `''`, and not the directory basename. D42's basename fallback is a READ-TIME
+// derivation and is never stored (see `projectRecordSchema`'s note): storing it
+// would make "unnamed" and "named after its folder" the same recorded fact, and
+// would go stale the day the folder is renamed. The writer omits the key rather
+// than sending `undefined`, so an unnamed project's bytes stay minimal (I6).
+export const projectCreatedPayloadSchema = z.object({
+  projectId: z.string(),
+  root: z.string(),
+  name: projectRecordSchema.shape.name,
+  description: projectRecordSchema.shape.description,
+});
+
+// project_updated — the MUTABLE-METADATA PATCH, mirroring
+// `workOrderAmendedPayloadSchema`'s discipline exactly: **present in the payload
+// → REPLACES the record's field; absent → the record's field is left exactly as
+// it was.** An update that renames without touching the description omits the
+// description, and it survives untouched — restating it would be the only
+// alternative, and it would make every rename a full rewrite that silently
+// clobbers whatever a concurrent one just changed.
+//
+// ⚠ **`root` IS NOT PATCHABLE, AND ITS ABSENCE HERE IS THE DESIGN, NOT AN
+// OVERSIGHT.** D42: the directory IS the project boundary, so a different
+// directory is a DIFFERENT PROJECT — one that must be declared (and get its own
+// projectId) rather than smuggled into an existing record's history. Moving a
+// boundary would also silently re-attribute every session and cost row that ever
+// sat under the old prefix, retroactively and with no record of the change.
+// Adding `root` here is a decision somebody has to write down, not a widening.
+export const projectUpdatedPayloadSchema = z.object({
+  projectId: z.string(),
+  name: projectRecordSchema.shape.name,
+  description: projectRecordSchema.shape.description,
+});
+
+// project_archived — the lifecycle's terminal step. **ARCHIVE, NOT DELETE:**
+// nothing is ever removed from an append-only log (I12), and the projection keeps
+// the record in the map with `archived: true` rather than dropping it, because
+// history attribution over the archived root must keep working — a cost row from
+// last month still sits under that directory. Only LIVE projects take part in
+// `projectForCwd`'s longest-prefix match; the record itself never goes away.
+//
+// Carries the projectId and nothing else: the fact is "this project was
+// archived", and every other field is already on the record.
+export const projectArchivedPayloadSchema = z.object({
+  projectId: z.string(),
+});
+
+// project_initialized (S8·1, **RESERVED — see EVENT_TYPES.projectInitialized**).
+// D42 reserves it for the onboarding hook (`design-directions.md` → "Project
+// onboarding"); rule 0.5 says the shape lands now and the workflow lands with its
+// consumer. Deliberately NOT folded by `projections/projects.ts` — a reserved
+// event that quietly changed a record would be a workflow nobody built.
+export const projectInitializedPayloadSchema = z.object({
+  projectId: z.string(),
+});
+
 export const EVENT_PAYLOAD_SCHEMAS = {
   [EVENT_TYPES.sessionCreated]: sessionCreatedPayloadSchema,
   [EVENT_TYPES.livenessChanged]: livenessChangedPayloadSchema,
@@ -813,6 +912,14 @@ export const EVENT_PAYLOAD_SCHEMAS = {
   // payloads ARE these event payloads (D43/D46), not restated shapes.
   [EVENT_TYPES.reviewReported]: reportReviewPayloadSchema,
   [EVENT_TYPES.completionReported]: reportCompletionPayloadSchema,
+  // S8·1 D42 — the project registry. `project_initialized` is registered here
+  // like its siblings even though nothing emits it: a reserved shape that is not
+  // in the payload table is a shape no consumer can validate against, which
+  // defeats the point of reserving it.
+  [EVENT_TYPES.projectCreated]: projectCreatedPayloadSchema,
+  [EVENT_TYPES.projectUpdated]: projectUpdatedPayloadSchema,
+  [EVENT_TYPES.projectArchived]: projectArchivedPayloadSchema,
+  [EVENT_TYPES.projectInitialized]: projectInitializedPayloadSchema,
 } as const;
 
 export type SessionCreatedPayload = z.infer<typeof sessionCreatedPayloadSchema>;
@@ -850,6 +957,10 @@ export type TaskSessionAttachedPayload = z.infer<typeof taskSessionAttachedPaylo
 export type TaskWorktreeCreatedPayload = z.infer<typeof taskWorktreeCreatedPayloadSchema>;
 export type CorrectionQueuedPayload = z.infer<typeof correctionQueuedPayloadSchema>;
 export type CorrectionDeliveredPayload = z.infer<typeof correctionDeliveredPayloadSchema>;
+export type ProjectCreatedPayload = z.infer<typeof projectCreatedPayloadSchema>;
+export type ProjectUpdatedPayload = z.infer<typeof projectUpdatedPayloadSchema>;
+export type ProjectArchivedPayload = z.infer<typeof projectArchivedPayloadSchema>;
+export type ProjectInitializedPayload = z.infer<typeof projectInitializedPayloadSchema>;
 // WorkOrderAmendedPayload is exported alongside `workOrderAmendedPayloadSchema`
 // above, adjacent to its schema rather than grouped down here with the rest —
 // no functional difference, kept next to the RESERVATION note it belongs with.
@@ -900,7 +1011,11 @@ export type DomainEvent =
   | { type: typeof EVENT_TYPES.workOrderAmended; payload: WorkOrderAmendedPayload }
   | { type: typeof EVENT_TYPES.planSubmitted; payload: SubmitPlanPayload }
   | { type: typeof EVENT_TYPES.reviewReported; payload: ReportReviewPayload }
-  | { type: typeof EVENT_TYPES.completionReported; payload: ReportCompletionPayload };
+  | { type: typeof EVENT_TYPES.completionReported; payload: ReportCompletionPayload }
+  | { type: typeof EVENT_TYPES.projectCreated; payload: ProjectCreatedPayload }
+  | { type: typeof EVENT_TYPES.projectUpdated; payload: ProjectUpdatedPayload }
+  | { type: typeof EVENT_TYPES.projectArchived; payload: ProjectArchivedPayload }
+  | { type: typeof EVENT_TYPES.projectInitialized; payload: ProjectInitializedPayload };
 
 // Maps each attention-setting event type to the needsAttention reason it sets.
 const ATTENTION_SETTER_REASON: Readonly<Record<string, AttentionReason>> = {
@@ -1061,6 +1176,38 @@ export function reviewReported(payload: ReportReviewPayload): EventInput {
 // real as of S7·7b-core; only the writer is still missing.
 export function completionReported(payload: ReportCompletionPayload): EventInput {
   return { stream: 'tasks', type: EVENT_TYPES.completionReported, payload };
+}
+
+// ── the project-registry constructors (S8·1, D42) ────────────────────────────
+//
+// All four on the 'projects' stream, literal for the same reason the task and
+// meter constructors use a literal: the vocabulary module stays free-standing (no
+// dependency on a projection). The stream is deliberately its OWN — a project
+// belongs to no session and no task, and `projections/projects.ts` folds only
+// this stream (D34, projections are stream-local).
+//
+// The SOLE WRITER of the first three is `ProjectWriter` (packages/daemon), reached
+// over HTTP by `projectApi.ts`. Nothing else in the tree may emit them.
+export function projectCreated(payload: ProjectCreatedPayload): EventInput {
+  return { stream: 'projects', type: EVENT_TYPES.projectCreated, payload };
+}
+export function projectUpdated(payload: ProjectUpdatedPayload): EventInput {
+  return { stream: 'projects', type: EVENT_TYPES.projectUpdated, payload };
+}
+export function projectArchived(payload: ProjectArchivedPayload): EventInput {
+  return { stream: 'projects', type: EVENT_TYPES.projectArchived, payload };
+}
+// ⚠ **NOTHING EMITS THIS, AND NOTHING FOLDS IT** (rule 0.5 — see
+// EVENT_TYPES.projectInitialized and the payload schema above). D42 reserves
+// `project_initialized` for the project ONBOARDING HOOK, described in
+// `design-directions.md` → "Project onboarding"; that workflow is built when it
+// has a consumer, not before. The constructor is real so the reservation is a
+// shape a future emitter can call rather than a comment — the same posture
+// `dispatch_refused` held from slice 0 to slice 6, and `work_order_amended` held
+// from S7·1 to S7·2b. If a grep for callers of this function comes up empty, that
+// is the expected result.
+export function projectInitialized(payload: ProjectInitializedPayload): EventInput {
+  return { stream: 'projects', type: EVENT_TYPES.projectInitialized, payload };
 }
 
 // The task↔session link (step 4a). On the 'tasks' stream and NOT the session's
