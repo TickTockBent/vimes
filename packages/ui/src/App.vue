@@ -23,6 +23,11 @@ import {
   projectDisplayName,
   resolveProject,
 } from './lib/projectContext.js';
+import {
+  describeEnsureOutcome,
+  sessionToOpenAfterEnsure,
+  type EnsureOutcomeNotice,
+} from './lib/orchestratorEntry.js';
 
 const store = useVimesStore();
 
@@ -212,6 +217,43 @@ function rememberLayout(hashValue: string): void {
 const scopeLabel = computed(() =>
   store.currentProject === null ? null : projectDisplayName(store.currentProject),
 );
+
+// ── the orchestrator door (S8·5, D56) ────────────────────────────────────────
+//
+// The standing per-project orchestrator's own top-level surface: a header
+// button (beside the scope chip, only when a project is scoped) that ENSURES
+// it exists and is live, then opens its stream panel — the SAME route shape
+// (`{ view: 'stream', appSessionId }`) and the same `openSessionPanel` write
+// every other session-opening path in this file uses. Busy-guarded so a
+// double-tap while the ensure is in flight cannot fire a second request.
+const orchestratorBusy = ref(false);
+const orchestratorNotice = ref<EnsureOutcomeNotice | null>(null);
+
+async function openOrchestrator(): Promise<void> {
+  const project = store.currentProject;
+  if (project === null || orchestratorBusy.value) {
+    return;
+  }
+  orchestratorBusy.value = true;
+  orchestratorNotice.value = null;
+  try {
+    const answer = await store.ensureOrchestrator(project.projectId);
+    // Opening comes FIRST: a founded/resumed session that also has something
+    // to say (a rotation, an undelivered briefing) still opens — the notice is
+    // a separate, additive fact, never a gate on getting into the chat.
+    const sessionId = sessionToOpenAfterEnsure(answer.status, answer.body);
+    if (sessionId !== null) {
+      openSessionPanel(panelStack.value.length - 1, sessionId);
+    }
+    orchestratorNotice.value = describeEnsureOutcome(answer.status, answer.body);
+  } finally {
+    orchestratorBusy.value = false;
+  }
+}
+
+function dismissOrchestratorNotice(): void {
+  orchestratorNotice.value = null;
+}
 
 // Focus (D39 #4): the last-interacted panel takes the focus ring. Default is the
 // tail (the freshest panel). A mousedown anywhere in a column sets it; a pop
@@ -513,6 +555,19 @@ function toggleSidebarCollapsed(): void {
       >
         {{ scopeLabel }}
       </a>
+      <!-- The orchestrator door (S8·5, D56): the standing per-project
+           orchestrator's own top-level surface — matches the scope chip's
+           markup/tokens, project-gated the same way. -->
+      <button
+        v-if="store.currentProject !== null"
+        type="button"
+        class="min-w-0 shrink-0 truncate rounded-md border border-line px-2 py-1 text-xs text-ink-dim transition-colors hover:bg-panel-sunken hover:text-ink disabled:opacity-50"
+        :disabled="orchestratorBusy"
+        title="Talk to this project's standing orchestrator"
+        @click="openOrchestrator()"
+      >
+        {{ orchestratorBusy ? 'Opening…' : 'Orchestrator' }}
+      </button>
       <span class="flex-1"></span>
       <!-- usage gauge (unit 3b): the account-usage instrument — binding constraint
            always visible, click to expand every window. Right region so it shows in
@@ -534,6 +589,31 @@ function toggleSidebarCollapsed(): void {
         type="button"
         class="min-h-[44px] min-w-[44px] shrink-0 rounded px-3 font-semibold active:bg-crit/80"
         @click="store.dismissRefusal()"
+      >
+        Dismiss
+      </button>
+    </div>
+    <!-- The orchestrator ensure notice (S8·5): mirrors the refusal strip's
+         dismissible idiom, tone-mapped onto the design system's info/warn
+         tokens — 'warn' matches the solid bg-warn banners above, 'info' uses
+         the lighter accent-tinted surface GitPanel's own info notice uses
+         (border-accent/30 bg-accent/10 text-accent), since a founding is
+         worth noting but is not a problem. -->
+    <div
+      v-if="orchestratorNotice"
+      class="sticky top-0 z-30 flex items-center justify-between gap-3 px-4 py-2 text-sm"
+      :class="
+        orchestratorNotice.tone === 'warn'
+          ? 'bg-warn text-accent-fg'
+          : 'border-b border-accent/30 bg-accent/10 text-accent'
+      "
+    >
+      <span class="truncate">{{ orchestratorNotice.text }}</span>
+      <button
+        type="button"
+        class="min-h-[44px] min-w-[44px] shrink-0 rounded px-3 font-semibold"
+        :class="orchestratorNotice.tone === 'warn' ? 'active:bg-warn/80' : 'active:bg-accent/20'"
+        @click="dismissOrchestratorNotice()"
       >
         Dismiss
       </button>

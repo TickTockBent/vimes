@@ -67,6 +67,21 @@ export interface SessionListPartition<T> {
  * until `minVisible` is met or the rows run out — so the floor always keeps
  * the FRESHEST tail available, never an arbitrary one).
  */
+// D56/S8·5 — the standing orchestrator gets its own top-level door (the
+// header button), so a session-list ROW for it would be a second, unlabeled
+// door to the same conversation. This is the one place the session list reads
+// `orchestratorForProjectId`.
+//
+// ⚠ FAIL OPEN TO VISIBLE. This must never hide a session on a hunch: only an
+// unambiguous, well-typed, non-empty string marking excludes a row. Absent
+// (an ordinary session — the overwhelming common case), `undefined`, `null`,
+// `''`, or any non-string junk on a hand-built/malformed record all read as
+// "not the orchestrator" and the row stays an ordinary, visible session. Both
+// directions are pinned in sessionListPartition.test.ts.
+export function isOrchestratorSession(record: { orchestratorForProjectId?: unknown }): boolean {
+  return typeof record.orchestratorForProjectId === 'string' && record.orchestratorForProjectId.length > 0;
+}
+
 export function partitionSessionsByRecency<T extends { createdAt: string }>(
   rows: readonly T[],
   nowMs: number,

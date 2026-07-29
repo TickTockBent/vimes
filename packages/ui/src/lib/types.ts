@@ -34,6 +34,12 @@ export interface SessionRecord {
   // (mirrors packages/core/src/schemas.ts) so a projection predating the field
   // reads as "nothing queued" via correctionStatus.ts's deriveCorrectionStatus.
   pendingCorrectionAt?: string | null;
+  // D56/S8·3: PRESENCE IS THE KIND — this session IS the standing orchestrator
+  // for that projectId. Optional, mirroring packages/core/src/schemas.ts's
+  // OPTIONAL-only posture: an ordinary session simply has no such key, never
+  // `''`. See lib/sessionListPartition.ts's `isOrchestratorSession` for the
+  // one place this client reads it.
+  orchestratorForProjectId?: string;
 }
 
 export interface EventRecord {
