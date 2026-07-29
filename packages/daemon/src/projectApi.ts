@@ -1,4 +1,5 @@
 import { stat } from 'node:fs/promises';
+import { relative, sep } from 'node:path';
 import type { Context, Hono } from 'hono';
 import { z } from 'zod';
 import type { ProjectRecord, ProjectsState } from '@vimes/core';
@@ -69,7 +70,33 @@ export interface ProjectApiDeps {
 // would not, because archiving frees the root. Both halves are the caller's to
 // reason about, and both need the whole list.
 export interface ListProjectsResponse {
-  projects: ProjectRecord[];
+  projects: ProjectListEntry[];
+  // ⚠ THE CONFIGURED ROOTS, VERBATIM (D21/D60's fence). The picker needs them for
+  // exactly one job: composing the absolute path a "declare this?" form pre-fills
+  // when a human lands on a URL segment that names no declared project (D61's
+  // onboarding door). It is NOT an invitation to build paths client-side and
+  // trust them — every declaration still goes through POST /api/projects, which
+  // re-resolves the root against these same roots server-side.
+  rootsBases: string[];
+}
+
+// A registry record PLUS the read-time path identity D61 gives it. The record on
+// disk is untouched: `pathSegment` is a RESPONSE DECORATION, derived per request
+// from the configured roots, never stored (D42 — the same read-time-derivation
+// discipline that keeps the basename name-fallback out of the birth record).
+export interface ProjectListEntry extends ProjectRecord {
+  // The project root RELATIVE to the configured root containing it — the segment
+  // that appears in the URL (`/infrastructure/johnny/`).
+  //
+  //   • `'infrastructure/johnny'` — the ordinary nested case.
+  //   • `''` — the project IS a configured base (declaring `~/projects` itself is
+  //     legal under D42's nesting). There is no URL for it, so the UI treats `''`
+  //     as reachable via the picker only.
+  //   • `null` — the root sits under NO configured base. Only reachable when the
+  //     fence MOVED after the declaration (an `/etc/vimes/env` edit): the record
+  //     is honest about being unaddressable rather than emitting a segment that
+  //     resolves to nothing.
+  pathSegment: string | null;
 }
 // The SAME `{ project }` shape for create, metadata and archive — the body is the
 // record **as the projection folded it**, so a client reads the operation's real
@@ -140,10 +167,17 @@ export function registerProjectApi(app: Hono, deps: ProjectApiDeps): void {
   // next to their parents (`~/projects` immediately before `~/projects/vimes`),
   // which is exactly how D42's longest-prefix-wins nesting reads on screen.
   app.get('/api/projects', (context) => {
+    const configuredRoots = deps.getConfiguredProjectRoots();
     const response: ListProjectsResponse = {
-      projects: Object.values(deps.readProjects().projects).sort((left, right) =>
-        left.root.localeCompare(right.root),
-      ),
+      projects: Object.values(deps.readProjects().projects)
+        .sort((left, right) => left.root.localeCompare(right.root))
+        // The decoration is applied AFTER the sort, so the ordering stays a
+        // function of the record's own root and cannot drift with the fence.
+        .map((project) => ({
+          ...project,
+          pathSegment: pathSegmentForRoot(project.root, configuredRoots),
+        })),
+      rootsBases: [...configuredRoots],
     };
     return context.json(response);
   });
@@ -326,6 +360,49 @@ export function registerProjectApi(app: Hono, deps: ProjectApiDeps): void {
       return findingResponse(context, error);
     }
   });
+}
+
+// ── the path identity (D61), DERIVED AT READ TIME ────────────────────────────
+//
+// PURE and TOTAL: strings in, string-or-null out, no fs, no clock. It is a
+// PRESENTATION derivation — nothing here decides what a project contains, which
+// stays `projectForCwd`'s job in packages/core (principle 9). Both walk paths, and
+// the reason this is not a second opinion on the same question is that they answer
+// different ones: core asks "does this cwd belong to that project?", this asks
+// "what does this project's root look like from the fence?".
+//
+// The segment-boundary guard IS shared in spirit, though, and for the same reason:
+// a bare `startsWith` would derive `-2/thing` for a root `~/projects-2/thing`
+// under the base `~/projects`. So containment is tested on a separator boundary
+// before `relative()` ever runs.
+//
+// LONGEST MATCHING BASE WINS, mirroring D42's longest-prefix-wins for
+// attribution: with bases `~/projects` and `~/projects/games`, a project at
+// `~/projects/games/tetris` derives `tetris`, not `games/tetris`.
+//
+// ⚠ MULTI-ROOT COLLISION IS NOT SOLVED HERE, deliberately. With two bases, two
+// different projects can derive the SAME segment (`~/a/foo` and `~/b/foo` both
+// → `foo`) and the URL becomes ambiguous. VIMES runs one root today
+// (`VIMES_PROJECT_ROOTS=~/projects`, D21), so the collision cannot occur; naming
+// it here so the day a second root is configured, this is where the answer goes
+// (a base-qualified segment, or a refusal to address the loser) rather than being
+// rediscovered from a mysteriously wrong picker.
+export function pathSegmentForRoot(root: string, configuredRoots: readonly string[]): string | null {
+  let longestContainingBase: string | null = null;
+  for (const base of configuredRoots) {
+    if (root !== base && !root.startsWith(base + sep)) {
+      continue;
+    }
+    if (longestContainingBase === null || base.length > longestContainingBase.length) {
+      longestContainingBase = base;
+    }
+  }
+  if (longestContainingBase === null) {
+    return null;
+  }
+  // `''` when the project IS the base — the honest answer, and the one the UI
+  // reads as "picker only, no URL" (see ProjectListEntry).
+  return relative(longestContainingBase, root);
 }
 
 // ── boundary helpers ─────────────────────────────────────────────────────────

@@ -47,6 +47,7 @@ const STAGE_EDGES_FIXTURE: Record<string, readonly string[]> = {
 
 const TASK_ONE = 'aaaaaaaa-1111-4000-8000-000000000001';
 const TASK_TWO = 'bbbbbbbb-2222-4000-8000-000000000002';
+const TASK_THREE = 'eeeeeeee-4444-4000-8000-000000000004';
 const SESSION_ONE = 'cccccccc-3333-4000-8000-000000000003';
 
 function taskRecord(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -267,6 +268,9 @@ describe('deriveTaskCard — labelling, and never a fabricated field', () => {
       }) as never,
     );
     expect(card.projectName).toBe('vimes');
+    // S8·2 — the FULL root rides alongside the basename: the basename is what a
+    // card renders, the root is what project scoping matches on.
+    expect(card.projectRoot).toBe('/home/user/projects/vimes');
     expect(card.createdBy).toBe('orchestrator');
     expect(card.isolatedInWorktree).toBe(true);
     expect(card.manualReviewRequired).toBe(true);
@@ -282,6 +286,7 @@ describe('deriveTaskCard — labelling, and never a fabricated field', () => {
     // render as absence — never as "unknown", never as a plausible default.
     const card = deriveTaskCard({ taskId: TASK_ONE });
     expect(card.projectName).toBeNull();
+    expect(card.projectRoot).toBeNull();
     expect(card.createdBy).toBeNull();
     expect(card.latestSession).toBeNull();
     expect(card.isolatedInWorktree).toBe(false);
@@ -314,6 +319,57 @@ describe('deriveTaskCard — labelling, and never a fabricated field', () => {
       {},
     );
     expect(card.latestSession).toEqual({ appSessionId: SESSION_ONE, stage: 'review', liveness: null });
+  });
+});
+
+describe('groupTasksForBoard — the PROJECT SCOPE (S8·2, D42)', () => {
+  const VIMES_ROOT = '/home/w/projects/infrastructure/vimes';
+  const scopedBody = {
+    tasks: {
+      [TASK_ONE]: taskRecord({ taskId: TASK_ONE, stage: 'backlog', projectRoot: VIMES_ROOT }),
+      [TASK_TWO]: taskRecord({
+        taskId: TASK_TWO,
+        stage: 'backlog',
+        projectRoot: `${VIMES_ROOT}/packages/ui`,
+      }),
+      [TASK_THREE]: taskRecord({
+        taskId: TASK_THREE,
+        stage: 'backlog',
+        // ⚠ THE TRAP, one level up: a SIBLING project whose root shares a string
+        // prefix with vimes. A bare startsWith would put this card on vimes's
+        // board, which is exactly what the boundary guard exists to prevent.
+        projectRoot: `${VIMES_ROOT}-2`,
+      }),
+    },
+  };
+
+  it('keeps the project root and everything beneath it, and NOTHING from a sibling', () => {
+    const scoped = groupTasksForBoard(scopedBody, {}, VIMES_ROOT);
+    const taskIds = scoped.groups.flatMap((group) => group.tasks.map((card) => card.taskId));
+    expect(taskIds).toContain(TASK_ONE);
+    expect(taskIds).toContain(TASK_TWO);
+    expect(taskIds).not.toContain(TASK_THREE);
+  });
+
+  it('scopes the COUNTS too — a header over cards nobody can see is a meter that lies', () => {
+    const scoped = groupTasksForBoard(scopedBody, {}, VIMES_ROOT);
+    expect(scoped.totalTasks).toBe(2);
+    expect(scoped.flow.find((group) => group.stage === 'backlog')!.count).toBe(2);
+  });
+
+  it('with NO scope, the board is byte-for-byte what it always was', () => {
+    // The unscoped path must stay untouched: every task, including the sibling.
+    const unscoped = groupTasksForBoard(scopedBody, {});
+    expect(unscoped.totalTasks).toBe(3);
+    expect(groupTasksForBoard(scopedBody, {}, null)).toEqual(unscoped);
+  });
+
+  it('EXCLUDES a task with no usable projectRoot from a scoped board, keeps it unscoped', () => {
+    // A boundary is proved, never assumed (D42) — a task that cannot be shown to
+    // belong here does not appear here. Unscoped, it is still a task that exists.
+    const body = { tasks: { [TASK_ONE]: { taskId: TASK_ONE, stage: 'backlog' } } };
+    expect(groupTasksForBoard(body, {}, VIMES_ROOT).totalTasks).toBe(0);
+    expect(groupTasksForBoard(body, {}).totalTasks).toBe(1);
   });
 });
 

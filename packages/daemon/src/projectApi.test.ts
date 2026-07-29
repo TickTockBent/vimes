@@ -2,7 +2,7 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { Hono } from 'hono';
 import {
   CountingIdSource,
@@ -17,6 +17,7 @@ import {
 } from '@vimes/core';
 import { createAccessAuthMiddleware, type AccessVerifier } from './auth.js';
 import {
+  pathSegmentForRoot,
   registerProjectApi,
   type ListProjectsResponse,
   type ProjectResponse,
@@ -419,6 +420,74 @@ describe('GET /api/projects — the registry', () => {
     const harness = buildApiHarness();
     const response = await harness.request('/api/projects', { headers: authHeaders(null) });
     expect(response.status).toBe(401);
+  });
+
+  // ─── S8·2 — the D61 path identity, decorated at read time ─────────────────
+  it('DECORATES each record with pathSegment and carries the roots verbatim', async () => {
+    const harness = buildApiHarness();
+    const nested = makeNestedDirectory(harness, 'johnny-');
+    await declareProjectThrough(harness, { root: nested });
+    // The base itself is a legal declaration (D42 nesting) and has NO segment.
+    await declareProjectThrough(harness);
+
+    const response = await harness.request('/api/projects', { headers: authHeaders() });
+    const body = (await response.json()) as ListProjectsResponse;
+
+    // ⚠ rootsBases is the CONFIGURED fence, not a derivation of the records: the
+    // picker composes a declare-prefill path from it for a segment that names no
+    // project at all, so it must be present even with an empty registry.
+    expect(body.rootsBases).toEqual([harness.configuredRoot]);
+
+    const segmentByRoot = new Map(body.projects.map((project) => [project.root, project.pathSegment]));
+    expect(segmentByRoot.get(nested)).toBe(relative(harness.configuredRoot, nested));
+    expect(segmentByRoot.get(harness.configuredRoot)).toBe('');
+    // Read-time only: the DECORATION never reaches the log. A birth record that
+    // carried a pathSegment would freeze the fence into the record and go stale
+    // the moment VIMES_PROJECT_ROOTS changed.
+    for (const event of harness.projectEvents()) {
+      expect('pathSegment' in (event.payload as Record<string, unknown>)).toBe(false);
+    }
+  });
+
+  it('carries rootsBases even when nothing has been declared', async () => {
+    const harness = buildApiHarness();
+    const body = (await (
+      await harness.request('/api/projects', { headers: authHeaders() })
+    ).json()) as ListProjectsResponse;
+    expect(body.projects).toEqual([]);
+    expect(body.rootsBases).toEqual([harness.configuredRoot]);
+  });
+});
+
+describe('pathSegmentForRoot — the D61 path identity (pure)', () => {
+  it('derives the relative segment, and EMPTY for the base itself', () => {
+    expect(pathSegmentForRoot('/home/w/projects/infrastructure/johnny', ['/home/w/projects'])).toBe(
+      join('infrastructure', 'johnny'),
+    );
+    expect(pathSegmentForRoot('/home/w/projects', ['/home/w/projects'])).toBe('');
+  });
+
+  it('is SEGMENT-BOUNDARY AWARE: a sibling of the base is not inside it', () => {
+    // The same mistake `isWithinProjectRoot` guards in core: a bare startsWith
+    // would derive '-2/thing' here, an addressable-looking segment for a project
+    // that is not under the fence at all.
+    expect(pathSegmentForRoot('/home/w/projects-2/thing', ['/home/w/projects'])).toBeNull();
+  });
+
+  it('picks the LONGEST containing base (D42s longest-prefix-wins, applied to the fence)', () => {
+    expect(
+      pathSegmentForRoot('/home/w/projects/games/tetris', [
+        '/home/w/projects',
+        '/home/w/projects/games',
+      ]),
+    ).toBe('tetris');
+  });
+
+  it('is NULL when no configured base contains the root — the fence moved', () => {
+    // Honest rather than plausible: emitting an absolute path as a "segment" would
+    // build a URL that resolves to nothing.
+    expect(pathSegmentForRoot('/srv/elsewhere/thing', ['/home/w/projects'])).toBeNull();
+    expect(pathSegmentForRoot('/home/w/projects/thing', [])).toBeNull();
   });
 });
 

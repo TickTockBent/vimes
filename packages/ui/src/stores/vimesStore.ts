@@ -8,6 +8,7 @@ import type { CacheObservabilityRecord } from '../lib/cacheBadge.js';
 import type { DerivedUsageBody, UsageRefreshOutcome, UsageSnapshot } from '../lib/meterDisplay.js';
 import type { CostLedgerBody } from '../lib/costDisplay.js';
 import type { TaskApiAnswer } from '../lib/taskBoard.js';
+import type { ProjectView } from '../lib/projectContext.js';
 import type { WorkOrderBody, WorkOrderFieldDescriptor } from '../lib/workOrderForm.js';
 import type { AmendmentBody } from '../lib/correctionDoors.js';
 import { sessionToSubscribeAfterDispatch, sessionToSubscribeAfterTransition } from '../lib/dispatchFollow.js';
@@ -94,6 +95,17 @@ export const useVimesStore = defineStore('vimes', () => {
   // from GET /api/files/roots. Null until the first fetch lands — views prefer
   // this over deriveRoots(sessions) once populated (see treeNode.ts effectiveRoots).
   const roots = ref<string[] | null>(null);
+  // ── the project registry (S8·2) — D42's declared boundaries, as served ──────
+  // The decorated list from GET /api/projects (archived records included — the
+  // flag is on the record and clients filter, per the route's own contract), the
+  // configured roots the picker composes a declare-prefill from, and whether we
+  // have looked at all.
+  const projects = ref<ProjectView[]>([]);
+  const rootsBases = ref<string[]>([]);
+  const projectsLoaded = ref(false);
+  // The last registry read FAILED (transport, a non-2xx, or a body that is not a
+  // registry). Distinct from "not loaded yet" so the picker can say which.
+  const projectsUnreachable = ref(false);
   const connectionStatus = ref<ConnectionStatus>('connecting');
   const catchingUp = ref(false);
   const lastRefusal = ref<{ refusedOp: string; reason: string } | null>(null);
@@ -274,6 +286,90 @@ export const useVimesStore = defineStore('vimes', () => {
     // Same reasoning for the usage meters (slice 5 step 3): they ride the
     // sessions refresh cadence rather than owning a polling loop of their own.
     void fetchDerivedUsage();
+  }
+
+  // ── the project registry (S8·2, D42/D61) ──────────────────────────────────
+  //
+  // GET /api/projects, held as the decorated LIST the daemon serves (each entry
+  // carries its read-time `pathSegment`). Plain REST-into-ref, same-origin —
+  // the fetchTerminals idiom, with ONE difference that matters: this fetch gates
+  // the app's root surface, so a failure cannot be swallowed silently the way a
+  // failed terminal list can.
+  //
+  // THREE STATES, DELIBERATELY DISTINCT (pillar 4 — an empty state is a claim):
+  //   • `projectsLoaded` false, `projectsUnreachable` false → we have not looked;
+  //   • `projectsUnreachable` true → we looked and could not reach the daemon,
+  //     which is NOT "you have no projects";
+  //   • `projectsLoaded` true → the array is the registry, empty or not.
+  async function fetchProjects(): Promise<void> {
+    try {
+      const response = await fetch('/api/projects', { credentials: 'same-origin' });
+      if (!response.ok) {
+        projectsUnreachable.value = true;
+        return;
+      }
+      const parsed = (await response.json()) as {
+        projects?: unknown;
+        rootsBases?: unknown;
+      };
+      if (!Array.isArray(parsed.projects)) {
+        // A 200 whose body is not a registry is a failure to READ the registry,
+        // not an empty one.
+        projectsUnreachable.value = true;
+        return;
+      }
+      projects.value = parsed.projects as ProjectView[];
+      projectsLoaded.value = true;
+      projectsUnreachable.value = false;
+      if (Array.isArray(parsed.rootsBases)) {
+        rootsBases.value = parsed.rootsBases.filter(
+          (base): base is string => typeof base === 'string',
+        );
+      }
+    } catch {
+      // The previous list (if any) stays; nothing is fabricated, and the picker
+      // offers a retry rather than claiming the registry is empty.
+      projectsUnreachable.value = true;
+    }
+  }
+
+  // POST /api/projects — declare a boundary (D42). The daemon's status and body
+  // are returned VERBATIM, exactly as `postJsonApi` does for the task writes and
+  // for the same reason (rule 0.3): a 403 is the D60 fence speaking, a 409 names
+  // the project that already owns the directory, and the store must not flatten
+  // either into a boolean.
+  //
+  // On a successful declaration the registry is REFETCHED rather than patched
+  // locally — the record the picker renders is the one the projection folded, not
+  // an echo of what was asked for.
+  async function declareProject(input: {
+    root: string;
+    name?: string;
+    description?: string;
+  }): Promise<TaskApiAnswer> {
+    const answer = await postJsonApi('/api/projects', {
+      root: input.root,
+      // Absent stays absent all the way to the birth record — a blank box must
+      // not become a project named with an empty string (the route refuses `''`
+      // anyway; this is the client half of the same discipline).
+      ...(input.name === undefined ? {} : { name: input.name }),
+      ...(input.description === undefined ? {} : { description: input.description }),
+    });
+    if (answer.status === 200) {
+      await fetchProjects();
+    }
+    return answer;
+  }
+
+  // The project this tab is open on, resolved from `location.pathname` by App.vue
+  // once the registry has landed (D61). Null means "no project context" — the
+  // picker, or a hash view reached without one — and every scoped surface reads
+  // THIS ref rather than re-deriving the project from the URL, so there is one
+  // answer to "which project am I in" and one place it is set (principle 9).
+  const currentProject = ref<ProjectView | null>(null);
+
+  function setCurrentProject(project: ProjectView | null): void {
+    currentProject.value = project;
   }
 
   // Refreshed on load and after a spawn/discover — the only ops that can widen
@@ -494,8 +590,12 @@ export const useVimesStore = defineStore('vimes', () => {
     }
   }
 
-  // The three task WRITES. All three are plain same-origin POSTs that return the
-  // daemon's STATUS AND BODY VERBATIM to the caller — they classify nothing.
+  // THE ONE JSON POST every write in this store goes through (the three task
+  // writes, and S8·2's project declaration). Plain same-origin POSTs that return
+  // the daemon's STATUS AND BODY VERBATIM to the caller — they classify nothing.
+  // Renamed from `postTaskApi` when the project registry became its second
+  // caller: nothing about it was ever task-specific, and a task-named helper
+  // posting to /api/projects would read as a mistake.
   //
   // ⚠ THAT IS THE WHOLE POINT (rule 0.3, principle 10). The daemon's answer is
   // the answer: a 409 carries an enumerated rejection the state machine made and
@@ -503,7 +603,7 @@ export const useVimesStore = defineStore('vimes', () => {
   // must not update `tasksProjectionBody` from a response — the PROJECTION is the
   // record, and the board only moves when the projection says it moved. There is
   // no optimistic path here to accidentally take.
-  async function postTaskApi(path: string, requestBody: unknown): Promise<TaskApiAnswer> {
+  async function postJsonApi(path: string, requestBody: unknown): Promise<TaskApiAnswer> {
     try {
       const response = await fetch(path, {
         method: 'POST',
@@ -538,7 +638,7 @@ export const useVimesStore = defineStore('vimes', () => {
   function createTask(
     input: { projectRoot: string; title?: string } & WorkOrderBody,
   ): Promise<TaskApiAnswer> {
-    return postTaskApi('/api/tasks', {
+    return postJsonApi('/api/tasks', {
       projectRoot: input.projectRoot,
       createdBy: 'human',
       ...(input.title === undefined ? {} : { title: input.title }),
@@ -552,7 +652,7 @@ export const useVimesStore = defineStore('vimes', () => {
   }
 
   // S7·8 — amend the work order (D46's amend door). Mirrors `createTask`'s
-  // plain fetch/parse/answer idiom exactly: `postTaskApi` returns the daemon's
+  // plain fetch/parse/answer idiom exactly: `postJsonApi` returns the daemon's
   // status and body VERBATIM, and this adds nothing on top.
   //
   // ⚠ NO SUBSCRIBE GLUE, UNLIKE `proposeTaskTransition`/`dispatchTask` BELOW.
@@ -563,7 +663,7 @@ export const useVimesStore = defineStore('vimes', () => {
   // revision is a later, separate, explicit `dispatchTask` call) — so there is
   // nothing here to subscribe to, and nothing schedules a sessions refresh.
   function amendTask(taskId: string, body: AmendmentBody): Promise<TaskApiAnswer> {
-    return postTaskApi(`/api/tasks/${encodeURIComponent(taskId)}/amendments`, body);
+    return postJsonApi(`/api/tasks/${encodeURIComponent(taskId)}/amendments`, body);
   }
 
   // PROPOSE a transition. The name is the contract: this does not move anything.
@@ -582,7 +682,7 @@ export const useVimesStore = defineStore('vimes', () => {
   // it. The returned `TaskApiAnswer` is UNCHANGED — this adds a side effect,
   // it does not reinterpret what the caller renders.
   async function proposeTaskTransition(taskId: string, toStage: string): Promise<TaskApiAnswer> {
-    const answer = await postTaskApi(`/api/tasks/${encodeURIComponent(taskId)}/transitions`, {
+    const answer = await postJsonApi(`/api/tasks/${encodeURIComponent(taskId)}/transitions`, {
       toStage,
       proposedBy: 'human',
     });
@@ -605,7 +705,7 @@ export const useVimesStore = defineStore('vimes', () => {
   // this glue only acts on it. The returned `TaskApiAnswer` is UNCHANGED —
   // this adds a side effect, it does not reinterpret what the caller renders.
   async function dispatchTask(taskId: string): Promise<TaskApiAnswer> {
-    const answer = await postTaskApi(`/api/tasks/${encodeURIComponent(taskId)}/dispatch`, {});
+    const answer = await postJsonApi(`/api/tasks/${encodeURIComponent(taskId)}/dispatch`, {});
     const spawnedSessionId = sessionToSubscribeAfterDispatch(answer.status, answer.body);
     if (spawnedSessionId !== null) {
       subscribe(spawnedSessionId);
@@ -1371,6 +1471,15 @@ export const useVimesStore = defineStore('vimes', () => {
   return {
     sessions,
     roots,
+    // The project registry + the resolved context (S8·2, D42/D61)
+    projects,
+    rootsBases,
+    projectsLoaded,
+    projectsUnreachable,
+    currentProject,
+    setCurrentProject,
+    fetchProjects,
+    declareProject,
     connectionStatus,
     catchingUp,
     lastRefusal,

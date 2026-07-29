@@ -27,6 +27,7 @@ import {
   type MeterTone,
   type RefreshNoticeTone,
 } from '../lib/meterDisplay.js';
+import { cwdWithinProject, projectDisplayName } from '../lib/projectContext.js';
 
 // `expandMeters` is how the `/#/meters` route is claimed (slice 5 step 4c): the
 // threshold-notification push deep-links there, and the user who tapped a usage
@@ -48,7 +49,12 @@ const emit = defineEmits<{
 const store = useVimesStore();
 
 const LAST_CWD_KEY = 'vimes:lastCwd';
-const cwd = ref(localStorage.getItem(LAST_CWD_KEY) ?? '');
+// ⚠ THE PROJECT ROOT WINS OVER THE REMEMBERED CWD when this tab is scoped to a
+// project (S8·2). Inside johnny, "new session" means "a session in johnny" — the
+// last cwd anyone typed anywhere is exactly the wrong default there, and it is
+// how a session lands outside the project whose list it then fails to appear in.
+// Unscoped, the remembered cwd is unchanged.
+const cwd = ref(store.currentProject?.root ?? localStorage.getItem(LAST_CWD_KEY) ?? '');
 const channel = ref<'sdk' | 'pty'>('sdk');
 const spawning = ref(false);
 
@@ -82,13 +88,30 @@ function toggleOlderSessions(): void {
   showOlderSessions.value = !showOlderSessions.value;
 }
 
+// ⚠ SCOPED BY CWD, NOT BY A STORED PROJECT ID (D42). Attribution is a READ-TIME
+// derivation over each session's own `cwd`, which is why declaring a project
+// retroactively scopes every session that ever ran under it — including ones from
+// before the project existed, and ones VIMES never spawned. `cwdWithinProject` is
+// the browser mirror of core's `projectForCwd`; see lib/projectContext.ts for the
+// lockstep rule that keeps the two honest.
+//
+// No project context → NO FILTER, byte-identical to before this unit.
+const scopedSessions = computed<SessionRecord[]>(() => {
+  const projectRoot = store.currentProject?.root ?? null;
+  const allSessions = Object.values(store.sessions);
+  if (projectRoot === null) {
+    return allSessions;
+  }
+  return allSessions.filter((session) => cwdWithinProject(session.cwd, projectRoot));
+});
+
 // Clock-free: session identity + sort only. The cache badge (which ticks its age
 // live) is a SEPARATE clock-dependent map below, so a one-second age tick never
 // re-sorts the whole list. Kept as raw SessionRecords (not yet derived to
 // SessionRow) because the Q2 age-out partition needs `createdAt`, which
 // SessionRow does not carry — deriving happens AFTER partitioning, below.
 const sortedSessions = computed<SessionRecord[]>(() =>
-  Object.values(store.sessions)
+  scopedSessions.value
     .slice()
     .sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0)),
 );
@@ -393,7 +416,18 @@ onUnmounted(() => {
 <template>
   <div class="mx-auto flex h-full max-w-lg flex-col gap-4 overflow-y-auto overscroll-contain p-4">
     <div class="flex items-center justify-between gap-2">
-      <h1 class="text-lg font-semibold uppercase tracking-[0.08em] text-ink">Sessions</h1>
+      <h1 class="flex min-w-0 items-baseline gap-2 text-lg font-semibold uppercase tracking-[0.08em] text-ink">
+        Sessions
+        <!-- The scope indicator (S8·2): this list is FILTERED, and a filtered list
+             that does not say so reads as an empty one. Rendered only when a
+             project context exists — unscoped, the heading is unchanged. -->
+        <span
+          v-if="store.currentProject"
+          class="min-w-0 truncate text-xs font-medium normal-case tracking-normal text-ink-dim"
+        >
+          in {{ projectDisplayName(store.currentProject) }}
+        </span>
+      </h1>
       <div class="flex flex-wrap items-center gap-x-2 gap-y-2">
         <button
           type="button"
