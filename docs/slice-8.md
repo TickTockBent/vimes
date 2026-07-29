@@ -71,14 +71,26 @@ thing — landing the author verb on a disposable session would rebuild it.
   needs identity semantics the event log can't give (rename/merge of roots) →
   halt, decision record.
 
-### S8·2 — Picker + the global project pointer (UI) — `sonnet` *(UI-only)*
-- **Scope:** the project picker (list + New Project) and a client-side global
-  pointer (selected project) that the BOARD and SESSION-SPAWN surfaces adopt
-  now; sessions list / cost / files / git / search adopt incrementally later
-  (each adoption a small follow-up unit, not this one).
-- **Assertions:** pointer derivation logic in `lib/` tested; `.vue` manual.
-- **Exit:** Wes picks a project on the phone; board + new-session default to
-  it. **Kill:** scoping the board breaks the global view Wes still needs →
+### S8·2 — Picker + project-rooted URLs (UI + one daemon route) — `sonnet`/`opus` *(D61 — restart on deploy, NOT UI-only)*
+- **Scope (widened by D61, 2026-07-29):**
+  - **Daemon:** the SPA fallback route — any non-`/api`, non-asset GET serves
+    `index.html` (Vite assets are absolute; auth wall unchanged).
+  - **UI:** pathname → project resolution against the declared registry
+    (bare `/` or unknown → picker; declared → root the panel stack there;
+    within-roots-but-undeclared → picker with "declare this?" pre-filled);
+    the picker itself (list + New Project, POST /api/projects); per-project
+    **last-layout memory in localStorage** (no hash → restore; hash present →
+    deep link wins); the BOARD and SESSION LIST scoped through `projectForCwd`
+    (tasks by projectRoot, sessions by cwd — Wes's per-tab "separate task
+    trees and session lists"); session-spawn defaults to the project root.
+  - Cost / files / git / search adopt the scope incrementally later (small
+    follow-up units, not this one).
+- **Assertions:** path↔project resolution + last-layout keying + scope
+  filtering logic in `lib/` tested; `.vue` manual; daemon fallback route
+  tested (api/assets not shadowed; deep paths serve index).
+- **Exit:** Wes opens two tabs on two projects from the phone; each shows its
+  own board + session list; a pasted session deep-link lands scoped.
+- **Kill:** scoping the board breaks the global view Wes still needs →
   design a both-views answer before proceeding.
 
 ## Phase B — the standing orchestrator (D56)

@@ -2115,3 +2115,39 @@ directories inside it (validated against the STATIC config roots, not the live
 session-cwd union — a session's transient cwd is not a declarable boundary).
 Widening the fence remains a separate, deliberate act (`/etc/vimes/env` edit +
 restart), never a side effect of clicking in a picker.
+
+## D61 — URL shape: the PATH carries the project, the HASH carries the view; localStorage carries last-layout — DECIDED 2026-07-29
+
+*(Wes + Fable, during S8·2 design. This REVISES one consequential detail of D42
+— "the hash gains a project segment" — which is why it is a new entry rather
+than an edit: the hash does NOT gain a project segment; the path does.)*
+
+**The shape:**
+- `vimes.wshoffner.dev/` → the project picker (D42's landing).
+- `vimes.wshoffner.dev/infrastructure/johnny/` → the johnny project, restored
+  to its last layout (per-project panel-stack memory in localStorage).
+- `vimes.wshoffner.dev/infrastructure/johnny/#/session/<id>` → a deep link
+  inside that project's scope; a present hash overrides the remembered layout.
+- One tab = one project, visible in the URL bar; history and bookmarks work.
+
+**Identity:** the path segment is the project root RELATIVE TO
+`VIMES_PROJECT_ROOTS` — well-defined because D60 constrains declaration within
+the roots; nested projects nest naturally in the URL.
+
+**Why path over the alternatives considered:** a `?folder=` query param
+(code-server's shape) exists because code-server could not own its URL space —
+it is verbose and leaks absolute filesystem paths into shareable URLs; a
+hash-only segment crams project and view stack into one namespace. The path
+shape subsumes the `?folder=` affordance Wes actually valued: hitting a
+project URL directly IS bypassing the picker.
+
+**Resolution rules:** pathname resolved against the DECLARED registry (D42 —
+never inferred). Unknown path or bare `/` → picker. A path inside the roots
+but NOT yet declared → picker with "declare this?" pre-filled (the URL as an
+onboarding door). The view stack machinery (buildHash, panel stack) is
+untouched — it just roots per project.
+
+**Cost accepted:** the daemon grows a SPA fallback route (any non-/api,
+non-asset GET serves index.html — Vite assets are absolute so nothing breaks
+under a prefix), which makes S8·2 a daemon-touching unit (restart on deploy),
+no longer UI-only.
