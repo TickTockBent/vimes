@@ -276,6 +276,33 @@ describe('deriveTaskCard — labelling, and never a fabricated field', () => {
     expect(card.manualReviewRequired).toBe(true);
   });
 
+  // ── S8·6: the provenance chip, both directions ──────────────────────────────
+  //
+  // The Gate-2 pivot criterion (how often authored work-orders need a human
+  // rewrite) is unanswerable from a board that renders authored and hand-made
+  // cards identically. These pin the derivation; the chip's markup reads it.
+  it('marks a task the ORCHESTRATOR authored', () => {
+    expect(deriveTaskCard(taskRecord({ createdBy: 'orchestrator' }) as never).authoredByOrchestrator).toBe(true);
+  });
+
+  it.each([
+    ['human', 'human'],
+    ['a value nobody has minted', 'dispatcher'],
+    ['the empty string', ''],
+    ['a near-miss with different case', 'Orchestrator'],
+    ['a non-string', 42],
+    ['an object', { name: 'orchestrator' }],
+    ['null', null],
+  ])('renders NO chip for %s — hand-made is the unmarked default', (_label, createdBy) => {
+    expect(deriveTaskCard(taskRecord({ createdBy }) as never).authoredByOrchestrator).toBe(false);
+  });
+
+  it('renders NO chip when the record carries no createdBy at all', () => {
+    // ⚠ THE FAIL-TO-NO-CHIP DIRECTION. A chip claiming the orchestrator wrote
+    // something it did not would corrupt the measurement the chip exists to make.
+    expect(deriveTaskCard({ taskId: TASK_ONE }).authoredByOrchestrator).toBe(false);
+  });
+
   it('shows NO worktree marker for a shared-dir task — a badge nobody asked for is noise', () => {
     const card = deriveTaskCard(taskRecord({ isolation: 'shared-dir' }) as never);
     expect(card.isolatedInWorktree).toBe(false);

@@ -354,6 +354,34 @@ reddened, orchestratorEntry's stayed green; restored byte-identical, re-green.
 - **Kill:** exposure can't be granted without weakening D50's dispatched
   clamps or forcing one exposure mechanism to serve two doctrines → halt.
 
+**✅ BUILT + ORCHESTRATOR-VERIFIED 2026-08-04** (human exit — the trial-opening
+walk — pending deploy). **Kill criterion NOT triggered, with the argument on
+the record:** the grant is the MOUNT (`mcpServers`, D52-proven orthogonal to
+the `tools` clamp); an orchestrator sets no clamp keys; D65's per-family
+servers keep the two doctrines structurally separate — pinned both directions
+(every dispatched stage sees no `vimes_board`; the orchestrator sees no report
+tools). Core: `createTaskToolPayloadSchema` strict-rejects (alien key = named
+in-run error, zero events), doctrine in the schema (title/scope/criteria/kill
+all required); founding gains "Your tools today" (exact wire name
+`mcp__vimes_board__create_task`, nothing-else-granted, harness-tools-are-
+private-scratch — the walk-2 finding answered) + the authoring doctrine
+(independently-checkable criteria, real kill conditions, promotion-is-Wes's).
+Daemon: `createTaskTool.ts` (I7 by construction — closure holds ONLY
+`createTask`; forced backlog/orchestrator/worktree/fresh-root; pinned acks
+naming the minted taskId; zod v3/v4 two-way drift bind); spec contract widened
+additively (`acknowledgement?` handler return, `server?` — absent =
+byte-identical vimes_report mount); **footing derived at `startProcess` from
+the session RECORD, not the ensure call sites** (agent-caught leak, ratified:
+`sendMessage` auto-resumes dormant sessions and every SDK turn ends dormant,
+so call-site threading would silently strip tools+'auto' on the first typed
+turn — the record is the entity, D56's own framing); D58 lands as
+`permissionMode ?? 'auto'` (explicit caller wins). UI: provenance chip,
+fails to no-chip. Suite 3023 → 3104 (+81). Agent's five sabotages +
+orchestrator's forced-provenance sabotage (exactly the 3 measuring tests
+reddened), all restored byte-identical. Noted follow-up (Wes's call): no
+length caps on the model door's payload text (the human door has
+MAX_WORK_ORDER_TEXT) — flagged, not built, outside the WO field set.
+
 ### ══ GATE 2 TRIAL ══ (runs AFTER S8·6, on real work — the pivot criterion)
 ~10 real tasks authored through the orchestrator. If authored work-orders need
 substantial human rewrite MORE OFTEN THAN NOT → **stop expanding verbs; fix

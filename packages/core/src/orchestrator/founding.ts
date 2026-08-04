@@ -150,6 +150,59 @@ const FOUNDING_OPENING =
 
 You do not move the board. Tools that let you PROPOSE work are granted to you one at a time as they are built, and even those propose — nothing you do transitions a task by itself. Until a verb is granted, the shape of the answer to "can I do that" is: say what should happen, and the human does it.`;
 
+// ── "Your tools today" — the ANTI-CONFABULATION section (S8·6) ───────────────
+//
+// ⚠ **THIS SECTION EXISTS BECAUSE OF AN OBSERVED FAILURE, not as documentation**
+// (rule 0.7). Walk 2, 2026-08-04: a founded orchestrator was told nothing about
+// which VIMES verbs it had, saw the harness's own built-in task tools, concluded
+// it had board access, and WROTE THAT WRONG BELIEF INTO ITS STANDING NOTES —
+// where it would have been read back verbatim at every refounding. A capability
+// belief that is never stated is a capability belief the model supplies itself.
+//
+// So this says three things, and each one is load-bearing: the EXACT wire name of
+// what is granted, that NOTHING ELSE is, and that the harness's task tools are
+// not this board. It is stated in the WIRE FORM (`mcp__vimes_board__create_task`)
+// on purpose — D65 makes the server the prefix, and this is the belt to that
+// braces: the model can match what it is told against what it can see.
+//
+// ⚠ MUST AGREE WITH THE TOOL ITSELF. The daemon's `CREATE_TASK_TOOL_DESCRIPTION`
+// (createTaskTool.ts) makes the same promises about the same verb; if one drifts,
+// the model is being told two different things about one tool.
+//
+// Byte-stable (no project-specific value), so it stays a shared prefix across
+// every founding of every project — the cache-read discipline this file follows.
+const FOUNDING_TOOLS_TODAY =
+  `Your tools today, stated exactly — do not infer any others.
+
+You have ONE VIMES verb: \`mcp__vimes_board__create_task\`. It authors a work-order onto this project's board, in backlog, and that is all it does. Nothing runs when you call it.
+
+There is no other VIMES verb. No promote, no dispatch, no amend, no move, no way to change a task once it exists. Those are separate grants, added one at a time as they are built, and none of them is yours yet — so when the answer to "can you do that" is one of them, say what should happen and let the human do it.
+
+Your harness also gives you task and todo tools of its own (TodoWrite, TaskList, TaskCreate and their siblings). Those are PRIVATE SCRATCH for your own working memory. They are not the VIMES board, nothing you write with them is visible on any screen the human looks at, and no VIMES surface reads them. Only \`mcp__vimes_board__create_task\` puts work on the board.`;
+
+// ── The AUTHORING DOCTRINE — the quality bar the Gate-2 trial measures ────────
+//
+// The pivot criterion for the author grant is whether authored work-orders need
+// substantial human rewrite MORE OFTEN THAN NOT. That is a question about
+// WORK-ORDER QUALITY, so the bar is stated to the author rather than inferred by
+// it — an orchestrator that writes vague criteria because nobody told it what a
+// checkable one is has been failed by this briefing, not by the model.
+//
+// Every line is D43's "a task IS a work-order" made operational, and the closing
+// line is the same sentence the tool's own acknowledgement returns, deliberately:
+// the boundary of the grant is worth hearing twice.
+//
+// Byte-stable, for the same prefix reason as the section above it.
+const FOUNDING_AUTHORING_DOCTRINE =
+  `When you author, you are writing a work-order, not a wish. Somebody else builds from it without asking you what you meant, and a reviewer grades against it without asking you what you had in mind. Write it so both of those are possible.
+
+  Scope — precise enough to build from. Name the change, not the aspiration.
+  Explicitly out — what a reasonable implementer might wrongly include. This is the field that prevents scope creep, so it is worth thinking about what someone would plausibly get wrong.
+  Acceptance criteria — each one INDEPENDENTLY CHECKABLE. A reviewer must be able to answer pass or fail without interpreting your intent. "Works correctly" is not a criterion; "the endpoint returns 409 for an archived project" is.
+  Kill criterion — a REAL observation that would stop the work, not a restatement of "it didn't work". It names the thing you might find that means this approach is wrong and the plan needs a decision rather than another attempt.
+
+Your authoring ends at backlog. Promotion is Wes's call, made from the board.`;
+
 // The standing-notes contract — the D56 identity model stated to the entity it is
 // about. Byte-stable (the path itself rides in the header block above it, so this
 // constant stays a shared prefix across projects as well as across foundings).
@@ -183,6 +236,13 @@ export function composeOrchestratorFounding(input: OrchestratorFoundingInput): s
   Notes:     ${input.notesPath}`,
   );
 
+  // S8·6, and the ORDER is chosen: what you can do, then how to do it well, then
+  // what persists, then the board. The opening block above ends on "until a verb
+  // is granted, say what should happen and let the human do it" — so the verb
+  // that IS granted belongs immediately after it, before the model has a chance
+  // to fill the gap itself (the walk-2 failure).
+  foundingBlocks.push(FOUNDING_TOOLS_TODAY);
+  foundingBlocks.push(FOUNDING_AUTHORING_DOCTRINE);
   foundingBlocks.push(FOUNDING_NOTES_CONTRACT);
   foundingBlocks.push(renderBoardBlock(input.board));
 

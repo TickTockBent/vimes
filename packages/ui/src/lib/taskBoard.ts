@@ -168,6 +168,20 @@ export interface TaskCard {
   // level up.
   readonly projectRoot: string | null;
   readonly createdBy: string | null;
+  // ── S8·6: the PROVENANCE chip ───────────────────────────────────────────────
+  //
+  // True ONLY for a task the standing orchestrator authored (`createdBy` is the
+  // exact string `'orchestrator'`). The Gate-2 pivot criterion is how often
+  // authored work-orders need substantial human rewrite, which is a question
+  // nobody can answer from a board where authored and hand-made cards look
+  // identical — so it has to be legible at a glance.
+  //
+  // ⚠ FAILS TO NO-CHIP, and that direction is chosen: hand-made is the UNMARKED
+  // default, so absent, unknown, malformed and `'human'` all render nothing. The
+  // failure mode of the other direction is a chip claiming the orchestrator wrote
+  // something it did not — which would corrupt the very measurement the chip
+  // exists to make.
+  readonly authoredByOrchestrator: boolean;
   // Rendered only when the task really asked for worktree isolation; a
   // `shared-dir` task shows nothing rather than a "shared" badge nobody asked
   // for.
@@ -255,6 +269,10 @@ export function deriveTaskCard(
     projectName: projectRoot === null ? null : basenameOf(projectRoot),
     projectRoot,
     createdBy: asString(task.createdBy),
+    // Exact-string equality on the raw value, the same shape as
+    // `isolatedInWorktree` below it — anything that is not the word is not the
+    // orchestrator (see the field's note).
+    authoredByOrchestrator: task.createdBy === 'orchestrator',
     isolatedInWorktree: task.isolation === 'worktree',
     manualReviewRequired: task.manualReviewRequired === true,
     latestSession: latestSessionOf(task, sessionsById),

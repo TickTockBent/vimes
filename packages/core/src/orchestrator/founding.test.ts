@@ -179,6 +179,81 @@ describe('composeOrchestratorFounding — the identity contract (D56)', () => {
   });
 });
 
+// ─── S8·6 — the two sections the walk-2 finding earned ───────────────────────
+//
+// These are CONTENT assertions, not golden ones (the goldens above already pin
+// the bytes). What they pin is the promises: a wrong wire name, a section that
+// stopped naming the harness tools, or a doctrine that lost "independently
+// checkable" would all keep the golden honest only by changing it — these fail
+// on the meaning instead.
+describe('composeOrchestratorFounding — "your tools today" (the anti-confabulation section)', () => {
+  const founding = composeOrchestratorFounding({
+    projectName: 'vimes',
+    projectRoot: PROJECT_ROOT,
+    notesPath: NOTES_PATH,
+    board: EMPTY_BOARD,
+  });
+
+  it('names the EXACT wire name of the one granted verb (D65)', () => {
+    // The wire form, not the bare tool name: `mcp__<server>__<tool>` is what the
+    // model actually sees, so it is what it is told. If D65's server name ever
+    // moves, this and the daemon's spec must move together.
+    expect(founding).toContain('`mcp__vimes_board__create_task`');
+  });
+
+  it('states that NO other VIMES verb is granted, naming the ones that are not', () => {
+    expect(founding).toContain('There is no other VIMES verb.');
+    expect(founding).toContain('No promote, no dispatch, no amend, no move');
+  });
+
+  it('states that the harness task tools are PRIVATE SCRATCH, not the board', () => {
+    // The walk-2 failure verbatim: the orchestrator conflated its harness TaskList
+    // with board access and banked that belief in its notes.
+    expect(founding).toContain('PRIVATE SCRATCH');
+    expect(founding).toContain('They are not the VIMES board');
+    expect(founding).toContain('no VIMES surface reads them');
+  });
+
+  it('says the granted verb runs nothing', () => {
+    expect(founding).toContain('Nothing runs when you call it.');
+  });
+});
+
+describe('composeOrchestratorFounding — the authoring doctrine (the Gate-2 bar)', () => {
+  const founding = composeOrchestratorFounding({
+    projectName: 'vimes',
+    projectRoot: PROJECT_ROOT,
+    notesPath: NOTES_PATH,
+    board: EMPTY_BOARD,
+  });
+
+  it('names all four work-order fields the schema demands', () => {
+    expect(founding).toContain('  Scope —');
+    expect(founding).toContain('  Explicitly out —');
+    expect(founding).toContain('  Acceptance criteria —');
+    expect(founding).toContain('  Kill criterion —');
+  });
+
+  it('demands INDEPENDENTLY CHECKABLE criteria, with the pass/fail test spelled out', () => {
+    expect(founding).toContain('INDEPENDENTLY CHECKABLE');
+    expect(founding).toContain('answer pass or fail without interpreting your intent');
+  });
+
+  it('demands a REAL kill observation, not a restatement of failure', () => {
+    expect(founding).toContain('a REAL observation that would stop the work');
+    expect(founding).toContain(`not a restatement of "it didn't work"`);
+  });
+
+  it('closes on the boundary of the grant — authoring ends at backlog', () => {
+    // ⚠ THE SAME SENTENCE THE TOOL'S OWN ACKNOWLEDGEMENT RETURNS
+    // (`createTaskAcknowledgement`, daemon). Deliberate repetition: the briefing
+    // says it once at founding, the tool says it back at every call.
+    expect(founding).toContain(
+      "Your authoring ends at backlog. Promotion is Wes's call, made from the board.",
+    );
+  });
+});
+
 describe('composeOrchestratorFounding — the standing-notes section', () => {
   it('renders the notes VERBATIM under their heading when present', () => {
     const founding = composeOrchestratorFounding({
@@ -317,6 +392,23 @@ You do not move the board. Tools that let you PROPOSE work are granted to you on
   Directory: /home/foo
   Notes:     /home/notes/foo.md
 
+Your tools today, stated exactly — do not infer any others.
+
+You have ONE VIMES verb: \`mcp__vimes_board__create_task\`. It authors a work-order onto this project's board, in backlog, and that is all it does. Nothing runs when you call it.
+
+There is no other VIMES verb. No promote, no dispatch, no amend, no move, no way to change a task once it exists. Those are separate grants, added one at a time as they are built, and none of them is yours yet — so when the answer to "can you do that" is one of them, say what should happen and let the human do it.
+
+Your harness also gives you task and todo tools of its own (TodoWrite, TaskList, TaskCreate and their siblings). Those are PRIVATE SCRATCH for your own working memory. They are not the VIMES board, nothing you write with them is visible on any screen the human looks at, and no VIMES surface reads them. Only \`mcp__vimes_board__create_task\` puts work on the board.
+
+When you author, you are writing a work-order, not a wish. Somebody else builds from it without asking you what you meant, and a reviewer grades against it without asking you what you had in mind. Write it so both of those are possible.
+
+  Scope — precise enough to build from. Name the change, not the aspiration.
+  Explicitly out — what a reasonable implementer might wrongly include. This is the field that prevents scope creep, so it is worth thinking about what someone would plausibly get wrong.
+  Acceptance criteria — each one INDEPENDENTLY CHECKABLE. A reviewer must be able to answer pass or fail without interpreting your intent. "Works correctly" is not a criterion; "the endpoint returns 409 for an archived project" is.
+  Kill criterion — a REAL observation that would stop the work, not a restatement of "it didn't work". It names the thing you might find that means this approach is wrong and the plan needs a decision rather than another attempt.
+
+Your authoring ends at backlog. Promotion is Wes's call, made from the board.
+
 Your transcript is a rotating vessel, not your identity. It fills up, it gets compacted, and eventually it is replaced outright — when that happens a fresh session opens with this same briefing. What persists is the board, this project's own documents, and your standing notes file at the path above. Those are what make you the same orchestrator tomorrow.
 
 So bank continuously rather than at the end: whenever you decide something, learn how this project actually works, or leave something half-finished, write it into that notes file with your own file tools. Anything that lives only in this conversation is gone at the next rotation. Keep the file CURRENT — it is read back to you verbatim at every refounding, so a stale note costs more than a missing one.
@@ -345,6 +437,23 @@ You do not move the board. Tools that let you PROPOSE work are granted to you on
   Project:   foo
   Directory: /home/foo
   Notes:     /home/notes/foo.md
+
+Your tools today, stated exactly — do not infer any others.
+
+You have ONE VIMES verb: \`mcp__vimes_board__create_task\`. It authors a work-order onto this project's board, in backlog, and that is all it does. Nothing runs when you call it.
+
+There is no other VIMES verb. No promote, no dispatch, no amend, no move, no way to change a task once it exists. Those are separate grants, added one at a time as they are built, and none of them is yours yet — so when the answer to "can you do that" is one of them, say what should happen and let the human do it.
+
+Your harness also gives you task and todo tools of its own (TodoWrite, TaskList, TaskCreate and their siblings). Those are PRIVATE SCRATCH for your own working memory. They are not the VIMES board, nothing you write with them is visible on any screen the human looks at, and no VIMES surface reads them. Only \`mcp__vimes_board__create_task\` puts work on the board.
+
+When you author, you are writing a work-order, not a wish. Somebody else builds from it without asking you what you meant, and a reviewer grades against it without asking you what you had in mind. Write it so both of those are possible.
+
+  Scope — precise enough to build from. Name the change, not the aspiration.
+  Explicitly out — what a reasonable implementer might wrongly include. This is the field that prevents scope creep, so it is worth thinking about what someone would plausibly get wrong.
+  Acceptance criteria — each one INDEPENDENTLY CHECKABLE. A reviewer must be able to answer pass or fail without interpreting your intent. "Works correctly" is not a criterion; "the endpoint returns 409 for an archived project" is.
+  Kill criterion — a REAL observation that would stop the work, not a restatement of "it didn't work". It names the thing you might find that means this approach is wrong and the plan needs a decision rather than another attempt.
+
+Your authoring ends at backlog. Promotion is Wes's call, made from the board.
 
 Your transcript is a rotating vessel, not your identity. It fills up, it gets compacted, and eventually it is replaced outright — when that happens a fresh session opens with this same briefing. What persists is the board, this project's own documents, and your standing notes file at the path above. Those are what make you the same orchestrator tomorrow.
 
