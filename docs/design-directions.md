@@ -205,6 +205,21 @@ continuity is free once connected). No daemon changes. Natural early unit of
 the restart-resilience thread — buildable NOW, independent of the
 handover/re-exec designs above.
 
+**BUILT 2026-08-04 (the 502-resilience unit, same day, Wes-cleared).** The
+diagnosis sharpened on contact: the client was not merely undefended — it put
+ITSELF on Cloudflare's page. `decideReconnectAction` treated any non-OK
+health probe as Access-interception and called `location.reload()`; the
+tunnel's 502 satisfied that branch, and the reload navigated into the error
+page. Fix pair: (1) reload is now reserved for Access-SHAPED outcomes
+(redirect / opaque / 401 / 403) — 5xx keeps the backoff loop, and stream
+resubscription from lastSeq (I2) makes recovery lossless; (2) the service
+worker gained a network-first navigation fallback to the precached shell
+(5xx or fetch-reject → cached `index.html`; **4xx passes through untouched**
+so the shell can never mask the Access login flow). Known accepted limit:
+hard reload (shift-refresh) bypasses the SW by design. Both guards
+sabotage-verified. The remaining thread (child-process survival across
+daemon restarts) is unchanged and stays parked above.
+
 ## A simple "alert my phone" API — for callers outside VIMES
 
 *(Wes, 2026-07-20.)* Right now the orchestrator buzzes Wes's phone via a
