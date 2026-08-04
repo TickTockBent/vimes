@@ -31,6 +31,28 @@ bind slice design from here:
   never woven into the core (reinforces rule 0.3 and principle 10; slice 0's
   reserved task/kanban schema is the seam already in place).
 
+**Sharpened 2026-08-04 (Wes, mid-Gate-2-trial): EVERYTHING becomes an optional
+extension — even the task list.** The 2026-07-20 framing below ("orchestration
+is a layer that bolts on") stopped one step short: in the end-state the
+platform core is sessions + event spine + projections + panels + the daemon
+API, and **the entire task machine — board, stages, dispatch, review — is
+itself the FIRST extension**, the built-in one (D51's sketch already says
+today's pipeline becomes the built-in `software` workflow; this generalizes
+that from workflow-definitions-as-data to workflow-SYSTEMS-as-extensions).
+Second tenant already named: **Wes's Book Genesis skill suite as a custom
+extension** — its phases (foundation, prose, beta-reader evaluation,
+editorial package) map onto D51's node kit (work/review/hold kinds), its
+skills ARE the stage briefings, its scores/gates ARE the acceptance shapes.
+Third element: **author a METHOD for developing extensions** — a documented,
+versioned extension format + development doctrine (the software-orchestration
+skill is the precedent: a method-as-artifact, proven on real projects before
+generalized). Sequencing per define-at-first-instance/generalize-at-second:
+(1) Gate-2 trial on the built-in pipeline → (2) slice-9 D51 design pass
+extracts the node-kit with BOOKS as the second tenant → (3) the
+extension-authoring method is written FROM those two worked examples, never
+before them. The D62 ACP read and the client-kit extraction feed the same
+seam: "what is the contract between the platform and ANY consumer."
+
 **Mobile's final form** (Wes, 2026-07-20): short chat sessions with optional
 voice synthesis; heavy text work happens on an actual computer. Phone
 keyboards are good but mobile terminals/heavy editing stay rough on the eyes
