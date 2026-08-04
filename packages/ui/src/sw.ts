@@ -1,4 +1,5 @@
 /// <reference lib="webworker" />
+import { decideNavigationResponse } from './lib/navigationFallback.js';
 import { notificationViewFrom } from './lib/pushNotification.js';
 
 // ─── VIMES service worker (slice-2 step 3, injectManifest) ───────────────────
@@ -34,9 +35,51 @@ self.addEventListener('activate', (event) => {
 });
 
 self.addEventListener('fetch', (event) => {
+  if (event.request.mode === 'navigate') {
+    event.respondWith(navigationResponse(event.request));
+    return;
+  }
   // Cache-first for the precached shell; everything else falls through to network.
   event.respondWith(caches.match(event.request).then((cached) => cached ?? fetch(event.request)));
 });
+
+// Navigations are network-first with the precached shell as the fallback: a daemon
+// restart behind the tunnel must not replace the open app with the infrastructure's
+// 502 page — the shell boots and the store's backoff loop reconnects instead.
+//
+// 4xx passes through untouched. A 401/403 or a redirect landing from Cloudflare Access
+// is the login flow; serving the cached shell over it would brick auth. A 404 is the
+// origin speaking, and the origin is entitled to be heard.
+//
+// Accepted limitation: a hard reload (shift-refresh) bypasses the service worker by
+// design, so that path still shows the infrastructure page. Normal reloads and
+// in-app navigations get the shell.
+async function navigationResponse(request: Request): Promise<Response> {
+  let networkResponse: Response | undefined;
+  let rejection: unknown;
+  try {
+    networkResponse = await fetch(request);
+  } catch (error) {
+    rejection = error;
+  }
+  const plan = decideNavigationResponse(
+    networkResponse === undefined ? { fetchRejected: true } : { fetchRejected: false, status: networkResponse.status },
+  );
+  if (plan === 'network' && networkResponse !== undefined) {
+    return networkResponse;
+  }
+  // The precache stored the shell under the relative key 'index.html'; resolve it the
+  // same way. On a miss (first visit, incomplete precache) the network's answer is the
+  // best truth available — never synthesize a response body of our own.
+  const cachedShell = await caches.match('index.html');
+  if (cachedShell !== undefined) {
+    return cachedShell;
+  }
+  if (networkResponse !== undefined) {
+    return networkResponse;
+  }
+  throw rejection;
+}
 
 self.addEventListener('push', (event) => {
   const view = notificationViewFrom(event.data?.text());

@@ -29,8 +29,19 @@ describe('decideReconnectAction', () => {
     expect(decideReconnectAction({ fetchFailed: false, type: 'opaqueredirect' })).toBe('reload');
   });
 
-  it('reloads on any non-OK status', () => {
+  it('reloads on 401/403 (Access denying without a redirect)', () => {
+    expect(decideReconnectAction({ fetchFailed: false, ok: false, status: 401, type: 'basic' })).toBe('reload');
     expect(decideReconnectAction({ fetchFailed: false, ok: false, status: 403, type: 'basic' })).toBe('reload');
+  });
+
+  it('keeps retrying on origin/tunnel errors — a reload there renders the 502 page', () => {
+    for (const status of [500, 502, 503, 504]) {
+      expect(decideReconnectAction({ fetchFailed: false, ok: false, status, type: 'basic' })).toBe('keep-retrying');
+    }
+  });
+
+  it('keeps retrying on a 404 (the origin is speaking, auth is fine)', () => {
+    expect(decideReconnectAction({ fetchFailed: false, ok: false, status: 404, type: 'basic' })).toBe('keep-retrying');
   });
 
   it('keeps retrying on a clean 200 (auth fine, WS trouble is transient)', () => {
