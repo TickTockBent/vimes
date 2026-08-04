@@ -5,6 +5,12 @@ Prior-art pattern extraction through the Vimes lens (series opened
 documents self-applies** — every item below is applied deliberately, and this
 tracker is the ledger of what has and hasn't been.
 
+*Provenance (noted 2026-08-04): the decomps are produced in Wes's web chats
+about VIMES — the analyst has current project context, which is why the
+targeting is sharp (and why header dates can lag the context they carry).
+They are informed prior-art analyses, not independent outside reviews; the
+deliberate-application rule above is the compensating control.*
+
 | Doc | Repo | Center of gravity |
 |---|---|---|
 | [jinn-decompose.md](jinn-decompose.md) | hristo2612/jinn | org-metaphor orchestration; hooks channel; the landmine list |
