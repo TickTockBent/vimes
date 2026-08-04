@@ -165,6 +165,21 @@ Candidate designs for the real thing, in rough order of cost:
 Parked; schedule when daemon-deploy frequency starts costing real work. Related:
 the two-halves deploy pre-flight (sessions AND terminals) in CLAUDE.md.
 
+**Observed live 2026-08-04 (walk-2 human gate, Wes): the CLIENT half is its own
+gap, and it is cheaper than every option above.** The instant the daemon died,
+the open PWA showed **Cloudflare's raw 502 Bad Gateway page** until a manual
+reload after the restart completed. Wes: "the frontend needs to be restart
+resilient." This is separable from child-process survival: whatever happens to
+shells, the SHELL OF THE APP should never be replaced by an infrastructure
+error page. The shape: service-worker-cached app shell (the PWA plumbing
+already exists in `sw.ts`) so navigation/refresh during an outage renders
+VIMES-with-a-banner instead of Cloudflare's page; a "daemon unreachable —
+reconnecting" state driven off the existing WS close/backoff; auto-recover
+when the socket returns (streams already resubscribe from lastSeq — I2 — so
+continuity is free once connected). No daemon changes. Natural early unit of
+the restart-resilience thread — buildable NOW, independent of the
+handover/re-exec designs above.
+
 ## A simple "alert my phone" API — for callers outside VIMES
 
 *(Wes, 2026-07-20.)* Right now the orchestrator buzzes Wes's phone via a

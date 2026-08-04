@@ -110,7 +110,12 @@ different directory is a different project).
   design a both-views answer before proceeding.
 
 **✅ BUILT + ORCHESTRATOR-VERIFIED 2026-07-29** (deployed with S8·1, one
-restart — awaiting Wes's phone walk for the human exit half). D61 made real:
+restart). **HUMAN EXIT PASSED 2026-08-04 (Wes, walk 1):** two tabs (johnny /
+vimes) correctly scoped — boards and session lists independent; a
+never-touched third project scoped clean (zero sessions); deep links land
+scoped. Known-and-expected gaps confirmed live, already queued as the
+incremental-adoption follow-ups: git / search / costs not yet scoped;
+terminal shells don't default to the open project's root. D61 made real:
 `shouldServeAppShell` (the extracted fallback rule — /api NEVER falls back, a
 deliberate fix to the pre-existing extension-less fallback that served 200 HTML
 for unknown API paths; asset detection by STATIC_CONTENT_TYPES membership so a
@@ -159,8 +164,24 @@ render as honest non-link picker rows.
   *(SP8·2 ran: resume is reliable in every scratch scenario tried — the kill
   criterion now guards the VIMES-context integration, not the CLI mechanics.)*
 
-**✅ BUILT + ORCHESTRATOR-VERIFIED 2026-07-29** (machine half; the human
-kill-daemon walk waits for S8·5's surface; deploys with the rest of Phase B).
+**✅ BUILT + ORCHESTRATOR-VERIFIED 2026-07-29. HUMAN EXIT PASSED 2026-08-04
+(Wes, walk 2 — the kill-daemon walk):** founded via the S8·5 header button;
+the orchestrator wrote a complete standing-notes file UNPROMPTED (identity,
+orchestration rules, deploy realities incl. the recursion hazard, the banked
+code word); daemon restarted mid-conversation; comeback resumed cleanly and
+recalled the code word on request. Wes: PASS. Two findings from the walk,
+neither blocking: **(a) tool confabulation** — the founding briefing never
+states which VIMES verbs are granted (currently none), and the orchestrator
+conflated the harness's built-in TaskList (its private session todo tool)
+with board access, writing a wrong capability belief into its own notes →
+folded into S8·6's doctrine briefing (a "your tools today" section + Wes's
+naming lean: prefix VIMES-native tools or call out exact names). **(b) the
+502 screen** — the instant the daemon died, the frontend showed Cloudflare's
+Bad Gateway page until a manual reload after restart; the client must absorb
+a daemon restart gracefully → recorded in design-directions ("hot reload"
+entry, the client half). Note: recall rode the TRANSCRIPT (resume path,
+SP8·2); the notes-carry path only exercises on a refound — the
+kill-the-transcript variant remains an unrun optional walk.
 Three skeleton calls locked: **lazy maintenance** (no boot respawn — the
 record knows, ensure reconstructs on contact, refounding carries notes),
 **file-based standing notes** (`~/.vimes/orchestrator-notes/<projectId>.md`,
@@ -284,7 +305,13 @@ reddened, orchestratorEntry's stayed green; restored byte-identical, re-green.
   section (checkable criteria, real kill conditions); `task_commented`
   reserved (D59); board provenance chip (orchestrator-authored vs hand-made —
   the pivot criterion needs it legible). D58 (permission mode) settled at
-  this unit's Gate-D pause.
+  this unit's Gate-D pause. **Added from the 2026-08-04 walk-2 finding:** the
+  briefing gains a **"your tools today"** section stating exactly which VIMES
+  verbs are granted and that the harness's built-in task tools are private
+  scratch, never the board (the founded orchestrator confabulated board
+  access from its harness TaskList). Naming lean (Wes): prefix VIMES-native
+  tools (e.g. `vimes_*`) or enumerate exact names in the briefing — decide at
+  this unit's design pass.
 - **Assertions:** forced-field test (hostile payload naming another project/
   stage → forced values win); hostile-input set (malformed → in-run error,
   zero events); I7 (handler reaches the sole writer's create path only — can
