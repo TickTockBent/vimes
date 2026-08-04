@@ -382,6 +382,24 @@ reddened), all restored byte-identical. Noted follow-up (Wes's call): no
 length caps on the model door's payload text (the human door has
 MAX_WORK_ORDER_TEXT) — flagged, not built, outside the WO field set.
 
+### S8·6b — Work-order inspection on the board card (UI-only) — `sonnet` *(trial finding, same day)*
+
+**✅ BUILT + ORCHESTRATOR-VERIFIED + DEPLOYED 2026-08-04.** Found minutes
+into the Gate-2 trial (Wes): clicking a task showed title+id+stage only —
+the ONLY surface rendering scope/explicitly-out/criteria/kill was the amend
+FORM, and an inspection surface that is secretly an edit form is not one;
+the trial requires grading authored work-orders from the board.
+`lib/workOrderDisplay.ts`: pure derivation, null = unauthored (honest
+one-line note, never an empty skeleton; bare workOrderRev is NOT authorship),
+per-field absence (em-dash for text fields, omitted for lists, empties never
+fabricated), criterion ids rendered dim (the identity verdicts key against —
+legible from day one), untrimmed text preserved for pre-wrap. Read-only
+section above the doors; amend door untouched; provenance footer reuses the
+S8·6 chip derivation. +15 tests (3119). Orchestrator sabotage: null-rule
+condition inverted → exactly the measuring file reddened (7); restored
+byte-identical. UI-only → shipped via ci-gate, NO restart, live sessions
+untouched.
+
 ### ══ GATE 2 TRIAL ══ (runs AFTER S8·6, on real work — the pivot criterion)
 ~10 real tasks authored through the orchestrator. If authored work-orders need
 substantial human rewrite MORE OFTEN THAN NOT → **stop expanding verbs; fix

@@ -31,6 +31,7 @@ import {
   type AmendFormModel,
   type CorrectionDoor,
 } from '../lib/correctionDoors.js';
+import { deriveWorkOrderDisplay, type WorkOrderDisplay } from '../lib/workOrderDisplay.js';
 
 // ─── slice 6 step 9 — THE TASK BOARD, MOBILE ────────────────────────────────
 //
@@ -253,6 +254,22 @@ const correctionRevDisplay = computed<number | null>(() => {
   const rev = correctionTaskRecord.value?.workOrderRev;
   return typeof rev === 'number' ? rev : null;
 });
+
+// ── The work-order INSPECTION section (S8·6b) ───────────────────────────────
+// Read-only rendering of the SAME wire fields `correctionTaskRecord` above
+// seeds the amend door from — a THIRD narrow view of the identical
+// `openTaskRecord` object, not a third lookup. `openTaskRecord` (TaskBoardRecord)
+// is structurally assignable to `WorkOrderDisplayRecord` with no cast: every
+// field the latter reads is optional/`unknown`, so any wire object satisfies
+// it (the excess-property check that would otherwise complain only fires on
+// object LITERALS, not on a variable of a wider type). Closes the gap this
+// unit exists for: until now the ONLY surface rendering scope/explicitly-out/
+// acceptance-criteria/kill-criterion was the amend FORM — an inspection
+// surface that is secretly an edit form is not one, and the Gate-2 trial
+// requires grading authored work-orders from the board.
+const workOrderDisplay = computed<WorkOrderDisplay | null>(() =>
+  openTaskRecord.value === null ? null : deriveWorkOrderDisplay(openTaskRecord.value),
+);
 
 function openCorrectionDoor(kind: CorrectionDoor['kind']): void {
   if (kind === 'steer') {
@@ -922,6 +939,51 @@ function livenessClass(liveness: string): string {
             </a>
           </p>
           <p v-if="dispatchNotice.idleNote !== null" class="mt-2 text-xs">{{ dispatchNotice.idleNote }}</p>
+        </div>
+
+        <!-- ── THE WORK ORDER (read-only) — S8·6b ──────────────────────────────
+             Above the doors deliberately: this is what an operator reads
+             BEFORE deciding whether to move, steer or amend. `workOrderDisplay`
+             is null for a task authored with no work-order fields at all — the
+             one-line note is the whole section then, never an empty skeleton
+             pretending there is something to read. A quiet reading surface:
+             dim labels, normal-weight body text, no verdict styling (that is
+             later work, with the review-visibility unit). -->
+        <h3 class="mt-4 text-sm font-semibold font-mono uppercase tracking-[0.08em]">Work order</h3>
+        <p v-if="workOrderDisplay === null" class="mt-1 text-xs text-ink-dim">No work-order authored.</p>
+        <div v-else class="mt-1 flex flex-col gap-3 text-sm">
+          <div>
+            <p class="text-[11px] font-medium font-mono uppercase tracking-[0.08em] text-ink-dim">Scope</p>
+            <p class="mt-0.5 whitespace-pre-wrap text-ink">{{ workOrderDisplay.scope ?? '—' }}</p>
+          </div>
+          <div v-if="workOrderDisplay.explicitlyOut !== null">
+            <p class="text-[11px] font-medium font-mono uppercase tracking-[0.08em] text-ink-dim">Explicitly out</p>
+            <ul class="mt-0.5 list-disc pl-4 text-ink">
+              <li v-for="(line, index) in workOrderDisplay.explicitlyOut" :key="index">{{ line }}</li>
+            </ul>
+          </div>
+          <div v-if="workOrderDisplay.acceptanceCriteria !== null">
+            <p class="text-[11px] font-medium font-mono uppercase tracking-[0.08em] text-ink-dim">
+              Acceptance criteria
+            </p>
+            <ol class="mt-0.5 list-decimal pl-4 text-ink">
+              <li v-for="criterion in workOrderDisplay.acceptanceCriteria" :key="criterion.id">
+                {{ criterion.text }}
+                <span class="font-mono text-[11px] text-ink-dim">{{ criterion.id }}</span>
+              </li>
+            </ol>
+          </div>
+          <div>
+            <p class="text-[11px] font-medium font-mono uppercase tracking-[0.08em] text-ink-dim">Kill criterion</p>
+            <p class="mt-0.5 whitespace-pre-wrap text-ink">{{ workOrderDisplay.killCriterion ?? '—' }}</p>
+          </div>
+          <!-- `rev` reuses the SAME 0-default `correctionDoors` prints next to the
+               doors below; `authoredByOrchestrator` reuses S8·6's chip derivation
+               verbatim rather than re-deriving provenance a third time. -->
+          <p class="text-[11px] text-ink-dim">
+            rev {{ workOrderDisplay.workOrderRev ?? 0 }} · authored by
+            {{ openCard.authoredByOrchestrator ? 'orchestrator' : 'human' }}
+          </p>
         </div>
 
         <!-- ⚠ EVERY STAGE BUT THE CURRENT ONE IS OFFERED, and the list is NOT
