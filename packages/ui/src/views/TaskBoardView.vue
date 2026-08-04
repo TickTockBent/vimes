@@ -31,7 +31,11 @@ import {
   type AmendFormModel,
   type CorrectionDoor,
 } from '../lib/correctionDoors.js';
-import { deriveWorkOrderDisplay, type WorkOrderDisplay } from '../lib/workOrderDisplay.js';
+import {
+  deriveWorkOrderDisplay,
+  type WorkOrderDisplay,
+  type WorkOrderDisplayRecord,
+} from '../lib/workOrderDisplay.js';
 
 // ─── slice 6 step 9 — THE TASK BOARD, MOBILE ────────────────────────────────
 //
@@ -258,17 +262,21 @@ const correctionRevDisplay = computed<number | null>(() => {
 // ── The work-order INSPECTION section (S8·6b) ───────────────────────────────
 // Read-only rendering of the SAME wire fields `correctionTaskRecord` above
 // seeds the amend door from — a THIRD narrow view of the identical
-// `openTaskRecord` object, not a third lookup. `openTaskRecord` (TaskBoardRecord)
-// is structurally assignable to `WorkOrderDisplayRecord` with no cast: every
-// field the latter reads is optional/`unknown`, so any wire object satisfies
-// it (the excess-property check that would otherwise complain only fires on
-// object LITERALS, not on a variable of a wider type). Closes the gap this
-// unit exists for: until now the ONLY surface rendering scope/explicitly-out/
-// acceptance-criteria/kill-criterion was the amend FORM — an inspection
-// surface that is secretly an edit form is not one, and the Gate-2 trial
-// requires grading authored work-orders from the board.
+// `openTaskRecord` object, not a third lookup. Same cast idiom as
+// `correctionTaskRecord`: `TaskBoardRecord` and `WorkOrderDisplayRecord` are
+// two independently-narrow mirrors of the identical wire record and share no
+// declared keys, so TS's weak-type (no-common-properties) check rejects a
+// direct pass — `as unknown as` states the runtime fact (the object really
+// does carry these fields; the TYPE is just a narrower view of it) rather
+// than fighting the checker. Closes the gap this unit exists for: until now
+// the ONLY surface rendering scope/explicitly-out/acceptance-criteria/
+// kill-criterion was the amend FORM — an inspection surface that is secretly
+// an edit form is not one, and the Gate-2 trial requires grading authored
+// work-orders from the board.
 const workOrderDisplay = computed<WorkOrderDisplay | null>(() =>
-  openTaskRecord.value === null ? null : deriveWorkOrderDisplay(openTaskRecord.value),
+  openTaskRecord.value === null
+    ? null
+    : deriveWorkOrderDisplay(openTaskRecord.value as unknown as WorkOrderDisplayRecord),
 );
 
 function openCorrectionDoor(kind: CorrectionDoor['kind']): void {
