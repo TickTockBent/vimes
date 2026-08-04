@@ -421,8 +421,16 @@ planning ("stop-condition check → Proceed"); implementer re-checked it
 independently (CONTINUE), implemented per plan, ran the real integration
 suite against a docker-compose test Postgres AND tore it down after, and
 fenced the foreign uncommitted count() work in its worklog ("predates this
-task, unrelated, left as-is"). Review dispatched by Wes (session `c95d0166`),
-verdict pending at capture time. **Rewrite tally: 0/1.**
+task, unrelated, left as-is"). Review dispatched by Wes (session `c95d0166`):
+**8/8 PASS, attempt 1** — every verdict carries file:line evidence (e.g.
+"MemoryService.ts:300 single generateEmbeddings call; integration test line
+605 spies toHaveBeenCalledTimes(1)"), the reviewer RE-RAN the suites (140
+unit + integration against the real pgvector DB) rather than trusting the
+implementer's word, and the parity criterion was checked against actual
+`toEqual(search(...))` assertions under active filters. Dispatcher routed
+review→done (seq 87). **Task 1 complete end-to-end: authored → promoted →
+planned → implemented → reviewed → done, zero human rewrites at any stage.
+Rewrite tally: 0/1.**
 
 **Trial findings so far (none halting):**
 1. **Worktree isolation is RESERVED, NOT BUILT** — `isolation: 'worktree'`
@@ -438,7 +446,8 @@ verdict pending at capture time. **Rewrite tally: 0/1.**
    future = D51's per-node auto-dispatch flag, the extension author's choice.
 3. Watch item: compound criteria (task 1's #8 bundles README+spec+roadmap+
    CHANGELOG) — if a reviewer stumbles, doctrine gains "one criterion, one
-   check".
+   check". *Task 1 outcome: the reviewer handled it cleanly, citing all four
+   artifacts by file:line in one note. Watch stays open but no stumble yet.*
 4. The dirty-tree handling was GOOD at every layer without being taught:
    orchestrator flagged it at founding and banked it in notes; implementer
    fenced it in pathsRejected. No layer clobbered or absorbed foreign work.
