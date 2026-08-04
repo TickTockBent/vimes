@@ -265,6 +265,37 @@ exactly the 5 fixture tests reddened; restored byte-identical.
   BEFORE compaction reliably → halt; lossy compaction without capture violates
   the D56 identity model.
 
+**✅ BUILT + ORCHESTRATOR-VERIFIED 2026-08-04** (D64 mechanism verbatim; the
+LIVE exit — drive a real orchestrator past threshold, verify capture→compact→
+recall — still owed after deploy). **Step 0 first:** exit-2 semantics
+RE-VERIFIED on CLI 2.1.221 with SP8·1's own rig (exit 2 blocks; JSON
+decision:"block" still accepted-and-ignored; PreCompact hookSpecificOutput
+still schema-rejected) — the risk-register row held across the bump. Core:
+`orchestrator/compactionSteward.ts` — ⟨tune⟩ v0 config (250k/275k nudges,
+300k hold — NO test asserts these values, Gate-D), `sumContextTokens` (one
+rule; UI's contextFill.ts noted for collapse on next touch), epoch-resetting
+memory fold (`compaction_observed` re-arms the ladder), edge-triggered
+LOWEST-unsent-rung escalation (deliberate opposite of meterAlerts' collapse —
+L2 must never arrive un-preceded), the fail-open door with its one non-
+exception (absent notes file = positive evidence of never-banked → HOLDS;
+agent-caught contradiction in the WO, ratified), pinned composers (L1
+gentle/delay-agency, L2 names the door; post-compaction pointer says trust-
+notes-over-summary). Events: `compaction_nudge_sent` (= DELIVERED, emitted
+only after sendMessage accepts — the event IS the memory), `compaction_held`
+(holds only; allows already witnessed), `hook_pre_compact` (the SIXTH hook —
+required-by-code deviation: PreCompact wasn't registered at all). Daemon:
+per-event relay (PreCompact carries `RESPONSE=$(curl…); [ hold ] && exit 2`,
+curl-fail exits 0 — fail-open at the shell too; other five commands pinned
+byte-identical), ingress ANSWERS PreCompact (bare-word body, no jq in the
+hook path) + SessionStart:compact (additionalContext envelope, orchestrator
+only), `CompactionNudgeLedger` + steward on meterAlerts' architecture
+(bounded-read rule verbatim; watch-per-orchestrator-stream off usage_block).
+Suite 2934 → 3023 (+89). Agent's three sabotages + orchestrator's epoch-reset
+sabotage (exactly the 5 measuring tests reddened, incl. the daemon ledger's),
+restored byte-identical. Remaining ratified deviations: sumContextTokens in
+core (principle 9); router-subscription trigger (PushPipeline precedent);
+`compaction_held` emitted from decideGate.
+
 ### S8·5 — The orchestrator surface (UI) — `sonnet` *(UI-only)*
 - **Scope:** the top-level chat surface bound to the global pointer — the
   design-directions "home" evolution in its minimal form: an Orchestrator tab/

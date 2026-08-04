@@ -1,6 +1,10 @@
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { readFile, stat } from 'node:fs/promises';
+// Synchronous, because the PreCompact answer path it serves is synchronous all
+// the way down (the gate decides inside one request, with no awaits between the
+// hook's POST and its exit code).
+import { statSync } from 'node:fs';
 import { extname, join, normalize, resolve, sep } from 'node:path';
 import { Hono } from 'hono';
 import { createAdaptorServer } from '@hono/node-server';
@@ -50,7 +54,8 @@ import { registerFileApi } from './fileApi.js';
 import { registerGitApi } from './gitApi.js';
 import { registerTaskApi } from './taskApi.js';
 import { registerProjectApi } from './projectApi.js';
-import { registerOrchestratorApi } from './orchestratorApi.js';
+import { registerOrchestratorApi, standingNotesPathFor } from './orchestratorApi.js';
+import { CompactionSteward } from './compactionSteward.js';
 import { TaskWriter } from './taskWriter.js';
 import { ProjectWriter } from './projectWriter.js';
 import { TaskDispatcher } from './taskDispatcher.js';
@@ -738,6 +743,49 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     deps.pushSender ?? createWebPushSender({ vapid: vapidKeys, subject: config.pushSubject });
   const pushPipeline = new PushPipeline({ router, store, sender: pushSender, subscriptions: pushSubscriptions });
 
+  // ─── the compaction steward (S8·4, D57/D64) ────────────────────────────────
+  //
+  // Capture-then-compact for the standing orchestrator: it NUDGES as the
+  // transcript fills (so the state is banked voluntarily) and HOLDS the
+  // PreCompact door while it is not. `sessionHost` is constructed just below;
+  // the `sendMessage` thunk only runs per nudge, long after — the same deferral
+  // `registerOrchestratorApi` above already relies on.
+  //
+  // ⟨tune⟩ thresholds come from core's `V0_COMPACTION_STEWARD_CONFIG` and are
+  // DELIBERATELY not a config knob yet: D64 signed the mechanism and left the
+  // numbers as design bands, so there is nothing calibrated to expose in
+  // `/etc/vimes/env`. When the calibration pass earns them (Gate-D), a knob is
+  // the natural landing place.
+  // ⚠ The type annotation is load-bearing, not decoration: this steward and the
+  // session host below reference each other (the steward sends turns THROUGH the
+  // host; the host asks the steward for hook answers), and without a declared
+  // type on one side TypeScript cannot break the inference cycle.
+  const compactionSteward: CompactionSteward = new CompactionSteward({
+    store,
+    router,
+    emit: (events) => router.emit(events),
+    readSessions: () => bootFromSnapshot(sessionsProjection, snapshotStore, store),
+    readCacheObservability: () => bootFromSnapshot(cacheObservabilityProjection, snapshotStore, store),
+    sendMessage: (appSessionId, text) => sessionHost.sendMessage(appSessionId, text),
+    // The SAME notes location the founding briefing reads and the orchestrator
+    // writes (orchestratorApi.ts) — one owner for the path, never a second
+    // derivation that could drift from it.
+    standingNotesPathFor: (projectId) =>
+      standingNotesPathFor(join(config.dataDir, 'orchestrator-notes'), projectId),
+    statNotesMtimeMs: (notesPath) => {
+      // The fs boundary (rule 0.3, determinism-exempt). EVERY failure is null —
+      // ENOENT is the ORDINARY case (an orchestrator that has never banked), and
+      // a permission problem or a directory-where-a-file-should-be tells us the
+      // same thing the gate needs to know: we have no evidence the notes were
+      // written. Never throws; a stat must not be able to break a hook.
+      try {
+        return statSync(notesPath).mtimeMs;
+      } catch {
+        return null;
+      }
+    },
+  });
+
   // Session host + JSONL tailer own every Claude process (rule 0.3). Factories
   // default to the real SDK/node-pty; CI injects fakes.
   const sessionHost = new SessionHost({
@@ -750,8 +798,17 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     ptySpawnFactory: deps.ptySpawnFactory,
     projectsRoot: deps.projectsRoot,
     preflightProbe: deps.preflightProbe,
-    // Register each new session's stream with the push pipeline (per-stream fanout).
-    onSessionCreated: (appSessionId) => pushPipeline.watch(appSessionId),
+    // Register each new session's stream with the push pipeline (per-stream
+    // fanout) and, for an ORCHESTRATOR session only, with the compaction steward
+    // (S8·4 — `watch` is a no-op for every other session, so this line costs an
+    // ordinary spawn one projection read and nothing else).
+    onSessionCreated: (appSessionId) => {
+      pushPipeline.watch(appSessionId);
+      compactionSteward.watch(appSessionId);
+    },
+    // S8·4 (D64): the PreCompact door + the post-compaction pointer. The host
+    // delegates both answers here; it owns none of the policy.
+    compactionSteward,
     // D48 native plan capture (S7·5b-ii): the SDK adapter intercepts a plan-mode
     // planner's ExitPlanMode and hands the plan here; the dispatcher owns task
     // state and records it (S7·5b-i's `recordPlan`). `taskDispatcher` is
@@ -1264,6 +1321,11 @@ export function createDaemon(deps: DaemonDeps): Daemon {
       // restart; a later resume→gate on one of them will push). New sessions
       // register via the host's onSessionCreated callback.
       pushPipeline.start();
+      // Compaction steward (S8·4): subscribe to every ORCHESTRATOR stream already
+      // in the log, so a restart resumes nudging the standing entity it left
+      // running. Its escalation memory is re-derived from the log, so a boot can
+      // neither re-send a level nor forget one.
+      compactionSteward.start();
       snapshotTimer = setInterval(() => {
         try {
           saveAllSnapshots();
@@ -1399,6 +1461,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
       // POST can emit after shutdown begins.
       await hookIngress.stop();
       pushPipeline.stop();
+      compactionSteward.stop();
       sessionHost.stop();
       // Terminals are ephemeral shells; they die with the daemon (§3.10).
       terminalHost.closeAll();

@@ -1482,7 +1482,7 @@ describe('SessionHost — spawn preflight (E3)', () => {
 // ── C settings injection + hook custody + D7 correlation ─────────────────────
 
 describe('SessionHost — settings injection + hook custody (C, D7)', () => {
-  it('spawn writes a per-session settings file (five hooks + relay); exit removes it; secret verifies', async () => {
+  it('spawn writes a per-session settings file (six hooks + relay); exit removes it; secret verifies', async () => {
     const fakePty = makeFakePty();
     const { host } = makeHarness({ ptySpawnFactory: fakePty.factory });
     const spawn = host.spawnSession({ channel: 'pty', cwd: '/p' });
@@ -1492,7 +1492,9 @@ describe('SessionHost — settings injection + hook custody (C, D7)', () => {
       hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
     };
     expect(Object.keys(parsed.hooks).sort()).toEqual(
-      ['PreToolUse', 'SessionEnd', 'SessionStart', 'Stop', 'StopFailure'].sort(),
+      // PreCompact joined in S8·4 — the sixth hook, and the only one whose relay
+      // reads the daemon's answer back (D64's door).
+      ['PreCompact', 'PreToolUse', 'SessionEnd', 'SessionStart', 'Stop', 'StopFailure'].sort(),
     );
     const relay = parsed.hooks.SessionStart![0]!.hooks[0]!.command;
     expect(relay).toContain(`/hooks/${appSessionId}`);

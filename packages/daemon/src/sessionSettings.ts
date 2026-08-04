@@ -6,8 +6,9 @@ import { REGISTERED_HOOK_EVENT_NAMES } from '@vimes/core';
 // ─── Per-session settings injection + per-spawn hook secret (slice-2 step 1) ──
 //
 // determinism-exempt (rule 0.3): real crypto + fs live here, the daemon boundary.
-// The core never imports this module. A settings file registers the five hook
-// relays; each relay reads a per-spawn bearer secret out of the ENVIRONMENT
+// The core never imports this module. A settings file registers the SIX hook
+// relays (five since slice 2, plus S8·4's PreCompact — the one that ANSWERS);
+// each relay reads a per-spawn bearer secret out of the ENVIRONMENT
 // (`$VIMES_HOOK_SECRET`, expanded by the hook's own shell at run time) and the
 // hook ingress verifies it constant-time.
 //
@@ -63,36 +64,89 @@ export function secretMatchesDigest(presented: string, expectedDigest: Buffer): 
   return timingSafeEqual(sha256(presented), expectedDigest);
 }
 
-// The relay the injected hook runs: POST the hook's stdin body (observed
-// contract) to the local ingress with the per-spawn bearer. `curl -fsS` fails
-// loudly on a non-2xx without dumping progress noise into the hook log.
+// The CLI hook name whose relay ANSWERS instead of only reporting (S8·4/D64).
+// Named once so the command builder, the shape test and the ingress all key on
+// the same literal.
+export const ANSWERING_HOOK_EVENT_NAME = 'PreCompact';
+
+// The literal body the ingress sends back to veto a compaction. The wire protocol
+// here is DELIBERATELY PRIMITIVE — a bare word, not JSON — because the consumer
+// is a `[ "$RESPONSE" = … ]` test in a POSIX shell with no `jq` guaranteed to
+// exist. Anything richer would put a JSON parser in the hook path, and a hook
+// that cannot parse its own answer fails in the direction that wedges compaction.
+export const COMPACTION_GATE_HOLD_BODY = 'hold';
+export const COMPACTION_GATE_ALLOW_BODY = 'allow';
+
+// The bare POST — the relay every hook except PreCompact runs. Its stdout IS the
+// hook's stdout, which is the structural channel a SessionStart answer rides back
+// on (S8·4: the CLI reads `hookSpecificOutput.additionalContext` from there).
 //
-// The bearer is `$VIMES_HOOK_SECRET`, expanded by the hook's own shell at run
-// time — so it never lands in argv. The header MUST stay in DOUBLE quotes:
-// single quotes would send the literal string `$VIMES_HOOK_SECRET` and every
-// hook would fail auth. There is deliberately no `secret` parameter here — the
-// builder cannot embed a secret it is never given.
-export function hookRelayCommand(args: { appSessionId: string; hookPort: number }): string {
+// `curl -fsS` fails loudly on a non-2xx without dumping progress noise into the
+// hook log. The bearer is `$VIMES_HOOK_SECRET`, expanded by the hook's own shell
+// at run time — so it never lands in argv. The header MUST stay in DOUBLE quotes:
+// single quotes would send the literal string `$VIMES_HOOK_SECRET` and every hook
+// would fail auth. There is deliberately no `secret` parameter here — the builder
+// cannot embed a secret it is never given.
+function bareRelayPost(args: { appSessionId: string; hookPort: number }): string {
   const url = `http://127.0.0.1:${args.hookPort}/hooks/${args.appSessionId}`;
   return `curl -fsS -X POST --data-binary @- -H "Authorization: Bearer $${HOOK_SECRET_ENV_VAR}" ${url}`;
 }
 
-// The per-session settings object registering all five hooks with the relay.
+// The relay the injected hook runs, PER EVENT (S8·4 made this per-event; it was
+// one command for all five before).
+//
+// ⚠ **PreCompact is the only event whose relay reads the answer, and exit 2 is the
+// only reason it exists.** SP8·1 OBSERVED — and the S8·4 step-0 gate re-verified
+// on CLI 2.1.221 — that a PreCompact hook blocks compaction if and only if it
+// exits 2. A JSON `{"decision":"block"}` / `{"continue":false}` is accepted,
+// logged as a SUCCESS, and silently ignored; the natural-looking implementation
+// would fail to veto anything. So the daemon's decision has to be carried across
+// a process boundary as an exit code, and this one line is that translation.
+//
+// ⚠ **CURL FAILURE EXITS 0 — the door fails OPEN here too**, for the same reason
+// `decideCompactionGate` fails open: a daemon that is down, unreachable or
+// returning 5xx must not become a permanent veto on an orchestrator's
+// compaction. A failed `curl -fsS` leaves `$RESPONSE` empty, which is not
+// `hold`, which exits 0. That is not an accident of shell semantics — it is the
+// behavior, and this comment is why it is written this way rather than with
+// `set -e`.
+//
+// POSIX sh only (the hook runs under `sh -c`): command substitution, one `[` test,
+// explicit `exit`s. No bashisms, no `jq`, no pipefail. Note also that `$(…)`
+// CAPTURES the body, so this hook writes nothing to stdout — a PreCompact hook has
+// no stdout channel worth using anyway (its `hookSpecificOutput` variant is
+// rejected by the CLI's own schema, OBSERVED SP8·1 Q3b(i)).
+export function hookRelayCommand(
+  args: { appSessionId: string; hookPort: number },
+  eventName: string,
+): string {
+  const post = bareRelayPost(args);
+  if (eventName !== ANSWERING_HOOK_EVENT_NAME) {
+    return post;
+  }
+  return `RESPONSE=$(${post}); if [ "$RESPONSE" = "${COMPACTION_GATE_HOLD_BODY}" ]; then exit 2; fi; exit 0`;
+}
+
+// The per-session settings object registering every hook with its own relay.
 // FRAGILE-ADAPTER (rule 0.6): the hooks-block shape is Claude Code's, pinned by
 // the step-0a spike (settingSources ['project'] MERGES with the project's own
 // hooks — D14 holds). PreToolUse carries an all-tools matcher; the lifecycle
 // hooks take none. The exact accepted shape is re-verified live, never in CI.
+//
+// S8·4 changed ONE thing here: the command is now built per event name, so
+// PreCompact can carry the answering relay. Every other event's command is
+// byte-identical to what it was (pinned by test) — the settings-file shape,
+// the matcher rules and the D14 merge posture are all untouched.
 export function buildSessionSettings(args: { appSessionId: string; hookPort: number }): {
   hooks: Record<string, Array<{ matcher?: string; hooks: Array<{ type: 'command'; command: string }> }>>;
 } {
-  const command = hookRelayCommand(args);
   const hooks: Record<
     string,
     Array<{ matcher?: string; hooks: Array<{ type: 'command'; command: string }> }>
   > = {};
   for (const name of REGISTERED_HOOK_EVENT_NAMES) {
     const entry: { matcher?: string; hooks: Array<{ type: 'command'; command: string }> } = {
-      hooks: [{ type: 'command', command }],
+      hooks: [{ type: 'command', command: hookRelayCommand(args, name) }],
     };
     if (name === 'PreToolUse') {
       entry.matcher = '*';
@@ -124,7 +178,7 @@ export function writeSessionSettings(dataDir: string, appSessionId: string, cont
 }
 
 // Mint a whole hook channel for one spawn: a fresh secret, the settings file
-// registering the five relays, and the environment fragment that carries the
+// registering the relays, and the environment fragment that carries the
 // secret to the child. THE POINT OF THIS FUNCTION IS THAT IT IS THE ONLY WAY TO
 // GET A settingsPath — a caller cannot obtain the file (and thus register the
 // relays) without also receiving the `env` that makes those relays authenticate.

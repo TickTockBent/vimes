@@ -85,6 +85,15 @@ export const EVENT_TYPES = {
   hookStopFailure: 'hook_stop_failure',
   hookPreToolUse: 'hook_pre_tool_use',
   hookSessionEnd: 'hook_session_end',
+  // ⚠ THE SIXTH HOOK, ADDED IN S8·4 (D64) — and the ONLY one the ingress ANSWERS
+  // rather than merely records. PreCompact is the compaction DOOR: the relay
+  // translates the ingress's answer into the hook's exit code, because exit 2 is
+  // the sole veto channel the CLI honors (a JSON `decision:"block"` is accepted,
+  // logged as success, and silently ignored — OBSERVED SP8·1 Q3b, re-verified on
+  // CLI 2.1.221 at the S8·4 step-0 gate). Registering it here is what puts it in
+  // `REGISTERED_HOOK_EVENT_NAMES`, i.e. in the injected settings file, and what
+  // lets `ingestHook` route it instead of quarantining it as an unknown name.
+  hookPreCompact: 'hook_pre_compact',
   // Slice-2 runtime-drift (E4): boot-time CLI version observation, warn-only.
   runtimeDriftObserved: 'runtime_drift_observed',
   // Slice-2 custody vocabulary (D10). session_adopted flips custody host; the
@@ -279,6 +288,21 @@ export const EVENT_TYPES = {
   // stream, snake_case `compact_metadata`) — two casings for one fact, the
   // CLI's own inconsistency, each path reads its own verbatim.
   compactionObserved: 'compaction_observed',
+  // ── S8·4 (D64): the transcript lifecycle's two facts, both session-scoped ──
+  //
+  // `compaction_nudge_sent` is VIMES's OWN decision (unlike its S8·4a neighbour,
+  // where we are only the witness): the daemon steward crossed a ⟨tune⟩ threshold
+  // and injected an escalating capture nudge into the orchestrator's transcript.
+  // It doubles as the escalation MEMORY — folded back by
+  // `rememberCompactionNudge` so a level fires once per transcript-epoch and a
+  // daemon restart re-derives exactly the escalation state it had.
+  //
+  // `compaction_held` records the other half: the PreCompact hook's answer came
+  // back `hold`, so a compaction was vetoed (exit 2 — the ONLY veto channel the
+  // CLI honors, OBSERVED at SP8·1 and re-verified on 2.1.221). Allows are NOT
+  // evented; see the payload schema for why.
+  compactionNudgeSent: 'compaction_nudge_sent',
+  compactionHeld: 'compaction_held',
 } as const;
 
 export const SYSTEM_STREAM = 'system';
@@ -480,7 +504,7 @@ export const hostStoppedPayloadSchema = z.object({}).passthrough();
 // fragile external surface (golden fixtures @ fixtures/hooks, CLI 2.1.215) — the
 // named fields are the ones observed across the fixtures, everything else rides
 // through passthrough. `appSessionId` is stamped by the ingress from the URL;
-// the rest is the verbatim hook stdin body. All five hook events share this
+// the rest is the verbatim hook stdin body. All SIX hook events share this
 // shape; per-event fields (e.g. StopFailure's reason/resetsAt) arrive via
 // passthrough and are typed by their consumers when those land (later slices).
 export const hookEventPayloadSchema = z
@@ -942,6 +966,51 @@ export const compactionObservedPayloadSchema = z.object({
   durationMs: z.number().int().nonnegative().optional(),
 });
 
+// ── S8·4 (D64) — the transcript lifecycle's own two facts ────────────────────
+
+// compaction_nudge_sent — the daemon steward DELIVERED an escalating nudge turn
+// into an orchestrator's session (D57's agency mechanism).
+//
+// ⚠ THE EVENT MEANS *DELIVERED*, NOT *DECIDED*. The steward emits this only
+// after `sendMessage` accepted the turn, because this event IS the escalation
+// memory: `rememberCompactionNudge` folds it, and a level recorded as sent is a
+// level that never fires again this epoch. Eventing a nudge that never reached a
+// live session would silently burn that level. See compactionSteward.ts (daemon).
+export const compactionNudgeSentPayloadSchema = z.object({
+  appSessionId: z.string(),
+  // The escalation step, 1-based and ascending — L1 is the gentle capture-soon
+  // nudge, L2 names the door. A positive int rather than an enum so the ⟨tune⟩
+  // ladder can grow a rung without a schema change (the config owns the rungs).
+  level: z.number().int().positive(),
+  // The fill reading that crossed the threshold — `latestContextTokens` summed,
+  // copied verbatim off the observation that fired the nudge. Evidence of WHY
+  // this level fired, and what the calibration pass will read back out of the log
+  // when the ⟨tune⟩ thresholds are finally pinned (Gate-D, D64).
+  contextTokens: z.number().int().nonnegative(),
+});
+
+// compaction_held — the PreCompact ingress answered `hold`: VIMES vetoed a
+// compaction because the orchestrator's state was still unbanked (D64's door).
+//
+// ⚠ ONLY HOLDS ARE EVENTED, NEVER ALLOWS. `allow` is the universal default (the
+// door fails OPEN — see `decideCompactionGate`), and the compaction that follows
+// an allow is ALREADY witnessed by S8·4a's `compaction_observed`. So an allow
+// event would be a second, redundant record of a fact the log already carries,
+// on the hot path of every compaction. Holds are the exception and the news.
+//
+// Volume: while held, the CLI re-offers the compaction on EVERY turn (OBSERVED,
+// SP8·1 Q3d — 5 consecutive re-offers, no breaker), so a long hold writes one
+// event per turn. That cadence is accepted deliberately: the nudges exist
+// precisely so holds are rare and short (D64).
+export const compactionHeldPayloadSchema = z.object({
+  appSessionId: z.string(),
+  // The fill reading at the moment of the veto, when one was known. OPTIONAL
+  // because the gate deliberately does NOT require a fill reading to answer (an
+  // unknown fill answers `allow`, so a `hold` always has one in practice today) —
+  // the field degrades to absent rather than to a fabricated 0 (pillar 4).
+  contextTokens: z.number().int().nonnegative().optional(),
+});
+
 export const EVENT_PAYLOAD_SCHEMAS = {
   [EVENT_TYPES.sessionCreated]: sessionCreatedPayloadSchema,
   [EVENT_TYPES.livenessChanged]: livenessChangedPayloadSchema,
@@ -969,6 +1038,7 @@ export const EVENT_PAYLOAD_SCHEMAS = {
   [EVENT_TYPES.hookStopFailure]: hookEventPayloadSchema,
   [EVENT_TYPES.hookPreToolUse]: hookEventPayloadSchema,
   [EVENT_TYPES.hookSessionEnd]: hookEventPayloadSchema,
+  [EVENT_TYPES.hookPreCompact]: hookEventPayloadSchema,
   [EVENT_TYPES.runtimeDriftObserved]: runtimeDriftObservedPayloadSchema,
   [EVENT_TYPES.sessionAdopted]: sessionAdoptedPayloadSchema,
   [EVENT_TYPES.sessionRenamed]: sessionRenamedPayloadSchema,
@@ -1001,6 +1071,8 @@ export const EVENT_PAYLOAD_SCHEMAS = {
   [EVENT_TYPES.projectArchived]: projectArchivedPayloadSchema,
   [EVENT_TYPES.projectInitialized]: projectInitializedPayloadSchema,
   [EVENT_TYPES.compactionObserved]: compactionObservedPayloadSchema,
+  [EVENT_TYPES.compactionNudgeSent]: compactionNudgeSentPayloadSchema,
+  [EVENT_TYPES.compactionHeld]: compactionHeldPayloadSchema,
 } as const;
 
 export type SessionCreatedPayload = z.infer<typeof sessionCreatedPayloadSchema>;
@@ -1043,6 +1115,8 @@ export type ProjectUpdatedPayload = z.infer<typeof projectUpdatedPayloadSchema>;
 export type ProjectArchivedPayload = z.infer<typeof projectArchivedPayloadSchema>;
 export type ProjectInitializedPayload = z.infer<typeof projectInitializedPayloadSchema>;
 export type CompactionObservedPayload = z.infer<typeof compactionObservedPayloadSchema>;
+export type CompactionNudgeSentPayload = z.infer<typeof compactionNudgeSentPayloadSchema>;
+export type CompactionHeldPayload = z.infer<typeof compactionHeldPayloadSchema>;
 // WorkOrderAmendedPayload is exported alongside `workOrderAmendedPayloadSchema`
 // above, adjacent to its schema rather than grouped down here with the rest —
 // no functional difference, kept next to the RESERVATION note it belongs with.
@@ -1075,6 +1149,7 @@ export type DomainEvent =
   | { type: typeof EVENT_TYPES.hookStopFailure; payload: HookEventPayload }
   | { type: typeof EVENT_TYPES.hookPreToolUse; payload: HookEventPayload }
   | { type: typeof EVENT_TYPES.hookSessionEnd; payload: HookEventPayload }
+  | { type: typeof EVENT_TYPES.hookPreCompact; payload: HookEventPayload }
   | { type: typeof EVENT_TYPES.runtimeDriftObserved; payload: RuntimeDriftObservedPayload }
   | { type: typeof EVENT_TYPES.sessionAdopted; payload: SessionAdoptedPayload }
   | { type: typeof EVENT_TYPES.sessionRenamed; payload: SessionRenamedPayload }
@@ -1098,7 +1173,9 @@ export type DomainEvent =
   | { type: typeof EVENT_TYPES.projectUpdated; payload: ProjectUpdatedPayload }
   | { type: typeof EVENT_TYPES.projectArchived; payload: ProjectArchivedPayload }
   | { type: typeof EVENT_TYPES.projectInitialized; payload: ProjectInitializedPayload }
-  | { type: typeof EVENT_TYPES.compactionObserved; payload: CompactionObservedPayload };
+  | { type: typeof EVENT_TYPES.compactionObserved; payload: CompactionObservedPayload }
+  | { type: typeof EVENT_TYPES.compactionNudgeSent; payload: CompactionNudgeSentPayload }
+  | { type: typeof EVENT_TYPES.compactionHeld; payload: CompactionHeldPayload };
 
 // Maps each attention-setting event type to the needsAttention reason it sets.
 const ATTENTION_SETTER_REASON: Readonly<Record<string, AttentionReason>> = {
@@ -1301,6 +1378,17 @@ export function compactionObserved(payload: CompactionObservedPayload): EventInp
   return { stream: payload.appSessionId, type: EVENT_TYPES.compactionObserved, payload };
 }
 
+// S8·4 (D64). Both ride the SESSION's own stream, beside the `compaction_observed`
+// they bracket — the nudge that tried to make a compaction cheap, and the veto
+// that bought time for it. Same-stream placement is also what lets the daemon's
+// ledger fold ONE session's escalation memory with one bounded-free read.
+export function compactionNudgeSent(payload: CompactionNudgeSentPayload): EventInput {
+  return { stream: payload.appSessionId, type: EVENT_TYPES.compactionNudgeSent, payload };
+}
+export function compactionHeld(payload: CompactionHeldPayload): EventInput {
+  return { stream: payload.appSessionId, type: EVENT_TYPES.compactionHeld, payload };
+}
+
 // The task↔session link (step 4a). On the 'tasks' stream and NOT the session's
 // stream: it is a fact about the TASK's record (`sessionRefs`), and the tasks
 // projection folds only its own stream. The session's own birth record
@@ -1351,6 +1439,9 @@ export function hookPreToolUse(payload: HookEventPayload): EventInput {
 export function hookSessionEnd(payload: HookEventPayload): EventInput {
   return { stream: payload.appSessionId, type: EVENT_TYPES.hookSessionEnd, payload };
 }
+export function hookPreCompact(payload: HookEventPayload): EventInput {
+  return { stream: payload.appSessionId, type: EVENT_TYPES.hookPreCompact, payload };
+}
 // System-scoped (E4): boot-time observation, not tied to a session.
 export function runtimeDriftObserved(payload: RuntimeDriftObservedPayload): EventInput {
   return { stream: SYSTEM_STREAM, type: EVENT_TYPES.runtimeDriftObserved, payload };
@@ -1385,9 +1476,17 @@ export const HOOK_EVENT_CONSTRUCTORS: Readonly<
   StopFailure: hookStopFailure,
   PreToolUse: hookPreToolUse,
   SessionEnd: hookSessionEnd,
+  // S8·4 (D64) — the compaction door. Recorded like every sibling; what makes it
+  // different is that the ingress ALSO answers it (`hold`/`allow`), and the relay
+  // turns that answer into an exit code. The recording half is here so the log
+  // carries the fire itself, veto or not.
+  PreCompact: hookPreCompact,
 };
 
-// The five hook event names registered in an injected per-session settings file.
+// The hook event names registered in an injected per-session settings file — SIX
+// since S8·4 added PreCompact (five from slice 2). Derived from the constructor
+// map on purpose: a name the ingress cannot route is a name the settings file
+// must not register, and vice versa.
 export const REGISTERED_HOOK_EVENT_NAMES: readonly string[] = Object.keys(HOOK_EVENT_CONSTRUCTORS);
 
 // The I5 batch rule (settled in step-2 review): an attention-setting event and

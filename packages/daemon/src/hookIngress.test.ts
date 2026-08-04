@@ -1,13 +1,14 @@
 import { afterAll, describe, expect, it } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
-import { SteppingClock, type EventRecord, type IdSource } from '@vimes/core';
+import { SteppingClock, usageBlock, type EventRecord, type IdSource } from '@vimes/core';
 import type { AccessVerifier } from './auth.js';
 import { createDaemon, type Daemon, type DaemonDeps } from './app.js';
 import type { DaemonConfig } from './config.js';
+import { standingNotesPathFor } from './orchestratorApi.js';
 import { HOOK_SECRET_ENV_VAR, sessionSettingsPath } from './sessionSettings.js';
 import type { SdkQueryFactory, SdkQueryOptions, SdkStreamMessage } from './sessionHost.js';
 
@@ -432,6 +433,204 @@ describe('runtime version drift (E4, warn-only)', () => {
       expect(driftEvents(daemon)).toEqual([
         { expected: '2.1.207', observed: null, channel: 'sdk', binaryPath: null },
       ]);
+    } finally {
+      await daemon.stop();
+    }
+  });
+});
+
+// ─── S8·4 (D64): the two hooks the ingress ANSWERS ───────────────────────────
+//
+// Everything below runs against a REAL daemon over a REAL HTTP round trip, so
+// the thing under test is the wire shape the injected relay will actually read —
+// a bare `hold`/`allow` word for PreCompact, and the CLI's `additionalContext`
+// envelope for a post-compaction SessionStart.
+describe('hook ingress — the S8·4 answer paths', () => {
+  // ⟨tune⟩ V0_COMPACTION_STEWARD_CONFIG's real thresholds are 250k nudge / 300k
+  // hold. These are NOT assertions about those numbers (Gate-D, rule 0.2) — they
+  // are a fill comfortably past both, chosen so the door's arming is unambiguous.
+  const FILL_PAST_THE_DOOR = 400_000;
+
+  function spawnOrchestratorAndSecret(
+    daemon: Daemon,
+    dataDir: string,
+    projectId: string,
+  ): { appSessionId: string; secret: string } {
+    const spawn = daemon.sessionHost.spawnSession({
+      channel: 'sdk',
+      cwd: projectRoot,
+      orchestratorForProjectId: projectId,
+    });
+    const appSessionId = 'appSessionId' in spawn ? spawn.appSessionId : '';
+    const options = takeLastSdkOptions();
+    expect(options.settings).toBe(sessionSettingsPath(dataDir, appSessionId));
+    return { appSessionId, secret: options.env![HOOK_SECRET_ENV_VAR]! };
+  }
+
+  // Drive the fill past the thresholds through the SAME signal production uses —
+  // a `usage_block` on the session's own stream — so the steward's watcher fires
+  // exactly as it will in the daemon, nudge and all.
+  function driveFillPastTheDoor(daemon: Daemon, appSessionId: string): void {
+    daemon.router.emit([
+      usageBlock({
+        appSessionId,
+        messageId: 'msg-fill-1',
+        usage: { input_tokens: FILL_PAST_THE_DOOR },
+      }),
+    ]);
+  }
+
+  function preCompactBody(): string {
+    // The verbatim PreCompact stdin shape SP8·1 OBSERVED (rule 0.7).
+    return JSON.stringify({
+      session_id: 'claude-sdk',
+      hook_event_name: 'PreCompact',
+      trigger: 'auto',
+      custom_instructions: null,
+    });
+  }
+
+  it('an ORDINARY session always gets `allow`, and no compaction_held is written', async () => {
+    const config = buildConfig();
+    const daemon = await startDaemon({ config });
+    try {
+      const { appSessionId, secret } = spawnAndSecret(daemon, config.dataDir);
+      driveFillPastTheDoor(daemon, appSessionId);
+
+      const response = await postHook(daemon.hookPort, appSessionId, secret, preCompactBody());
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe('allow');
+      expect(streamRecords(daemon, appSessionId).map((r) => r.type)).not.toContain('compaction_held');
+      // The fire itself is still recorded — answering never replaces witnessing.
+      expect(streamRecords(daemon, appSessionId).map((r) => r.type)).toContain('hook_pre_compact');
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  it('an UNBANKED orchestrator past the threshold gets `hold`, and the veto is evented', async () => {
+    const config = buildConfig();
+    const daemon = await startDaemon({ config });
+    try {
+      const { appSessionId, secret } = spawnOrchestratorAndSecret(daemon, config.dataDir, 'proj-hold');
+      // Arms the door: the fill fires the first nudge, which is what gives
+      // `decideCompactionGate` a start-of-asking mark to compare the (absent)
+      // notes file against.
+      driveFillPastTheDoor(daemon, appSessionId);
+      expect(streamRecords(daemon, appSessionId).map((r) => r.type)).toContain('compaction_nudge_sent');
+
+      const response = await postHook(daemon.hookPort, appSessionId, secret, preCompactBody());
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe('hold');
+      const held = streamRecords(daemon, appSessionId).filter((r) => r.type === 'compaction_held');
+      expect(held).toHaveLength(1);
+      expect((held[0]!.payload as { contextTokens: number }).contextTokens).toBe(FILL_PAST_THE_DOOR);
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  it('the SAME orchestrator gets `allow` once its standing notes are written', async () => {
+    const config = buildConfig();
+    const daemon = await startDaemon({ config });
+    try {
+      const projectId = 'proj-banked';
+      const { appSessionId, secret } = spawnOrchestratorAndSecret(daemon, config.dataDir, projectId);
+      driveFillPastTheDoor(daemon, appSessionId);
+      expect(await (await postHook(daemon.hookPort, appSessionId, secret, preCompactBody())).text()).toBe('hold');
+
+      // The orchestrator banks — the same file the founding briefing reads back.
+      const notesPath = standingNotesPathFor(join(config.dataDir, 'orchestrator-notes'), projectId);
+      mkdirSync(dirname(notesPath), { recursive: true });
+      writeFileSync(notesPath, '# banked\n', 'utf8');
+
+      const response = await postHook(daemon.hookPort, appSessionId, secret, preCompactBody());
+      expect(await response.text()).toBe('allow');
+      // Still exactly the ONE hold from before the bank — an allow events nothing.
+      expect(streamRecords(daemon, appSessionId).filter((r) => r.type === 'compaction_held')).toHaveLength(1);
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  it('an orchestrator that was NEVER nudged gets `allow` — the door needs an ask first', async () => {
+    const config = buildConfig();
+    const daemon = await startDaemon({ config });
+    try {
+      const { appSessionId, secret } = spawnOrchestratorAndSecret(daemon, config.dataDir, 'proj-unnudged');
+      // No usage_block at all: no fill observed, so no nudge and no hold.
+      const response = await postHook(daemon.hookPort, appSessionId, secret, preCompactBody());
+      expect(await response.text()).toBe('allow');
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  it('a compacted ORCHESTRATOR SessionStart answers with the additionalContext envelope', async () => {
+    const config = buildConfig();
+    const daemon = await startDaemon({ config });
+    try {
+      const projectId = 'proj-resume';
+      const { appSessionId, secret } = spawnOrchestratorAndSecret(daemon, config.dataDir, projectId);
+      const response = await postHook(
+        daemon.hookPort,
+        appSessionId,
+        secret,
+        // `source: "compact"` is the CLI's own post-compaction SessionStart
+        // marker (OBSERVED, SP8·1).
+        JSON.stringify({ hook_event_name: 'SessionStart', source: 'compact', session_id: 'claude-sdk' }),
+      );
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as {
+        hookSpecificOutput: { hookEventName: string; additionalContext: string };
+      };
+      expect(body.hookSpecificOutput.hookEventName).toBe('SessionStart');
+      expect(body.hookSpecificOutput.additionalContext).toContain(
+        standingNotesPathFor(join(config.dataDir, 'orchestrator-notes'), projectId),
+      );
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  it('every OTHER case keeps today\'s byte-identical `ok` body', async () => {
+    const config = buildConfig();
+    const daemon = await startDaemon({ config });
+    try {
+      const orchestrator = spawnOrchestratorAndSecret(daemon, config.dataDir, 'proj-ok');
+      const ordinary = spawnAndSecret(daemon, config.dataDir);
+
+      // An ORDINARY session's post-compaction SessionStart: not our business.
+      const ordinaryCompact = await postHook(
+        daemon.hookPort,
+        ordinary.appSessionId,
+        ordinary.secret,
+        JSON.stringify({ hook_event_name: 'SessionStart', source: 'compact', session_id: 'claude-sdk' }),
+      );
+      expect(await ordinaryCompact.text()).toBe('ok');
+
+      // The ORCHESTRATOR's ordinary (non-compact) SessionStart sources.
+      for (const source of ['startup', 'resume', 'clear']) {
+        const response = await postHook(
+          daemon.hookPort,
+          orchestrator.appSessionId,
+          orchestrator.secret,
+          JSON.stringify({ hook_event_name: 'SessionStart', source, session_id: 'claude-sdk' }),
+        );
+        expect(await response.text()).toBe('ok');
+      }
+
+      // ...and every non-answered hook, on the orchestrator itself.
+      for (const hookEventName of ['Stop', 'StopFailure', 'PreToolUse', 'SessionEnd']) {
+        const response = await postHook(
+          daemon.hookPort,
+          orchestrator.appSessionId,
+          orchestrator.secret,
+          JSON.stringify({ hook_event_name: hookEventName, session_id: 'claude-sdk' }),
+        );
+        expect(response.status).toBe(200);
+        expect(await response.text()).toBe('ok');
+      }
     } finally {
       await daemon.stop();
     }

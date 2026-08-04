@@ -38,9 +38,16 @@ import {
   projectInitializedPayloadSchema,
   compactionObserved,
   compactionObservedPayloadSchema,
+  compactionNudgeSent,
+  compactionNudgeSentPayloadSchema,
+  compactionHeld,
+  compactionHeldPayloadSchema,
+  usageBlock,
   messagePayloadSchema,
 } from './events.js';
-import { sessionRecordSchema } from './schemas.js';
+import { cacheObservabilityProjection } from './projections/cacheObservability.js';
+import { replayFromEmpty } from './projections/projection.js';
+import { sessionRecordSchema, type EventRecord } from './schemas.js';
 import {
   submitPlanPayloadSchema,
   reportReviewPayloadSchema,
@@ -94,14 +101,25 @@ describe('hook ingress vocabulary (B)', () => {
     expect(parsed.success && (parsed.data as Record<string, unknown>).model).toBe('claude-opus-4-8[1m]');
   });
 
-  it('the five registered hook names each map to a constructor emitting the right type', () => {
-    expect(REGISTERED_HOOK_EVENT_NAMES).toEqual(['SessionStart', 'Stop', 'StopFailure', 'PreToolUse', 'SessionEnd']);
+  it('the registered hook names each map to a constructor emitting the right type', () => {
+    // SIX since S8·4 added PreCompact — the compaction door (D64). The ORDER is
+    // pinned too: `REGISTERED_HOOK_EVENT_NAMES` is `Object.keys` of the
+    // constructor map, and it is what the settings file iterates.
+    expect(REGISTERED_HOOK_EVENT_NAMES).toEqual([
+      'SessionStart',
+      'Stop',
+      'StopFailure',
+      'PreToolUse',
+      'SessionEnd',
+      'PreCompact',
+    ]);
     const expectedTypes: Record<string, string> = {
       SessionStart: 'hook_session_start',
       Stop: 'hook_stop',
       StopFailure: 'hook_stop_failure',
       PreToolUse: 'hook_pre_tool_use',
       SessionEnd: 'hook_session_end',
+      PreCompact: 'hook_pre_compact',
     };
     for (const name of REGISTERED_HOOK_EVENT_NAMES) {
       const input = HOOK_EVENT_CONSTRUCTORS[name]!({ appSessionId: 'app-1', hook_event_name: name });
@@ -634,6 +652,129 @@ describe('compaction_observed (S8·4a — the witness of an observed `/compact`)
     expect(
       compactionObservedPayloadSchema.safeParse({ ...observedPayload, durationMs: 'seven' }).success,
     ).toBe(false);
+  });
+});
+
+describe('compaction_nudge_sent (S8·4 — a DELIVERED escalation nudge)', () => {
+  const nudgePayload = { appSessionId: 'aaaaaaaa-0000-4000-8000-000000000001', level: 1, contextTokens: 268_000 };
+
+  it("constructs on the SESSION's own stream, beside the compaction it is about", () => {
+    expect(compactionNudgeSent(nudgePayload)).toEqual({
+      stream: nudgePayload.appSessionId,
+      type: 'compaction_nudge_sent',
+      payload: nudgePayload,
+    });
+    expect(EVENT_TYPES.compactionNudgeSent).toBe('compaction_nudge_sent');
+    expect(EVENT_PAYLOAD_SCHEMAS[EVENT_TYPES.compactionNudgeSent]).toBe(
+      compactionNudgeSentPayloadSchema,
+    );
+  });
+
+  it('requires all three fields — this event IS the escalation memory, so none is decoration', () => {
+    // ⚠ Contrast `compaction_observed`, whose numbers ARE decoration (the
+    // boundary is the fact). Here the level is what suppression keys on and the
+    // fill is the calibration evidence, so a partial record is not a usable one.
+    for (const omitted of ['appSessionId', 'level', 'contextTokens'] as const) {
+      const { [omitted]: _dropped, ...partial } = nudgePayload;
+      expect(compactionNudgeSentPayloadSchema.safeParse(partial).success).toBe(false);
+    }
+  });
+
+  it('the level is a positive integer; the fill is a nonnegative integer', () => {
+    expect(compactionNudgeSentPayloadSchema.safeParse({ ...nudgePayload, level: 0 }).success).toBe(false);
+    expect(compactionNudgeSentPayloadSchema.safeParse({ ...nudgePayload, level: 1.5 }).success).toBe(false);
+    expect(compactionNudgeSentPayloadSchema.safeParse({ ...nudgePayload, contextTokens: -1 }).success).toBe(false);
+    // An observed zero fill is a real (if odd) reading, not a validation error.
+    expect(compactionNudgeSentPayloadSchema.safeParse({ ...nudgePayload, contextTokens: 0 }).success).toBe(true);
+    // A rung the ladder has not grown yet still validates — the config owns the
+    // rungs, not the schema.
+    expect(compactionNudgeSentPayloadSchema.safeParse({ ...nudgePayload, level: 7 }).success).toBe(true);
+  });
+});
+
+describe('compaction_held (S8·4 — the door refused; ALLOWS are deliberately never evented)', () => {
+  const heldPayload = { appSessionId: 'aaaaaaaa-0000-4000-8000-000000000001', contextTokens: 310_000 };
+
+  it("constructs on the SESSION's own stream", () => {
+    expect(compactionHeld(heldPayload)).toEqual({
+      stream: heldPayload.appSessionId,
+      type: 'compaction_held',
+      payload: heldPayload,
+    });
+    expect(EVENT_TYPES.compactionHeld).toBe('compaction_held');
+    expect(EVENT_PAYLOAD_SCHEMAS[EVENT_TYPES.compactionHeld]).toBe(compactionHeldPayloadSchema);
+  });
+
+  it('accepts the minimal shape — appSessionId alone (the fill degrades to ABSENT, never 0)', () => {
+    expect(compactionHeldPayloadSchema.safeParse({ appSessionId: heldPayload.appSessionId }).success).toBe(true);
+    expect(compactionHeld({ appSessionId: heldPayload.appSessionId }).payload).toEqual({
+      appSessionId: heldPayload.appSessionId,
+    });
+  });
+
+  it('rejects a negative or fractional fill', () => {
+    expect(compactionHeldPayloadSchema.safeParse({ ...heldPayload, contextTokens: -1 }).success).toBe(false);
+    expect(compactionHeldPayloadSchema.safeParse({ ...heldPayload, contextTokens: 1.5 }).success).toBe(false);
+  });
+
+  it('there is NO allow event in the vocabulary — allow is the default and is already witnessed', () => {
+    // The design statement, made checkable: `compaction_observed` (S8·4a) records
+    // the compaction that follows an allow, so an allow event would be a second
+    // record of a fact the log already carries, on the hot path of every
+    // compaction. If a `compaction_allowed` ever appears, that reasoning has been
+    // reversed and it needs a decision record, not a quiet addition.
+    expect(Object.values(EVENT_TYPES)).not.toContain('compaction_allowed');
+  });
+});
+
+describe('S8·4 events and I6 replay — the new vocabulary perturbs NO existing read model', () => {
+  // Hand-built records in the store's own shape, so the fold under test is the
+  // real one rather than a paraphrase. ⚠ `ts` is passed EXPLICITLY rather than
+  // derived from `seq`: `cacheObservability` folds `event.ts` into
+  // `latestBlockAt`, so a ts that moved with a record's position would make the
+  // two logs differ for a reason that has nothing to do with the new events.
+  function record(
+    seq: number,
+    ts: string,
+    input: { stream: string; type: string; payload?: unknown },
+  ): EventRecord {
+    return { seq, stream: input.stream, type: input.type, payload: input.payload, ts } as EventRecord;
+  }
+
+  const appSessionId = 'aaaaaaaa-0000-4000-8000-000000000001';
+  const firstUsageAt = '2026-08-04T10:00:01.000Z';
+  const secondUsageAt = '2026-08-04T10:00:09.000Z';
+  const firstUsage = usageBlock({
+    appSessionId,
+    messageId: 'msg-1',
+    usage: { input_tokens: 10, cache_read_input_tokens: 250_000 },
+  });
+  const secondUsage = usageBlock({
+    appSessionId,
+    messageId: 'msg-2',
+    usage: { input_tokens: 20, cache_read_input_tokens: 280_000 },
+  });
+
+  it('cacheObservability folds a log WITH the new events byte-identically to one WITHOUT', () => {
+    // The I6 discipline for a vocabulary addition: a log that now carries the new
+    // events replays to the SAME bytes as one that never saw them — because no
+    // projection folds either event. If either ever grows a fold, this test is
+    // the one that must be deliberately rewritten rather than quietly relaxed.
+    const withoutNewEvents = cacheObservabilityProjection.serialize(
+      replayFromEmpty(cacheObservabilityProjection, [
+        record(1, firstUsageAt, firstUsage),
+        record(2, secondUsageAt, secondUsage),
+      ]),
+    );
+    const withNewEvents = cacheObservabilityProjection.serialize(
+      replayFromEmpty(cacheObservabilityProjection, [
+        record(1, firstUsageAt, firstUsage),
+        record(2, '2026-08-04T10:00:02.000Z', compactionNudgeSent({ appSessionId, level: 1, contextTokens: 250_010 })),
+        record(3, '2026-08-04T10:00:03.000Z', compactionHeld({ appSessionId, contextTokens: 250_010 })),
+        record(4, secondUsageAt, secondUsage),
+      ]),
+    );
+    expect(withNewEvents).toBe(withoutNewEvents);
   });
 });
 
