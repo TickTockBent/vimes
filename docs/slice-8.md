@@ -242,7 +242,8 @@ exactly the 5 fixture tests reddened; restored byte-identical.
   capture into standing notes before any compaction. Bands (<40% general /
   ~60% rolling) recorded as design bands — NOT pinned as FAIL-able assertions
   (Gate-D).
-- **⟸ Gate-D pause — the SP8·1-recommended mechanism shape (sign-off needed):**
+- **⟸ Gate-D pause — ✅ SIGNED OFF 2026-08-04 (Wes, "as written") → decisions.md D64.
+  The mechanism, as signed:**
   **the hook holds the door, the daemon nudges early.** The PreCompact hook
   vetoes via **exit 2 only** (never a JSON decision — observed to be silently
   ignored; risk-register row pins this per CLI bump) while state is unbanked,

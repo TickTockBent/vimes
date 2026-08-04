@@ -2151,3 +2151,41 @@ untouched — it just roots per project.
 non-asset GET serves index.html — Vite assets are absolute so nothing breaks
 under a prefix), which makes S8·2 a daemon-touching unit (restart on deploy),
 no longer UI-only.
+
+## D64 — S8·4 capture-then-compact mechanism: the hook holds the door (exit-2-only), the daemon nudges early — SIGNED OFF 2026-08-04
+
+*(Wes, 2026-08-04: "Sign off on the S8·4 Gate-D mechanism as written." This is
+the Gate-D sign-off the slice-8 plan paused on; the mechanism is the
+SP8·1-recommended shape recorded in slice-8.md S8·4, adopted verbatim.)*
+
+**The mechanism (D57 made operational):**
+- **The PreCompact hook is the DOOR.** While the orchestrator's state is
+  unbanked, the hook vetoes compaction via **exit code 2 only** — never a JSON
+  decision, which SP8·1 observed to be accepted-and-silently-ignored (the
+  risk-register row re-verifies exit-2 semantics per CLI bump). Once banked, it
+  exits 0. Because the hook runs to completion BEFORE summarization, a
+  synchronous file-level bank needs no veto at all — the veto exists for
+  banking that needs a MODEL turn.
+- **The daemon NUDGES early, so the veto rarely fires.** At the ⟨tune⟩
+  thresholds the daemon injects escalating nudges into the orchestrator's
+  session off `latestContextTokens` (already folded in cacheObservability;
+  per-turn granularity — fill is known between turns, never mid-turn). The
+  orchestrator keeps its D57 delay agency: it may finish landing work before
+  capturing; the door holds while it does.
+- **Banked state re-enters** via the session's own standing notes and/or a
+  `SessionStart:compact` hook (observed to fire) — PreCompact itself CANNOT
+  inject context (SP8·1).
+
+**What is signed vs what remains open (Gate-D discipline):**
+- SIGNED: the mechanism shape above.
+- **NOT pinned:** thresholds (⟨tune⟩ ~250–300k) and the <40% general / ~60%
+  rolling bands remain DESIGN BANDS — recorded with assumptions, never
+  FAIL-able assertions, until calibrated against real orchestrator sessions.
+- **NOT adopted (v1):** the strongest form (`DISABLE_AUTO_COMPACT=1` +
+  VIMES-driven deliberate `/compact`) stays optional/parked — the env var is a
+  rule-0.6 fragile surface needing a boot canary if ever adopted.
+- **Open spike-row before LONG deferral is relied on:** sustained veto in a
+  single long-lived process (auto-compact re-offer was observed across
+  processes; `tengu_auto_compact_circuit_breaker` strings exist in the binary,
+  behavior unverified). The early-nudge design deliberately makes long
+  deferral rare rather than depending on it.
