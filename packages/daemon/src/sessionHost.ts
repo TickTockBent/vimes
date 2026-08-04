@@ -26,6 +26,7 @@ import {
   usageBlock,
   withNotificationTrigger,
   type Clock,
+  type CompactionGateDecision,
   type EventInput,
   type EventStore,
   type IdSource,
@@ -348,6 +349,15 @@ interface PendingGate {
   resolve: (result: SdkPermissionResult) => void;
 }
 
+// The narrow slice of the daemon's `CompactionSteward` the host actually calls
+// (S8·4). Declared as an interface rather than imported as the class so the host
+// keeps no dependency on the steward's construction — the same posture the
+// `HookHost` surface takes towards the ingress, in the other direction.
+export interface CompactionStewardSurface {
+  decideGate(appSessionId: string): CompactionGateDecision;
+  resumeContextForCompactedSession(appSessionId: string): string | null;
+}
+
 export interface SessionHostDeps {
   store: EventStore;
   router: EventRouter;
@@ -388,6 +398,12 @@ export interface SessionHostDeps {
     appSessionId: string,
     worklog: ReportCompletionPayload['worklog'],
   ) => void;
+  // S8·4 (D64): the compaction door + the post-compaction pointer. Injected
+  // rather than built here because the policy needs facts the host does not own
+  // (the project registry, the standing-notes directory, the nudge ledger folded
+  // from the log). UNSET = no opinion: every PreCompact answers `allow` and every
+  // SessionStart gets today's plain ack, i.e. exactly the pre-S8·4 behavior.
+  compactionSteward?: CompactionStewardSurface;
 }
 
 // Delete every CLAUDE* key (covers CLAUDECODE) from a copy of the parent env; keep
@@ -1039,6 +1055,7 @@ export class SessionHost implements HookHost {
   private readonly onCompletionReported:
     | ((appSessionId: string, worklog: ReportCompletionPayload['worklog']) => void)
     | undefined;
+  private readonly compactionSteward: CompactionStewardSurface | undefined;
 
   private readonly sdkAdapter: ClaudeSdkAdapter;
   private readonly ptyAdapter: ClaudePtyAdapter;
@@ -1072,6 +1089,7 @@ export class SessionHost implements HookHost {
     this.onPlanCaptured = deps.onPlanCaptured;
     this.onReviewReported = deps.onReviewReported;
     this.onCompletionReported = deps.onCompletionReported;
+    this.compactionSteward = deps.compactionSteward;
 
     const services: AdapterServices = {
       emit: (events) => this.router.emit(events),
@@ -1517,6 +1535,23 @@ export class SessionHost implements HookHost {
     return { status: 'emitted' };
   }
 
+  // ── the S8·4 answer paths (D64) ─────────────────────────────────────────────
+  //
+  // Pure DELEGATION. The host owns process custody and the hook vocabulary; it
+  // owns none of the compaction policy, which needs facts it does not have (the
+  // project registry, the standing-notes directory, the nudge ledger). Both
+  // methods degrade to "no opinion" when the steward is not wired: the door is
+  // open and a compacted session gets today's plain ack, which is exactly the
+  // pre-S8·4 behavior. That is what keeps every existing test — and any
+  // composition that never wanted a steward — unchanged.
+  decideCompactionGateFor(appSessionId: string): CompactionGateDecision {
+    return this.compactionSteward?.decideGate(appSessionId) ?? 'allow';
+  }
+
+  compactResumeContextFor(appSessionId: string): string | null {
+    return this.compactionSteward?.resumeContextForCompactedSession(appSessionId) ?? null;
+  }
+
   // ── internals ────────────────────────────────────────────────────────────
   //
   // ⚠ **ONE OPTIONS OBJECT, NOT A POSITIONAL LIST** (the QUEUE'd finding, taken at
@@ -1563,7 +1598,7 @@ export class SessionHost implements HookHost {
   }
 
   // Mint the whole hook channel for this spawn — secret, settings file
-  // registering the five relays (C), and the env fragment carrying the secret —
+  // registering the relays (C), and the env fragment carrying the secret —
   // then register the digest for the ingress. Returning the channel whole is
   // what keeps the settings file and the secret env inseparable at the call
   // site. Best effort: an fs failure degrades to NO channel (no settings file,

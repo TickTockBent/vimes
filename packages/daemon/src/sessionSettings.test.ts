@@ -1,9 +1,12 @@
 import { afterAll, describe, expect, it } from 'vitest';
-import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  ANSWERING_HOOK_EVENT_NAME,
+  COMPACTION_GATE_ALLOW_BODY,
+  COMPACTION_GATE_HOLD_BODY,
   HOOK_SECRET_ENV_VAR,
   buildSessionSettings,
   envWithHookSecret,
@@ -29,16 +32,23 @@ function relayCommandOf(settingsPath: string): string {
   return parsed.hooks.SessionStart![0]!.hooks[0]!.command;
 }
 
+// The relay command as it stood BEFORE S8·4 made the builder per-event —
+// spelled out as a literal, not re-derived from the builder, so the
+// byte-identical assertions below cannot pass by both sides changing together.
+const PRE_S8_4_RELAY_COMMAND =
+  `curl -fsS -X POST --data-binary @- -H "Authorization: Bearer $VIMES_HOOK_SECRET" http://127.0.0.1:4601/hooks/app-1`;
+
 describe('buildSessionSettings (C)', () => {
-  it('registers all five hooks, each with the relay command; PreToolUse carries the all-tools matcher', () => {
+  it('registers all SIX hooks; PreToolUse carries the all-tools matcher', () => {
     const settings = buildSessionSettings({ appSessionId: 'app-1', hookPort: 4601 });
     expect(Object.keys(settings.hooks).sort()).toEqual(
-      ['PreToolUse', 'SessionEnd', 'SessionStart', 'Stop', 'StopFailure'].sort(),
+      ['PreCompact', 'PreToolUse', 'SessionEnd', 'SessionStart', 'Stop', 'StopFailure'].sort(),
     );
-    const expectedCommand = hookRelayCommand({ appSessionId: 'app-1', hookPort: 4601 });
     for (const [name, entries] of Object.entries(settings.hooks)) {
       expect(entries).toHaveLength(1);
-      expect(entries[0]!.hooks).toEqual([{ type: 'command', command: expectedCommand }]);
+      expect(entries[0]!.hooks).toEqual([
+        { type: 'command', command: hookRelayCommand({ appSessionId: 'app-1', hookPort: 4601 }, name) },
+      ]);
       if (name === 'PreToolUse') {
         expect(entries[0]!.matcher).toBe('*');
       } else {
@@ -47,8 +57,25 @@ describe('buildSessionSettings (C)', () => {
     }
   });
 
+  // ⚠ THE REGRESSION GUARD FOR THE PER-EVENT SPLIT. Making the builder per-event
+  // is the kind of change that quietly rewrites five working relays to fix one;
+  // this pins the other five against a hard-coded pre-S8·4 literal.
+  it('every NON-PreCompact relay command is byte-identical to the pre-S8·4 command', () => {
+    const settings = buildSessionSettings({ appSessionId: 'app-1', hookPort: 4601 });
+    for (const [name, entries] of Object.entries(settings.hooks)) {
+      if (name === ANSWERING_HOOK_EVENT_NAME) {
+        continue;
+      }
+      expect(entries[0]!.hooks[0]!.command).toBe(PRE_S8_4_RELAY_COMMAND);
+    }
+    // ...and the PreCompact one is the ONLY one that differs.
+    expect(settings.hooks[ANSWERING_HOOK_EVENT_NAME]![0]!.hooks[0]!.command).not.toBe(
+      PRE_S8_4_RELAY_COMMAND,
+    );
+  });
+
   it('the relay command posts the hook stdin to the local ingress with the bearer secret', () => {
-    const command = hookRelayCommand({ appSessionId: 'app-xyz', hookPort: 4601 });
+    const command = hookRelayCommand({ appSessionId: 'app-xyz', hookPort: 4601 }, 'SessionStart');
     expect(command).toContain('http://127.0.0.1:4601/hooks/app-xyz');
     expect(command).toContain(`Authorization: Bearer $${HOOK_SECRET_ENV_VAR}`);
     expect(command).toContain('--data-binary @-');
@@ -59,7 +86,7 @@ describe('buildSessionSettings (C)', () => {
   // bearer value. A command line is world-readable via /proc/<pid>/cmdline for
   // as long as the hook runs; the environment is not.
   it('the relay command carries the variable NAME, never a secret VALUE', () => {
-    const command = hookRelayCommand({ appSessionId: 'app-xyz', hookPort: 4601 });
+    const command = hookRelayCommand({ appSessionId: 'app-xyz', hookPort: 4601 }, 'SessionStart');
     // The builder takes no secret at all, so feed a real minted one through the
     // whole channel and prove it is absent from the command it produced.
     const { settingsPath, env } = mintHookChannel({
@@ -82,7 +109,7 @@ describe('buildSessionSettings (C)', () => {
   // Quoting is load-bearing: single quotes would post the LITERAL string
   // "$VIMES_HOOK_SECRET" and every hook for that session would fail auth.
   it('the bearer header is double-quoted so the hook shell expands the variable', () => {
-    const command = hookRelayCommand({ appSessionId: 'app-q', hookPort: 4601 });
+    const command = hookRelayCommand({ appSessionId: 'app-q', hookPort: 4601 }, 'Stop');
     expect(command).toContain(`-H "Authorization: Bearer $${HOOK_SECRET_ENV_VAR}"`);
     expect(command).not.toContain("'Authorization: Bearer");
 
@@ -95,6 +122,86 @@ describe('buildSessionSettings (C)', () => {
       encoding: 'utf8',
     });
     expect(expanded).toBe('Authorization: Bearer expanded-value');
+  });
+});
+
+// ─── the PreCompact relay: the daemon's answer, carried as an exit code ──────
+//
+// ⚠ THESE TESTS EXECUTE THE GENERATED STRING, not a paraphrase of it. Exit 2 is
+// the only channel the CLI honors (OBSERVED SP8·1 Q3a, re-verified on CLI 2.1.221
+// at the S8·4 step-0 gate), so a relay that composes the right words but exits
+// the wrong number vetoes nothing — and the failure is SILENT, because the CLI
+// logs an ignored non-veto as a successful hook. A string assertion alone cannot
+// see that; running it under /bin/sh can.
+describe('the PreCompact relay command (S8·4 / D64 — the compaction door)', () => {
+  const preCompactCommand = hookRelayCommand(
+    { appSessionId: 'app-gate', hookPort: 4601 },
+    ANSWERING_HOOK_EVENT_NAME,
+  );
+
+  // Run the REAL generated command with a scripted `curl` shim first on PATH, so
+  // the shell semantics under test are exactly the ones the hook will run under.
+  function runRelayWithScriptedCurl(curlScript: string): { status: number; stdout: string } {
+    const shimDirectory = mkdtempSync(join(temporaryDirectory, 'curl-shim-'));
+    const shimPath = join(shimDirectory, 'curl');
+    writeFileSync(shimPath, `#!/bin/sh\n${curlScript}\n`, { mode: 0o755 });
+    const result = spawnSync('/bin/sh', ['-c', preCompactCommand], {
+      env: { PATH: `${shimDirectory}:/usr/bin:/bin`, [HOOK_SECRET_ENV_VAR]: 'test-secret' },
+      encoding: 'utf8',
+    });
+    return { status: result.status ?? -1, stdout: result.stdout };
+  }
+
+  it('still POSTs the hook stdin to the same ingress with the same bearer', () => {
+    // The answering relay WRAPS the bare post; it does not replace it. The auth
+    // and transport contract is unchanged.
+    expect(preCompactCommand).toContain('http://127.0.0.1:4601/hooks/app-gate');
+    expect(preCompactCommand).toContain(`-H "Authorization: Bearer $${HOOK_SECRET_ENV_VAR}"`);
+    expect(preCompactCommand).toContain('curl -fsS -X POST --data-binary @-');
+  });
+
+  it('is a SINGLE LINE of POSIX sh (the hook runs under `sh -c`)', () => {
+    expect(preCompactCommand).not.toContain('\n');
+    // Bashisms that would break under dash — the shell /bin/sh is on Debian/Ubuntu.
+    expect(preCompactCommand).not.toContain('[[');
+    expect(preCompactCommand).not.toContain('set -o pipefail');
+  });
+
+  it('EXECUTES: a `hold` body exits 2 — the only channel that actually vetoes', () => {
+    expect(runRelayWithScriptedCurl(`printf %s ${COMPACTION_GATE_HOLD_BODY}`).status).toBe(2);
+  });
+
+  it('EXECUTES: an `allow` body exits 0', () => {
+    expect(runRelayWithScriptedCurl(`printf %s ${COMPACTION_GATE_ALLOW_BODY}`).status).toBe(0);
+  });
+
+  it('EXECUTES: a curl FAILURE exits 0 — the door fails open when the daemon does', () => {
+    // `curl -fsS` against a dead/erroring daemon: empty stdout, nonzero status.
+    // A daemon that is down must not become a permanent veto on compaction.
+    expect(runRelayWithScriptedCurl('echo "curl: (7) Failed to connect" >&2; exit 7').status).toBe(0);
+  });
+
+  it('EXECUTES: any UNRECOGNIZED body exits 0 — only the literal `hold` vetoes', () => {
+    expect(runRelayWithScriptedCurl('printf %s HOLD').status).toBe(0);
+    expect(runRelayWithScriptedCurl('printf %s "hold "').status).toBe(0);
+    expect(runRelayWithScriptedCurl('printf %s \'{"decision":"block"}\'').status).toBe(0);
+    expect(runRelayWithScriptedCurl('exit 0').status).toBe(0);
+  });
+
+  it('EXECUTES: writes NOTHING to stdout — the body is captured, never echoed', () => {
+    // A PreCompact hook has no usable stdout channel (its hookSpecificOutput
+    // variant is rejected by the CLI's own schema, OBSERVED SP8·1 Q3b(i)), so
+    // leaking the answer there would only pollute the transcript's hook record.
+    expect(runRelayWithScriptedCurl(`printf %s ${COMPACTION_GATE_HOLD_BODY}`).stdout).toBe('');
+    expect(runRelayWithScriptedCurl(`printf %s ${COMPACTION_GATE_ALLOW_BODY}`).stdout).toBe('');
+  });
+
+  it('never emits a JSON decision — the shape the CLI accepts and ignores', () => {
+    // The trap SP8·1 named explicitly: `{"decision":"block"}` is schema-checked,
+    // logged as a SUCCESS, and does not block. Nothing in this relay may look
+    // like an attempt to use it.
+    expect(preCompactCommand).not.toContain('decision');
+    expect(preCompactCommand).not.toContain('continue');
   });
 });
 

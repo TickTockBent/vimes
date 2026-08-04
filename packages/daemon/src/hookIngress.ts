@@ -6,6 +6,7 @@ import {
   SYSTEM_STREAM,
   hookEventPayloadSchema,
   lineQuarantined,
+  type CompactionGateDecision,
   type EventInput,
   type EventRouter,
 } from '@vimes/core';
@@ -36,7 +37,25 @@ export type HookIngestResult = { status: 'emitted' } | { status: 'unknown-event'
 export interface HookHost {
   verifyHookSecret(appSessionId: string, presentedSecret: string | undefined): HookAuthResult;
   ingestHook(appSessionId: string, body: Record<string, unknown>): HookIngestResult;
+  // S8·4 (D64) — the two ANSWER paths. Both return the daemon's decision; the
+  // host owns the policy, this module owns only the wire shape.
+  //
+  // `decideCompactionGateFor` answers a PreCompact: `'hold'` vetoes, `'allow'`
+  // proceeds. `compactResumeContextFor` returns the paragraph to hand back to a
+  // just-compacted ORCHESTRATOR session, or null for anything else.
+  decideCompactionGateFor(appSessionId: string): CompactionGateDecision;
+  compactResumeContextFor(appSessionId: string): string | null;
 }
+
+// The hook names this ingress ANSWERS rather than only records. Named here
+// because the answer shapes below are this module's wire contract.
+const PRE_COMPACT_HOOK_EVENT_NAME = 'PreCompact';
+const SESSION_START_HOOK_EVENT_NAME = 'SessionStart';
+// The CLI's own `SessionStart` source value for a post-compaction start —
+// OBSERVED at SP8·1 (`hook_name: "SessionStart:compact"` in the SDK stream, and
+// `source: "compact"` in the hook body). Rule 0.7: this literal is a fact we saw,
+// not one we read in a doc.
+const COMPACT_SESSION_START_SOURCE = 'compact';
 
 export interface HookIngressDeps {
   host: HookHost;
@@ -117,10 +136,49 @@ export function createHookIngress(deps: HookIngressDeps): HookIngress {
     // 4) Ingest — the host emits the hook event (+ correlation for SessionStart).
     // An unrecognized hook_event_name is quarantined but still accepted (the
     // relay is well-formed and authed; nothing to route on).
-    const result = host.ingestHook(appSessionId, validated.data as Record<string, unknown>);
+    const validatedBody = validated.data as Record<string, unknown>;
+    const result = host.ingestHook(appSessionId, validatedBody);
     if (result.status === 'unknown-event') {
       emitQuarantine([lineQuarantined({ appSessionId, raw: capRaw(rawBody), reason: 'hook-unknown-event' })]);
     }
+
+    // 5) ANSWER (S8·4, D64). Recording comes FIRST, above, so the log carries the
+    // hook fire whatever the answer turns out to be. Only two hooks are answered;
+    // every other event keeps the byte-identical `ok` body it has always had.
+    const hookEventName =
+      typeof validatedBody.hook_event_name === 'string' ? validatedBody.hook_event_name : undefined;
+
+    if (hookEventName === PRE_COMPACT_HOOK_EVENT_NAME) {
+      // ⚠ THE BODY IS THE PROTOCOL, and it is a BARE WORD on purpose. The relay
+      // that reads it is `[ "$RESPONSE" = "hold" ]` in a POSIX shell — no JSON
+      // parser, no `jq` dependency — because a hook that cannot parse its own
+      // answer fails in the direction that wedges compaction. See
+      // sessionSettings.ts's `hookRelayCommand`.
+      return context.text(host.decideCompactionGateFor(appSessionId), 200);
+    }
+
+    if (
+      hookEventName === SESSION_START_HOOK_EVENT_NAME &&
+      validatedBody.source === COMPACT_SESSION_START_SOURCE
+    ) {
+      const resumeContext = host.compactResumeContextFor(appSessionId);
+      if (resumeContext !== null) {
+        // FRAGILE-ADAPTER (rule 0.6): the envelope shape is Claude Code's, and it
+        // is SCHEMA-CHECKED at the far end — SP8·1 OBSERVED the CLI rejecting a
+        // malformed hook output with "Hook JSON output validation failed" and
+        // proceeding as if the hook had said nothing. `SessionStart` IS among the
+        // accepted `hookSpecificOutput` variants (unlike PreCompact, which is
+        // not), which is the whole reason the post-compaction pointer rides this
+        // hook rather than the one that fires at the boundary.
+        return context.json({
+          hookSpecificOutput: {
+            hookEventName: SESSION_START_HOOK_EVENT_NAME,
+            additionalContext: resumeContext,
+          },
+        });
+      }
+    }
+
     return context.text('ok', 200);
   });
 

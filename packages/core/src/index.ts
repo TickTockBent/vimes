@@ -122,6 +122,25 @@ export {
   type OrchestratorFoundingInput,
   type OrchestratorReorientationInput,
 } from './orchestrator/founding.js';
+// S8·4 (D57/D64) — the transcript lifecycle's pure policy: escalating capture
+// nudges, the compaction door, and the words for both.
+export {
+  V0_COMPACTION_STEWARD_CONFIG,
+  EMPTY_COMPACTION_NUDGE_MEMORY,
+  sumContextTokens,
+  rememberCompactionNudge,
+  evaluateCompactionNudge,
+  decideCompactionGate,
+  composeCompactionNudge,
+  composeCompactionResumeContext,
+  type CompactionStewardConfig,
+  type CompactionNudgeThreshold,
+  type CompactionNudgeMemory,
+  type CompactionMemoryEntry,
+  type CompactionNudgeInput,
+  type CompactionGateInput,
+  type CompactionGateDecision,
+} from './orchestrator/compactionSteward.js';
 export {
   TASK_STAGES,
   TASK_STAGE_EDGES,
