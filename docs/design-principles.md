@@ -130,6 +130,17 @@ principle before recommending. Seeded at kickoff from the spec's ground rules
     stale meter in an unattended dispatched run means STOP (worst case:
     the 5-hour window is the human's tomorrow). One branch, when unattended
     operation lands.
+15. **The daemon's public API (HTTP/WS + MCP) IS the extension API.**
+    *(herdr 2.1.1, Wes-ratified 2026-08-04: "there is no separate plugin
+    SDK; the entire CLI is the plugin API.")* No second SDK to design,
+    version, document, or keep honest. First-party consumers — the UI, the
+    MCP verb-family servers, the future CLI client — dogfood the same
+    surface, so the contract cannot silently rot and third-party extensions
+    are never second-class. Compounds #10 (MCP server = thin client of the
+    daemon API). Consequence: a capability an extension will someday need is
+    a capability the public API must carry — "internal-only" API surface is
+    a smell, and the D66 two-tier boundary decides which tier gets what, not
+    whether a second interface exists.
 
 ## Standing consequences worth restating
 

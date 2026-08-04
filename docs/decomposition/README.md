@@ -96,7 +96,7 @@ the right doc, no action due yet), **pending** (waits for its slice/trigger).
 | Item (source) | Lands in | Status 2026-08-04 |
 |---|---|---|
 | Extension manifest shape modelled on `herdr-plugin.toml`: id/version/`min_vimes_version`, actions (with `contexts`), events (SPINE subscriptions — exact fit), panes, link handlers, build/startup (hd 2.1.6) | slice-9 D51 node-kit design pass | **noted** → design-directions herdr entry; design-pass input alongside D62 ACP read |
-| Rule: the daemon's public API (HTTP/WS + MCP) *is* the extension API — no second SDK; first-party consumers dogfood it (hd 2.1.1) | design-principles | **proposed** — awaits Wes ratification (compounds principle 10) |
+| Rule: the daemon's public API (HTTP/WS + MCP) *is* the extension API — no second SDK; first-party consumers dogfood it (hd 2.1.1) | design-principles | **ratified 2026-08-04** → design-principles #15 |
 | Two-tier extension boundary: in-process modules vs external argv processes, and which API each gets (hd §5 Q1) | slice-9 design pass | **opened → D66** (lean: both tiers, deliberately) |
 | Per-extension config/state isolation on disk; no cross-extension state access (hd 2.1.5) | engine design | **noted** — makes the already-articulated module-isolation rule concrete |
 | Extension trust decision BEFORE third-party extensions: preview-before-install, ref pinning, stated non-sandboxing — priced against the Access-authenticated daemon, not a local tool (hd §5 Q2) | before the authoring method publishes | **opened → D67** (lean: v1 first-party-only; manifest designed so preview/pinning are possible day one) |
