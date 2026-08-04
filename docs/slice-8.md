@@ -408,6 +408,41 @@ Drive verbs (promote/move/dispatch/amend — S8·7+) come only after the trial
 passes, one individually-revertible grant at a time. Board-events-as-turns is
 the far seam: reserved, unbuilt, undesigned.
 
+**TRIAL LOG (append per task):**
+
+**Task 1 — `0dc79a84` searchMany() on johnny (2026-08-04).** Authored by
+johnny's orchestrator on its FIRST founding (new S8·6 briefing): grounded in
+the code unprompted, one-shot `create_task` call, zero validation bounces.
+Orchestrator grade (Fable): **no rewrite needed** — 8 independently-checkable
+criteria (incl. spy-counted single-embedding-call), 7 real explicitly-out
+fences (found and fenced `searchAcross()`), genuine kill criterion. Wes
+promoted as-is. Planner answered the kill criterion explicitly before
+planning ("stop-condition check → Proceed"); implementer re-checked it
+independently (CONTINUE), implemented per plan, ran the real integration
+suite against a docker-compose test Postgres AND tore it down after, and
+fenced the foreign uncommitted count() work in its worklog ("predates this
+task, unrelated, left as-is"). Review dispatched by Wes (session `c95d0166`),
+verdict pending at capture time. **Rewrite tally: 0/1.**
+
+**Trial findings so far (none halting):**
+1. **Worktree isolation is RESERVED, NOT BUILT** — `isolation: 'worktree'`
+   rides every task record but the dispatcher spawns in the PROJECT ROOT.
+   Both the planner and implementer for task 1 ran in johnny's dirty main
+   tree (Wes's deliberate dirty-repo experiment — the entanglement of
+   searchMany with uncommitted count() in one tree is the observed cost).
+   Consequence pair when isolation IS built: planning would ground on a
+   DIFFERENT tree than the live one (plan/tree skew — plan-in-worktree or
+   dirty-tree warning needed), and merge-back ownership is undesigned.
+2. **Review does not auto-dispatch, BY DESIGN** (D53 anti-chaining;
+   dispatchDecision.ts's fail-closed promoter match). Wes: fine for now;
+   future = D51's per-node auto-dispatch flag, the extension author's choice.
+3. Watch item: compound criteria (task 1's #8 bundles README+spec+roadmap+
+   CHANGELOG) — if a reviewer stumbles, doctrine gains "one criterion, one
+   check".
+4. The dirty-tree handling was GOOD at every layer without being taught:
+   orchestrator flagged it at founding and banked it in notes; implementer
+   fenced it in pathsRejected. No layer clobbered or absorbed foreign work.
+
 ## Explicitly OUT (slice-wide)
 
 Drive verbs beyond author · `task_commented` emitter (D59) · board-events

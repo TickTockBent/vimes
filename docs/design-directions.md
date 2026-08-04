@@ -1048,6 +1048,35 @@ it), the relay/ticket infra (tunnel + Access already solves single-operator reac
 channel gateway, browser/SSRF, OS sandbox — all horizon-only. The decomp's skip
 list is well-reasoned.
 
+## Panel open-semantics: nav restarts the drill, the header button appends — two rules, felt as one bug
+
+*(Wes, 2026-08-04, mid-trial: "If I open Orchestrator first and then any other
+panel (tasks), that panel replaces orchestrator. If I open orchestrator second,
+it opens on the side… this is a wider scale panel issue (open cost, replaces
+tasks)… maybe a misalignment of my understanding." Captured, not decided.)*
+
+**Diagnosis (code-confirmed).** `openPanelFrom` is D41's truncate-forward
+drill-path. The sidebar's nav items emit with **index 0** (by design — "a click
+in the list opens FROM index 0 → truncates to [list] then pushes"), so every
+nav click STARTS A NEW DRILL from the root, discarding open panels. The S8·5
+Orchestrator header button opens from the **tail**, so it APPENDS. Both are
+correct under their own rule; the rules disagree, and live use feels the
+disagreement as breakage.
+
+**The decision when revisited:** should top-level view opens (nav + header
+buttons) (a) keep restarting the drill (D41-consistent; the stack stays a
+linear parentage chain — editor-closes-with-files depends on it), (b)
+**append-or-focus** (if the view is already open, focus its panel; else open
+beside — matches Wes's "alongside" expectation, breaks linear parentage for
+nav-opened panels), or (c) split the vocabulary: DRILL opens (from a panel's
+content) truncate-forward as today, TOP-LEVEL opens (nav/header) append-or-
+focus — two named open kinds instead of one rule bent two ways. **Lean: (c)**
+— it matches what the two surfaces already do (the header button IS a
+top-level open and already appends), names the distinction instead of hiding
+it, and leaves D41's back/close semantics untouched. Interacts with the
+end-state entry (board-as-sidebar, work-as-panels) and the eventual
+dock/drag redesign — decide no later than that redesign's design pass.
+
 ## Mined from the agent-of-empires decomp — UI doctrine, and the differentiator made visible
 
 *(2026-07-29, `docs/decomposition/agent-of-empires-decompose.md` reviewed and
