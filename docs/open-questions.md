@@ -394,3 +394,46 @@ comment channel while Wes is the only promoter. **Trigger:** review flows going
 async (comments needing to outlive a conversation), or the orchestrator needing
 to annotate tasks it didn't author. **Lean:** reserve-only until the trigger
 fires; the consumer surface (board comments) gets designed with it.
+
+## D62 — Does VIMES adopt ACP as the multi-provider seam, or keep the private adapter interface?
+**Opened 2026-07-29 (agent-of-empires decomp 2.1/§5 Q1, Wes-ratified).** The
+planned multi-provider seam was a capabilities-declared adapter interface of our
+own invention (codor 2.5; the multi-provider bill is now 7×-corroborated across
+the series). AoE pays that bill with the **Agent Client Protocol** instead — a
+public JSON-RPC standard already encoding session lifecycle, prompt turns,
+tool-call reporting, permission requests, plan updates, capability negotiation,
+and fs/terminal delegation, already implemented by multiple agent CLIs and
+editors. Adopting it would make provider #2 near-free and the seam an
+implementation of a standard rather than a private abstraction; against it, ACP
+is a session-*interaction* protocol, not a work-order protocol — VIMES's
+differentiators (`submit_plan`, `report_review` with criterion UUIDs,
+`deriveReviewOutcome`) sit ABOVE it either way, and a standard brings its own
+versioning and assumptions (rule 0.6 applies to it like any external surface).
+Sub-question flagged by the decomp: whether ACP's plan-update primitive is
+liftable as an artifact the way D48's `ExitPlanMode` interception is, or forces
+the plan boundary back toward a tool-call contract. **Trigger:** BEFORE the
+stage-runner interface hardens — the spec read is an explicit input to the
+slice-9 D51 design pass. **Lean:** read the spec first (research, not a spike —
+one session, produces a D-record either way); the strategic read says adoption
+would be a win, not a concession, but nothing is decided from documentation
+alone about what we'd build against — anything adopted gets the rule-0.6
+fragile-adapter treatment and observed-behavior verification.
+
+## D63 — How does a local/terminal CLI client authenticate to the daemon?
+**Opened 2026-07-29 (the CLI-client direction — see "One daemon, N faces" in
+design-directions.md; Wes: "we're not adding auth yet, but eventually").** I14
+is deliberately fail-closed with no loopback exemption: every route, static and
+WS included, requires a Cloudflare Access JWT, so a local client hitting
+127.0.0.1:4600 gets 401 today (verified). A CLI needs a credential story, and
+there are two shapes: **(a) go through the front door** — the CLI talks to the
+public URL like every other client, minting an Access token via `cloudflared
+access login`; zero daemon changes, I14 stays a single choke point, works
+today. **(b) a local credential path** — unix domain socket or loopback bearer
+token (the hook-ingress :4601 posture already in the codebase; same territory
+as the "alert my phone" API entry) — faster round-trips, but a second door
+beside the choke point I14 built, which is a real security decision, not a
+detail. **Trigger:** the tier-one CLI unit gets scheduled. **Lean:** (a) first —
+prove the CLI on the front-door path where no new trust is minted; build (b)
+only if tunnel latency costs real work in practice, and design it together with
+the "alert my phone" machine-caller credential rather than as a second bespoke
+door.

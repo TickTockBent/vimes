@@ -1010,3 +1010,114 @@ model, and D43/D44 (the work-order/plan seam).
 it), the relay/ticket infra (tunnel + Access already solves single-operator reach),
 channel gateway, browser/SSRF, OS sandbox — all horizon-only. The decomp's skip
 list is well-reasoned.
+
+## Mined from the agent-of-empires decomp — UI doctrine, and the differentiator made visible
+
+*(2026-07-29, `docs/decomposition/agent-of-empires-decompose.md` reviewed and
+ratified by Wes same day. AoE is the closest competitor in the series — same
+lane (tmux-backed sessions, mobile PWA over a tunnel, push, diff review), ahead
+on session-manager polish, with **no work-order/verdict machine anywhere in it**.
+The operational carry-overs live in the decomposition README tracker; the two
+UI-shaping consequences land here because they bind the redesign era.)*
+
+**1. Write the UI design doctrine doc before the next substantial agent-built
+UI unit.** AoE keeps `web/DESIGN.md` — a standalone written design system with a
+product classifier, numbered principles, a full type table, named surface
+tokens, and an explicit **"what we avoid"** list ("AI slop patterns: purple
+gradients, 3-column icon grids, centered-everything"). VIMES has an architecture
+constitution but nothing equivalent for the UI — and under the standing
+nothing-is-sacred stance above, large agent-built redesigns are COMING. One page,
+written once, is what keeps N agents' UI work coherent through a reshape: it is
+a **work-order input** (cite it in every UI WO the way design-principles is
+cited in core WOs), not a style guide. Contents when written: the principles
+(including "real estate to content, not chrome" from the UI-shape entry above,
+and AoE's "density over chrome" which VIMES shares), the type scale, the named
+tokens already in use (ink/panel/line/accent/warn), and the avoid-list.
+
+**The divergence to state in that doc, verbatim-worthy:** AoE's principle is
+"mobile is monitoring" — on the phone you mostly *watch*. **VIMES's is the
+opposite: mobile is for DECIDING** — pillar 5, answering a gate in one tap while
+the cache is warm; watching is incidental. That difference is what justifies
+every decide-in-one-tap interaction (tier-0 notification actions, the gate
+cards) and it is the sentence that keeps a UI agent from optimizing the wrong
+thing on the small screen.
+
+**2. The verification loop must be VISIBLE in the UI, not just true in the
+architecture** (aoe §7, the strategic consequence). AoE's structured view has
+plan panels, tool-call cards, swipe-to-approve — the same visual language VIMES
+is building. What it cannot render, because the concepts don't exist in it:
+a work-order with acceptance criteria, a plan crossing an agent boundary as an
+artifact, a fresh implementer, a criterion-keyed verdict, a bounce loop. **If
+the board reads as a nicer session list, VIMES gets compared to AoE as a
+session list — and loses.** Standing input for every board/redesign unit: the
+differentiators go on screen FIRST — provenance chips (orchestrator-authored vs
+hand-made, already required by the Gate-2 pivot criterion), per-criterion
+verdict state, attempt/bounce history, the work-order itself as the card's
+face. Per-tool-call approval is what AoE has; per-criterion verification is
+what VIMES is — the screen should make that difference legible at a glance.
+
+## One daemon, N faces — the VIMES CLI client
+
+*(Wes, 2026-07-29, reading the AoE decomp: "this is a product that runs
+entirely in a CLI window and I think we could have a version of that without
+much trouble… a Vimes CLI terminal you can open to do work locally which is
+also reflected in the website/app, sessions mirrored properly and alerts still
+working via your phone." Ratified as a direction same day — "love the idea."
+Captured, not scheduled.)*
+
+**The thesis: the daemon is the product; every face is a client.** Rule 0.3
+already made this true — the web UI talks only HTTP+WS, and nothing in the
+daemon knows what renders. A terminal client is a THIRD face (web, push, CLI),
+not a new architecture. AoE walked the same road in the opposite direction
+(TUI first, web added); the lesson transfers: same daemon, multiple faces.
+
+**What falls out free, verified against the current build (2026-07-29):**
+- **Sessions mirror automatically** — subscribe semantics are already
+  client-count-agnostic (two browser tabs prove it daily). A CLI attached to a
+  session and a phone watching it are two subscribers on one stream.
+- **Alerts keep working untouched** — push is daemon-side, driven by the
+  attention model, independent of which client (if any) is connected.
+- **The PTY story gets BETTER, not merely ported.** Rule 0.8 relays terminal
+  bytes verbatim; the web needed xterm.js to reconstruct a terminal from those
+  bytes — a real terminal IS the native renderer. `vimes attach <session>` is a
+  thin WS client: stream to stdout, stdin upstream, SIGWINCH → the resize API.
+  This is the killer feature and the cheapest one.
+- **Project scoping from cwd** — the D61 symmetry: the web needed
+  path-carries-project URLs; a CLI run inside a project directory scopes itself
+  via `projectForCwd` (S8·1's core authority), no flag needed.
+- **The recursion hazard does NOT worsen** — the CLI process is a *client*,
+  not a daemon child. A daemon restart drops its connection (reconnect), not
+  its existence; the claude process underneath is the same beat-7-recoverable
+  session it is today.
+
+**The three real gaps:**
+1. **Auth — the only architectural one.** I14 is deliberately fail-closed with
+   NO loopback exemption (verified in `auth.ts`; a local `curl` to :4600 401s
+   today). **Wes 2026-07-29: not adding auth yet, but eventually.** → D63 in
+   open-questions carries the lean: `cloudflared access` token through the
+   public URL first (zero daemon changes, I14 stays a single choke point); a
+   local credential path (unix socket, or loopback bearer per the hook-ingress
+   posture — cf. the "alert my phone" entry above, same decision territory)
+   only if tunnel latency annoys in practice.
+2. **The client-kit extraction — "completing the separation," mostly
+   mechanical.** The house rule already did the hard part: everything in
+   `packages/ui/src/lib/` is pure, tested, framework-free (no Vue imports —
+   why `.vue` carries no logic). Extract the shared surface (`types`,
+   `sessionRow`, `dispatchFollow`, `orchestratorEntry`, `sessionListPartition`,
+   `projectContext`, …) into a `packages/client-kit` both faces consume.
+   Forcing-function bonus: anything that WON'T extract cleanly is web-coupling
+   debt found early.
+3. **The TUI itself — the real cost, and it tiers.** **Tier one: a thin
+   command CLI** (`vimes ls / attach / board / orchestrator`) — cheap, high
+   dogfood value, `attach` alone changes the daily workflow. **Tier two: a
+   full-screen dashboard** — a genuine product surface that competes on AoE's
+   home turf, which the aoe §7 read says not to do. If tier two is ever built,
+   the visible-differentiator entry above applies in full: a TUI that is just
+   session-switching is tmux with extra steps.
+
+**Sequencing lean:** the client-kit extraction pairs naturally with the
+slice-9 design pass (it is the same "what is the contract between the daemon
+and ANY consumer" question the D62 ACP read informs); the tier-one CLI is an
+early-slice-10 candidate after the Gate-2 trial. Nothing here preempts slice 8.
+**Trigger:** Wes schedules it; D63 must be settled (or consciously deferred to
+the public-URL path) before the first CLI unit.

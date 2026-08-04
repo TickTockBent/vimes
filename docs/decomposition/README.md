@@ -1,7 +1,7 @@
 # Decomposition series — index & carry-over tracker
 
-Prior-art pattern extraction through the Vimes lens (2026-07-19): three
-repos, each analyzed against the canonical spec/docs. **Nothing in these
+Prior-art pattern extraction through the Vimes lens (series opened
+2026-07-19), each repo analyzed against the canonical spec/docs. **Nothing in these
 documents self-applies** — every item below is applied deliberately, and this
 tracker is the ledger of what has and hasn't been.
 
@@ -12,6 +12,7 @@ tracker is the ledger of what has and hasn't been.
 | [codor-decompose.md](codor-decompose.md) | rjx18/codor | sibling design; custody trio; assumption ledger; brakes |
 | [agenc-core-decompose.md](agenc-core-decompose.md) | agenc-core | admission kernel (fail-closed budgets); deadline propagation |
 | [agentswarms-decompose.md](agentswarms-decompose.md) | AgentSwarms-fyi/agentswarms | **checkpoint anatomy** (the resumability checklist); attended/unattended failure-semantics synthesis; quality trends above the verdict |
+| [agent-of-empires-decompose.md](agent-of-empires-decompose.md) | agent-of-empires/agent-of-empires | **the closest competitor** (same lane: sessions + mobile PWA + tunnel); ACP as an off-the-shelf capabilities seam; approval nonces; context-reset surfacing; notification debounce; written UI doctrine |
 
 **Strongest signal of the series:** four-repo independent convergence on the
 Vimes bones (daemon-owned sessions, event journal, pure-function core,
@@ -68,3 +69,17 @@ the right doc, no action due yet), **pending** (waits for its slice/trigger).
 | Per-criterion outcome aggregation over the spine (failure rate by criterion/stage/model/author) (as 2.5) | insights read-model | pending — **natural instrument for the Gate-2 pivot criterion** (authored-vs-hand-made rewrite rate) |
 | Defensive-skip discipline for model-shaped text VIMES doesn't control (as 2.5) | as encountered | noted |
 | ELv2 packaging shape as the commercial-model reference (as §7) | the someday-conversation | noted, zero action |
+
+### Agent-of-Empires carry-overs (added 2026-07-29 — agent-of-empires-decompose.md §6; Wes-ratified same day)
+
+| Item (source) | Lands in | Status 2026-07-29 |
+|---|---|---|
+| Context-reset made explicit + visible: spine event when a resume fails to restore model context + a visible marker in the session view (aoe 2.2) | session host | **ratified, pending** — the S8·4a `compaction_observed` recognizer/projection is the exact pattern to follow (this is its sibling event); note the orchestrator's refound notice (S8·5) already surfaces the standing-entity case |
+| Notification debounce on status flicker: attention state stays instantaneous in the spine, DELIVERY waits for stability (aoe 2.4, their 100ms default) | attention model / push pipeline | **ratified, pending** — protects push-channel credibility (the operator screenshots these); low effort |
+| Stale-action guard on state-advancing UI actions (aoe 2.3, approval nonces) | board API + UI, incrementally | **ratified, reshaped** — the orchestrator's check found VIMES closer than the decomp assumed: `TaskWriter` already reads fresh + refuses departed-stage edges, and `(taskId, stage, attempt, workOrderRev)` already exists. The lift is CAS, not a token system: UI actions CARRY the identity they rendered against; server refuses mismatch. The genuinely-missing half — an anti-synthesis human-proof secret the agent never sees — is designed as part of the S8·6-era grant work (principle 13's mobile-shaped corollary), not standalone |
+| Read the ACP spec; decide adopt-vs-private-seam by D-record (aoe 2.1/§5 Q1) | before the stage-runner interface hardens | **ratified → open-questions D62** — explicit input to the slice-9 D51 design pass; research, not a spike |
+| Written UI design doctrine doc: principles, type scale, tokens, an explicit "what we avoid" list; names the AoE divergence (their "mobile is monitoring" vs VIMES "mobile is for deciding", pillar 5) (aoe 2.7) | repo `docs/`, before the next substantial agent-built UI unit | **ratified, pending** — a doctrine document (work-order input for UI agents), not a style guide; see the design-directions entry |
+| Bounded transport-respawn → park-with-reason, never go silent (aoe 2.5; 5th series appearance of bounded-retry-then-park, first at transport level) | session host | pending — extends the watchdog discipline from stage runs to SDK-stream/PTY death |
+| Per-session operational log: LRU-bounded writers, synchronous best-effort writes, re-entrancy guarded (aoe 2.6) | daemon diagnostics | pending — pairs with the `vimes doctor` item (agenc) |
+| Device pairing (QR + passphrase) + connected-devices view (aoe 2.8; 3rd appearance of pairing-link) | horizon | deferred — post-MVP, only if VIMES goes beyond one operator |
+| **Strategic (§7): the verification loop must be VISIBLE in the UI**, or VIMES gets compared to AoE as a session list — and loses that comparison | UI redesign era | **ratified → design-directions entry** — standing input, not a unit |
