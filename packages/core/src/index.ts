@@ -220,12 +220,14 @@ export {
   reportReviewPayloadSchema,
   reportCompletionPayloadSchema,
   scopedTokenBindingSchema,
+  createTaskToolPayloadSchema,
   type StageRunIdentity,
   type ArtifactEnvelope,
   type SubmitPlanPayload,
   type ReportReviewPayload,
   type ReportCompletionPayload,
   type ScopedTokenBinding,
+  type CreateTaskToolPayload,
 } from './tasks/workOrder.js';
 export {
   WATCHDOG_GOVERNED_LIVENESS,

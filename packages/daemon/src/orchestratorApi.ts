@@ -232,13 +232,26 @@ export function registerOrchestratorApi(app: Hono, deps: OrchestratorApiDeps): v
       cwd: project.root,
       name: `Orchestrator — ${orchestratorDisplayName(project)}`,
       // D56's marking: presence IS the kind, and this is the only writer of it.
+      //
+      // ⚠ **S8·6 MADE THIS LINE LOAD-BEARING TWICE OVER.** It still marks the
+      // record so the ensure path can find this session again — and it is now also
+      // what GRANTS the session its footing: the host reads the marking back off
+      // the record at every process start and mounts D65's `vimes_board` family
+      // (today: `create_task`) under D58's `permissionMode: 'auto'`. See
+      // `startProcess` in sessionHost.ts for why the grant is derived from the
+      // record rather than passed as an option here — in short, `sendMessage`
+      // auto-resumes an orchestrator through a path this file cannot reach, and a
+      // grant that lived on the call would quietly vanish there.
       orchestratorForProjectId: projectId,
-      // ⚠ NO `permissionMode`, NO `dispatched`, NO `stage` — deliberately. The
-      // orchestrator is an INTERACTIVE session (D56: a conversation partner, not
-      // an unattended run), so it takes the SDK default footing, keeps the human
-      // gate, and is offered none of the dispatched report tools. D58 (which
-      // permission mode a tool-bearing orchestrator runs in) settles at S8·6,
-      // with the author grant that first gives it a tool.
+      // ⚠ STILL NO `dispatched` AND NO `stage`, and that is the S8·6 kill
+      // criterion's exact seam. The orchestrator is an INTERACTIVE session (D56: a
+      // conversation partner, not an unattended run), so it is NOT clamped: no
+      // `tools` allowlist, no `disallowedTools` denylist — D50 governs dispatched
+      // runs and this is not one, so nothing about the author grant edits or
+      // weakens it. The grant is the MOUNT, which D52's spike proved orthogonal to
+      // the clamp (an MCP tool needs no allowlist entry and opens no spawn hole).
+      // It is offered none of the dispatched REPORT tools either: it does not
+      // report, it authors.
     });
     if ('refused' in spawnResult) {
       // No session exists, so there is nothing to brief and nothing to mark. The

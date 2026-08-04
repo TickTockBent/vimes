@@ -105,7 +105,14 @@ export interface SdkReportToolSpec {
   name: string;
   description: string;
   inputSchema: z.ZodRawShape;
-  handler: (input: unknown) => Promise<{ ok: boolean }>;
+  // ⚠ S8·6 ADDED THE OPTIONAL `acknowledgement`, ADDITIVELY. A handler that sets
+  // it has the factory return THAT string instead of the spec's static
+  // `recorded`/`notRecorded` below; a handler that does not (both report tools —
+  // and they were not touched) produces byte-identical model-facing text. The
+  // reason it exists is that `create_task`'s answer cannot be a constant: it names
+  // the MINTED taskId, and on the malformed path it names the field that failed
+  // validation. A per-CALL fact cannot live on a per-SPEC constant.
+  handler: (input: unknown) => Promise<{ ok: boolean; acknowledgement?: string }>;
   // ⚠ S7·7b ADDED THIS, and the reason is that there are now TWO tools on one
   // server. The factory's wrap-up `CallToolResult` used to hard-code "Review
   // verdict recorded." — correct while `report_review` was the only customer, and
@@ -116,13 +123,31 @@ export interface SdkReportToolSpec {
   // path's model-facing bytes are unchanged (the review path is out of scope for
   // S7·7b — this is an additive field, not a behaviour change).
   acknowledgement: {
-    // Returned when `handler` resolved `{ ok: true }`.
+    // Returned when `handler` resolved `{ ok: true }` WITHOUT its own
+    // acknowledgement. S8·6 note: still REQUIRED rather than optional, so every
+    // spec states in one place what it says back on each outcome even when its
+    // handler usually overrides it — a spec whose only answer lived inside a
+    // closure would be a tool nobody can read the words of.
     readonly recorded: string;
-    // Returned when it resolved `{ ok: false }`. No handler produces that today;
-    // the string exists because the `{ ok: boolean }` contract permits it and a
-    // silent success message on a failure would be the worst possible answer.
+    // Returned when it resolved `{ ok: false }` without its own acknowledgement.
+    // The two report handlers never produce that; the string exists because the
+    // `{ ok: boolean }` contract permits it and a silent success message on a
+    // failure would be the worst possible answer.
     readonly notRecorded: string;
   };
+  // ── D65 (S8·6): WHICH in-process MCP server this tool mounts under ───────────
+  //
+  // MCP tool names compose as `mcp__<server>__<tool>`, so the server IS the
+  // model-facing prefix, and the convention is one server per VERB FAMILY:
+  // `vimes_report` (stage-run report tools) and `vimes_board` (the orchestrator's
+  // board verbs). ABSENT = `vimes_report`, which is what both report specs leave
+  // it as — so their mount, their server name and their wire names are unchanged
+  // to the byte.
+  //
+  // The family split is not cosmetic: it mirrors the exposure matrix. A doctrine
+  // that does not grant board verbs simply never mounts `vimes_board`, so there is
+  // no per-tool filtering anywhere and no way to half-grant a family.
+  server?: string;
 }
 
 export interface SdkQueryOptions {
@@ -274,6 +299,16 @@ interface AdapterSpawnContext {
   // dispatched spawn that somehow omits it, which falls back to the pre-S7·7d
   // both-tools exposure. The PTY adapter ignores it.
   stage?: TaskStage;
+  // S8·6 (D56/D65): the project this session is the STANDING ORCHESTRATOR for.
+  //
+  // ⚠ **DERIVED FROM THE SESSION RECORD, NEVER FROM THE CALL** — see
+  // `startProcess`, which is the one place it is read. Absent for every other
+  // session, which is today's behaviour exactly. The PTY adapter ignores it.
+  //
+  // Present means: mount the board family (`vimes_board`), and NOT the report
+  // family. It does NOT mean `dispatched` — an orchestrator carries no `tools`
+  // clamp and no `stage`, because it is a conversation partner, not a run.
+  orchestratorForProjectId?: string;
 }
 
 export type InteractionAck = { ok: true; appSessionId: string } | { refused: true; reason: string };
@@ -326,6 +361,13 @@ interface AdapterServices {
   // `implementing → review` OUTCOME transition. The adapter never touches task
   // state itself.
   onCompletionReported(appSessionId: string, worklog: ReportCompletionPayload['worklog']): void;
+  // S8·6 (D56's author grant): the board-verb specs a STANDING ORCHESTRATOR for
+  // this project is granted. Injected rather than built here for the reason
+  // createTaskTool.ts's header spells out — `create_task` needs the task writer
+  // and the project registry, and the session host is not allowed to read task
+  // state (D18). Returns `[]` when no grant is composed (the default), which mounts
+  // NOTHING and leaves the spawn options byte-identical to a pre-S8·6 one.
+  orchestratorReportTools(projectId: string): SdkReportToolSpec[];
 }
 
 interface LiveProcess {
@@ -404,6 +446,14 @@ export interface SessionHostDeps {
   // from the log). UNSET = no opinion: every PreCompact answers `allow` and every
   // SessionStart gets today's plain ack, i.e. exactly the pre-S8·4 behavior.
   compactionSteward?: CompactionStewardSurface;
+  // S8·6 (D56's author grant, D65): the board-verb specs a standing orchestrator
+  // is granted, by project. app.ts composes `create_task` here off the daemon's
+  // single `TaskWriter` and the project registry (see createTaskTool.ts for why
+  // the host cannot build it itself). UNSET = no grant at all: an orchestrator
+  // spawns with no VIMES tools and the query options are byte-identical to the
+  // pre-S8·6 ones — which is exactly what every test that does not care about the
+  // grant gets, and what a composition that deliberately revoked it would get.
+  orchestratorReportTools?: (projectId: string) => SdkReportToolSpec[];
 }
 
 // Delete every CLAUDE* key (covers CLAUDECODE) from a copy of the parent env; keep
@@ -637,9 +687,17 @@ class ClaudeSdkAdapter implements SessionAdapter {
         // correctly no-opped it. UNATTENDED that gate is a STALL — the fleet's planner
         // sits waiting on an approval nobody will give. So the guard stays where it
         // is, and the OFFER moves to where it is true.
+        //
+        // ⚠ S8·6 ADDED THE OTHER BRANCH, AND THE `? :` IS THE POINT. A session is
+        // a dispatched RUN or a standing ORCHESTRATOR, never both, so the two
+        // exposures cannot compose: a dispatched spawn is offered its stage's
+        // report tool and can never see `vimes_board`; an orchestrator is offered
+        // the board family and never a report tool, because it does not report —
+        // it authors, and nothing dispatched it to finish. D50's clamp is
+        // untouched on both sides (see the orchestrator branch's own note).
         ...(context.dispatched === true
           ? this.reportToolsOptionFor(context.appSessionId, context.stage)
-          : {}),
+          : this.orchestratorToolsOptionFor(context.orchestratorForProjectId)),
       },
     });
     if (context.permissionMode === 'plan') {
@@ -694,6 +752,41 @@ class ClaudeSdkAdapter implements SessionAdapter {
           reportTools: [this.buildReviewSpec(appSessionId), this.buildCompletionSpec(appSessionId)],
         };
     }
+  }
+
+  // ── S8·6: WHICH tools a STANDING ORCHESTRATOR is offered (D56's author grant) ─
+  //
+  // The other half of the exposure matrix, and its counterpart above is the
+  // reason it is a separate method rather than another case in that switch: the
+  // two answer DIFFERENT questions under different doctrines. `reportToolsOptionFor`
+  // asks "which stage is this run finishing?"; this one asks "which board verbs
+  // has this standing entity been granted?" — and D56's answer is that verbs are
+  // grants added ONE AT A TIME, each individually revertible. Today the grant is
+  // `create_task` and nothing else.
+  //
+  // ⚠ **D50'S CLAMP IS NOT WEAKENED HERE, AND THIS IS THE SEAM THE SLICE'S KILL
+  // CRITERION NAMES.** An orchestrator spawn sets NO `tools` and NO
+  // `disallowedTools` — it is not a dispatched run, so the closed allowlist and
+  // the sub-agent denylist that clamp those never come into it, and nothing about
+  // this grant edits either list. The grant is the MOUNT (`mcpServers`), which
+  // D52's spike proved ORTHOGONAL to the `tools` clamp: an MCP tool needs no
+  // allowlist entry and opens no spawn hole. So dispatched runs keep exactly the
+  // clamp they had, and one exposure mechanism is not being asked to serve two
+  // doctrines — it is being asked to mount two different FAMILIES (D65), which is
+  // what a per-family server name is for.
+  //
+  // Absent projectId (every ordinary session) → `{}`, the absence idiom this file
+  // uses everywhere: the `reportTools` key is not set at all. An EMPTY grant is
+  // the same absence, so a composition that wired no grant — or deliberately
+  // revoked one — produces byte-identical options rather than an empty array.
+  private orchestratorToolsOptionFor(
+    orchestratorForProjectId: string | undefined,
+  ): { reportTools?: SdkReportToolSpec[] } {
+    if (orchestratorForProjectId === undefined) {
+      return {};
+    }
+    const grantedTools = this.services.orchestratorReportTools(orchestratorForProjectId);
+    return grantedTools.length === 0 ? {} : { reportTools: grantedTools };
   }
 
   // S7·6b: the SDK-agnostic `report_review` spec for this session. The handler
@@ -1056,6 +1149,9 @@ export class SessionHost implements HookHost {
     | ((appSessionId: string, worklog: ReportCompletionPayload['worklog']) => void)
     | undefined;
   private readonly compactionSteward: CompactionStewardSurface | undefined;
+  private readonly orchestratorReportTools:
+    | ((projectId: string) => SdkReportToolSpec[])
+    | undefined;
 
   private readonly sdkAdapter: ClaudeSdkAdapter;
   private readonly ptyAdapter: ClaudePtyAdapter;
@@ -1090,6 +1186,7 @@ export class SessionHost implements HookHost {
     this.onReviewReported = deps.onReviewReported;
     this.onCompletionReported = deps.onCompletionReported;
     this.compactionSteward = deps.compactionSteward;
+    this.orchestratorReportTools = deps.orchestratorReportTools;
 
     const services: AdapterServices = {
       emit: (events) => this.router.emit(events),
@@ -1114,6 +1211,11 @@ export class SessionHost implements HookHost {
       // dispatcher's recordCompletion, no logic owned here.
       onCompletionReported: (appSessionId, worklog) =>
         this.onCompletionReported?.(appSessionId, worklog),
+      // S8·6: the author grant, forwarded. Unset → `[]` → no tools are mounted
+      // and the orchestrator's options stay byte-identical to a pre-grant spawn
+      // (see `orchestratorToolsOptionFor`). Never a throw: an ungranted daemon is
+      // a daemon whose orchestrator has no verbs yet, which is a supported state.
+      orchestratorReportTools: (projectId) => this.orchestratorReportTools?.(projectId) ?? [],
     };
     this.sdkAdapter = new ClaudeSdkAdapter(deps.sdkQueryFactory ?? defaultSdkQueryFactory, services);
     this.ptyAdapter = new ClaudePtyAdapter(deps.ptySpawnFactory ?? defaultPtySpawnFactory, services);
@@ -1590,7 +1692,48 @@ export class SessionHost implements HookHost {
     const adapter: SessionAdapter = channel === 'sdk' ? this.sdkAdapter : this.ptyAdapter;
     const hookChannel = this.prepareHookChannel(appSessionId);
     const cause = resume === undefined ? 'spawn' : 'resume';
-    const live = adapter.spawn({ appSessionId, cwd, resume, hookChannel, permissionMode, dispatched, stage });
+
+    // ── S8·6 (D56/D58/D65): the STANDING ORCHESTRATOR's footing ────────────────
+    //
+    // ⚠ **READ OFF THE SESSION RECORD, NOT OFF THE CALL, AND THAT IS THE WHOLE
+    // MECHANISM.** D56 says the verbs are grants on the standing ENTITY, and the
+    // entity is the record (`orchestratorForProjectId`, S8·3's marking — presence
+    // IS the kind). So the grant is re-derived at every process start, from the
+    // only fact that outlives a process.
+    //
+    // The alternative — options threaded from the ensure endpoint's spawn and
+    // resume calls — was the work-order's sketch and it LEAKS, because
+    // `startProcess` has a third caller nobody passes options through:
+    // `sendMessage` auto-resumes a dormant/interrupted session in-process (see it
+    // call `resumeSession` below), and EVERY SDK turn ends dormant
+    // (`driveToDormant('run-complete')`). So the first turn typed at an
+    // orchestrator whose query has ended would re-found it WITHOUT its tools and
+    // WITHOUT 'auto' — a silent capability loss, in the one place a model is most
+    // likely to then confabulate. Deriving here covers spawn, explicit resume and
+    // auto-resume with one rule.
+    //
+    // Safe at spawn time: `spawnSession` emits `session_created` — carrying the
+    // marking — BEFORE it calls this, so the record is already there to read.
+    const orchestratorForProjectId = this.currentSessions()[appSessionId]?.orchestratorForProjectId;
+
+    const live = adapter.spawn({
+      appSessionId,
+      cwd,
+      resume,
+      hookChannel,
+      // D58 (DECIDED 2026-08-04): an orchestrator runs `'auto'`. Its proposals flow
+      // gate-free because the board PROMOTION is already the human approval —
+      // gating the proposal too is approving twice — and because D55's observed
+      // evidence says MCP tools bypass `canUseTool` regardless, so an interactive
+      // mode would gate the built-in tools while the VIMES verbs flowed free.
+      // Nothing runs until Wes promotes. `??` and not an override: no caller ever
+      // passes a mode for an orchestrator, and if one ever did, the explicit
+      // request wins over the derived default.
+      permissionMode: permissionMode ?? (orchestratorForProjectId === undefined ? undefined : 'auto'),
+      dispatched,
+      stage,
+      orchestratorForProjectId,
+    });
     live.settingsPath = hookChannel?.settingsPath;
     this.liveProcesses.set(appSessionId, live);
     this.emitGuardedLiveness(appSessionId, 'running', cause);
@@ -1815,12 +1958,24 @@ interface SdkReportToolSurface {
   }) => unknown;
 }
 
+// The server a spec mounts under when it names none — see `SdkReportToolSpec.server`.
+// Named here rather than spelled twice, because "absent means vimes_report" is the
+// byte-identity promise the two report tools rely on (D65).
+const DEFAULT_TOOL_SERVER = 'vimes_report';
+
 // S7·6b: map the SDK-agnostic report-tool specs onto the SDK's `mcpServers` value —
 // or `undefined` when there are none, so the query options stay byte-identical for a
 // non-dispatched spawn (the spread idiom at the call site drops an undefined key).
 // This is the ONLY place the SDK's `tool`/`createSdkMcpServer` are touched
 // (sdk.d.ts:467/:6745), keeping them out of the testable adapter (D18 / the
 // SDK-boundary rule). Exported for the unit test, which injects a fake surface.
+//
+// ⚠ S8·6 (D65) MADE THIS GROUP BY SERVER, and the shape of the change is what
+// keeps it safe: specs are bucketed by `spec.server ?? 'vimes_report'` IN ORDER,
+// and a call whose specs all leave `server` absent produces exactly one
+// `vimes_report` entry holding exactly the same tools in exactly the same order as
+// before — the pre-S8·6 return value, to the byte. Only a spec that NAMES another
+// family (today: `create_task` → `vimes_board`) adds a second entry.
 export function buildReportMcpServers(
   reportTools: SdkReportToolSpec[] | undefined,
   sdk: SdkReportToolSurface,
@@ -1828,9 +1983,23 @@ export function buildReportMcpServers(
   if (reportTools === undefined || reportTools.length === 0) {
     return undefined;
   }
-  return {
-    vimes_report: sdk.createSdkMcpServer({
-      name: 'vimes_report',
+  // Insertion-ordered: a Map preserves first-seen server order, so the resulting
+  // object's key order follows the specs rather than an alphabetical accident.
+  const specsByServer = new Map<string, SdkReportToolSpec[]>();
+  for (const spec of reportTools) {
+    const serverName = spec.server ?? DEFAULT_TOOL_SERVER;
+    const bucket = specsByServer.get(serverName);
+    if (bucket === undefined) {
+      specsByServer.set(serverName, [spec]);
+    } else {
+      bucket.push(spec);
+    }
+  }
+
+  const mcpServers: Record<string, unknown> = {};
+  for (const [serverName, specs] of specsByServer) {
+    mcpServers[serverName] = sdk.createSdkMcpServer({
+      name: serverName,
       version: '0.0.1',
       // alwaysLoad: the tools ride in the prompt and are never deferred behind tool
       // search (sdk.d.ts:480-487) — the spike relied on this to keep report_review
@@ -1842,7 +2011,7 @@ export function buildReportMcpServers(
       // mount side by side under the single `vimes_report` name and the model sees
       // `mcp__vimes_report__report_review` and `mcp__vimes_report__report_completion`.
       // Nothing here is per-tool except the spec's own fields.
-      tools: reportTools.map((spec) =>
+      tools: specs.map((spec) =>
         sdk.tool(spec.name, spec.description, spec.inputSchema, async (args) => {
           // Wrap the SDK-agnostic `{ ok }` return into a success CallToolResult. The
           // observation (onReviewReported / onCompletionReported) already happened
@@ -1853,19 +2022,27 @@ export function buildReportMcpServers(
           // review was the only tool and became a lie the moment a second one shared
           // this wrapper. This function is now tool-agnostic, which is what lets a
           // third report tool land without touching it.
+          //
+          // ⚠ S8·6: a HANDLER-SUPPLIED acknowledgement wins over the spec's static
+          // pair. `??` and not a truthiness check, deliberately — a handler that
+          // deliberately answers with the empty string is answering, and coercing
+          // that back to the static text would be this wrapper overruling it.
           const result = await spec.handler(args);
           return {
             content: [
               {
                 type: 'text',
-                text: result.ok ? spec.acknowledgement.recorded : spec.acknowledgement.notRecorded,
+                text:
+                  result.acknowledgement ??
+                  (result.ok ? spec.acknowledgement.recorded : spec.acknowledgement.notRecorded),
               },
             ],
           };
         }),
       ),
-    }),
-  };
+    });
+  }
+  return mcpServers;
 }
 
 const defaultSdkQueryFactory: SdkQueryFactory = ({ prompt, options }) => {

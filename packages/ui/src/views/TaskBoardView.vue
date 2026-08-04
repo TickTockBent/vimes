@@ -708,7 +708,18 @@ function livenessClass(liveness: string): string {
             </span>
             <span class="flex w-full flex-wrap items-center gap-1.5 text-[11px] text-ink-dim">
               <span v-if="card.projectName !== null" class="truncate">{{ card.projectName }}</span>
-              <span v-if="card.createdBy !== null">· {{ card.createdBy }}</span>
+              <!-- S8·6: the PROVENANCE chip. Only orchestrator-authored work is
+                   marked — hand-made is the unmarked default, and the derivation
+                   fails to no-chip (lib/taskBoard.ts). It replaces the plain
+                   "· human"/"· orchestrator" text this row used to carry: a chip
+                   the eye can find beats a word it has to read, and the Gate-2
+                   pivot criterion needs the difference legible at a glance. -->
+              <span
+                v-if="card.authoredByOrchestrator"
+                class="rounded-full bg-panel-sunken px-1.5 py-0.5 font-semibold font-mono uppercase tracking-[0.08em] text-ink-dim"
+              >
+                authored
+              </span>
               <span
                 v-if="card.isolatedInWorktree"
                 class="rounded-full bg-panel-sunken px-1.5 py-0.5 font-semibold font-mono uppercase tracking-[0.08em] text-ink-dim"
@@ -777,7 +788,18 @@ function livenessClass(liveness: string): string {
             </span>
             <span class="flex w-full flex-wrap items-center gap-1.5 text-[11px] text-ink-dim">
               <span v-if="card.projectName !== null" class="truncate">{{ card.projectName }}</span>
-              <span v-if="card.createdBy !== null">· {{ card.createdBy }}</span>
+              <!-- S8·6: the PROVENANCE chip. Only orchestrator-authored work is
+                   marked — hand-made is the unmarked default, and the derivation
+                   fails to no-chip (lib/taskBoard.ts). It replaces the plain
+                   "· human"/"· orchestrator" text this row used to carry: a chip
+                   the eye can find beats a word it has to read, and the Gate-2
+                   pivot criterion needs the difference legible at a glance. -->
+              <span
+                v-if="card.authoredByOrchestrator"
+                class="rounded-full bg-panel-sunken px-1.5 py-0.5 font-semibold font-mono uppercase tracking-[0.08em] text-ink-dim"
+              >
+                authored
+              </span>
               <span
                 v-if="card.isolatedInWorktree"
                 class="rounded-full bg-panel-sunken px-1.5 py-0.5 font-semibold font-mono uppercase tracking-[0.08em] text-ink-dim"

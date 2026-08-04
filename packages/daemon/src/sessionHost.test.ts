@@ -107,6 +107,10 @@ function makeHarness(deps: {
   onReviewReported?: (appSessionId: string, criteria: unknown) => void;
   // S7·7b: the completion-capture callback, the same seam for the worklog.
   onCompletionReported?: (appSessionId: string, worklog: unknown) => void;
+  // S8·6: the author grant, by project. Unset in every case that predates the
+  // grant — which is the point: an ungranted host must spawn an orchestrator with
+  // byte-identical options to a pre-S8·6 one.
+  orchestratorReportTools?: (projectId: string) => SdkReportToolSpec[];
 }): Harness {
   const clock = new SteppingClock('2026-01-01T00:00:00.000Z', 1000);
   const ids = new CountingIdSource();
@@ -124,6 +128,7 @@ function makeHarness(deps: {
     onPlanCaptured: deps.onPlanCaptured,
     onReviewReported: deps.onReviewReported,
     onCompletionReported: deps.onCompletionReported,
+    orchestratorReportTools: deps.orchestratorReportTools,
   });
   return { host, store, router };
 }
@@ -2035,6 +2040,229 @@ describe('SessionHost — report tool exposure (S7·6b + S7·7b + S7·7d)', () =
   });
 });
 
+// ── S8·6: the AUTHOR GRANT's exposure matrix, pinned BOTH directions ──────────
+//
+// The unit's kill criterion is "exposure cannot be granted without weakening
+// D50's dispatched clamps or forcing one exposure mechanism to serve two
+// doctrines". These cases are the standing evidence that neither happened: a
+// dispatched run of ANY stage never sees the board family, an orchestrator never
+// sees the report family, and the orchestrator carries no `tools`/`disallowedTools`
+// clamp at all because it is not a dispatched run.
+describe('SessionHost — the author grant exposure matrix (S8·6, D56/D65)', () => {
+  // The grant, as a test double: one spec whose only job is to be recognizable.
+  // The REAL spec's behaviour is createTaskTool.test.ts's business — what is
+  // asserted here is WHICH sessions are handed one.
+  const GRANT_PROJECT_ID = 'project-1';
+  function fakeGrant(): { grant: (projectId: string) => SdkReportToolSpec[]; askedFor: string[] } {
+    const askedFor: string[] = [];
+    return {
+      askedFor,
+      grant: (projectId: string) => {
+        askedFor.push(projectId);
+        return [
+          {
+            name: 'create_task',
+            server: 'vimes_board',
+            description: 'author a work-order',
+            inputSchema: { title: z.string() },
+            handler: async () => ({ ok: true, acknowledgement: 'ack' }),
+            acknowledgement: { recorded: 'r', notRecorded: 'n' },
+          },
+        ];
+      },
+    };
+  }
+
+  it('an ORCHESTRATOR spawn carries exactly [create_task] on the vimes_board server', async () => {
+    const { factory, calls } = makeSdkFactory(async function* () {
+      yield { type: 'system', subtype: 'init', session_id: 'claude-1' };
+      yield { type: 'result', subtype: 'success' };
+    });
+    const { grant, askedFor } = fakeGrant();
+    const { host } = makeHarness({ sdkQueryFactory: factory, orchestratorReportTools: grant });
+    try {
+      host.spawnSession({ channel: 'sdk', cwd: '/p', orchestratorForProjectId: GRANT_PROJECT_ID });
+      await waitFor(() => calls.length === 1);
+      const specs = calls[0]!.reportTools;
+      expect(specs!.map((spec) => spec.name)).toEqual(['create_task']);
+      expect(specs![0]!.server).toBe('vimes_board');
+      // The grant was asked for THIS project — the tool can only ever author onto
+      // the board of the project the orchestrator was founded for.
+      expect(askedFor).toEqual([GRANT_PROJECT_ID]);
+    } finally {
+      host.stop();
+    }
+  });
+
+  it('an ORCHESTRATOR spawn is offered NO report tools — it authors, it never reports', async () => {
+    const { factory, calls } = makeSdkFactory(async function* () {
+      yield { type: 'system', subtype: 'init', session_id: 'claude-1' };
+      yield { type: 'result', subtype: 'success' };
+    });
+    const { grant } = fakeGrant();
+    const { host } = makeHarness({ sdkQueryFactory: factory, orchestratorReportTools: grant });
+    try {
+      host.spawnSession({ channel: 'sdk', cwd: '/p', orchestratorForProjectId: GRANT_PROJECT_ID });
+      await waitFor(() => calls.length === 1);
+      const names = calls[0]!.reportTools!.map((spec) => spec.name);
+      expect(names).not.toContain('report_review');
+      expect(names).not.toContain('report_completion');
+    } finally {
+      host.stop();
+    }
+  });
+
+  it('an ORCHESTRATOR spawn runs permissionMode auto (D58) and carries NO D50 clamp', async () => {
+    const { factory, calls } = makeSdkFactory(async function* () {
+      yield { type: 'system', subtype: 'init', session_id: 'claude-1' };
+      yield { type: 'result', subtype: 'success' };
+    });
+    const { grant } = fakeGrant();
+    const { host } = makeHarness({ sdkQueryFactory: factory, orchestratorReportTools: grant });
+    try {
+      host.spawnSession({ channel: 'sdk', cwd: '/p', orchestratorForProjectId: GRANT_PROJECT_ID });
+      await waitFor(() => calls.length === 1);
+      // D58, settled 2026-08-04: proposals flow gate-free because promotion is
+      // already the human approval.
+      expect(calls[0]!.permissionMode).toBe('auto');
+      // ⚠ THE KILL-CRITERION ASSERTION. The grant is the MOUNT, never an allowlist
+      // edit: an orchestrator is not a dispatched run, so D50's closed `tools`
+      // allowlist and its spawn-family denylist are ABSENT — untouched, not widened.
+      expect('tools' in calls[0]!).toBe(false);
+      expect('disallowedTools' in calls[0]!).toBe(false);
+    } finally {
+      host.stop();
+    }
+  });
+
+  it('the grant survives a RESUME — including the auto-resume inside sendMessage', async () => {
+    // ⚠ THE CASE THAT DECIDED WHERE THE FOOTING IS DERIVED. Every SDK turn ends
+    // dormant (`run-complete`), and a turn arriving after the query has ended
+    // auto-resumes in-process — a path the ensure endpoint cannot reach. A grant
+    // that rode on the spawn CALL would silently vanish here.
+    const { factory, calls } = makeSdkFactory(async function* () {
+      yield { type: 'system', subtype: 'init', session_id: 'claude-1' };
+      yield { type: 'result', subtype: 'success' };
+    });
+    const { grant, askedFor } = fakeGrant();
+    const { host, store } = makeHarness({
+      sdkQueryFactory: factory,
+      orchestratorReportTools: grant,
+    });
+    try {
+      const spawn = host.spawnSession({
+        channel: 'sdk',
+        cwd: '/p',
+        orchestratorForProjectId: GRANT_PROJECT_ID,
+      });
+      const appSessionId = 'appSessionId' in spawn ? spawn.appSessionId : '';
+      // The generator ends after its result, exactly as a finished turn does, and
+      // the session lands dormant with no live process.
+      await waitFor(() => sessionOf(store, appSessionId)?.liveness === 'dormant');
+      await waitFor(() => calls.length === 1);
+
+      // A plain turn — the wsHub path, which knows nothing about orchestrators.
+      expect(host.sendMessage(appSessionId, 'next turn')).toEqual({ ok: true });
+      await waitFor(() => calls.length === 2);
+
+      // The RESUMED process is footed identically to the founded one.
+      expect(calls[1]!.resume).toBe('claude-1');
+      expect(calls[1]!.reportTools!.map((spec) => spec.name)).toEqual(['create_task']);
+      expect(calls[1]!.permissionMode).toBe('auto');
+      expect(askedFor).toEqual([GRANT_PROJECT_ID, GRANT_PROJECT_ID]);
+    } finally {
+      host.stop();
+    }
+  });
+
+  it('an ORCHESTRATOR spawn with NO grant composed carries NO reportTools key', async () => {
+    // Reverting the grant is emptying the list, and this is what that looks like:
+    // byte-identical options to a pre-S8·6 orchestrator spawn. Both the unset
+    // dependency and an empty return are the same absence.
+    const { factory, calls } = makeSdkFactory(async function* () {
+      yield { type: 'system', subtype: 'init', session_id: 'claude-1' };
+      yield { type: 'result', subtype: 'success' };
+    });
+    const { host } = makeHarness({ sdkQueryFactory: factory, orchestratorReportTools: () => [] });
+    try {
+      host.spawnSession({ channel: 'sdk', cwd: '/p', orchestratorForProjectId: GRANT_PROJECT_ID });
+      await waitFor(() => calls.length === 1);
+      expect('reportTools' in calls[0]!).toBe(false);
+      // Still 'auto' — the FOOTING is the entity's, not the grant's. An
+      // orchestrator with no verbs is still an orchestrator.
+      expect(calls[0]!.permissionMode).toBe('auto');
+    } finally {
+      host.stop();
+    }
+  });
+
+  // ── the other direction: no dispatched stage ever sees the board family ──────
+  it.each(['planning', 'implementing', 'review'] as const)(
+    'a dispatched %s spawn sees NO vimes_board server and NO create_task tool',
+    async (stage) => {
+      const { factory, calls } = makeSdkFactory(async function* () {
+        yield { type: 'system', subtype: 'init', session_id: 'claude-1' };
+        yield { type: 'result', subtype: 'success' };
+      });
+      // The grant IS composed on this host — so a leak would be a real leak, not
+      // an absence of anything to leak.
+      const { grant, askedFor } = fakeGrant();
+      const { host } = makeHarness({ sdkQueryFactory: factory, orchestratorReportTools: grant });
+      try {
+        host.spawnSession({ channel: 'sdk', cwd: '/p', dispatched: true, stage });
+        await waitFor(() => calls.length === 1);
+        const specs = calls[0]!.reportTools ?? [];
+        expect(specs.map((spec) => spec.name)).not.toContain('create_task');
+        expect(specs.map((spec) => spec.server ?? 'vimes_report')).not.toContain('vimes_board');
+        // The grant was never even consulted for a dispatched run.
+        expect(askedFor).toEqual([]);
+      } finally {
+        host.stop();
+      }
+    },
+  );
+
+  it('a dispatched spawn with NO stage (the fail-open fallback) still sees no board family', async () => {
+    const { factory, calls } = makeSdkFactory(async function* () {
+      yield { type: 'system', subtype: 'init', session_id: 'claude-1' };
+      yield { type: 'result', subtype: 'success' };
+    });
+    const { grant, askedFor } = fakeGrant();
+    const { host } = makeHarness({ sdkQueryFactory: factory, orchestratorReportTools: grant });
+    try {
+      host.spawnSession({ channel: 'sdk', cwd: '/p', dispatched: true });
+      await waitFor(() => calls.length === 1);
+      // S7·7d's fallback offers BOTH report tools; it must never offer a third
+      // family as well — fail-open-to-guarded, not fail-open-to-everything.
+      expect(calls[0]!.reportTools!.map((spec) => spec.name)).toEqual([
+        'report_review',
+        'report_completion',
+      ]);
+      expect(askedFor).toEqual([]);
+    } finally {
+      host.stop();
+    }
+  });
+
+  it('an ORDINARY interactive spawn is neither — no tools, no permissionMode', async () => {
+    const { factory, calls } = makeSdkFactory(async function* () {
+      yield { type: 'system', subtype: 'init', session_id: 'claude-1' };
+      yield { type: 'result', subtype: 'success' };
+    });
+    const { grant, askedFor } = fakeGrant();
+    const { host } = makeHarness({ sdkQueryFactory: factory, orchestratorReportTools: grant });
+    try {
+      host.spawnSession({ channel: 'sdk', cwd: '/p' });
+      await waitFor(() => calls.length === 1);
+      expect('reportTools' in calls[0]!).toBe(false);
+      expect(calls[0]!.permissionMode).toBeUndefined();
+      expect(askedFor).toEqual([]);
+    } finally {
+      host.stop();
+    }
+  });
+});
+
 describe('buildReportMcpServers — the SDK-boundary wrap (S7·6b)', () => {
   function fakeSurface(): {
     surface: Parameters<typeof buildReportMcpServers>[1];
@@ -2193,6 +2421,108 @@ describe('buildReportMcpServers — the SDK-boundary wrap (S7·6b)', () => {
     };
     await expect(server.tools[0]!.handler({}, undefined)).resolves.toEqual({
       content: [{ type: 'text', text: 'Completion not recorded.' }],
+    });
+  });
+
+  // ── S8·6 (D65): the factory groups by SERVER, and absence is the old behaviour ─
+  //
+  // ⚠ THE FIRST CASE BELOW IS THE BYTE-IDENTITY PIN. The grouping rewrite must be
+  // invisible to every pre-S8·6 caller: specs that name no server produce exactly
+  // one `vimes_report` entry, same version, same alwaysLoad, same tools in the
+  // same order. If that ever changes, the two report tools' mount changed with it.
+  const boardSpec: SdkReportToolSpec = {
+    name: 'create_task',
+    server: 'vimes_board',
+    description: 'author a work-order',
+    inputSchema: { title: z.string() },
+    handler: async () => ({ ok: true }),
+    acknowledgement: { recorded: 'authored', notRecorded: 'not authored' },
+  };
+
+  it('specs with NO server all mount under vimes_report — byte-identical to pre-S8·6', () => {
+    const { surface, toolCalls, serverCalls } = fakeSurface();
+    const servers = buildReportMcpServers([spec, completionSpec], surface);
+    expect(Object.keys(servers!)).toEqual(['vimes_report']);
+    expect(serverCalls).toEqual([
+      { name: 'vimes_report', version: '0.0.1', alwaysLoad: true, toolCount: 2 },
+    ]);
+    expect(toolCalls.map((call) => call.name)).toEqual(['report_review', 'report_completion']);
+  });
+
+  it('a spec naming vimes_board mounts under its OWN server (the family split)', () => {
+    const { surface, serverCalls } = fakeSurface();
+    const servers = buildReportMcpServers([boardSpec], surface);
+    // The model therefore sees `mcp__vimes_board__create_task` — the server IS the
+    // prefix, which is the whole of D65's naming answer.
+    expect(Object.keys(servers!)).toEqual(['vimes_board']);
+    expect(serverCalls).toEqual([
+      { name: 'vimes_board', version: '0.0.1', alwaysLoad: true, toolCount: 1 },
+    ]);
+  });
+
+  it('mixed families mount as TWO servers, each holding only its own tools', () => {
+    // Not reachable from any spawn today (the exposure matrix keeps the families
+    // apart), and pinned anyway: the grouping must be a property of the factory,
+    // not of the fact that nobody currently mixes them.
+    const { surface, serverCalls } = fakeSurface();
+    const servers = buildReportMcpServers([spec, boardSpec, completionSpec], surface);
+    // Key order follows first-seen spec order, not alphabetical.
+    expect(Object.keys(servers!)).toEqual(['vimes_report', 'vimes_board']);
+    expect(serverCalls).toEqual([
+      { name: 'vimes_report', version: '0.0.1', alwaysLoad: true, toolCount: 2 },
+      { name: 'vimes_board', version: '0.0.1', alwaysLoad: true, toolCount: 1 },
+    ]);
+  });
+
+  // ── S8·6: a handler-supplied acknowledgement wins over the spec's static pair ──
+  it('a handler acknowledgement REPLACES the static text (this is how the taskId is named)', async () => {
+    const { surface } = fakeSurface();
+    const namingSpec: SdkReportToolSpec = {
+      ...boardSpec,
+      handler: async () => ({ ok: true, acknowledgement: 'Work-order task-9 created in backlog.' }),
+    };
+    const servers = buildReportMcpServers([namingSpec], surface)!;
+    const server = servers.vimes_board as {
+      tools: Array<{
+        handler: (args: unknown, extra: unknown) => Promise<{ content: Array<{ type: 'text'; text: string }> }>;
+      }>;
+    };
+    await expect(server.tools[0]!.handler({}, undefined)).resolves.toEqual({
+      content: [{ type: 'text', text: 'Work-order task-9 created in backlog.' }],
+    });
+  });
+
+  it('an ok:FALSE handler acknowledgement wins too — a refusal must say WHY', async () => {
+    const { surface } = fakeSurface();
+    const refusingSpec: SdkReportToolSpec = {
+      ...boardSpec,
+      handler: async () => ({ ok: false, acknowledgement: 'No task was created — title: too small.' }),
+    };
+    const servers = buildReportMcpServers([refusingSpec], surface)!;
+    const server = servers.vimes_board as {
+      tools: Array<{
+        handler: (args: unknown, extra: unknown) => Promise<{ content: Array<{ type: 'text'; text: string }> }>;
+      }>;
+    };
+    await expect(server.tools[0]!.handler({}, undefined)).resolves.toEqual({
+      content: [{ type: 'text', text: 'No task was created — title: too small.' }],
+    });
+  });
+
+  it('a handler that answers with the EMPTY string is answering — `??`, not truthiness', async () => {
+    const { surface } = fakeSurface();
+    const silentSpec: SdkReportToolSpec = {
+      ...boardSpec,
+      handler: async () => ({ ok: true, acknowledgement: '' }),
+    };
+    const servers = buildReportMcpServers([silentSpec], surface)!;
+    const server = servers.vimes_board as {
+      tools: Array<{
+        handler: (args: unknown, extra: unknown) => Promise<{ content: Array<{ type: 'text'; text: string }> }>;
+      }>;
+    };
+    await expect(server.tools[0]!.handler({}, undefined)).resolves.toEqual({
+      content: [{ type: 'text', text: '' }],
     });
   });
 });

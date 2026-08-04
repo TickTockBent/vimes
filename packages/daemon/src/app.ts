@@ -55,6 +55,7 @@ import { registerGitApi } from './gitApi.js';
 import { registerTaskApi } from './taskApi.js';
 import { registerProjectApi } from './projectApi.js';
 import { registerOrchestratorApi, standingNotesPathFor } from './orchestratorApi.js';
+import { buildCreateTaskSpec } from './createTaskTool.js';
 import { CompactionSteward } from './compactionSteward.js';
 import { TaskWriter } from './taskWriter.js';
 import { ProjectWriter } from './projectWriter.js';
@@ -827,6 +828,32 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     // D53). Same wiring shape as the two above.
     onCompletionReported: (appSessionId, worklog) =>
       taskDispatcher.recordCompletion(appSessionId, worklog),
+    // ─── S8·6: the AUTHOR GRANT (D56's first verb, D65's `vimes_board`) ───────
+    //
+    // The one place the orchestrator's board verbs are composed. The host cannot
+    // build this itself — `create_task` needs the task writer and the project
+    // registry, and the session host is not a reader of task state (D18) — so the
+    // capability is assembled here, where every other cross-module wire is made.
+    //
+    // ⚠ **ONE VERB, AND THE LIST IS THE GRANT.** D56: verbs arrive one at a time,
+    // each individually revertible. Reverting the author grant is deleting this
+    // array's one entry; there is no flag, no config and no other switch, and the
+    // orchestrator's options go byte-identical back to pre-S8·6 when it is empty.
+    //
+    // ⚠ THE SAME `taskWriter` INSTANCE the HTTP create door uses — one writer,
+    // two callers (principle 10) — but handed in as a SINGLE destructured
+    // capability, so the tool handler can create and can do nothing else. See
+    // createTaskTool.ts's I7 note before widening this.
+    orchestratorReportTools: (projectId) => [
+      buildCreateTaskSpec({
+        createTask: (input) => taskWriter.createTask(input),
+        // FRESH per call, never captured at spawn: the registry read happens when
+        // the model authors, so an edited root binds the task where the project
+        // actually is now and a project that has left the registry refuses.
+        resolveProjectRoot: () =>
+          bootFromSnapshot(projectsProjection, snapshotStore, store).projects[projectId]?.root,
+      }),
+    ],
   });
   const tailer = new JsonlTailer({
     router,
