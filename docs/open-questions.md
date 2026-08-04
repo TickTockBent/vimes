@@ -377,15 +377,10 @@ built: an in-flight lock in `TaskDispatcher`, claimed in the synchronous prefix,
 released in a `finally`, loser gets a silent `in-flight` execution outcome.
 Full record: **decisions.md D54**.
 
-## D58 — Orchestrator session permission mode (gate-free proposals vs per-proposal gates)
-**Opened 2026-07-29 (the S7·9→slice-8 reframe; carried from the S7·9 skeleton's
-Gate-D pause).** When the standing orchestrator (D56) calls `create_task`, should
-its session run `'auto'` (observed: MCP tools bypass `canUseTool` → proposals flow
-gate-free) or default-interactive (every proposal fires a permission gate Wes
-answers in-chat)? **Trigger:** the author-grant build unit (slice-8, S8·6-ish).
-**Lean:** `'auto'` — the PROMOTION from the board is already the human approval;
-gating the proposal too is approving twice. D55's evidence covers the bypass
-behavior. Revisit if authored-task volume makes un-gated creation noisy.
+## D58 — Orchestrator session permission mode — ✅ DECIDED 2026-08-04 → decisions.md D58
+`'auto'`, the lean as stated: promotion is the approval; D55's bypass evidence
+made interactive the worst of both. Full record: **decisions.md D58** (and D65
+for the companion tool-naming call).
 
 ## D59 — `task_commented`: when does the emitter earn its build?
 **Opened 2026-07-29 (same reframe).** The comment verb is reserved (schema, no

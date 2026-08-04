@@ -2189,3 +2189,31 @@ SP8·1-recommended shape recorded in slice-8.md S8·4, adopted verbatim.)*
   processes; `tengu_auto_compact_circuit_breaker` strings exist in the binary,
   behavior unverified). The early-nudge design deliberately makes long
   deferral rare rather than depending on it.
+
+## D58 — Orchestrator sessions run permissionMode 'auto' — DECIDED 2026-08-04
+
+*(Opened 2026-07-29 at the S7·9→slice-8 reframe; settled at S8·6's Gate-D pause
+as planned. Wes chose the lean.)*
+
+The standing orchestrator's session (spawn AND resume paths) runs `'auto'`:
+`create_task` proposals flow gate-free. Rationale: the board PROMOTION is
+already the human approval — gating the proposal too is approving twice; and
+D55's observed evidence says MCP tools bypass `canUseTool` anyway, so an
+interactive mode would gate the built-in tools while the VIMES verbs flowed
+free — the worst of both. Nothing runs until Wes promotes from the board.
+**Revisit trigger:** authored-task volume makes un-gated creation noisy.
+
+## D65 — VIMES-native tools mount under verb-family servers: `vimes_board` joins `vimes_report` — DECIDED 2026-08-04
+
+*(The walk-2 tool-confabulation finding's naming half — Wes leaned "prefix all
+Vimes tools or call out specific names"; decided at S8·6's design pass.)*
+
+MCP tool names compose as `mcp__<server>__<tool>`, so the server IS the prefix.
+The convention: **one server per verb family, named `vimes_<family>`** —
+`vimes_report` (stage-run report tools, unchanged bytes) and now `vimes_board`
+(orchestrator board verbs; `create_task` first, future drive verbs join it).
+The model therefore sees `mcp__vimes_board__create_task` — structurally
+VIMES-prefixed, and the family separation mirrors the exposure matrix: a
+server the doctrine doesn't grant simply isn't mounted. The founding
+briefing's "your tools today" section ADDITIONALLY enumerates the exact names
+(belt and braces against confabulation — the walk-2 finding).
