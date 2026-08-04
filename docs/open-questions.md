@@ -432,3 +432,43 @@ prove the CLI on the front-door path where no new trust is minted; build (b)
 only if tunnel latency costs real work in practice, and design it together with
 the "alert my phone" machine-caller credential rather than as a second bespoke
 door.
+
+## D66 — Where is the extension boundary drawn: in-process modules, external processes, or both tiers?
+**Opened 2026-08-04 (herdr decomp §5 Q1).** Herdr's plugins are *external
+processes* — a directory with a manifest and argv commands, calling back
+through the public CLI/socket. VIMES's first "extensions" (the task machine,
+the orchestration layer, Book Genesis) are heading toward *in-process
+TypeScript modules over the spine*. Those are different things wearing one
+word, and the fork matters: external-process extensions get language freedom
+and crash isolation but can only use the public API; in-process modules get
+direct spine access and cheap composition but can break the daemon. The API
+surface a third-party extension needs is a SUPERSET of what a first-party
+module needs — discovering that late means retrofitting. **Trigger:** the
+slice-9 D51 node-kit design pass (this question rides with D62's ACP read —
+both are "what is the contract between the platform and ANY consumer").
+**Lean:** both tiers, decided deliberately: first-party workflow layers as
+in-process modules over the spine; third-party extensions as external
+manifest-declared processes over the public daemon API (HTTP/WS + MCP) —
+with the herdr rule adopted alongside ("the existing API *is* the plugin
+API": no second SDK to design, version, or keep honest; first-party
+consumers dogfood the same surface, which the UI and MCP servers already do).
+
+## D67 — What is the extension trust model, decided BEFORE the first third-party extension exists?
+**Opened 2026-08-04 (herdr decomp §5 Q2).** An extension is ordinary code.
+Herdr's posture — state the trust model plainly, preview source + commands
+before install, `--ref` pinning, explicitly no sandbox in v1 — is defensible
+for a local terminal multiplexer. VIMES's daemon is a harder target: it holds
+Access-authenticated reach to every project under `VIMES_PROJECT_ROOTS`, the
+session-spawning capability, and the orchestration credit. A third-party
+extension runs INSIDE that trust boundary. The honest options are the same
+three (state it plainly / preview before install / sandbox), but the stakes
+are a remote-reachable daemon, not a local tool. **Trigger:** before any
+third-party extension is installed — and realistically before the
+extension-authoring method (the third element of the everything-is-an-
+extension sequencing) is published, since publishing a method invites
+third-party code. **Lean:** decision record first, mechanism second: v1 =
+first-party-only extensions (trust by authorship), with the manifest shape
+designed so preview-before-install and version pinning are POSSIBLE from day
+one (manifest-declared capabilities are inspectable without running code —
+the same property that makes them align with rule 0.3). Sandboxing is a
+someday-question priced only if a marketplace era arrives.

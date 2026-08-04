@@ -52,6 +52,9 @@ extracts the node-kit with BOOKS as the second tenant → (3) the
 extension-authoring method is written FROM those two worked examples, never
 before them. The D62 ACP read and the client-kit extraction feed the same
 seam: "what is the contract between the platform and ANY consumer."
+*(2026-08-04 addendum: the herdr decomp is the shipped external reference for
+this exact architecture — see "Mined from the herdr decomp" below; D66/D67
+opened from it.)*
 
 **Mobile's final form** (Wes, 2026-07-20): short chat sessions with optional
 voice synthesis; heavy text work happens on an actual computer. Phone
@@ -1187,3 +1190,69 @@ and ANY consumer" question the D62 ACP read informs); the tier-one CLI is an
 early-slice-10 candidate after the Gate-2 trial. Nothing here preempts slice 8.
 **Trigger:** Wes schedules it; D63 must be settled (or consciously deferred to
 the public-URL path) before the first CLI unit.
+
+## Mined from the herdr decomp — the working reference for VIMES-as-engine
+
+*(2026-08-04, herdr-decompose.md — seventh in the series. Read §2.1 first: a
+shipped, marketplace-backed plugin system whose stated goal is the
+everything-is-an-extension vision this doc's top entry just committed to.
+Decisions minted from it: D66 (extension boundary tiers), D67 (extension
+trust model). Carry-over ledger in decomposition/README.md.)*
+
+**The reference shape for the extension manifest** (adapt, don't copy —
+herdr-plugin.toml's taxonomy maps onto VIMES almost verbatim):
+- **Manifest-declared, never runtime-registered.** What an extension can do
+  is inspectable without running it — validation, listing, and reasoning
+  about capability happen statically. This is the same property rule 0.3
+  buys elsewhere, and it is what makes D67's preview-before-install possible.
+- **The extension points**: `[[actions]]` with `contexts` scoping WHERE an
+  action is offered (VIMES: `task | session | board | project`), `[[events]]`
+  as subscriptions (VIMES: **the spine is already the event bus — the fit is
+  exact**), `[[panes]]` as contributed views (the panel shell is already the
+  mount surface), `[[link_handlers]]` as URL→action routing (a URL becomes a
+  work-order), `[[build]]`/`[[startup]]` for setup and long-running pieces.
+- **`min_vimes_version` floors — on the manifest AND on data artifacts.**
+  Golden fixtures, work-order schemas, and extension manifests each declare
+  the engine they need, so an old fixture against a new core fails with a
+  sentence instead of a mystery (herdr 2.4; version-pinning's 4th series
+  appearance, first time extended to data files).
+- **Per-extension config/state directories.** The "modules cannot see each
+  other's private state" rule made concrete on disk.
+
+**The rule candidate (Wes sign-off → design-principles): the daemon's public
+API (HTTP/WS + MCP) *is* the extension API.** No second SDK to design,
+version, or document; first-party consumers (the UI, the MCP servers) already
+dogfood the same surface, so the contract can't silently rot. Herdr states it
+in one line ("there is no separate plugin SDK; the entire CLI is the plugin
+API") and it compounds with principle 10 (MCP server = thin client).
+
+**Skill-file discipline for the S8·7+ verb grants** (herdr 2.3, their agent
+skill): capability bound to context (env-gated: verify you're inside the
+platform, STOP if not), **negative triggers stated explicitly** ("do not use
+merely because a task could benefit"), and **pointer documentation** — defer
+to the live schema/help surface rather than embedding a reference that rots.
+The S8·6 briefing already enumerates exact tool names; negative triggers and
+defer-to-live-schema are the upgrades, applied per-grant in the work orders.
+
+**Rule 0.8's strongest external evidence** (herdr 2.2): nineteen per-agent
+detection manifests, a region grammar, priority arbitration, an explain
+debugger, and a *dated versioned update channel* — real engineering spent
+being approximately right about what hooks + the SDK stream + JSONL tell
+VIMES exactly. Their `transcript_viewer` rule (don't misread a user scrolling
+as agent activity) is a false-positive class that only exists because the
+screen is being read. Narrow lift kept: IF CLI-version drift ever makes our
+transcript/hook classification hairy, the shape to adopt is theirs — dated,
+versioned, data-driven rule files WITH an explain output — not ad-hoc code.
+
+**Strategic (their marketplace, our goods):** if the differentiator is the
+verification loop, the natural marketplace goods are **work-order templates,
+acceptance-criteria libraries, and review rubrics** — shareable artifacts
+tied to the layer no competitor has (the series-wide absence: eighth
+consecutive project with no work-order, no criteria, no verdict). Zero action
+now; remember it when the monetization question stops being hypothetical.
+
+**UI doctrine input:** keyboard AND pointer both first-class (herdr 2.5).
+Mobile is inherently touch; the desktop must not therefore be mouse-only —
+keyboard-driven board/session navigation is cheap to honour early and
+expensive to retrofit into a component library that assumed pointer events.
+Goes into the doctrine doc (already ratified-pending from the AoE pass).

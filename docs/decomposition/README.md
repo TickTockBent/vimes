@@ -13,6 +13,7 @@ tracker is the ledger of what has and hasn't been.
 | [agenc-core-decompose.md](agenc-core-decompose.md) | agenc-core | admission kernel (fail-closed budgets); deadline propagation |
 | [agentswarms-decompose.md](agentswarms-decompose.md) | AgentSwarms-fyi/agentswarms | **checkpoint anatomy** (the resumability checklist); attended/unattended failure-semantics synthesis; quality trends above the verdict |
 | [agent-of-empires-decompose.md](agent-of-empires-decompose.md) | agent-of-empires/agent-of-empires | **the closest competitor** (same lane: sessions + mobile PWA + tunnel); ACP as an off-the-shelf capabilities seam; approval nonces; context-reset surfacing; notification debounce; written UI doctrine |
+| [herdr-decompose.md](herdr-decompose.md) | herdrdev/herdr | **the working reference for VIMES-as-engine** (shipped manifest-based plugin contract + marketplace); "the existing API *is* the plugin API"; extension trust model; env-gated negatively-triggered agent capability; rule 0.8's strongest external evidence (their screen-scraping manifests) |
 
 **Strongest signal of the series:** four-repo independent convergence on the
 Vimes bones (daemon-owned sessions, event journal, pure-function core,
@@ -83,3 +84,18 @@ the right doc, no action due yet), **pending** (waits for its slice/trigger).
 | Per-session operational log: LRU-bounded writers, synchronous best-effort writes, re-entrancy guarded (aoe 2.6) | daemon diagnostics | pending — pairs with the `vimes doctor` item (agenc) |
 | Device pairing (QR + passphrase) + connected-devices view (aoe 2.8; 3rd appearance of pairing-link) | horizon | deferred — post-MVP, only if VIMES goes beyond one operator |
 | **Strategic (§7): the verification loop must be VISIBLE in the UI**, or VIMES gets compared to AoE as a session list — and loses that comparison | UI redesign era | **ratified → design-directions entry** — standing input, not a unit |
+
+### Herdr carry-overs (added 2026-08-04 — herdr-decompose.md §6)
+
+| Item (source) | Lands in | Status 2026-08-04 |
+|---|---|---|
+| Extension manifest shape modelled on `herdr-plugin.toml`: id/version/`min_vimes_version`, actions (with `contexts`), events (SPINE subscriptions — exact fit), panes, link handlers, build/startup (hd 2.1.6) | slice-9 D51 node-kit design pass | **noted** → design-directions herdr entry; design-pass input alongside D62 ACP read |
+| Rule: the daemon's public API (HTTP/WS + MCP) *is* the extension API — no second SDK; first-party consumers dogfood it (hd 2.1.1) | design-principles | **proposed** — awaits Wes ratification (compounds principle 10) |
+| Two-tier extension boundary: in-process modules vs external argv processes, and which API each gets (hd §5 Q1) | slice-9 design pass | **opened → D66** (lean: both tiers, deliberately) |
+| Per-extension config/state isolation on disk; no cross-extension state access (hd 2.1.5) | engine design | **noted** — makes the already-articulated module-isolation rule concrete |
+| Extension trust decision BEFORE third-party extensions: preview-before-install, ref pinning, stated non-sandboxing — priced against the Access-authenticated daemon, not a local tool (hd §5 Q2) | before the authoring method publishes | **opened → D67** (lean: v1 first-party-only; manifest designed so preview/pinning are possible day one) |
+| `min_engine_version`-style compatibility floors on DATA artifacts (golden fixtures, work-order schemas, manifests) (hd 2.4) | schema notes | **noted** — adopt at next fixture/schema touch; version-pinning's 4th series appearance, first on data files |
+| Skill-file discipline for S8·7+ verb grants: env/context-gated capability, explicit NEGATIVE triggers, defer-to-live-schema over prose (hd 2.3) | every drive-verb work order | pending — S8·6 briefing already enumerates exact names; negative triggers + pointer docs are the upgrades |
+| Keyboard-first navigation for board/session list alongside pointer/touch (hd 2.5) | UI doctrine doc | **noted** — doctrine doc already ratified-pending (AoE pass); this is an input to it |
+| Dated/versioned data-driven classifier WITH explain output, IF external-surface drift gets hairy (hd 2.2, the narrow lift) | as encountered (CLI-version drift) | noted — the shape to reach for, not a unit |
+| Marketplace goods = work-order templates, criteria libraries, review rubrics (the verification layer as the sellable artifact) (hd §5 Q3) | the someday-conversation | noted, zero action (pairs with agentswarms' ELv2 row) |
