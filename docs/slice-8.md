@@ -486,6 +486,69 @@ question. The trial tests the HARNESS: can the task machine author, route,
 and complete real work orders without human rewrites. Remaining trial tasks
 are therefore whatever real work arises, not synthetic stressor categories.
 
+**Task 3 — `2b8c00ec` AskUserQuestion question surface, ON VIMES ITSELF
+(2026-08-05; the recursion milestone — vimes working on vimes through
+vimes).** Wes founded the VIMES orchestrator (session `c963960e` /
+transcript `272f4d57`), ran the Rutabega recall gate (PASSED across a daemon
+restart), then gave the finding-6 bug as a deliberately vague ask.
+Orchestrator grade (Fable): **no rewrite needed — the strongest authored
+order of the trial, and it EXCEEDED the rubric.** What it did before
+authoring, verified in its transcript: (1) mapped all four collapse points
+independently via Explore (capture/wire/UI/return — matching Fable's own
+diagnosis file-for-file, plus one fact Fable missed: the WS wire is already
+loose, `gateResponseEnvelopeSchema.response` is `z.unknown()`, so the binary
+collapse lives only in the typed layers); (2) identified the answer-injection
+contract as an opaque external surface (compiled SDK binary, no readable
+types) and refused to build on hypothesis — rule 0.7 applied unprompted;
+(3) with Wes's explicit clearance ("sub-agents don't work through this
+harness yet so you'll need to do it yourself"), RAN the spike itself, twice,
+isolated from vimes.service: observed `options.title === undefined`, the
+questions input shape, and the full answer round-trip
+(`updatedInput.answers` keyed by question text → tool_result "Your questions
+have been answered" → model text confirms receipt; multiSelect ", " join
+round-trips and is correctly classified as OUR encoding, not the SDK's);
+(4) named the residual risk honestly — spike ran under minimal spawn
+options, not the daemon's — and made re-confirmation-under-daemon-identical-
+spawn the FIRST acceptance criterion AND the kill criterion; (5) carried the
+repo gotchas into the order (vue-tsc gate verbatim, daemon-restart-required,
+full ci-gate). Scope decision (B, full single-call fidelity) elicited from
+Wes in prose — the orchestrator respected its own banked AskUserQuestion
+tripwire while authoring the task that fixes it. Nit: the order and notes
+are dated 2026-08-04 throughout (the founding's date) though the work ran
+2026-08-05 — cosmetic. Orchestrator's standing offer, surfaced: draft a
+decisions.md entry + risk-register fragile-adapter row for the pinned
+contract (correct per 0.6; Wes signs). **Rewrite tally: 0/3.**
+
+*Docs-write postscript:* Wes approved the orchestrator to write the decision
++ risk-register row itself; both landed well-formed (full contract, Gate-D
+signed-vs-open split, fragile-adapter isolation plan). One real miss, fixed
+at Fable's gate: it minted **D66**, already allocated in open-questions.md
+(the D# space spans BOTH files) — renumbered to **D68**, dates corrected
+08-04→08-05. Doctrine note for orchestrator briefings: D# allocation must
+check decisions.md AND open-questions.md. (Its own notes still say D66 —
+Wes relays the renumber so the next refounding doesn't re-seed it.)
+
+*Task 3 full-loop outcome (same day):* planned → implemented → reviewed
+**9/9 PASS, attempt 1** → done (seq 101–111). The plan front-loaded AC1 as
+Step 0 and carried the repo's whole discipline unprompted (zod v3/v4
+restatement with `satisfies` drift-guard, optional-widening, verify-by-
+breaking on the injection guard, vue-tsc + full ci-gate, deploy plan with
+recursion hazard). Implementer ran the Step-0 spike FIRST — contract HELD
+under daemon-identical spawn on both attended footings ('default' + 'plan';
+clamp footing unreachable in production, judged moot) — caught its own NUL
+byte in GateCard.vue at byte level, and REFUSED the deploy after a /proc
+ancestry walk confirmed the recursion hazard (no clearance held; banked in
+pathsRejected with the exact outside-shell handoff). Reviewer verified the
+spike's raw logs by TIMESTAMP, re-ran full ci-gate (3132 = 3125 + 7 new).
+Orchestrator gate (Fable): own run green (typecheck, 3132/3132, vue-tsc),
+diff read across all four chokepoints. **Task 3 complete end-to-end on
+VIMES itself, zero human rewrites at any stage. Tally: 0/3. DEPLOY
+OUTSTANDING:** daemon+core changed — restart from OUTSIDE vimes, then the
+live e2e drive (render → selection→model → Other → decline → permission
+gates unchanged → D50); then johnny's orchestrator gets its tripwire
+cleared. ci-gate already shipped the new UI (safe direction: old daemon
+emits no questions → degrades to Allow/Deny until restart).
+
 **Trial findings so far (none halting):**
 1. **Worktree isolation is RESERVED, NOT BUILT** — `isolation: 'worktree'`
    rides every task record but the dispatcher spawns in the PROJECT ROOT.

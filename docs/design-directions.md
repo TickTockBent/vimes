@@ -1139,15 +1139,26 @@ strong lean for the injection mechanism: the tool's own schema carries an
 `answers` field ("user answers collected by the permission component"),
 i.e. `updatedInput = {...input, answers: {...}}`.
 
+**SPIKE COMPLETE (2026-08-05): the VIMES orchestrator ran the second half
+itself** (session `c963960e`, transcript `272f4d57`, two runs isolated from
+vimes.service; trial task 3 `2b8c00ec` is the resulting work order).
+Contract pinned by observation: `updatedInput: {...input, answers:
+{[questionText]: string}}` → tool_result "Your questions have been
+answered: …" → model confirms receipt. `options.title` is UNDEFINED for
+AskUserQuestion; multiSelect encodes as labels joined ", " (OUR choice —
+the tool echoes verbatim); "Other" free-text rides the same string channel.
+Residual risk, honestly held: the spike used minimal spawn options — the
+work order's AC1 + kill criterion require re-confirmation under
+DAEMON-IDENTICAL spawn before building further. The contract is now signed
+as **D68** (decisions.md, 2026-08-05) with its fragile-adapter row in
+risk-register.md — both authored by the orchestrator on Wes's approval,
+renumbered from its minted "D66" at the orchestrator gate (D66/D67 were
+already allocated in open-questions.md).
+
 **Build shape when scheduled (spike FIRST — rules 0.6/0.7):**
-1. **Spike:** confirm the second half by runtime observation — return
-   `updatedInput` with a populated `answers` map from canUseTool and observe
-   the tool result carry the selection (exact key shape: question text vs
-   header vs index; multiSelect encoding). The first half is already
-   observed (above); NOTHING here is built against documentation. The
-   D48/S7·0 plan-mode spikes are the precedent and the fixture pattern
-   (`fixtures/plan-mode/`); the johnny transcript excerpt should be frozen
-   as the no-answer fixture.
+1. **Spike:** ~~confirm the second half by runtime observation~~ DONE, see
+   above. The remaining observation debt is AC1's re-confirmation under
+   daemon-identical spawn options — baked into the work order.
 2. **Schema (0.5):** a structured question event — either
    `gate_fired.kind: 'question'` with the parsed questions/options payload, or
    a sibling `question_fired` — plus the answer path carrying selections (not

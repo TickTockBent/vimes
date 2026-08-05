@@ -2217,3 +2217,49 @@ VIMES-prefixed, and the family separation mirrors the exposure matrix: a
 server the doctrine doesn't grant simply isn't mounted. The founding
 briefing's "your tools today" section ADDITIONALLY enumerates the exact names
 (belt and braces against confabulation — the walk-2 finding).
+
+## D68 — AskUserQuestion answers reach the model by injecting `answers` into `updatedInput` on allow — DECIDED 2026-08-05
+
+*(Opened and settled same day. The first orchestrator-authored work-order
+(`2b8c00ec`, AskUserQuestion multi-option support) surfaced the question; an
+orchestrator spike drove the real SDK and pinned the contract; Wes signed. The
+build slice is scope B — full single-call fidelity.)*
+
+**The bug this answers.** `AskUserQuestion` reaches VIMES through the SDK
+`canUseTool` permission callback — the same channel as "may I run `rm`?" — and
+VIMES collapsed it into the binary allow/deny gate. On allow,
+`respondInteraction` returned `{behavior:'allow', updatedInput:<the original
+question>}`: it granted the tool permission to run but injected **no selected
+answer**, so the tool executed with nothing chosen and the model got an empty
+result. That is the observed "approved but returned no data."
+
+**The contract (observed, rule 0.7 — spike 2026-08-05, two runs, driving
+`@anthropic-ai/claude-agent-sdk` directly, isolated from `vimes.service`):**
+- Input via `canUseTool` for `AskUserQuestion`:
+  `{ questions: [ { question, header, options:[{label,description}], multiSelect } ] }`,
+  1–4 questions. `options.title` is **undefined** for this tool (so the daemon's
+  current `prompt = options.title` fallback already misfires on it).
+- **Answer delivery:** return
+  `{ behavior:'allow', updatedInput:{ ...input, answers: { [questionText]: string } } }`.
+  The SDK-vendored built-in tool then emits the tool_result
+  (`"Your questions have been answered: \"<q>\"=\"<value>\"…"`) and the model
+  receives it. `answers` is keyed by the **question text**; each value is a
+  **string**.
+- **multiSelect** value = the selected labels joined with `", "` — this join is
+  **VIMES's choice**, not an opaque external contract (the tool echoes the string
+  verbatim). **"Other"** free-text value = the typed string. Both flow through the
+  same string-valued `answers` channel.
+
+**What is signed vs what remains open (Gate-D).**
+- SIGNED: the input shape and the answer-injection mechanism above, as the
+  grounding the build slice rests on.
+- **NOT yet proven under production spawn:** the spike ran with
+  `permissionMode:'default'` + a bare `canUseTool`, **not** the daemon's real
+  spawn options (closed allowlist, spawn-family denylist, MCP report servers,
+  hook env, `settingSources`). The contract is very likely stable but this is an
+  external surface (rule 0.6) — the work-order's **first acceptance step**
+  re-confirms it under daemon-identical spawn, and its **kill criterion** halts
+  the slice to a finding if it does not hold (re-spike; if the SDK offers no
+  supported answer channel through `canUseTool`, escalate to a design call —
+  e.g. intercept `AskUserQuestion` as a client-side tool). Tracked as a
+  fragile-adapter row in `risk-register.md`.
