@@ -549,6 +549,20 @@ gates unchanged → D50); then johnny's orchestrator gets its tripwire
 cleared. ci-gate already shipped the new UI (safe direction: old daemon
 emits no questions → degrades to Allow/Deny until restart).
 
+*Deployed + LIVE-CONFIRMED (2026-08-05, same day):* daemon restarted (boot
+line clean except the known CLI auto-update drift 2.1.220→2.1.222, warn-only
+— fixture shape-check + env pin bump queued). Production validation landed
+within the hour: johnny's orchestrator — the SAME session (`61bb5ea4`) whose
+original ask produced "The user did not answer the questions" — asked a
+THREE-question call through the new surface and received every answer,
+keyed by question text ("Memory consolidation", "Balanced", …); the
+gate_fired event (seq 225, stream `ef3f4163`) carries the full structured
+questions payload where its pre-restart sibling (seq 169) has none. The
+finding-6 loop is closed end-to-end: found in live use → captured →
+spiked → authored → built → reviewed → deployed → re-validated in live use,
+by the machine under trial. (MultiSelect + "Other" proven by spike + unit
+tests; production has exercised single-select so far.)
+
 **Trial findings so far (none halting):**
 1. **Worktree isolation is RESERVED, NOT BUILT** — `isolation: 'worktree'`
    rides every task record but the dispatcher spawns in the PROJECT ROOT.
