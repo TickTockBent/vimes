@@ -1448,6 +1448,14 @@ from raw.)*
    state-overlay contribution alongside actions/panes. AoE's declarative
    host-rendered blocks are the prior art.
 
+7. **Usage meters are first-class chrome in BOTH clients (Wes, same day,
+   v2 mockups)** — the 5h-window meter sits at the top of the sessions
+   pane, "directly above the sessions it funds": window bar, % used, time
+   remaining, running count, and the 7-day figure; web renders a split
+   solid/faded bar, TUI renders `█░` blocks — same truth, native idiom.
+   Pillar 4 made visible at the home surface; the E2-b aggregation
+   projection and the ledger (E1-a) are what feed it.
+
 **Raw concepts (captured, NOT settled — pass questions):**
 - **Subprojects**: the tree's middle layer is a user-defined grouping
   ("/frontend/checkout") that MAY carry its own context, rules, docs, and
