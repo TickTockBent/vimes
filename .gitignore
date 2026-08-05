@@ -18,3 +18,8 @@ Screenshot_*.png
 # Orchestrator working files: checkpoints, probe scripts, gate logs, handoff
 # notes. Durable work items live in docs/QUEUE.md; design lives in docs/.
 scratchpad/
+
+# Local clones of every decomposed product (the decomp series' primary
+# sources) — reference-only, never committed. Re-pull list: the URLs in each
+# docs/decomposition/*-decompose.md header.
+docs/decomposition/references/
