@@ -56,6 +56,56 @@ seam: "what is the contract between the platform and ANY consumer."
 this exact architecture — see "Mined from the herdr decomp" below; D66/D67
 opened from it.)*
 
+**Sharpened again 2026-08-05 (Wes, at slice-8 close — the reassessment that
+redefines slice 9).** Stated as the end-state, pending the design pass:
+- **The engine is a pure harness: session-handling architecture ONLY, zero
+  assumptions about how people work.** Its core capability set grows in one
+  direction — sessions, including **branched sessions and session trees**
+  — and sheds workflow entirely. *Grounded 2026-08-05 from herdr's own docs
+  (primary source now local: `docs/decomposition/references/herdr/`,
+  cli-reference.mdx §worktree, configuration.mdx §worktrees,
+  socket-api.mdx §worktree methods): herdr's model is **worktree-backed
+  workspace trees** — `worktree.create` makes a git worktree checkout,
+  opens it as a full child workspace (own tabs/panes/sessions), and GROUPS
+  it under the parent repo workspace; provenance is the git checkout;
+  lifecycle is explicit (create/open/remove; branches never deleted; force
+  only after a dirty-checkout confirm). Closing the parent closes the
+  group's herdr state but deletes nothing.* This is the same seam as trial
+  findings 1 + 5 (worktree isolation reserved; staleness guard) — herdr's
+  answer is worktrees-as-first-class-child-workspaces with provenance,
+  which would give dispatched stages isolation AND parallel-exploration
+  branching in one design. *Transcript-level conversation forking (branch a
+  session's dialogue, not its working copy) is BANKED as a possible future
+  enhancement, deliberately out of engine scope (Wes, 2026-08-05:
+  "branching can be powerful but can also get confusing as context gets
+  forked") — the session-tree primitive should not preclude it, but nothing
+  designs for it until it earns a capture of its own.*
+- **The task list/machine becomes a GENUINE extension** — not
+  built-in-that-could-be-disabled; the engine ships workflow-free and the
+  task system drops in like any other tenant. (Sequencing of the migration —
+  seam-first vs migrate-last — stays a design-pass question; the END state
+  is no longer open.)
+- **Drive verbs (ex-S8·7+) are extension content**, never engine grants —
+  they arrive with the workflow extension that needs them. Engine keeps the
+  0.3/principle-13 line absolutely: event spine, persistence, transition
+  legality, gates/attention, auth. Extensions propose; the engine decides.
+- **Book Genesis (`~/projects/content/book-genesis`) becomes a real
+  extension**, not a standalone project: 10 skills (narrative-foundation,
+  prose-craft, beta-reader, editorial-package, continuity-guardian,
+  entity-tracker, …) are stage briefings; its agents are node performers;
+  its knowledge/examples are fixtures. The second tenant is no longer
+  hypothetical — it has a repo and a structure that maps.
+- **Clients: web and terminal open VIMES seamlessly**, loading each
+  project's extensions as needed. The terminal client is a co-equal
+  first-party consumer of the same daemon API (#15 — it dogfoods the same
+  surface; D63 CLI-auth's trigger approaches). ⚠ Open design question this
+  creates: the extension UI contract must be client-agnostic or degrade
+  gracefully (a web pane has no TUI equivalent for free) — decide in the
+  extension-engine design pass, informed by herdr's `[[panes]]` taxonomy.
+- Per-project extension loading implies a **project-level extension
+  declaration** (which extensions, which versions — `min_vimes_version`
+  floors from the herdr lifts apply). Schema reservation candidate (0.5).
+
 **Mobile's final form** (Wes, 2026-07-20): short chat sessions with optional
 voice synthesis; heavy text work happens on an actual computer. Phone
 keyboards are good but mobile terminals/heavy editing stay rough on the eyes
