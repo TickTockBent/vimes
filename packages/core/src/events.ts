@@ -378,12 +378,34 @@ export const transitionRejectedPayloadSchema = z.object({
 // real gate populates them from the SDK tool INPUT so the phone can headline
 // WHICH tool + WHAT target is being gated (a path approved unread, smoke #4);
 // harness profiles omit them, keeping the scenario double-run byte-identical.
+// D68: the structured question payload an AskUserQuestion gate carries. A single
+// AskUserQuestion tool call presents 1–4 questions, each single- or multi-select,
+// each with its own options. `options.title` is UNDEFINED for this tool, so the
+// question TEXT is the real prompt; `header` is a short label the SDK also sends.
+// These schemas exist so the option structure survives the typed layers to the UI
+// instead of collapsing into the binary allow/deny gate. Kept OPTIONAL on the
+// gate_fired payload below — a real permission gate (Bash/Write/…) has no
+// questions, so existing events/tests stay byte-identical.
+export const gateQuestionOptionSchema = z.object({
+  label: z.string(),
+  description: z.string().optional(),
+});
+export const gateQuestionSchema = z.object({
+  question: z.string(),
+  header: z.string().optional(),
+  options: z.array(gateQuestionOptionSchema),
+  multiSelect: z.boolean().optional(),
+});
 export const gateFiredPayloadSchema = z.object({
   appSessionId: z.string(),
   prompt: z.string(),
   requestId: z.string().optional(),
   toolName: z.string().optional(),
   target: z.string().optional(),
+  // D68: present ONLY on an AskUserQuestion gate (same optional-widening
+  // discipline as requestId/toolName/target above). Absent on every permission
+  // gate and every harness profile, so the fold and existing events are unchanged.
+  questions: z.array(gateQuestionSchema).optional(),
 });
 export const questionAskedPayloadSchema = z.object({ appSessionId: z.string(), prompt: z.string() });
 export const runCompletedPayloadSchema = z.object({ appSessionId: z.string() });
@@ -1079,6 +1101,8 @@ export type SessionCreatedPayload = z.infer<typeof sessionCreatedPayloadSchema>;
 export type LivenessChangedPayload = z.infer<typeof livenessChangedPayloadSchema>;
 export type TransitionRejectedPayload = z.infer<typeof transitionRejectedPayloadSchema>;
 export type GateFiredPayload = z.infer<typeof gateFiredPayloadSchema>;
+export type GateQuestion = z.infer<typeof gateQuestionSchema>;
+export type GateQuestionOption = z.infer<typeof gateQuestionOptionSchema>;
 export type QuestionAskedPayload = z.infer<typeof questionAskedPayloadSchema>;
 export type RunCompletedPayload = z.infer<typeof runCompletedPayloadSchema>;
 export type WatchdogStalePayload = z.infer<typeof watchdogStalePayloadSchema>;

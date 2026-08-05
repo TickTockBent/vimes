@@ -48,6 +48,36 @@ describe('deriveGateCards', () => {
     const [card] = deriveGateCards(events, EMPTY);
     expect(card).not.toHaveProperty('toolName');
     expect(card).not.toHaveProperty('target');
+    expect(card).not.toHaveProperty('questions');
+  });
+
+  it('D68: carries the structured questions array through to the card (AskUserQuestion)', () => {
+    const questions = [
+      { question: 'Which language?', header: 'Language', options: [{ label: 'TypeScript', description: 'Typed JS.' }, { label: 'JavaScript' }], multiSelect: false },
+      { question: 'Which test tools?', options: [{ label: 'Vitest' }, { label: 'Playwright' }], multiSelect: true },
+    ];
+    const events = [
+      makeEvent({
+        seq: 1,
+        type: 'gate_fired',
+        payload: { appSessionId: 'app-1', prompt: 'Which language?', requestId: 'req-1', toolName: 'AskUserQuestion', questions },
+      }),
+    ];
+    const [card] = deriveGateCards(events, EMPTY);
+    expect(card!.questions).toEqual(questions);
+  });
+
+  it('D68: a malformed questions payload is dropped, leaving a plain Allow/Deny card', () => {
+    const events = [
+      makeEvent({
+        seq: 1,
+        type: 'gate_fired',
+        // options is not an array → the whole questions field is rejected.
+        payload: { appSessionId: 'app-1', prompt: 'huh?', requestId: 'req-1', questions: [{ question: 'q', options: 'nope' }] },
+      }),
+    ];
+    const [card] = deriveGateCards(events, EMPTY);
+    expect(card).not.toHaveProperty('questions');
   });
 
   it('answering: a locally-sent gate_response marks the card answering before the server confirms', () => {

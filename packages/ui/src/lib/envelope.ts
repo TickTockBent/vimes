@@ -9,7 +9,16 @@ export type ClientEnvelope =
   | { op: 'subscribe'; stream: string; lastSeq: number }
   | { op: 'unsubscribe'; stream: string }
   | { op: 'send'; appSessionId: string; text: string }
-  | { op: 'gate_response'; appSessionId: string; requestId: string; response: 'allow' | 'deny' }
+  // D68: `response` is 'allow'|'deny' for a permission gate, or a structured
+  // answers map for an AskUserQuestion gate (keyed by question text, string
+  // values). The daemon's gateResponseEnvelopeSchema.response is z.unknown(), so
+  // the structured shape rides the wire unchanged; only this typed layer widens.
+  | {
+      op: 'gate_response';
+      appSessionId: string;
+      requestId: string;
+      response: 'allow' | 'deny' | { answers: Record<string, string> };
+    }
   | { op: 'resume'; appSessionId: string }
   | { op: 'spawn'; channel: 'sdk' | 'pty'; cwd: string; name?: string }
   // v0.2 (D9/D10) session ops.

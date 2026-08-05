@@ -432,7 +432,12 @@ function onComposerEnter(event: KeyboardEvent): void {
   // 'newline': do nothing — let the textarea insert the newline naturally.
 }
 
-function respond(card: { appSessionId: string; requestId: string }, response: 'allow' | 'deny'): void {
+function respond(
+  card: { appSessionId: string; requestId: string },
+  // D68: 'allow'|'deny' for a permission gate; a structured answers map for an
+  // AskUserQuestion gate. Forwarded verbatim to the store (wire is z.unknown()).
+  response: 'allow' | 'deny' | { answers: Record<string, string> },
+): void {
   store.answerGate(card.appSessionId, card.requestId, response);
 }
 
@@ -593,6 +598,7 @@ function resume(): void {
           :prompt="activeCardFor(event)!.prompt"
           :tool-name="activeCardFor(event)!.toolName"
           :target="activeCardFor(event)!.target"
+          :questions="activeCardFor(event)!.questions"
           :answering="activeCardFor(event)!.status === 'answering'"
           @respond="(response) => respond(activeCardFor(event)!, response)"
         />
