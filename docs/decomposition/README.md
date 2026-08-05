@@ -105,3 +105,35 @@ the right doc, no action due yet), **pending** (waits for its slice/trigger).
 | Keyboard-first navigation for board/session list alongside pointer/touch (hd 2.5) | UI doctrine doc | **noted** — doctrine doc already ratified-pending (AoE pass); this is an input to it |
 | Dated/versioned data-driven classifier WITH explain output, IF external-surface drift gets hairy (hd 2.2, the narrow lift) | as encountered (CLI-version drift) | noted — the shape to reach for, not a unit |
 | Marketplace goods = work-order templates, criteria libraries, review rubrics (the verification layer as the sellable artifact) (hd §5 Q3) | the someday-conversation | noted, zero action (pairs with agentswarms' ELv2 row) |
+
+### References library + observed drift vs the decomp docs (2026-08-05)
+
+Local shallow clones of ALL seven decomposed products now live in
+`references/` (gitignored; re-pull from the URLs in each decomp header).
+**The clones are the authority; the decomp docs are dated analyses** — rule
+0.7 applied to our own artifacts. The S9·0b deep-read (slice-9 research)
+verified the decomps against source and found four drifts, logged here so
+nobody builds on the stale claims:
+
+1. **agent-of-empires: the decomp's "skip-tier plugin API" is now the
+   corpus's strongest D66/D67 prior art** (v1.14.0): `api_version` with
+   per-field vocabulary gating, static-contributions-vs-capabilities split,
+   capability grants pinned to manifest/content hashes, re-approval on
+   grant widening, `plugins.lock`, RPC capability middleware with an authz
+   test matrix, declarative host-rendered UI blocks (TUI *and* web) —
+   honest `NoSandbox` ceiling. The decomp's dismissal is superseded.
+2. **agenc-core: OS sandbox is DEFAULT-ON** (`sandbox_mode:
+   "workspace-write"`, runtime/src/config/schema.ts:952) behind a
+   fail-closed execution broker enumerating ~19 execution surfaces — the
+   decomp called it "opt-in / horizon." agenc also ships a plugin system
+   the decomp never mentioned (execution-time containment, marketplace
+   fetch guards, optional sha pinning).
+3. **herdr: `contexts` on actions is offered-not-enforced** — parsed and
+   surfaced, never checked at invoke. If VIMES adopts `contexts`, decide
+   which side enforces, explicitly.
+4. **AoE's own docs lag its shipped plugin runtime** ("not wired up yet" vs
+   a working supervised host) — third-party docs get the same 0.7 shake as
+   Anthropic's.
+
+Full detail: the S9·0b prior-art brief (scratchpad, slice-9 research
+phase); its synthesis feeds S9·2 (manifest) and S9·3 (trust) directly.

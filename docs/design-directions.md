@@ -1405,3 +1405,58 @@ Mobile is inherently touch; the desktop must not therefore be mouse-only —
 keyboard-driven board/session navigation is cheap to honour early and
 expensive to retrofit into a component library that assumed pointer events.
 Goes into the doctrine doc (already ratified-pending from the AoE pass).
+
+## The base-VIMES mockups (Wes, 2026-08-05) — the D70 engine's face, in two clients
+
+*(Two authored mockups, `docs/mockups/vimes_terminal.jsx` (web) and
+`docs/mockups/vimes_tui.jsx` (terminal) — founding UI documents for the
+extension-engine era, discussed same day. Wes's framing: "raw concepts to
+show you the design in my head" — the SKELETON is the intent; the specific
+lists/labels are illustrative. What follows separates settled-by-discussion
+from raw.)*
+
+**Settled by the pair + discussion (design-pass inputs, near-signed):**
+1. **The session tree is the home surface in both clients** — repo →
+   user-defined grouping → sessions named by INTENT, live status glyphs.
+   Pillar 1 grown into D70: the tree of work replaces both today's session
+   list and the board as the landing surface.
+2. **Same information architecture, per-client grammar.** Web = pointer,
+   tabs, toggles; TUI = modal vim grammar + tmux window strip + `:`
+   commands. Tree left, transcript center, switchable context pane right,
+   dense status line. Scope-8 consequence: the client contract is shared
+   STATE + per-client input grammar, not shared widgets.
+3. **Extensions are visible, versioned, per-workspace-toggleable product
+   surface** (web panel; TUI `[x] name ver` + `:ext install` / `:ext
+   search`). Extension management is itself public-API surface (the herdr
+   move). The mockups' specific extension LIST is illustrative only —
+   confirmed: session-host is ENGINE, never a listed extension; tasks/
+   orchestration/docs-standard are extensions; hooks-on-the-spine is a
+   candidate smallest-first-extension.
+4. **The transcript is structured data in every client** — the TUI renders
+   turns/diffs/economics as data, never scraped bytes (0.8 survives the
+   terminal). Engine health + economics (window remaining, per-turn tokens,
+   event count, spine status) are inline chrome, not a separate dashboard.
+5. **Verbs have two faces (Wes, sharpened in discussion): every extension
+   verb is exposed BOTH as an agent tool AND as a human command** (`:promote
+   review`, palette entries). Same verb, same principle-13 authority
+   derivation, different invoker — this is how one workflow extension
+   serves fully-agentic AND fully-human-gated shops. Manifest requirement:
+   a verb declaration yields both surfaces. (Client-grammar rendering can
+   land later; the SCHEMA reserves it now, 0.5.)
+6. Extensions can **decorate engine objects** (the TUI's `review` status
+   glyph on sessions comes from the tasks extension) — the manifest needs a
+   state-overlay contribution alongside actions/panes. AoE's declarative
+   host-rendered blocks are the prior art.
+
+**Raw concepts (captured, NOT settled — pass questions):**
+- **Subprojects**: the tree's middle layer is a user-defined grouping
+  ("/frontend/checkout") that MAY carry its own context, rules, docs, and
+  workflow at that level. Label vs directory-scoped is explicitly
+  undecided. Interacts with: per-project extension loading, D21 roots, and
+  possibly worktree nodes (is a worktree child a subproject?). Engine-vs-
+  extension placement of subproject config: undecided.
+- **vmx**: the pre-"vimes" working name (v-mux — a tmux-like vimes:
+  terminal-first, session after session, pane management, window
+  switching). Surfaced in the mockups as the prompt's agent name ("Message
+  vmx…"). Candidate: the TUI binary name / the resident agent's short
+  name. Unassigned; naming decision parked.
