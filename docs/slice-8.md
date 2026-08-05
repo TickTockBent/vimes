@@ -432,6 +432,52 @@ review→done (seq 87). **Task 1 complete end-to-end: authored → promoted →
 planned → implemented → reviewed → done, zero human rewrites at any stage.
 Rewrite tally: 0/1.**
 
+**Task 2 — `ad148cd0` extract shared vector-search core on johnny
+(2026-08-05, authoring grade — graded BLIND per protocol: Wes withheld his
+intent).** The messier category on purpose: a refactor, in the deliberately
+dirty tree. Authored one-shot (seq 88, zero bounces). Orchestrator grade
+(Fable): **no rewrite needed** — verified against johnny's source: the two
+duplicated blocks are real and named precisely (order-expression at
+MemoryService.ts:232/320/397 verbatim-identical; row-mapper duplicated with
+the namespace variant correctly called out), the `buildFilterConditions`
+precedent cited is real, error-label preservation criterion matches the
+actual three labels, and the explicitly-out list fences the classic refactor
+failure modes (signature drift, perf scope-creep into UNION rework, test
+loosening, mock touching). The kill criterion is the best authored yet: it
+names the three REAL differences a shared core must absorb (single vs
+per-query loop, `=` vs `IN`, namespace projection), sets a readability
+stop-condition, and prescribes the correct partial fallback (extract only
+the genuinely identical helpers, leave the shells duplicated). Two
+annotation-level flaws, neither promotion-blocking: (a) criterion 1's
+grep-check says `exp(ln(2)` "appears exactly once" but a comment at line 230
+also contains the string — a literal count lands at 2 post-refactor; spirit
+is unambiguous, a careful reviewer applies it to code occurrences; (b) the
+order declares `isolation: worktree` for code that exists ONLY as
+uncommitted work — see finding 5. **Rewrite tally: 0/2.**
+
+*Task 2 full-loop outcome (same day):* promoted → planned → implemented →
+reviewed **6/6 PASS, attempt 1** → done (seq 89–99, dispatcher-routed).
+The plan (artifact `814e4c3f`) made the kill criterion's prescribed partial
+fallback its opening move — a "Seam decision (already made)" section judged
+the three query shells genuinely different, declined the work order's
+optional full consolidation, and extracted only the two identical parts
+(`buildOrderExpression`, `toSearchResult`/`toCrossNamespaceResult`) — the
+right engineering call, though it never cited the kill criterion BY NAME
+(task 1's planner ran an explicit "stop-condition check → Proceed"; watch
+item: whether explicit kill-criterion acknowledgment should be doctrine or
+stays planner's discretion). Implementer resolved the authoring nit
+unprompted (the line-230 decay comment was reworded, so the literal
+`exp(ln(2)`-once grep-check passes clean — orchestrator-verified: one
+occurrence, line 385). Reviewer re-ran both suites (140 unit + 76
+integration against a fresh pgvector up/torn down), verified all six
+criteria with file:line evidence, and correctly fenced the dirty-tree
+sibling work AGAIN (types.ts/mock searchMany/count lines attributed to
+sibling features, not this refactor). Mid-task, trial finding 6 surfaced
+organically (AskUserQuestion flattened to accept/decline — the orchestrator
+asked Wes which refactor to author, got "did not answer", and proceeded on
+its own marked recommendation). **Task 2 complete end-to-end, zero human
+rewrites at any stage. Tally stands: 0/2.**
+
 **Trial findings so far (none halting):**
 1. **Worktree isolation is RESERVED, NOT BUILT** — `isolation: 'worktree'`
    rides every task record but the dispatcher spawns in the PROJECT ROOT.
@@ -451,6 +497,29 @@ Rewrite tally: 0/1.**
 4. The dirty-tree handling was GOOD at every layer without being taught:
    orchestrator flagged it at founding and banked it in notes; implementer
    fenced it in pathsRejected. No layer clobbered or absorbed foreign work.
+5. **(Task 2) `isolation: worktree` declared for code that is not in HEAD.**
+   `searchMany()` exists only as uncommitted work in johnny's dirty tree —
+   `git show HEAD:src/MemoryService.ts` has no such method. If worktree
+   isolation were BUILT (finding 1), the dispatcher would check out HEAD and
+   the task's subject would not exist: planner grounds on a tree missing a
+   third of the refactor's targets. Inert today (the field rides unread), but
+   it upgrades finding 1's consequence pair to a triple: when isolation
+   lands, the dispatcher needs a **staleness guard** — task references paths/
+   symbols absent at HEAD + worktree isolation → fail loud at dispatch, never
+   plan against the wrong tree. The authoring orchestrator can't be blamed
+   for this (the field is schema-boilerplate to it), which is exactly why the
+   guard belongs in the dispatcher, not in authoring doctrine.
+6. **(Task 2, mid-trial) AskUserQuestion has no attended surface** — johnny's
+   orchestrator asked Wes a multi-option question; VIMES flattened it to the
+   generic gate's accept/decline (prompt = 160-char JSON truncation), and
+   "accept" resolves `allow` with the ORIGINAL input unchanged
+   (sessionHost.ts respondInteraction) — no human choice is ever collected or
+   returned. D50 auto-denies AskUserQuestion for dispatched sessions (no
+   human); the attended half was never built. Full diagnosis + build shape in
+   design-directions ("AskUserQuestion needs a first-class question
+   surface"). Not halting (deny tells the orchestrator to proceed on
+   judgment), but it degrades the orchestrator-as-design-partner loop the
+   trial exists to exercise.
 
 ## Explicitly OUT (slice-wide)
 

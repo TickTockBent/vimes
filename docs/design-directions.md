@@ -1095,6 +1095,79 @@ it, and leaves D41's back/close semantics untouched. Interacts with the
 end-state entry (board-as-sidebar, work-as-panels) and the eventual
 dock/drag redesign — decide no later than that redesign's design pass.
 
+**Second observation — the CLOSE side of the same conflation (Wes,
+2026-08-05: files open → orchestrator opened after it → closing files closes
+BOTH).** Code-confirmed, not a defect: the close button calls `closePanelAt`
+(App.vue:450), whose documented contract is truncate-forward — closing panel
+i discards everything opened after it, correct for a drill chain (closing
+files SHOULD close the editor it spawned). But a panel appended as a
+*sibling* (the S8·5 header-button open) is not a child of what it happens to
+sit after, and the cascade eats it anyway. Same root as the open-side: the
+linear stack encodes parentage by position, and top-level opens put
+non-children into child positions. Strengthens lean (c): under two named
+open kinds, close-cascade follows DRILL edges only — a top-level panel
+closes alone. The decision now has live pain on both faces (open and close);
+weight that when scheduling the dock/drag pass.
+
+## AskUserQuestion needs a first-class question surface (attended sessions)
+
+*(Wes, 2026-08-05, mid-trial-task-2: johnny's orchestrator presented multiple
+options; VIMES surfaced only accept/decline. Trial finding 6.)*
+
+**Diagnosis (code-confirmed).** The generic gate is the ONLY interactive
+surface an attended SDK session has, and it is shaped for permissions, not
+questions. `handleGate` flattens any tool call to a one-line prompt (SDK
+title, else `toolName: {json}` truncated to 160 chars) + `gate_fired`;
+GateCard renders accept/decline; `respondInteraction` maps accept to
+`{behavior:'allow', updatedInput: pending.input}` — the original input,
+unchanged. For AskUserQuestion that means: the options are invisible, and
+"accept" attaches NO human choice — the asking session proceeds having
+learned nothing. The dispatched half is already handled (D50 auto-deny,
+"proceed on judgment"); the attended half was never built.
+
+**Scheduled (Wes, 2026-08-05): capture now, build AFTER slice 8.**
+
+**Observed truth, first half already in hand (johnny orchestrator transcript
+`61bb5ea4`, line 111-113, 2026-08-05):** allowing AskUserQuestion with the
+input UNCHANGED executes the tool and returns the string **"The user did not
+answer the questions."** with `toolUseResult.answers: {}` — so "accept" on
+the flattened gate reads to the asking session as an explicit non-answer,
+not an error (johnny's orchestrator then proceeded with its own marked
+recommendation — graceful degradation, but the human's voice was silently
+dropped). The empty `answers` object alongside the echoed questions is the
+strong lean for the injection mechanism: the tool's own schema carries an
+`answers` field ("user answers collected by the permission component"),
+i.e. `updatedInput = {...input, answers: {...}}`.
+
+**Build shape when scheduled (spike FIRST — rules 0.6/0.7):**
+1. **Spike:** confirm the second half by runtime observation — return
+   `updatedInput` with a populated `answers` map from canUseTool and observe
+   the tool result carry the selection (exact key shape: question text vs
+   header vs index; multiSelect encoding). The first half is already
+   observed (above); NOTHING here is built against documentation. The
+   D48/S7·0 plan-mode spikes are the precedent and the fixture pattern
+   (`fixtures/plan-mode/`); the johnny transcript excerpt should be frozen
+   as the no-answer fixture.
+2. **Schema (0.5):** a structured question event — either
+   `gate_fired.kind: 'question'` with the parsed questions/options payload, or
+   a sibling `question_fired` — plus the answer path carrying selections (not
+   just allow/deny) through `answerGate` → `respondInteraction`. Reserve the
+   shape early; the multiSelect and free-text-"Other" variants exist in the
+   tool schema and must be representable even if v1 renders single-select only.
+3. **UI:** a QuestionCard sibling of GateCard — options as tappable choices
+   (one-tap-answerable from the phone, pillar 5), free-text fallback.
+   Attention/notification integration comes free: the event rides the same
+   `withNotificationTrigger` path gates already use.
+4. **Danger to avoid:** do NOT special-case by parsing the prompt string —
+   the branch keys on `toolName === 'AskUserQuestion'` and reads the
+   STRUCTURED input (same posture as `extractGateTarget`), and every other
+   tool keeps the generic gate byte-identical.
+
+Interaction: D50's dispatched auto-deny stays exactly as is (unattended =
+nobody to ask, by design). The trial makes this gap live: an orchestrator
+that can't ask its human degrades into guess-and-log (the D50 message) even
+when the human is sitting right there.
+
 ## Mined from the agent-of-empires decomp — UI doctrine, and the differentiator made visible
 
 *(2026-07-29, `docs/decomposition/agent-of-empires-decompose.md` reviewed and
