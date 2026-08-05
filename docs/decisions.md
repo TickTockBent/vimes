@@ -2303,3 +2303,50 @@ none halting, all logged with owners.
   the S8·7 briefing edit).
 - Slice 9 (D51 node-kit design pass) is next, inputs staged: D62 ACP read,
   D66/D67, the herdr manifest shape, books as second tenant.
+
+## D70 — VIMES is a pure session engine; all workflow is extension content — DECIDED 2026-08-05
+
+*(Wes's reassessment at slice-8 close, signed same day. Supersedes D69's
+placement of the drive verbs — not their unlock: the Gate-2 validation
+stands; what changed is where validated capability lives.)*
+
+**The shape.** The engine ships session-handling architecture only: process
+custody, the event spine, persistence, projections, gates/attention, auth,
+and **session trees** — worktree-backed child sessions with git-checkout
+provenance, grouped under a parent, per the herdr model (primary source
+local in `docs/decomposition/references/herdr/`; this one design also
+answers trial findings 1 and 5). The engine makes **zero assumptions about
+how people work** — candidate design principle #16, to be ratified in the
+slice-9 pass.
+
+**What moves out.** The task machine — board, stages, dispatch, review —
+becomes a **genuine extension**: the engine ships workflow-free and the
+task system drops in like any tenant. The ex-S8·7 drive verbs are extension
+content, arriving with the workflow extension that needs them, never engine
+grants. The 0.3/principle-13 line is absolute: extensions propose, the
+engine's deterministic core decides; an extension crash can never corrupt
+or stall engine state.
+
+**The tenants.** First: the task machine (migrating). Second: **Book
+Genesis** (`~/projects/content/book-genesis`) — a real repo whose skills,
+agents, and gates map directly onto stage briefings, performers, and
+acceptance shapes. Third consumer at design time: the drive verbs. The
+extension-authoring method is written FROM these worked examples, never
+before them.
+
+**The clients.** Web and terminal open VIMES as co-equal first-party
+consumers of the same daemon API (#15 — no second SDK), loading each
+project's declared extensions. Any capability reachable only through one
+client is a bug against #15.
+
+**Explicitly out of engine scope:** transcript-level conversation forking
+(banked as a possible future enhancement; the session-tree primitive must
+not preclude it, nothing designs for it).
+
+**Consequence for the plan.** Slice 9 is redefined as the
+**extension-engine design pass**, absorbing the D51 node-kit pass: D66
+(boundary tiers) and D67 (trust) decided inside it; the extension manifest
+and per-project declaration schemas reserved (0.5); the task-machine
+migration map and drive-verb drop-in spec produced; migration sequencing
+(seam-first vs migrate-last) an explicit pass question. Docs-first; nothing
+builds until the pass is signed.
