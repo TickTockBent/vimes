@@ -478,6 +478,14 @@ asked Wes which refactor to author, got "did not answer", and proceeded on
 its own marked recommendation). **Task 2 complete end-to-end, zero human
 rewrites at any stage. Tally stands: 0/2.**
 
+**Trial scope sharpened (Wes, 2026-08-05, after task 2):** the vague-ask and
+find-the-bug task categories are SKIPPED, deliberately. Reasoning: the
+orchestrator runs the same model that already does that work well elsewhere —
+grading it on fuzzy-prompt competence would test the MODEL, which is not in
+question. The trial tests the HARNESS: can the task machine author, route,
+and complete real work orders without human rewrites. Remaining trial tasks
+are therefore whatever real work arises, not synthetic stressor categories.
+
 **Trial findings so far (none halting):**
 1. **Worktree isolation is RESERVED, NOT BUILT** — `isolation: 'worktree'`
    rides every task record but the dispatcher spawns in the PROJECT ROOT.
@@ -519,7 +527,15 @@ rewrites at any stage. Tally stands: 0/2.**
    design-directions ("AskUserQuestion needs a first-class question
    surface"). Not halting (deny tells the orchestrator to proceed on
    judgment), but it degrades the orchestrator-as-design-partner loop the
-   trial exists to exercise.
+   trial exists to exercise. *Postscript (2026-08-05): the orchestrator
+   ADAPTED unprompted — its notes bank a "HARNESS LIMITATION" entry with the
+   correct mechanism diagnosis ("Wes only sees accept/deny — my options
+   never reach him"), a workaround (options in prose, or recommend +
+   proceed), and an explicit un-park trigger ("UNTIL he confirms it's
+   fixed: do NOT use AskUserQuestion"). The agent routed around the
+   harness gap and left a dated tripwire to un-route when it closes —
+   exactly the notes-discipline behavior D56's briefing was designed to
+   produce.*
 
 ## Explicitly OUT (slice-wide)
 
