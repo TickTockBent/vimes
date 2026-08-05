@@ -614,6 +614,17 @@ tests; production has exercised single-select so far.)
    exactly the notes-discipline behavior D56's briefing was designed to
    produce.*
 
+**══ GATE 2 VERDICT: PASSED — SLICE 8 CLOSED (Wes, 2026-08-05, D69) ══**
+Three end-to-end loops of escalating difficulty, **0/3 rewrites**: clean
+feature (8/8), blind-graded refactor in a dirty tree (6/6), and VIMES
+building VIMES through its own machine (9/9, spiked its own external
+contract, deployed and production-confirmed same day). Synthetic stressor
+categories skipped by scope decision — they grade the model, not the
+harness. Findings 1–6 logged, none halting. **Drive verbs (S8·7+)
+unlocked**, one revertible grant at a time. Carried forward, non-blocking:
+S8·4 + 502 organic live exits; CLI 2.1.222 fixture check + pin bump;
+D#-allocation rule into the founding briefing. Full record: D69.
+
 ## Explicitly OUT (slice-wide)
 
 Drive verbs beyond author · `task_commented` emitter (D59) · board-events

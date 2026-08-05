@@ -2263,3 +2263,43 @@ result. That is the observed "approved but returned no data."
   supported answer channel through `canUseTool`, escalate to a design call —
   e.g. intercept `AskUserQuestion` as a client-side tool). Tracked as a
   fragile-adapter row in `risk-register.md`.
+
+## D69 — Gate-2 verdict: PASSED. The task machine authors real work without human rewrite; drive verbs unlocked; slice 8 CLOSED — DECIDED 2026-08-05
+
+*(Wes's call, same day as trial task 3's completion.)*
+
+**The criterion and the evidence.** Gate 2 (carried verbatim from slice 7's
+phase-two criterion) asked: do orchestrator-authored work orders need
+substantial human rewrite more often than not? Verdict on a three-task
+sample: **0/3 rewrites, and the quality rose as the difficulty did.**
+- Task 1 (`0dc79a84`, clean feature, johnny): 8/8 review PASS attempt 1.
+- Task 2 (`ad148cd0`, refactor in a deliberately dirty tree, graded blind):
+  6/6 PASS attempt 1; the plan pre-applied the kill criterion's partial
+  fallback; every layer fenced foreign uncommitted work unprompted.
+- Task 3 (`2b8c00ec`, VIMES building VIMES — the recursion milestone): the
+  orchestrator spiked the external contract ITSELF before authoring (D68),
+  9/9 PASS attempt 1, deployed and production-confirmed the same day by the
+  very session whose failed question was the originating finding.
+
+**The sample-size rationale (Wes, banked in the trial log 2026-08-05):** the
+planned ~10 tasks assumed synthetic stressor categories (vague asks,
+find-the-bug). Skipped deliberately — those grade the MODEL, which is the
+same model already doing that work elsewhere; the trial's question was the
+HARNESS (schema, doctrine, routing, verdicts), and three end-to-end loops of
+escalating difficulty answered it. Findings 1–6 were process discoveries,
+none halting, all logged with owners.
+
+**Consequences.**
+- **S8·7+ drive verbs (promote/move/dispatch/amend) are UNLOCKED** — built
+  one individually-revertible grant at a time, each work order carrying the
+  herdr skill-file discipline and the principle-13 check (no
+  decision-asserting parameters).
+- **Slice 8 is CLOSED.** Two organic live exits carry forward as standing
+  watch items, deliberately NOT blocking (Wes: "I'm not holding up dev work
+  for them"): the S8·4 compaction gate's first real 250k/275k/300k crossing,
+  and the 502 unit's observed reconnect ride-through. Housekeeping rides
+  alongside: CLI 2.1.222 fixture shape-check + `VIMES_EXPECTED_CLI_VERSION`
+  bump; D#-allocation-checks-both-files into the founding briefing (rides
+  the S8·7 briefing edit).
+- Slice 9 (D51 node-kit design pass) is next, inputs staged: D62 ACP read,
+  D66/D67, the herdr manifest shape, books as second tenant.
