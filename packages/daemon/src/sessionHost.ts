@@ -29,6 +29,7 @@ import {
   type CompactionGateDecision,
   type EventInput,
   type EventStore,
+  type GateQuestion,
   type IdSource,
   type Liveness,
   type ReportCompletionPayload,
@@ -389,6 +390,9 @@ interface PendingGate {
   appSessionId: string;
   input: Record<string, unknown>;
   resolve: (result: SdkPermissionResult) => void;
+  // D68: the gated tool's name, so respondInteraction can restrict structured
+  // answer injection to AskUserQuestion gates (a permission gate never gets one).
+  toolName: string;
 }
 
 // The narrow slice of the daemon's `CompactionSteward` the host actually calls
@@ -515,6 +519,53 @@ export function extractGateTarget(
   }
   return typeof candidateField === 'string' ? candidateField : undefined;
 }
+
+// ── D68: AskUserQuestion's structured input shape ────────────────────────────
+//
+// AskUserQuestion arrives through `canUseTool` (the permission seam) carrying its
+// questions in the tool INPUT. We RESTATE the shape in the daemon's zod v4 rather
+// than reuse core's `gateQuestionSchema` object — the SAME zod v3 (core) / v4
+// (daemon+SDK) split the review/completion schemas above document (the SDK reads
+// `_zod.toJSONSchema()`, a v3 object lacks it; reusing the object throws). It is
+// BOUND to core's `GateQuestion` at the TYPE level below, so a drift in core's
+// shape reddens THIS build rather than a live session (rule 0.5/0.6). Parsed with
+// `safeParse` at the seam so malformed input degrades to a plain gate, never a
+// throw out of `canUseTool` (rule 0.6, fail-safe).
+const askQuestionSchema = z.object({
+  question: z.string(),
+  header: z.string().optional(),
+  options: z.array(
+    z.object({
+      label: z.string(),
+      description: z.string().optional(),
+    }),
+  ),
+  multiSelect: z.boolean().optional(),
+});
+const askQuestionsSchema = z.array(askQuestionSchema);
+type AskQuestion = z.infer<typeof askQuestionSchema>;
+// Drift bind (both directions = structural equivalence with core's GateQuestion):
+// if core's `gateQuestionSchema` gains/loses/renames a field, one of these stops
+// compiling and the build fails — the derivation-without-reuse guarantee.
+const _askQuestionMatchesCore = [] as AskQuestion[] satisfies GateQuestion[];
+const _coreMatchesAskQuestion = [] as GateQuestion[] satisfies AskQuestion[];
+void _askQuestionMatchesCore;
+void _coreMatchesAskQuestion;
+
+// D68: what a gate answer may be, off the loose wire (gate_response.response is
+// z.unknown()). Fail-closed: only the three recognized shapes parse; anything
+// else falls through to deny in respondInteraction.
+//   'allow'  — a real permission gate approved (byte-identical to before D68).
+//   'deny'   — declined (covers both a permission deny AND declining a question).
+//   {answers}— an AskUserQuestion's selected answers, keyed by question TEXT,
+//              each value a STRING (single = a label; multiSelect = labels joined
+//              ", "; Other = the typed string). Injected into updatedInput only
+//              when the pending gate is actually an AskUserQuestion.
+const gateAnswerSchema = z.union([
+  z.literal('allow'),
+  z.literal('deny'),
+  z.object({ answers: z.record(z.string(), z.string()) }),
+]);
 
 // ── S8·4a compaction-metadata guards (fragile-adapter boundary, rule 0.6) ────
 // Mirrors mapper.ts's `isObject`/`optionalNonnegativeInt` exactly (this file
@@ -859,11 +910,30 @@ class ClaudeSdkAdapter implements SessionAdapter {
       return { refused: true, reason: 'unknown-gate' };
     }
     this.pendingGates.delete(requestId);
-    // Fail-closed: anything other than the explicit 'allow' string denies.
-    const result: SdkPermissionResult =
-      answer === 'allow'
-        ? { behavior: 'allow', updatedInput: pending.input }
-        : { behavior: 'deny', message: 'denied from VIMES' };
+    // Fail-closed: parse the loose-wire answer; anything unrecognized denies.
+    const parsed = gateAnswerSchema.safeParse(answer);
+    let result: SdkPermissionResult;
+    if (
+      parsed.success &&
+      typeof parsed.data === 'object' &&
+      pending.toolName === 'AskUserQuestion'
+    ) {
+      // D68 answer injection (the pinned contract, re-confirmed Step-0 2026-08-05):
+      // spread the original tool input and add `answers` keyed by question text.
+      // The built-in AskUserQuestion tool echoes `answers` as the tool_result and
+      // the model receives the selection. Guarded to AskUserQuestion gates: an
+      // `answers` object on any other gate falls through to deny below.
+      result = {
+        behavior: 'allow',
+        updatedInput: { ...pending.input, answers: parsed.data.answers },
+      };
+    } else if (parsed.success && parsed.data === 'allow') {
+      // Real permission gate approved — byte-identical to the pre-D68 allow path.
+      result = { behavior: 'allow', updatedInput: pending.input };
+    } else {
+      // 'deny', a malformed answer, or an `answers` object on a non-question gate.
+      result = { behavior: 'deny', message: 'denied from VIMES' };
+    }
     pending.resolve(result);
     return { ok: true, appSessionId: pending.appSessionId };
   }
@@ -1044,20 +1114,51 @@ class ClaudeSdkAdapter implements SessionAdapter {
       });
     }
     const requestId = options.requestId;
+    // D68: an attended AskUserQuestion is NOT a permission gate — it's a
+    // multi-option prompt whose selected answer must reach the model. Detect it,
+    // parse the structured questions off the tool INPUT (never the screen — rule
+    // 0.8), and carry them on the fired event so the UI can render options instead
+    // of allow/deny. `options.title` is UNDEFINED for this tool (Step-0 spike
+    // 2026-08-05), so the first question's text stands in as the prompt for
+    // legacy/prompt-only consumers. A malformed input degrades to a plain gate
+    // (safeParse — never a throw out of canUseTool, rule 0.6).
+    let questions: AskQuestion[] | undefined;
+    if (toolName === 'AskUserQuestion') {
+      const parsed = askQuestionsSchema.safeParse((input as { questions?: unknown }).questions);
+      if (parsed.success && parsed.data.length > 0) {
+        questions = parsed.data;
+      }
+    }
     // Richer gate prompt: prefer the SDK-provided title; when absent fall back to
     // the tool name plus its input JSON, truncated to 160 chars with an ellipsis.
+    // For an AskUserQuestion (title always undefined) prefer the first question's
+    // text over the JSON dump so the fallback line is human-meaningful.
     const prompt =
       typeof options.title === 'string' && options.title.length > 0
         ? options.title
-        : truncateGatePrompt(`${toolName}: ${JSON.stringify(input)}`);
+        : questions !== undefined
+          ? truncateGatePrompt(questions[0]!.question)
+          : truncateGatePrompt(`${toolName}: ${JSON.stringify(input)}`);
     // Surface toolName + a structured target (from the tool INPUT, never the
     // prompt string) so the phone can headline WHAT is being gated. `prompt`
     // stays exactly as above — it remains the fallback/detail line.
     const target = extractGateTarget(toolName, input);
-    const gateEvent = gateFired({ appSessionId, prompt, requestId, toolName, target });
+    const gateEvent = gateFired({
+      appSessionId,
+      prompt,
+      requestId,
+      toolName,
+      target,
+      // Present ONLY for AskUserQuestion; gateFired's schema leaves it optional so
+      // every permission gate stays byte-identical (no `questions` key emitted).
+      ...(questions !== undefined ? { questions } : {}),
+    });
     this.services.emit(withNotificationTrigger(gateEvent));
     return new Promise<SdkPermissionResult>((resolve) => {
-      this.pendingGates.set(requestId, { appSessionId, input, resolve });
+      // `toolName` is carried on the pending gate so respondInteraction can guard
+      // answer injection to AskUserQuestion gates only (a permission gate can
+      // never receive an `answers` object — see respondInteraction).
+      this.pendingGates.set(requestId, { appSessionId, input, resolve, toolName });
     });
   }
 }

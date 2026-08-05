@@ -77,6 +77,38 @@ describe('gateFired / gateFiredPayloadSchema (widened for requestId, rule 0.7)',
     });
     expect(gateFiredPayloadSchema.safeParse(input.payload).success).toBe(true);
   });
+
+  // D68: an AskUserQuestion gate carries a structured `questions` array — one
+  // single-select and one multiSelect question, each with options. The widened
+  // schema accepts it AND still accepts a permission gate that omits it entirely.
+  it('constructor + schema accept a payload WITH a questions array (AskUserQuestion)', () => {
+    const questions = [
+      {
+        question: 'Which language?',
+        header: 'Language',
+        options: [
+          { label: 'TypeScript', description: 'Typed superset of JavaScript.' },
+          { label: 'JavaScript' },
+        ],
+        multiSelect: false,
+      },
+      {
+        question: 'Which test tools?',
+        options: [{ label: 'Vitest' }, { label: 'Playwright' }],
+        multiSelect: true,
+      },
+    ];
+    const input = gateFired({ appSessionId: 'app-1', prompt: 'Which language?', requestId: 'req-1', questions });
+    expect((input.payload as { questions: unknown }).questions).toEqual(questions);
+    expect(gateFiredPayloadSchema.safeParse(input.payload).success).toBe(true);
+  });
+
+  it('schema still accepts a gate WITHOUT questions (permission gate, no regression)', () => {
+    const input = gateFired({ appSessionId: 'app-1', prompt: 'run rm?', requestId: 'req-2', toolName: 'Bash' });
+    const parsed = gateFiredPayloadSchema.safeParse(input.payload);
+    expect(parsed.success).toBe(true);
+    expect((input.payload as { questions?: unknown }).questions).toBeUndefined();
+  });
 });
 
 // Slice-2 hook vocabulary (B). Loose passthrough: unknown fields tolerated; the

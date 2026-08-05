@@ -1,5 +1,19 @@
 import type { EventRecord } from './types.js';
 
+// D68: hand-duplicated mirror of core's gateQuestionOptionSchema/gateQuestionSchema
+// (@vimes/core is not a sanctioned dependency here — see types.ts header). An
+// AskUserQuestion gate carries 1–4 of these; a real permission gate carries none.
+export interface GateQuestionOption {
+  label: string;
+  description?: string;
+}
+export interface GateQuestion {
+  question: string;
+  header?: string;
+  options: GateQuestionOption[];
+  multiSelect?: boolean;
+}
+
 export interface GateCard {
   requestId: string;
   appSessionId: string;
@@ -9,11 +23,51 @@ export interface GateCard {
   // card shows a prominent tool + target headline above the prompt.
   toolName?: string;
   target?: string;
+  // D68: present ONLY on an AskUserQuestion gate. When set, the card renders the
+  // question UI (radio/checkbox + Other) instead of the binary Allow/Deny.
+  questions?: GateQuestion[];
   status: 'fired' | 'answering';
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+// Tolerant shape-validate of a gate_fired's `questions` field (rule 0.7 —
+// observed truth over the declared narrower payload; the daemon relays the raw
+// event, so read defensively). Returns undefined for anything that isn't a
+// well-formed non-empty question array, so a permission gate (no questions) and a
+// malformed payload both fall back to the Allow/Deny path.
+function asQuestions(value: unknown): GateQuestion[] | undefined {
+  if (!Array.isArray(value) || value.length === 0) {
+    return undefined;
+  }
+  const questions: GateQuestion[] = [];
+  for (const rawQuestion of value) {
+    if (!isRecord(rawQuestion) || typeof rawQuestion.question !== 'string') {
+      return undefined;
+    }
+    if (!Array.isArray(rawQuestion.options)) {
+      return undefined;
+    }
+    const options: GateQuestionOption[] = [];
+    for (const rawOption of rawQuestion.options) {
+      if (!isRecord(rawOption) || typeof rawOption.label !== 'string') {
+        return undefined;
+      }
+      options.push({
+        label: rawOption.label,
+        ...(typeof rawOption.description === 'string' ? { description: rawOption.description } : {}),
+      });
+    }
+    questions.push({
+      question: rawQuestion.question,
+      options,
+      ...(typeof rawQuestion.header === 'string' ? { header: rawQuestion.header } : {}),
+      ...(typeof rawQuestion.multiSelect === 'boolean' ? { multiSelect: rawQuestion.multiSelect } : {}),
+    });
+  }
+  return questions;
 }
 
 // gate_fired's payload on the wire carries requestId (packages/daemon/src/
@@ -24,12 +78,20 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 // declares {appSessionId, prompt}.
 function asGateFired(
   event: EventRecord,
-): { appSessionId: string; prompt: string; requestId: string; toolName?: string; target?: string } | null {
+): {
+  appSessionId: string;
+  prompt: string;
+  requestId: string;
+  toolName?: string;
+  target?: string;
+  questions?: GateQuestion[];
+} | null {
   if (!isRecord(event.payload)) {
     return null;
   }
-  const { appSessionId, prompt, requestId, toolName, target } = event.payload;
+  const { appSessionId, prompt, requestId, toolName, target, questions } = event.payload;
   if (typeof appSessionId === 'string' && typeof prompt === 'string' && typeof requestId === 'string') {
+    const parsedQuestions = asQuestions(questions);
     return {
       appSessionId,
       prompt,
@@ -38,6 +100,8 @@ function asGateFired(
       // daemon's real gate, absent (undefined) on harness/older events.
       ...(typeof toolName === 'string' ? { toolName } : {}),
       ...(typeof target === 'string' ? { target } : {}),
+      // D68: present only on an AskUserQuestion gate; undefined for permission gates.
+      ...(parsedQuestions !== undefined ? { questions: parsedQuestions } : {}),
     };
   }
   return null;
@@ -70,6 +134,7 @@ export function deriveGateCards(events: readonly EventRecord[], answeringRequest
           prompt: fired.prompt,
           ...(fired.toolName !== undefined ? { toolName: fired.toolName } : {}),
           ...(fired.target !== undefined ? { target: fired.target } : {}),
+          ...(fired.questions !== undefined ? { questions: fired.questions } : {}),
           status: 'fired',
         });
       }

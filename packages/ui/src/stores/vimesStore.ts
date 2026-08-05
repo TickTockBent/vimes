@@ -1288,7 +1288,13 @@ export const useVimesStore = defineStore('vimes', () => {
     sendEnvelope({ op: 'send', appSessionId, text });
   }
 
-  function answerGate(appSessionId: string, requestId: string, response: 'allow' | 'deny'): void {
+  function answerGate(
+    appSessionId: string,
+    requestId: string,
+    // D68: an AskUserQuestion gate submits a structured answers map; a permission
+    // gate submits 'allow'|'deny'. Body is unchanged — the wire is z.unknown().
+    response: 'allow' | 'deny' | { answers: Record<string, string> },
+  ): void {
     answeringRequestIds.add(requestId);
     sendEnvelope({ op: 'gate_response', appSessionId, requestId, response });
   }

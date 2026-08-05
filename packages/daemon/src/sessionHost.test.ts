@@ -825,9 +825,28 @@ describe('SessionHost — AskUserQuestion auto-deny for dispatched sessions (D50
   });
 
   it('a NON-dispatched session sends AskUserQuestion to the normal gate (scoped to dispatched)', async () => {
+    // D68: drive the REAL AskUserQuestion input shape (title undefined, a
+    // structured `questions` array) and assert the daemon carries the parsed
+    // questions onto gate_fired AND uses the first question text as the prompt.
+    const askInput = {
+      questions: [
+        {
+          question: 'Which language?',
+          header: 'Language',
+          options: [{ label: 'TypeScript', description: 'Typed JS.' }, { label: 'JavaScript' }],
+          multiSelect: false,
+        },
+        {
+          question: 'Which test tools?',
+          options: [{ label: 'Vitest' }, { label: 'Playwright' }],
+          multiSelect: true,
+        },
+      ],
+    };
     const { factory } = makeSdkFactory(async function* ({ options }) {
       yield { type: 'system', subtype: 'init', session_id: 'claude-1' };
-      void options.canUseTool('AskUserQuestion', { question: 'which one?' }, { requestId: 'req-ask' });
+      // title UNDEFINED, exactly as the SDK sends for AskUserQuestion.
+      void options.canUseTool('AskUserQuestion', askInput, { requestId: 'req-ask' });
     });
     const { host, store } = makeHarness({ sdkQueryFactory: factory });
     try {
@@ -837,6 +856,97 @@ describe('SessionHost — AskUserQuestion auto-deny for dispatched sessions (D50
 
       const gate = records(store, appSessionId).find((record) => record.type === 'gate_fired')!;
       expect((gate.payload as { toolName: string }).toolName).toBe('AskUserQuestion');
+      // The structured questions survive to the fired event.
+      expect((gate.payload as { questions: unknown }).questions).toEqual(askInput.questions);
+      // Prompt falls back to the first question's text (title is undefined).
+      expect((gate.payload as { prompt: string }).prompt).toBe('Which language?');
+      // The widened core schema accepts the daemon's real question payload.
+      expect(gateFiredPayloadSchema.safeParse(gate.payload).success).toBe(true);
+    } finally {
+      host.stop();
+    }
+  });
+
+  it('answerGate injects the selected answers into updatedInput for an AskUserQuestion gate (D68)', async () => {
+    // The pinned contract: on a structured answer, canUseTool resolves with
+    // {behavior:'allow', updatedInput:{...originalInput, answers}} — answers keyed
+    // by question TEXT, multiSelect value joined ", ".
+    const askInput = {
+      questions: [
+        { question: 'Which language?', options: [{ label: 'TypeScript' }], multiSelect: false },
+        { question: 'Which test tools?', options: [{ label: 'Vitest' }, { label: 'Playwright' }], multiSelect: true },
+      ],
+    };
+    const permissionResults: unknown[] = [];
+    const { factory } = makeSdkFactory(async function* ({ options }) {
+      yield { type: 'system', subtype: 'init', session_id: 'claude-1' };
+      const result = await options.canUseTool('AskUserQuestion', askInput, { requestId: 'req-ask' });
+      permissionResults.push(result);
+      yield { type: 'result', subtype: 'success' };
+    });
+    const { host, store } = makeHarness({ sdkQueryFactory: factory });
+    try {
+      const spawn = host.spawnSession({ channel: 'sdk', cwd: '/p' });
+      const appSessionId = 'appSessionId' in spawn ? spawn.appSessionId : '';
+      await waitFor(() => types(store, appSessionId).includes('gate_fired'));
+
+      const answers = { 'Which language?': 'TypeScript', 'Which test tools?': 'Vitest, Playwright' };
+      expect(host.answerGate(appSessionId, 'req-ask', { answers })).toEqual({ ok: true });
+      await waitFor(() => permissionResults.length === 1);
+      // Original input preserved AND the answers injected — the built-in tool
+      // echoes `answers` as the tool_result, so the model receives the selection.
+      expect(permissionResults[0]).toEqual({
+        behavior: 'allow',
+        updatedInput: { ...askInput, answers },
+      });
+    } finally {
+      host.stop();
+    }
+  });
+
+  it('answerGate deny declines an AskUserQuestion gate cleanly (D68 decline path)', async () => {
+    const askInput = { questions: [{ question: 'Which one?', options: [{ label: 'A' }], multiSelect: false }] };
+    const permissionResults: unknown[] = [];
+    const { factory } = makeSdkFactory(async function* ({ options }) {
+      yield { type: 'system', subtype: 'init', session_id: 'claude-1' };
+      const result = await options.canUseTool('AskUserQuestion', askInput, { requestId: 'req-ask' });
+      permissionResults.push(result);
+      yield { type: 'result', subtype: 'success' };
+    });
+    const { host, store } = makeHarness({ sdkQueryFactory: factory });
+    try {
+      const spawn = host.spawnSession({ channel: 'sdk', cwd: '/p' });
+      const appSessionId = 'appSessionId' in spawn ? spawn.appSessionId : '';
+      await waitFor(() => types(store, appSessionId).includes('gate_fired'));
+
+      host.answerGate(appSessionId, 'req-ask', 'deny');
+      await waitFor(() => permissionResults.length === 1);
+      expect(permissionResults[0]).toEqual({ behavior: 'deny', message: 'denied from VIMES' });
+    } finally {
+      host.stop();
+    }
+  });
+
+  it('an answers object sent to a NON-AskUserQuestion (permission) gate is denied (D68 defensive guard)', async () => {
+    // ⚠ VERIFY-BY-BREAKING anchor: remove the `pending.toolName === 'AskUserQuestion'`
+    // guard in respondInteraction and this reddens — the answers object would be
+    // injected into a Bash permission gate's updatedInput instead of denying.
+    const permissionResults: unknown[] = [];
+    const { factory } = makeSdkFactory(async function* ({ options }) {
+      yield { type: 'system', subtype: 'init', session_id: 'claude-1' };
+      const result = await options.canUseTool('Bash', { command: 'ls' }, { requestId: 'req-bash', title: 'run ls' });
+      permissionResults.push(result);
+      yield { type: 'result', subtype: 'success' };
+    });
+    const { host, store } = makeHarness({ sdkQueryFactory: factory });
+    try {
+      const spawn = host.spawnSession({ channel: 'sdk', cwd: '/p' });
+      const appSessionId = 'appSessionId' in spawn ? spawn.appSessionId : '';
+      await waitFor(() => types(store, appSessionId).includes('gate_fired'));
+
+      host.answerGate(appSessionId, 'req-bash', { answers: { injected: 'nope' } });
+      await waitFor(() => permissionResults.length === 1);
+      expect(permissionResults[0]).toEqual({ behavior: 'deny', message: 'denied from VIMES' });
     } finally {
       host.stop();
     }
