@@ -452,7 +452,7 @@ calls the module's handler (Tier 1); `deliver = "command"` spawns argv per
 event (Tier 2 only, herdr's shape) and is subject to the command-pool caps of
 §2.9.
 
-### 2.7 `capabilities` — reserved array, taxonomy owed by S9·3
+### 2.7 `capabilities` — reserved array, taxonomy finished in §5 (Trust)
 
 ```toml
 capabilities = ["session.dispatch", "session.unattended", "blob.write"]
@@ -1054,6 +1054,445 @@ consistent; each needs Wes (or a later unit) to confirm or overturn.
    exactly as it warns on an unknown one**, or the versioning story ships the
    silent failure it exists to prevent.
 
+*(Questions 9–12 were added by §5, the S9·3 trust section, and follow the
+same convention.)*
+
+9. **How is first-party-only actually ENFORCED?** **DEFAULT TAKEN:** by
+   absence plus one check — v1 ships no install path at all (a property, not
+   a policy), and the registry refuses any source other than in-build or a
+   local directory the operator named. Flagged because "first-party" is
+   otherwise a convention, and a convention is not a trust boundary; the day
+   an install path exists this becomes a real check with real inputs, and
+   §5.1's tripwire fires with it.
+10. **Do the RUNTIME FACES of static contributions need grants?**
+    **DEFAULT TAKEN:** yes for two of the four — `events.subscribe` (the
+    stream, not the `[[events]]` declaration) and `verbs.register` (mounting
+    the agent face only) — while every declaration stays ungated. This
+    refines §2.7 rule 2 into declare-vs-do; it is the only place a
+    "no grant needed" section acquires a grant, so it wants a conscious yes
+    rather than a silent one.
+11. **How does a Tier-2 extension authenticate back to the daemon?** *(This
+    is the parenthetical ninth below, now carrying a default.)*
+    **DEFAULT TAKEN:** a daemon-minted, per-extension, capability-scoped
+    credential — never the human's Access identity, never a shared daemon
+    token — because a grant enforced against a credential that cannot name
+    the extension is decorative (§5.2). The constraint is proposed here; the
+    **mechanism stays with D63**.
+12. **`confinement` defaults OFF.** **DEFAULT TAKEN:** off, per E3's third
+    meaning of "directory" (Wes-settled: "off by default, matching the
+    tools' native reach"). Flagged because it diverges from agenc — the
+    prior art whose threat class VIMES actually shares, which defaults
+    `workspace-write` **on** — and is therefore the one place this model
+    deliberately ships *less* containment than its closest analogue. The
+    default is not in doubt; the signature should be conscious.
+
 *(A ninth, noted without a default because it is squarely S9·3's: nothing
 here says how a Tier-2 process authenticates back to the daemon. The env
 model reserves the slot; D63 and the trust unit fill it.)*
+
+---
+
+## §5. Trust — Proposed D67
+
+*Appended 2026-08-05 as the S9·3 deliverable of the same pass. It answers pass
+scope question 2 (the extension trust model → **D67, proposed here**) and
+finishes the capability taxonomy §2.7 reserved. It adds no new open-questions
+section: its defaults join §4.2 as items 9–12.*
+
+Same posture as everything above: **nothing here builds anything**, and nothing
+here decides. Prior art is cited by path into `docs/decomposition/references/`,
+and every rule this section rests on was re-checked against source while
+writing (rule 0.7).
+
+### 5.1 The proposal — Proposed D67
+
+**Proposed D67: v1 is first-party-only. The grant machinery is built anyway.**
+
+- **Trust by authorship.** Only extensions authored in this repo, or by Wes,
+  load. There is **no third-party install path in v1** — no
+  `vimes extension install owner/repo`, no marketplace index, no remote fetch,
+  no `--ref`. The installed set is whatever the daemon build ships (Tier 1) plus
+  local directories the operator points at deliberately (Tier 2).
+- **But the manifest machinery carries preview and pinning from day one.** Four
+  properties, all lifted, all cheap while the set is ours and all expensive to
+  retrofit once it is not:
+
+  1. **Grants are pinned to the manifest hash.** A grant is a statement about
+     *this exact content*, not about an id (AoE `docs/plugins.md:91-105` —
+     the approval "is pinned to the exact fetched content, so an update that
+     changed
+     since you reviewed it is refused rather than applied"). The hash covers the
+     manifest and the extension tree with build output excluded, so a venv or a
+     `dist/` cannot break integrity verification (AoE's `.aoe-build/` exclusion).
+  2. **Unknown capability → REJECT, never grant.** Stolen verbatim
+     (`aoe-plugin-api/src/capability.rs:36-41`: "An unknown capability is
+     rejected at install … never silently granted"). The refusal names the
+     host's supported set and says *upgrade vimes*. §5.3 makes it a parse rule.
+  3. **A widened grant demands re-approval, pinned to exact content.** New
+     capabilities, a changed `[runtime]` block, a changed build step, a new
+     `[[panes]]`/`[[verbs]]` surface, or a trust-level change are all *widening*
+     and all re-prompt with a what-changed diff; **declining keeps the current
+     version active** and suppresses re-prompting until the next one (AoE,
+     `docs/plugins.md:82-105`). Herdr's narrower version of the same hole-closing
+     is also adopted: a manifest that changed between preview and post-build
+     **aborts** (`herdr src/cli/plugin.rs:215`,
+     `ensure_manifest_unchanged_after_build`) — review-then-swap is closed at
+     both ends.
+  4. **A lockfile records provenance.** `extensions.lock` on the daemon side:
+     per extension, its source (in-build / local path / — later — repo + ref +
+     resolved commit), the resolved manifest hash, and the granted capability
+     set. AoE's `plugins.lock` (exact commit + manifest hash + release asset)
+     and herdr's `resolved_commit` (`src/cli/plugin.rs:197`) are the two halves;
+     we take both, and unlike herdr's — which is *informational only*, nothing
+     re-verifies it later — ours is the thing the grant is pinned to.
+
+**What first-party-only makes UNNECESSARY in v1** (named so nobody builds them):
+
+- A **marketplace or index** of any kind. herdr's is an automatic GitHub-topic
+  scrape that does not even parse manifests, and their docs say so plainly ("a
+  listing means a repository tagged itself, not that Herdr vetted it"); agenc
+  guards marketplace fetches with HTTPS-or-loopback checks, size caps and
+  optional `sha` pinning (`agenc plugins/marketplace/fetchGuards.ts`). Both
+  are real work in service of a distribution problem VIMES does not have.
+- **Signing, attestation, or publisher identity.** Nothing in the corpus ships
+  it either; it is the answer to "who wrote this", which authorship answers.
+- **The ref-audit flow.** AoE's "no `@ref` → latest stable release (the audited
+  default); explicit `@ref` → unverified, un-audited code, confirm first"
+  (`docs/plugins.md:68-74`) exists to grade *strangers' revisions*.
+- **The interactive install preview UI.** herdr prints id, name, version,
+  source, every build command and every action command before the confirm
+  prompt, and requires `--yes` when stdin is not interactive
+  (`herdr src/cli/plugin.rs:189,205`). Under first-party-only the review
+  happens at **code review, under the gate discipline** — the diff is the
+  preview, and a reviewer reading a `capabilities = [...]` line in a PR is
+  doing exactly what the prompt would ask a stranger to do, with more context
+  and more time.
+
+**What first-party-only does NOT excuse — the grant/pin plumbing itself.**
+Three reasons, in ascending order of how much they cost to ignore:
+
+1. **Tier 2 is real on day one.** Book Genesis is a `worker`-kind external
+   process (§3.2) and it is the pass's kill criterion. An external process
+   holding a daemon credential is exactly the shape a third-party extension has;
+   the only difference is who wrote it. Building the credential and the gate
+   later means retrofitting them under a live tenant.
+2. **#15 means the API surface IS the trust surface.** The public API is the
+   extension API, so every capability an extension will ever need is a
+   capability the public API carries, reachable by anything holding a daemon
+   credential. There is no second, smaller, "internal" surface where the gating
+   could live instead. Gating at the API is therefore the *only* place gating
+   can be, and it has to be real even when every caller is ours.
+3. **Declared capabilities are how a first-party extension gets reviewed.** The
+   manifest's `capabilities` array is a diff-reviewable claim of blast radius —
+   a PR that adds `session.unattended` to `book-genesis` is a PR whose review
+   question is obvious. §1.2 already says Tier-1 builtins declare capabilities
+   they cannot be denied; **this is why**: the declaration's value is the
+   review, not the enforcement. Auto-granting *without* declaring would delete
+   the artifact and keep only the trust.
+
+**The §2.8 consequence, priced.** §2.8's DEFAULT TAKEN puts activation in the
+repo (`<project>/.vimes/extensions.toml`), which makes commit access to a
+project into activation authority there. Under first-party-only that price is
+acceptable and small: the union of everything installable is the union of
+everything Wes wrote and reviewed, so activation can only turn *on* a reviewed
+extension in *one* project. It is the same shape as agenc's "trusted by
+installation" one level down, and it holds for the same reason theirs does.
+**The tripwire is explicit:** the day an extension we did not author is
+installed on the box, an in-repo activation file becomes a privilege-escalation
+path from commit access, and the answer then is a per-project grant
+confirmation held by the daemon — not a file in a repo. That is a D-record, not
+a patch.
+
+**When D67 is reopened** (its own trigger, restated as a rule): before the
+first extension VIMES did not author is installed, and — realistically
+earlier — before the extension-authoring method is published, since a method
+is an invitation. Reopening means a new dated entry, never a stretch of this
+one.
+
+### 5.2 The threat framing — say what the daemon actually holds
+
+**The class, named honestly.** The VIMES daemon runs as the operator's user on
+`motherbrain`; it holds Access-authenticated reach into **every project under
+`VIMES_PROJECT_ROOTS`** (`~/projects`, D21); it owns process custody of every
+Claude Code session on the box; it holds the orchestration credit; and it is
+**published to the public internet** through a Cloudflare tunnel at
+`vimes.wshoffner.dev`. An over-trusted extension inside that boundary can
+dispatch unattended sessions into any repo on the box and let them run with no
+human watching; read every transcript — which is to say every credential,
+customer artifact and file content any session has ever seen; create a raw PTY,
+which is RCE by design (standing consequence, design-principles); burn the
+subscription usage window that pillar 4 exists to meter, so that tomorrow's
+human work has no budget; and paint arbitrary content onto the surface the
+tunnel publishes. **That is agenc's threat class — a daemon with reach, many
+projects, remotely reachable — not herdr's**, whose plugins can do only what
+the person already sitting at that laptop could do. jinn sits at the third
+point of the triangle and is honest about it: their containment story is
+Docker, and their README names the blast radius in the install instructions
+("the writable blast radius includes those state volumes … every writable
+project mount, and unrestricted network egress", `jinn/README.md:92`). Naming
+it in the operator-facing doc, not only the design doc, is the liftable
+practice.
+
+**The consequence: grants gate the ENGINE API, and nothing else.** A capability
+in this model is permission to have *the engine* do something on the
+extension's behalf. It is not a boundary around the extension's own process.
+Stated in herdr's plain-language register, and this sentence is meant to reach
+the operator docs verbatim:
+
+> An extension is ordinary code running as the daemon's user, with the daemon's
+> environment and the daemon's reach into every project on this box. VIMES
+> validates its manifest, keeps its config, state and blobs in namespaces it
+> cannot escape, and gates which engine operations it may call. **VIMES does
+> not review, sandbox, or contain what an extension's own process does.**
+
+(herdr's original: "Herdr validates the manifest and keeps each plugin's config
+and state in its own directory, but it does not review or sandbox what a plugin
+does" — `herdr docs/…/plugins.mdx:49-52`.)
+
+**No overclaiming, in one line:** *capabilities without OS enforcement are
+informed consent, not containment.* The corpus's most advanced trust design
+lands in exactly the same place and says so in its source — AoE's only v1
+sandbox backend is `NoSandbox` (`aoe src/plugin/host.rs:108,124`), and their own
+comment puts the real ceiling at a future OS-level backend, out of scope
+because "the worker is cooperative, not adversarial" (`host.rs:652-654`). VIMES
+v1 makes the same bet, one threat class up, which is why §5.4 reserves the
+enforcement field now rather than pretending the bet is a design.
+
+**What makes the bet acceptable — and it is a conditional, not a property.**
+Under first-party-only, the party being *informed* is the party that *wrote the
+code*, and consent is exercised at code review under the gate discipline rather
+than at an install prompt. Informed consent is a coherent trust model exactly
+when those two are the same entity. **That equivalence is the load-bearing claim
+of proposed D67, and it dies the moment someone else's extension loads** — at
+which point the missing OS confinement stops being a deferred cost and becomes
+the whole question. This is the single sentence to read back when D67 is
+reopened.
+
+**One rule the trust model requires of the credential** (the ninth item §4.2
+noted without a default, and it is this unit's). A Tier-2 extension
+authenticates back to the daemon with a **daemon-minted, per-extension,
+capability-scoped credential** — never the human's Access identity, never a
+shared daemon token. The reason is mechanical, not stylistic: capability grants
+are enforced at the API, so the API must be able to tell *which extension* is
+calling and *what it was granted*; a Tier-2 process carrying the human's
+credential is indistinguishable from the human, and every grant in §5.3 becomes
+decorative. That is the constraint. **The mechanism stays with D63** (how a
+local/terminal client authenticates at all) — this section proposes the shape
+the token must satisfy, not the token. (§4.2, new question 11.)
+
+### 5.3 The capability taxonomy
+
+**The grading rule: grade by EFFECT, not by API.** Two operations that differ in
+what they can do to the operator's world get two grants even when they are one
+endpoint; two operations that differ only in which function you call share one.
+The purest case is already in §2.7's list: `session.dispatch` and
+`session.unattended` are the *same call with a different flag*, and the flag —
+"no human is watching" — changes the effect enough to be its own grant. AoE
+states the rule as a worked example (`fs.read` split from `fs.write` because
+"the two carry very different risk", `capability.rs:74-76`; `clipboard.read`
+split from `clipboard.write` because read is *more* sensitive;
+`acp.capabilities.read` split from `.probe` because probe spawns a real
+process — "a different risk axis"). Read is not automatically the cheap half.
+
+**The taxonomy.** This finishes §2.7's candidate list: it keeps every string
+there, adds four (`events.subscribe`, `verbs.register`, and the reserved-empty
+`records.read` / `records.write`), and deliberately declines two of AoE's
+(`config.read` / `config.write` — see the cross-extension rule below). Severity
+column: `read` / `write` / **`HIGH`**.
+
+| Capability | Grants | Sev | Why it is its own grant |
+|---|---|---|---|
+| `tree.read` | read the session tree, nodes, groups, provenance | read | E2's structure is the shape of the operator's work |
+| `tree.write` | create/close/move nodes, create worktree-backed children | write | a worktree node is a real git operation in a real repo — the write half has filesystem effect the API shape hides |
+| `session.read` | transcripts and stream content | **HIGH** | the most sensitive read in the product: a transcript holds every credential, file and customer artifact a session ever saw. Graded above several writes on purpose — this is the grant an exfiltration-shaped extension wants |
+| `session.send` | steer a live session | write | injects text into a conversation a human believes is theirs |
+| `session.dispatch` | E1-d: spawn a session with briefing + clamps | write | creates work and spends usage |
+| `session.unattended` | dispatch with **no human present** | **HIGH** | **never implied by `session.dispatch`** — AoE's exact rule, verbatim in their source: "Never implied by `session.create` or `session.prompt`" (`aoe-plugin-api/src/capability.rs:112-115`). Principle 14's fail-closed branch lives here, and it is the only place an extension's proposal becomes work no human sees before it runs |
+| `session.kill` | custody's destructive edge | write | destroys in-flight work; the recursion hazard makes it self-reachable |
+| `terminal.create` | a raw PTY | **HIGH** | RCE by design (standing consequence). Also the grant a `[[panes]] kind = "pty"` requires — see below |
+| `events.subscribe` | receive the engine event stream for activated projects | read | firehose read: every session, gate, run and refusal across every activated project. Broad enough to grade even though `[[events]]` itself is free |
+| `verbs.register` | mount the **agent face** of declared verbs | write | putting a tool into a dispatched model's context shapes what the model does; D65's exposure matrix already treats mounting as an act. The **human face needs no grant** — a human invoking a command in their own client is the human acting |
+| `overlay.write` | write declared overlay values | write | paints state other clients render, and an overlay may claim an attention rank — so it can consume the scarce resource without going through `notify` |
+| `notify` | attention triggers and push | write | pillar 5's scarce resource; the one capability whose abuse costs the human directly |
+| `blob.read` / `blob.write` | the E1-b artifact service, engine-namespaced per extension | read / write | plans, review reports, manuscripts. Split for AoE's stated reason; cross-namespace access does not exist (§2.9) |
+| `ledger.read` | cost/usage windows | read | graded up one band: a cross-project spend picture is also a work-pattern picture |
+| `records.read` / `records.write` | another extension's records, if §4.2 q6 option (a) lands | — | **reserved and permanently empty in v1.** An extension's own records need no grant — its own namespace, exactly as AoE's "a plugin's own declared settings need no `config.*`" (`capability.rs:55-59`) |
+| `fs.read` / `fs.write` | engine-mediated filesystem outside the extension's own dirs | read / write | ⚠ see the honesty note below |
+| `net` | engine-mediated outbound network | write | ⚠ see the honesty note below |
+| `process.spawn` | OS subprocesses beyond the declared worker | **HIGH** | ⚠ see the honesty note below |
+| `extension.manage` | install / enable / disable extensions | **HIGH** | the grant that grants grants. **Declared and never granted in v1** — there is no install path to reach. Reserved so the string exists before it is needed under pressure. herdr makes plugin management ordinary API methods, so anything including an agent can do it (`herdr docs/…/socket-api.mdx:112`); deliberately not copied |
+
+**⚠ The honesty note on `fs.*` / `net` / `process.spawn`.** These gate what the
+*engine* will do on the extension's behalf. At **Tier 2** the extension's own
+process already has all three — it is a normal process with the daemon's
+environment — so the grant is a **declaration of intent that makes review
+possible**, not a fence. At **Tier 1** it is not even that: a module inside the
+daemon can `import fs` and the capability system never sees it. This is the
+sharpest instance of "informed consent, not containment", and it is labeled in
+the table rather than left for a reader to discover on a bad day. It is also
+the clearest thing §5.4's confinement field would eventually change.
+
+**The declare-vs-do refinement of §2.7 rule 2.** Static contributions need no
+grant — `[[verbs]]`, `[[overlays]]`, `[[panes]]`, `[[events]]` are declarative,
+parseable, listable and refusable without running anything the extension
+shipped. That stands. What the table above grades is the **runtime face** of two
+of them: *declaring* `[[events]]` is inert, *receiving the stream* is a broad
+read; *declaring* `[[verbs]]` is inert, *mounting the agent face* is an effect
+on every session that gets the tool. The other two need no runtime grant —
+`[[overlays]]`'s runtime face is `overlay.write` (already in §2.7's list), and
+`[[panes]]` needs nothing for `kind = "blocks"` (host-rendered block trees; the
+host owns the rendering) while `kind = "pty"` inherits `terminal.create` and its
+severity. This looks like a contradiction of rule 2 and is a refinement of it;
+it is flagged as such (§4.2, new question 10).
+
+**No cross-extension capability exists at all.** There is no `ext.<other>.read`,
+no shared storage API, no capability whose *name* references another
+extension's namespace, and therefore no row in the table to grade. Isolation is
+by construction (§2.9), not by policy check — which is also why AoE's
+`config.read` / `config.write` (host-global *or other-plugin* configuration)
+are declined rather than adopted: reserving the string would reserve the idea.
+Adding cross-extension reach later is a D-record with its own evidence, not a
+convenience.
+
+**Validation rules (parse-time, all refusals or warnings, never grants).**
+
+1. **Unknown capability → reject the manifest.** The host holds a
+   `KNOWN_CAPABILITIES`-style versioned list (`capability.rs:62`); a string not
+   on it fails the manifest with the host's supported set and *upgrade vimes*.
+2. **Adding a capability string does NOT bump `api_version`.** Capabilities are
+   open strings validated against the known list, so the vocabulary version
+   gates the manifest *shape* and the known list gates the *permission
+   surface* — AoE's split, already relied on by §2.3's property 2.
+3. **A retired capability warns; it never silently no-ops.** Same lesson as
+   §4.2 question 8's deprecated-event near-miss: an allowlist that cannot
+   express *"this string used to mean something"* ships the silent failure the
+   versioning exists to prevent. A deprecated capability lists on the extension
+   record with its replacement named.
+4. **Trust level is host-assigned, never manifest-declared** (§2.7 rule 3;
+   `capability.rs:122-135`, `TrustLevel::{Builtin, Community}`). In v1 only
+   `builtin` and `local` exist; `community` is reserved and unreachable.
+5. **A grant is checked at every call, not only at load.** AoE's worker RPCs
+   pass `PluginRpcContext::require(capability)` middleware with structured
+   `capability_missing` errors and an `authz_matrix_capability_gates` test
+   (`aoe src/plugin/host_api.rs:226-241`, `.../session_api.rs:662`). The
+   VIMES form is the same and falls out of #15: the check lives on the public
+   API, keyed to the credential of §5.2, so both tiers are gated by one
+   mechanism and Tier 1's auto-grant is a *value* in that mechanism rather than
+   a bypass of it.
+
+### 5.4 The reserved confinement field — E3's third meaning
+
+E4 item 8 and E3's third meaning of "directory" land here. **Reserved, not
+built** (rule 0.5).
+
+**The field.** On the dispatch `sessionSpec` (E1-d's primitive), a single
+optional table:
+
+```toml
+# RESERVED on the dispatch spec. v1 PARSES it, RECORDS it, and ENFORCES NOTHING.
+confinement = { mode = "off", paths = ["/home/…/projects/vimes"] }
+```
+
+`mode` reserves agenc's vocabulary deliberately —
+`off | read-only | workspace-write | external` against their
+`danger_full_access | read_only | workspace_write | external_sandbox`
+(`agenc runtime/src/tools/orchestrator.ts:128`) — because adopting the
+vocabulary now costs nothing and adopting it after callers exist costs a
+migration. `paths` means what E3 says it means and nothing else: **"this
+session may touch ONLY these paths."**
+
+**Off by default, and that is a settled product position rather than a v1
+shortcut.** E3's three meanings are kept separate on purpose: tree position is
+*organization* and never claims containment; a group's `directory` is a *spawn
+default* and never a boundary; **containment is its own explicit, opt-in
+session property**, off by default, "matching the tools' native reach"
+(architecture.md, E3). The confinement field is the only place in the entire
+model where a path list means *may not go outside*.
+
+**The divergence from our closest-threat-class prior art, stated rather than
+buried.** agenc — the reference whose threat class VIMES actually shares —
+defaults to `workspace-write` (`agenc runtime/src/config/schema.ts:952`) —
+sandbox **on** unless you ask otherwise. VIMES proposes to default **off**.
+The reason is a product reason, not a security one: Claude Code's real
+capability is to reach across repos (E3 meaning #1 says so directly —
+"requiring directories
+would fight it"), and an engine whose default makes its hosted tool worse at
+its own job is an engine people route around. The cost is named, not softened:
+**default-off means an extension that never sets `confinement` gets the tool's
+native reach**, and unattended dispatch inherits that. `session.unattended`'s
+HIGH grade in §5.3 is doing the work that a sandbox default does at agenc.
+Flagged as §4.2 question 12 — not because the default is in doubt, but because
+it is the one place VIMES deliberately ships *less* containment than the prior
+art it most resembles, and that deserves a conscious signature.
+
+**The eventual enforcement shape, named now so it is not invented later.**
+agenc's execution broker is the pattern, and three of its properties are the
+ones worth copying:
+
+1. **One named choke point per execution surface.** The broker is "the final
+   process-execution boundary for commands that do not naturally pass through
+   the model-tool router (hooks, MCP stdio, workflow commands, and direct
+   interactive shell input)"
+   (`agenc runtime/src/sandbox/execution-broker.ts:1-9`).
+2. **Fail-closed, with exactly two outcomes.** "Restricted modes have exactly
+   two outcomes: return a platform-sandboxed command or throw a stable,
+   actionable error. Only explicit `danger_full_access` and `external_sandbox`
+   modes may return the host command unchanged" (`ibid.:6-9`). No third branch,
+   no silent passthrough.
+3. **Every surface is enumerated by name** — a 17-variant
+   `SandboxExecutionSurface` union (`startup`, `hook`, `cron`, `mcp_stdio`,
+   `pane_agent`, `child_agent`, `command_exec`, …, `:42-58`) with a dedicated
+   `sandbox_surface_uncovered` error code (`:60-64`). *Naming the surfaces is
+   what stops a new one from quietly bypassing the boundary*, and it is the
+   half that costs nothing today.
+
+VIMES's execution surfaces, enumerated now because that half is free: **session
+spawn**, **terminal create**, **extension worker spawn**, **extension command
+spawn** (`deliver = "command"` event hooks and command-kind runtimes), and
+**build/install commands** if an install path ever ships. Five. A sixth arriving
+without a broker entry is the failure mode the enumeration exists to make loud.
+
+**What v1 does: reserves the field, records what it was given, enforces
+nothing.** Enforcing it is a future slice with its own D-record and its own
+evidence, and the evidence is operational as much as architectural: the Linux
+backend is bubblewrap + Landlock, and agenc ships an AppArmor remediation flow
+because Ubuntu restricts unprivileged user namespaces
+(`agenc sandbox/apparmor.ts` detects it and prints the exact profile-install
+command). `motherbrain` is
+Ubuntu 24.04. The eventual slice therefore has a host-configuration cost, not
+only a code cost — which is precisely the kind of thing that should be
+discovered in a design doc rather than mid-implementation.
+
+**Why reserve now rather than when it is enforced.** Every dispatch caller —
+the engine, the tasks extension, Book Genesis, the drive verbs — takes the
+`sessionSpec` shape. A field added after those callers exist changes four
+signatures and a schema at once; a field reserved today costs one optional key
+that parses and is ignored. That is 0.5's rationale exactly, and D11 is the
+worked example: the data shape lands now, the machinery waits for its first
+consumer.
+
+### 5.5 What §5 proposes vs what §5 builds
+
+**Builds: nothing.** In rule 0.5's framing:
+
+- **Proposed (needs Wes's signature, S9·6):** D67 itself — first-party-only v1
+  with grant/pin plumbing built anyway (§5.1); the threat framing and the
+  no-OS-confinement statement in herdr's register (§5.2); the capability
+  taxonomy and its five validation rules (§5.3); `confinement` off by default
+  (§5.4).
+- **Reserved (data shapes, landed now):** the finished capability string list
+  including the reserved-empty `records.*` pair; `extensions.lock`'s fields
+  (source, manifest hash, granted set); the `confinement` table on the dispatch
+  spec with agenc's mode vocabulary; the five named execution surfaces.
+- **Deferred by design:** OS confinement of any kind, and the backend choice
+  with it; the extension credential's mechanism (D63); per-project grant
+  confirmation (needed only when the tripwire in §5.1 trips); a `vimes doctor`
+  audit-with-repair pass over daemon exposure and file permissions
+  (`agenc bin/security-cli.ts` is the template, and it is a slice, not a line);
+  everything marketplace-shaped (pass explicitly-out).
+- **Not built, and not to be built until the pass signs:** any grant store, any
+  lockfile writer, any capability middleware, any parser.
+
+The four properties in §5.1 are the whole reason this section exists ahead of
+its consumer. Everything else here is a sentence for a doc and a field that
+parses.
