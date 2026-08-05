@@ -27,18 +27,12 @@
 //      silently suppressing.
 // The risk register remains the record of WHY; this list is the machine-readable
 // tripwire exception, and it is meant to shrink, not grow.
-const ALLOWLISTED_ADVISORY_SOURCES = new Map([
-  [
-    1124334,
-    {
-      ghsa: 'GHSA-mh99-v99m-4gvg',
-      reason:
-        'brace-expansion DoS — build/dev/test toolchain ONLY (vite-plugin-pwa/workbox + @vue/test-utils chains); 0 runtime-reachable (daemon pulls none, browser ships workbox-*-runtime not this). A pin is blocked by a dual-major (^2 & ^5) split; npm\'s only "fix" is an SDK-tearing --force downgrade. See docs/risk-register.md (2026-07-24).',
-      added: '2026-07-24',
-      revisit: 'when the vite-plugin-pwa / @vue/test-utils build chain is next upgraded, or if it ever reaches a runtime dep',
-    },
-  ],
-]);
+// Currently EMPTY (GHSA-mh99-v99m-4gvg pruned 2026-08-05 — the advisory left
+// the audit after a dependency refresh, and the gate's own staleness NOTE
+// called for the prune; the WHY stays in docs/risk-register.md, 2026-07-24
+// entry). The Map and its rules remain — this is the shape a future excusal
+// must take.
+const ALLOWLISTED_ADVISORY_SOURCES = new Map([]);
 
 let rawAuditJson = '';
 for await (const chunk of process.stdin) {
