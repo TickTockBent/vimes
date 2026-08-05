@@ -82,23 +82,41 @@ in a **tree**, not a list.
 - `session` — leaf. Today's session, unchanged in identity (I3/I11), plus
   a parent-node reference.
 
-**DECISION E2-a — are `group` and `worktree` one kind or two?** A worktree
-node is a group node with checkout provenance. Proposal: ONE node table,
-`provenance: null | {worktree...}` — a group MAY be plain (label only) or
-worktree-backed; the herdr lifecycle applies only when provenance exists.
-This keeps the subproject question (E3) orthogonal to isolation.
+**DECISION E2-a** *(walked 2026-08-05: SETTLED — one kind, with Wes's
+write-once sharpening)*. ONE node table, `provenance: null | {worktree...}`.
+Worktree-ness is a property, not an identity: the moment a worktree wants
+what groups carry (E3's context/rules/docs), one kind gives it for free
+where two kinds force duplication or awkward nesting; and the event
+vocabulary collapses to one `node_created` shape instead of parallel
+families. **Provenance is WRITE-ONCE-AT-CREATION**: set in `node_created`
+or never — `null` stays `null` forever. "Converting" a group means creating
+a worktree CHILD under it (a new node), which closes the mutation loophole
+("I didn't edit a checkout, I added one") while keeping the single table.
 
-**Tree semantics (proposal, mostly inherited from herdr's observed model):**
-- Tree shape is ENGINE STATE, event-sourced (`node_created`, `node_moved?`,
-  `node_closed`, `session_attached_to_node`) — not display sugar. Clients
-  render the same tree (the mockups' shared IA).
+**Tree semantics (walked 2026-08-05, sharpened):**
+- Tree shape is ENGINE STATE, event-sourced (`node_created`, `node_closed`,
+  `session_attached_to_node`) — not display sugar. Clients render the same
+  tree (the mockups' shared IA). **No `node_moved` in v1**: moves are
+  banned until someone actually wants one (then a D-record — the forest
+  invariant would need its preservation clause, and provenance-bearing
+  nodes make cross-project moves genuinely weird: disk path divorces from
+  tree position).
 - Closing a parent closes engine state for the subtree, deletes nothing on
   disk (herdr's rule, verbatim).
-- Status/attention/cost AGGREGATE up the tree (a repo row shows its
-  subtree's worst attention state + running count — what the mockups' tree
-  glyphs and header "4 running · 3 fail" imply).
-- **DECISION E2-b**: is aggregation an engine projection (one truth, every
-  client renders it) or client-side? Proposal: engine projection.
+- Status/attention/cost AGGREGATE up the tree.
+- **DECISION E2-b** *(walked 2026-08-05: SETTLED — engine projection,
+  emphatically)*. Clients aren't the only consumers: attention debounce,
+  unattended-era escalation policy, and extensions asking "is anything
+  under this node red" all read subtree state — the projection is the ONE
+  place "worst" gets defined. Two pins the projection spec must carry:
+  (1) "worst" requires an EXPLICIT, VERSIONED total order over attention
+  states — every reserved/future reason (rate-limited, brake, …) declares
+  its severity rank AT RESERVATION, or the rollup silently misorders the
+  day it lands; (2) **rollups count PROCESSES, not open nodes** — a closed
+  node can still have living processes under it (see the three axes
+  below), and a rollup that filters by node-open-state turns
+  closed-but-alive sessions into invisible spend, exactly the
+  going-silently-dark failure the attention system exists to prevent.
 
 **What the tree buys immediately (why this is the right primitive):**
 - Trial finding 1: dispatched stages get isolation by running in a
@@ -108,18 +126,39 @@ This keeps the subproject question (E3) orthogonal to isolation.
   dispatch.
 - Parallel exploration (two approaches on two worktree nodes under one
   group) falls out for free.
-- **DECISION E2-c — who creates worktree nodes?** Humans (a tree verb),
-  extensions (the tasks extension isolating a stage), or both? Proposal:
-  both, through the same public API (#15); the engine owns the git
-  operations (one GitAdapter path, injection-guarded like slice-4).
+- **DECISION E2-c** *(walked 2026-08-05: SETTLED — both creators, one API,
+  engine does git)*. This is **principle 13 applied to the filesystem**:
+  the extension never touches git — it PROPOSES a checkout; the engine's
+  one injection-guarded GitAdapter path decides and performs. Two pinned
+  edges: (1) `create` when the branch already exists **fails loud and
+  points at `open`** — attach-to-existing is a DIFFERENT verb with
+  different provenance semantics (the resolved commit differs); silently
+  merging the two is how provenance lies. (2) Removal interacts with the
+  SP8·2 observed fact that `--resume` requires an exact cwd match:
+  sessions whose transcripts live against a worktree path lose
+  resumability when the checkout is removed — so `remove` is gated (or
+  loudly warned) on "resumable sessions exist here."
+
+**The three orthogonal axes (the complete pillar-2 lineage):**
+1. **Closure is tree-state.** Closing a node never kills a process.
+2. **Kill is process-state.** Killing a process never closes its node —
+   a dead session's node persists, holding transcript and provenance for
+   archaeology. (Both directions stated so no asymmetric reading lets a
+   crash quietly reap the node.)
+3. **Removal is disk-state.** `worktree remove` destroys the one thing
+   the event spine cannot replay — the checkout and, via cwd-exact
+   resume, the resumability of its sessions. It is its own named,
+   explicit, gated act — never a side effect of closure or kill.
 
 **Invariant candidates (I# to pin in the pass):**
 - Every session has exactly one parent node; nodes form a forest rooted in
-  projects (no cycles, no orphans).
-- Worktree provenance is immutable once created (a new checkout is a new
-  node).
-- Node closure never implies process kill without an explicit, separate
-  decision (mirrors "reconnecting is not resuming", pillar 2).
+  projects (no cycles, no orphans; trivially preserved while moves are
+  banned).
+- Provenance is write-once-at-creation; `null` stays `null` forever; a new
+  checkout is a new node.
+- The three axes are independent: no transition on one axis implies a
+  transition on another; every cross-axis act is its own explicit event.
+- Aggregation counts processes, not open nodes.
 
 ---
 
@@ -136,12 +175,28 @@ documentation, workflow. Three escalating options:
 - **(iii) Node-scoped config**: per-node extension loading, rules,
   briefings — real machinery, real power, real complexity.
 
-**DECISION E3-a**: proposal — ship (ii) as the v1 semantics (it is nearly
-free and matches "or we could make them scoped to actual directories"),
-RESERVE the schema field for (iii) (`nodeConfig: reserved`, 0.5), and let
-a real tenant need pull (iii) into existence (first-consumer rule, D11).
-Note: per-node WORKFLOW (different extension per subproject) is (iii)
-territory — defer until Book Genesis or a real project demands it.
+**DECISION E3-a** *(walked 2026-08-05: SETTLED — (ii), directory
+OPTIONAL)*: ship (ii) as the v1 semantics, with the group's `directory`
+field NULLABLE (like `provenance`): a label-only group scopes nothing and
+just aggregates; a directory-bearing group defaults spawn cwd. RESERVE the
+schema field for (iii) (`nodeConfig: reserved`, 0.5), and let a real
+tenant need pull (iii) into existence (first-consumer rule, D11). Per-node
+WORKFLOW (different extension per subproject) is (iii) territory — defer
+until Book Genesis or a real project demands it.
+
+**The three meanings of "directory" (Wes, closing the element — kept
+deliberately separate):**
+1. **Tree position is ORGANIZATION.** Where a session appears is a human
+   labeling choice and never claims containment — a session filed under
+   `/infrastructure/vimes` may reach into any repo its work needs (that is
+   the tool's real capability; requiring directories would fight it).
+2. **A group's directory is a SPAWN DEFAULT** — where work begins (cwd +
+   context-file discovery), never where it may go.
+3. **Containment is its own explicit, OPT-IN session property** — "this
+   session may touch ONLY these paths." Not a tree concept: a reserved
+   session-spec confinement field, designed in S9·3 (trust) with
+   agenc-core's `sandbox_mode` + fail-closed execution broker as the
+   named prior art. Off by default, matching the tools' native reach.
 
 ---
 
@@ -159,8 +214,10 @@ S9·2 (manifest) / S9·5 (client contract):
    the client-agnostic default; PTY panes as the terminal-first escape
    hatch (pillar 7).
 5. Per-project (and reserved: per-node) extension activation.
-6. Blob/artifact service (pending E1-b).
-7. Dispatch primitive (pending E1-d).
+6. Blob/artifact service (E1-b: engine, per-extension namespacing).
+7. Dispatch primitive (E1-d: engine owns `dispatch(sessionSpec)`).
+8. Reserved: session-spec confinement field (E3's third meaning — designed
+   in S9·3 with the agenc broker as prior art).
 
 ---
 
