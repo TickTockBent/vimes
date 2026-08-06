@@ -20,7 +20,7 @@ import {
   createTaskAcknowledgement,
   type CreateTaskToolDeps,
 } from './createTaskTool.js';
-import { TaskWriter, type CreateTaskInput } from './taskWriter.js';
+import { InstanceWriter, type CreateInstanceInput } from './instanceWriter.js';
 
 // ─── S8·6 — the author grant's handler (D56's first verb) ────────────────────
 //
@@ -31,7 +31,7 @@ import { TaskWriter, type CreateTaskInput } from './taskWriter.js';
 // separately, in sessionHost.test.ts's exposure matrix).
 //
 // "ZERO EVENTS" is asserted throughout as "the writer was never called" —
-// `TaskWriter.createTask` is the only thing that can emit here, so a call count of
+// `InstanceWriter.createInstance` is the only thing that can emit here, so a call count of
 // zero IS an event count of zero.
 
 const PROJECT_ROOT = '/home/wes/projects/vimes';
@@ -48,7 +48,7 @@ const VALID_PAYLOAD = {
 };
 
 function makeSpec(overrides: { projectRoot?: string | undefined } = {}) {
-  const created: CreateTaskInput[] = [];
+  const created: CreateInstanceInput[] = [];
   let mintCounter = 0;
   // The resolver is a THUNK on purpose: a case can move the root between building
   // the spec and calling the handler, which is what pins the call-time read.
@@ -284,29 +284,29 @@ describe('buildCreateTaskSpec — the project binding (read at CALL time)', () =
 // ─── the REAL writer, end to end (I6) ────────────────────────────────────────
 //
 // Every case above fakes `createTask` to watch what the handler asks for. This
-// one wires the tool to the ACTUAL `TaskWriter` over a real event store, because
-// two things can only be seen there: what the authored `task_created` payload
-// LOOKS LIKE on the log, and that replaying that log folds the same record twice
-// (I6 — the log is the source of record, not a cache of one).
-describe('buildCreateTaskSpec — against the REAL TaskWriter (I6)', () => {
+// one wires the tool to the ACTUAL `InstanceWriter` over a real event store,
+// because two things can only be seen there: what the authored `instance_created`
+// payload LOOKS LIKE on the log, and that replaying that log folds the same record
+// twice (I6 — the log is the source of record, not a cache of one).
+describe('buildCreateTaskSpec — against the REAL InstanceWriter (I6)', () => {
   function realHarness() {
     const store = new MemoryEventStore({
       clock: new SteppingClock('2026-08-04T12:00:00.000Z', 1000),
       ids: new CountingIdSource(),
     });
     const emitted: EventInput[] = [];
-    const writer = new TaskWriter({
+    const writer = new InstanceWriter({
       emit: (events) => {
         emitted.push(...events);
         store.append(events);
       },
       readTasks: () => legacyTasksViewOf(replayFromEmpty(instancesProjection, readAllStreamsGrouped(store))),
-      // Counting, injected (rule 0.3): the taskId AND the criterion ids are
+      // Counting, injected (rule 0.3): the instanceId AND the criterion ids are
       // byte-identical run to run.
       ids: new CountingIdSource(),
     });
     const spec = buildCreateTaskSpec({
-      createTask: (input) => writer.createTask(input),
+      createTask: (input) => writer.createInstance(input),
       resolveProjectRoot: () => PROJECT_ROOT,
     });
     return {
@@ -316,23 +316,27 @@ describe('buildCreateTaskSpec — against the REAL TaskWriter (I6)', () => {
     };
   }
 
-  it('writes ONE task_created whose payload carries the forced fields and MINTED criterion ids', async () => {
+  it('writes ONE instance_created whose payload carries the forced fields and MINTED criterion ids', async () => {
     const { spec, emitted } = realHarness();
     const result = await spec.handler(VALID_PAYLOAD);
     expect(result.ok).toBe(true);
 
-    expect(emitted.map((event) => event.type)).toEqual(['task_created']);
+    // S11·U2: the generic spelling, and the authored fields under `payload`.
+    expect(emitted.map((event) => event.type)).toEqual(['instance_created']);
     const payload = emitted[0]!.payload as Record<string, unknown>;
-    expect(payload.projectRoot).toBe(PROJECT_ROOT);
+    expect(payload.project).toBe(PROJECT_ROOT);
     expect(payload.createdBy).toBe('orchestrator');
-    expect(payload.stage).toBe('backlog');
+    expect(payload.node).toBe('backlog');
     expect(payload.isolation).toBe('worktree');
+    // Nothing pinned a workflow this slice (rule 0.7) — the stated fact is `null`.
+    expect(payload.workflow).toBeNull();
     // Ungated, and ABSENT rather than `{}` — the byte-identity rule the writer
     // follows for every unauthored key.
     expect('gates' in payload).toBe(false);
     // The ids exist, they came from the injected source, and the model never saw
     // them: `{ text }` in, `{ id, text }` on the log.
-    expect(payload.acceptanceCriteria).toEqual([
+    const authoredPayload = payload.payload as Record<string, unknown>;
+    expect(authoredPayload.acceptanceCriteria).toEqual([
       {
         id: '00000000-0000-4000-8000-000000000002',
         text: 'A card whose createdBy is orchestrator renders the chip',
@@ -342,14 +346,14 @@ describe('buildCreateTaskSpec — against the REAL TaskWriter (I6)', () => {
         text: 'A card whose createdBy is human renders nothing',
       },
     ]);
-    // ids 2 and 3 because id 1 was the taskId: one source, minted in order.
-    expect(payload.taskId).toBe('00000000-0000-4000-8000-000000000001');
+    // ids 2 and 3 because id 1 was the instanceId: one source, minted in order.
+    expect(payload.instanceId).toBe('00000000-0000-4000-8000-000000000001');
   });
 
   it('the acknowledgement names the id the LOG minted, not one the tool invented', async () => {
     const { spec, emitted } = realHarness();
     const result = await spec.handler(VALID_PAYLOAD);
-    const mintedTaskId = (emitted[0]!.payload as { taskId: string }).taskId;
+    const mintedTaskId = (emitted[0]!.payload as { instanceId: string }).instanceId;
     expect(result.acknowledgement).toBe(createTaskAcknowledgement(mintedTaskId));
   });
 
@@ -389,7 +393,7 @@ describe('buildCreateTaskSpec — against the REAL TaskWriter (I6)', () => {
 // ─── I7, at COMPILE level ────────────────────────────────────────────────────
 //
 // The handler closure receives ONE capability — `createTask` — plus the registry
-// read. It holds no `TaskWriter`, so `proposeTaskTransition` and `amendWorkOrder`
+// read. It holds no `InstanceWriter`, so `proposeMove` and `revisePayload`
 // are not merely unused here: they are UNREACHABLE, and the compiler is what says
 // so. This block is the pin: adding a drive verb to `CreateTaskToolDeps` stops the
 // build here rather than quietly widening what an orchestrator can do.

@@ -568,7 +568,7 @@ describe('task watchdog — task_quarantined is NEVER emitted', () => {
       verdict: { verdict: 'quarantine' },
     });
     // And the task itself never moved: no transition, no quarantine, nothing.
-    expect(harness.emitted.some((event) => event.type === EVENT_TYPES.taskTransitioned)).toBe(false);
+    expect(harness.emitted.some((event) => event.type === EVENT_TYPES.instanceMoved)).toBe(false);
   });
 
   it('across EVERY policy and every state, the runner writes only two event types', () => {

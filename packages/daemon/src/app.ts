@@ -59,7 +59,7 @@ import { registerProjectApi } from './projectApi.js';
 import { registerOrchestratorApi, standingNotesPathFor } from './orchestratorApi.js';
 import { buildCreateTaskSpec } from './createTaskTool.js';
 import { CompactionSteward } from './compactionSteward.js';
-import { TaskWriter } from './taskWriter.js';
+import { InstanceWriter } from './instanceWriter.js';
 import { ProjectWriter } from './projectWriter.js';
 import { TaskDispatcher } from './taskDispatcher.js';
 import { TaskWatchdog } from './taskWatchdog.js';
@@ -509,11 +509,12 @@ export function createDaemon(deps: DaemonDeps): Daemon {
   // registerXApi calls. This is the dispatcher's FIRST CALLER: steps 1–4a built
   // the decisions and the executor, and nothing invoked them outside a test.
   //
-  // ⚠ ONE WRITER. `TaskWriter` is constructed here and is the ONLY thing in the
-  // daemon that writes `task_created` / `task_transitioned` /
-  // `task_transition_rejected`. Step 5's watchdog will take this same instance
+  // ⚠ ONE WRITER. `InstanceWriter` is constructed here and is the ONLY thing in
+  // the daemon that writes `instance_created` / `instance_moved` /
+  // `instance_move_rejected` / `instance_payload_revised` (S11·U2 re-homed it from
+  // `TaskWriter`, spelling included). Step 5's watchdog takes this same instance
   // rather than growing a second path (principle 10).
-  const taskWriter = new TaskWriter({
+  const instanceWriter = new InstanceWriter({
     emit: (events) => router.emit(events),
     readTasks: () => readTasksAsLegacyView(),
     ids,
@@ -577,15 +578,15 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     worktreeManager,
     // S7·5b-i: the state-owning half of native plan capture (D48). The dispatcher
     // writes captured plans into `artifactStore` and proposes planning→plan-ready
-    // through `taskWriter` (I7's choke point — the SAME one-writer instance the task
-    // API uses, never a second one). Nothing calls `recordPlan` yet; the trigger is
-    // 5b-ii, so wiring these two changes no live behaviour.
+    // through `instanceWriter` (I7's choke point — the SAME one-writer instance the
+    // task API uses, never a second one). Nothing calls `recordPlan` yet; the
+    // trigger is 5b-ii, so wiring these two changes no live behaviour.
     artifactStore,
-    taskWriter,
+    instanceWriter,
   });
 
   registerTaskApi(app, {
-    taskWriter,
+    instanceWriter,
     // ONE explicit attempt per request. No loop, no timer, no scheduling — step
     // 4a's boundary, unchanged. The promise is step 8's async ripple and nothing
     // more; the envelope the route returns is byte-identical.
@@ -601,7 +602,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
   // Behind the same auth wall and before the static catch-all, in the same region
   // as the other registerXApi calls.
   //
-  // ⚠ ONE WRITER, exactly as `TaskWriter` is for tasks: this instance is the ONLY
+  // ⚠ ONE WRITER, exactly as `InstanceWriter` is for tasks: this instance is the ONLY
   // thing in the daemon that writes `project_created` / `project_updated` /
   // `project_archived`, and any later caller (the picker's own bookkeeping, an
   // onboarding workflow) takes THIS instance rather than growing a second path.
@@ -845,13 +846,15 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     // S7·6b review capture (I10): the SDK adapter observes a dispatched review
     // session's `report_review` tool call and hands the reported criteria here; the
     // dispatcher owns task state and records it (S7·6b's `recordReview` — emit
-    // review_reported + propose the review→done/implementing transition via I7).
+    // report_filed (reportKind 'review') + propose the review→done/implementing
+    // move via I7).
     // Same wiring shape as onPlanCaptured above.
     onReviewReported: (appSessionId, criteria) => taskDispatcher.recordReview(appSessionId, criteria),
     // S7·7b completion capture (I10): the SDK adapter observes a dispatched
     // implementing session's `report_completion` tool call and hands the worklog
     // here; the dispatcher owns task state and records it (`recordCompletion` —
-    // emit completion_reported + propose the implementing→review OUTCOME via I7,
+    // emit report_filed (reportKind 'completion') + propose the implementing→review
+    // OUTCOME via I7,
     // D53). Same wiring shape as the two above.
     onCompletionReported: (appSessionId, worklog) =>
       taskDispatcher.recordCompletion(appSessionId, worklog),
@@ -867,13 +870,13 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     // array's one entry; there is no flag, no config and no other switch, and the
     // orchestrator's options go byte-identical back to pre-S8·6 when it is empty.
     //
-    // ⚠ THE SAME `taskWriter` INSTANCE the HTTP create door uses — one writer,
+    // ⚠ THE SAME `instanceWriter` INSTANCE the HTTP create door uses — one writer,
     // two callers (principle 10) — but handed in as a SINGLE destructured
     // capability, so the tool handler can create and can do nothing else. See
     // createTaskTool.ts's I7 note before widening this.
     orchestratorReportTools: (projectId) => [
       buildCreateTaskSpec({
-        createTask: (input) => taskWriter.createTask(input),
+        createTask: (input) => instanceWriter.createInstance(input),
         // FRESH per call, never captured at spawn: the registry read happens when
         // the model authors, so an edited root binds the task where the project
         // actually is now and a project that has left the registry refuses.

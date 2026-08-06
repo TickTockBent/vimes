@@ -1,12 +1,11 @@
 import {
-  completionReported,
+  captureRecorded,
   decideDispatch,
   deriveReviewOutcome,
   dispatchRefused,
-  planSubmitted,
+  instanceRunAttached,
+  reportFiled,
   resolveStageRunner,
-  reviewReported,
-  taskSessionAttached,
   taskWorktreeCreated,
   type ArtifactStore,
   type DispatchDeferReason,
@@ -21,7 +20,7 @@ import {
   type TasksState,
 } from '@vimes/core';
 import type { SessionHost } from './sessionHost.js';
-import type { TaskWriter } from './taskWriter.js';
+import type { InstanceWriter } from './instanceWriter.js';
 import type { WorktreeManager } from './worktreeManager.js';
 
 // ─── slice 6 step 4a — the dispatcher EXECUTOR (daemon I/O) ──────────────────
@@ -212,20 +211,20 @@ export interface TaskDispatcherDeps {
   // either is a half-written fact:
   //
   //   • `artifactStore` — the content-addressed blob store (S7·4). The plan CONTENT
-  //     lives here; the task record and the `plan_submitted` event carry only the
+  //     lives here; the task record and the `capture_recorded` event carry only the
   //     hash. The dispatcher is the writer, never the adapter.
-  //   • `taskWriter` — narrowed to `proposeTaskTransition` alone (the same `Pick`
+  //   • `instanceWriter` — narrowed to `proposeMove` alone (the same `Pick`
   //     idiom the session-host seam uses), so the planning→plan-ready move goes
-  //     through I7's SINGLE choke point (which emits `task_transitioned` or an
-  //     evented rejection), NOT a `task_transitioned` this module hand-rolls. A
-  //     dispatcher that emitted the transition itself would be a second writer of
+  //     through I7's SINGLE choke point (which emits `instance_moved` or an
+  //     evented rejection), NOT an `instance_moved` this module hand-rolls. A
+  //     dispatcher that emitted the move itself would be a second writer of
   //     task state, and I7 would stop being assertable the moment it did.
   //
   // ⚠ NO CALLER YET. `recordPlan` is invoked by nothing in this unit — the trigger
   // (the `ExitPlanMode` interception + the `onPlanCaptured` callback) is 5b-ii. So
   // wiring these deps changes NO live behaviour and needs no restart.
   artifactStore: ArtifactStore;
-  taskWriter: Pick<TaskWriter, 'proposeTaskTransition'>;
+  instanceWriter: Pick<InstanceWriter, 'proposeMove'>;
 }
 
 // What happened to a composed stage instruction. Present on a result ONLY when an
@@ -298,7 +297,7 @@ export type DispatchAttemptResult =
       // ⚠ **STEP 8'S EXECUTION OUTCOME, AND THE SAFETY ONE.** The decision was to
       // run this stage, the task asked for worktree isolation, the flag was on, and
       // the worktree COULD NOT BE MADE. Nothing spawned, nothing resumed, no
-      // `task_session_attached` was written, and — the point — **the task did NOT
+      // `instance_run_attached` was written, and — the point — **the task did NOT
       // fall back to `projectRoot`.**
       //
       // A fallback would be the tempting fix and it is the bug: an isolated task
@@ -338,7 +337,7 @@ export type DispatchAttemptResult =
       //   (c) **It exists because `dispatchTask` went async in step 8**, and D54
       //       named the window: `already-running` is derived from the task's OWN
       //       refs against live processes, so it can only fire once
-      //       `task_session_attached` has LANDED. Between `decideDispatch` saying
+      //       `instance_run_attached` has LANDED. Between `decideDispatch` saying
       //       spawn and that event being emitted there is an `await` (worktree
       //       creation is a subprocess), and a second attempt arriving inside it
       //       used to sail straight through to a second live session on one task.
@@ -410,7 +409,7 @@ export class TaskDispatcher {
    *
    *   • `spawn`  → `resolveStageRunner` (step 7) says WHO runs the stage, and since
    *     D46 the answer is always the same one: the session host spawns an SDK
-   *     session in the resolved cwd, then ONE `task_session_attached` records the
+   *     session in the resolved cwd, then ONE `instance_run_attached` records the
    *     link. Emitted only AFTER a real `appSessionId` comes back, so the board
    *     never shows a ref to a session that does not exist. **A `review` stage AND
    *     a fix both land here** — see stageRunner.ts for the independence rule and
@@ -454,7 +453,7 @@ export class TaskDispatcher {
    *
    *   • **GUARDS: the async window D54 named.** `already-running` is derived from
    *     the task's own `sessionRefs` against live processes, so it cannot fire until
-   *     `task_session_attached` has LANDED. Since step 8 there is an `await` between
+   *     `instance_run_attached` has LANDED. Since step 8 there is an `await` between
    *     the decision and that event (worktree creation is a subprocess), and a
    *     second attempt inside that window used to reach a second spawn — two live
    *     sessions on one task. Human-clicked dispatch made that rare and visible;
@@ -574,7 +573,7 @@ export class TaskDispatcher {
           // KNOWN GAP, recorded rather than hidden: `spawnSession` writes
           // `taskRef: null` into `session_created`, and sessionHost.ts is frozen for
           // this step, so the session→task backlink does not exist yet. The link
-          // lives ONLY on the task side, in the `task_session_attached` below.
+          // lives ONLY on the task side, in the `instance_run_attached` below.
           // D48: the PLANNING stage runs write-blocked in permissionMode 'plan' so
           // the planner produces a plan rather than doing the work; the SDK adapter
           // intercepts its ExitPlanMode and hands the plan to `recordPlan` (S7·5b-ii).
@@ -622,7 +621,7 @@ export class TaskDispatcher {
           }
           if ('refused' in spawnResult) {
             // The spawn did not yield a session (preflight, typically). NO
-            // `task_session_attached` — there is no session to attach — and NO
+            // `instance_run_attached` — there is no session to attach — and NO
             // `dispatch_refused`, on two counts: this was an execution failure
             // rather than a decision (see the vocabulary note above), and the
             // session host ALREADY evented its own refusal. Recording it again here
@@ -630,9 +629,11 @@ export class TaskDispatcher {
             return { outcome: 'spawn-failed', taskId: task.taskId, reason: spawnResult.reason };
           }
           this.deps.emit([
-            taskSessionAttached({
-              taskId: task.taskId,
-              stage: decision.stage,
+            // The alias adapter's `task_session_attached` mapping, forward:
+            // taskId -> instanceId, stage -> node, appSessionId verbatim.
+            instanceRunAttached({
+              instanceId: task.taskId,
+              node: decision.stage,
               appSessionId: spawnResult.appSessionId,
             }),
           ]);
@@ -672,8 +673,8 @@ export class TaskDispatcher {
    * 5b-ii), so this method changes no live behaviour on its own.
    *
    * The dispatcher owns three writes here, IN THIS ORDER, and the order is the
-   * contract: store the blob → emit `plan_submitted` → propose the transition. The
-   * hash the event carries must name a blob that already exists, and the transition
+   * contract: store the blob → emit `capture_recorded` → propose the move. The
+   * hash the event carries must name a blob that already exists, and the move
    * must follow the fact it depends on.
    *
    * TOTAL and NEVER THROWS on its own paths — like `dispatchTask`, it is called from
@@ -681,21 +682,22 @@ export class TaskDispatcher {
    * Two paths are deliberate NO-OPS:
    *
    *   • EMPTY PLAN → nothing. A plan-mode run that emitted only whitespace captured
-   *     nothing; storing an empty-hash artifact and evening a `plan_submitted` for
-   *     it would be a false fact in an append-only log — the plan that never was.
+   *     nothing; storing an empty-hash artifact and evening a `capture_recorded`
+   *     for it would be a false fact in an append-only log — the plan that never
+   *     was.
    *
    *   • UNKNOWN / NON-PLANNING SESSION → nothing. If no task carries a
    *     `{ stage: 'planning', appSessionId }` ref for this planner, there is no task
    *     to record against, and fabricating one would put a plan on a task the log
    *     never tied to this session — the same "unknown → nothing" discipline
-   *     `dispatchTask` and `TaskWriter` already keep.
+   *     `dispatchTask` and `InstanceWriter` already keep.
    *
-   * ⚠ THE TRANSITION GOES THROUGH `taskWriter.proposeTaskTransition` (I7's choke
-   * point), NEVER a `task_transitioned` this module emits. The writer adjudicates
-   * planning→plan-ready and records EITHER a `task_transitioned` or an evented
+   * ⚠ THE MOVE GOES THROUGH `instanceWriter.proposeMove` (I7's choke point), NEVER
+   * an `instance_moved` this module emits. The writer adjudicates
+   * planning→plan-ready and records EITHER an `instance_moved` or an evented
    * rejection (e.g. the task already left `planning`) — both of which are correct
    * and both of which are the writer's to make, not the dispatcher's. Emitting the
-   * transition here would make this a second writer of task state and break I10/I7.
+   * move here would make this a second writer of task state and break I10/I7.
    */
   recordPlan(plannerAppSessionId: string, planText: string): void {
     // 1. EMPTY GUARD — a whitespace-only plan captured nothing; see the no-op note.
@@ -737,24 +739,27 @@ export class TaskDispatcher {
       createdAt: this.deps.nowIso(),
     });
 
-    // 5. EMIT `plan_submitted` (S7·5a) — AFTER the blob exists, so the hash it
-    // carries always names stored content. The fold augments the record with
-    // `planArtifactHash`; the rest of the payload stays on the event for audit.
+    // 5. EMIT `capture_recorded` (S7·5a's `plan_submitted`, generalised S11·U2) —
+    // AFTER the blob exists, so the hash it carries always names stored content.
+    // The fold augments the record with `planArtifactHash`; the rest of the payload
+    // stays on the event for audit. `captureKind: 'plan'` is the catalogue's one
+    // entry, and this is the alias adapter's mapping written FORWARD.
     this.deps.emit([
-      planSubmitted({
-        taskId: owningTask.taskId,
-        stage: 'planning',
+      captureRecorded({
+        instanceId: owningTask.taskId,
+        captureKind: 'plan',
+        artifactHash: planEnvelope.hash,
+        node: 'planning',
         attempt: planningAttempt,
-        workOrderRev,
-        planArtifactHash: planEnvelope.hash,
-        plannerSessionRef: { appSessionId: plannerAppSessionId },
+        payloadRev: workOrderRev,
+        capturedFrom: { appSessionId: plannerAppSessionId },
       }),
     ]);
 
     // 6. PROPOSE planning→plan-ready through I7's choke point — LAST, and never a
-    // hand-rolled emit. The writer emits `task_transitioned` (or an evented
+    // hand-rolled emit. The writer emits `instance_moved` (or an evented
     // rejection if the task is not in `planning`, which is correct and recorded).
-    this.deps.taskWriter.proposeTaskTransition(owningTask.taskId, {
+    this.deps.instanceWriter.proposeMove(owningTask.taskId, {
       toStage: 'plan-ready',
       proposedBy: 'dispatcher',
     });
@@ -767,10 +772,11 @@ export class TaskDispatcher {
    * reported through the `report_review` tool (S7·6b's SDK-adapter trigger).
    *
    * The dispatcher owns two writes here, IN THIS ORDER, and the order is the
-   * contract (mirroring recordPlan's store→emit→propose): emit `review_reported`
-   * (the durable record) → propose the review→done / review→implementing transition
-   * through `taskWriter.proposeTaskTransition` (I7's choke point). Unlike a plan,
-   * the review payload is small structured data carried inline — NO artifact store.
+   * contract (mirroring recordPlan's store→emit→propose): emit `report_filed`
+   * (`reportKind: 'review'` — the durable record) → propose the review→done /
+   * review→implementing move through `instanceWriter.proposeMove` (I7's choke
+   * point). Unlike a plan, the review payload is small structured data carried
+   * inline — NO artifact store.
    *
    * TOTAL and NEVER THROWS on its own paths — like `recordPlan`, it is called from an
    * adapter and a method that throws is a capture that silently stopped. One path is
@@ -782,11 +788,11 @@ export class TaskDispatcher {
    *     DISPATCHED SESSION IS SAFE: an implementing session that never calls it is a
    *     no-op, and one that spuriously calls it is guarded here.
    *
-   * ⚠ THE TRANSITION GOES THROUGH `taskWriter.proposeTaskTransition` (I7's choke
-   * point), NEVER a `task_transitioned` this module emits — the same contract
-   * recordPlan keeps. The writer adjudicates the move and records EITHER a
-   * `task_transitioned` or an evented rejection (e.g. the task already left
-   * `review`). Emitting the transition here would make this a second writer of task
+   * ⚠ THE MOVE GOES THROUGH `instanceWriter.proposeMove` (I7's choke point), NEVER
+   * an `instance_moved` this module emits — the same contract
+   * recordPlan keeps. The writer adjudicates the move and records EITHER an
+   * `instance_moved` or an evented rejection (e.g. the task already left
+   * `review`). Emitting the move here would make this a second writer of task
    * state and break I10/I7.
    */
   recordReview(reviewerAppSessionId: string, criteria: ReportReviewPayload['criteria']): void {
@@ -811,29 +817,33 @@ export class TaskDispatcher {
     ).length;
     const workOrderRev = owningTask.workOrderRev ?? 0;
 
-    // 3. EMIT `review_reported` (S7·6a) — the durable record, FIRST, so the fact is
-    // written before the consequence is proposed (recordPlan's store→emit→propose
-    // ordering, minus the store).
+    // 3. EMIT `report_filed` with `reportKind: 'review'` (S7·6a's
+    // `review_reported`, generalised S11·U2) — the durable record, FIRST, so the
+    // fact is written before the consequence is proposed (recordPlan's
+    // store→emit→propose ordering, minus the store). The D46 identity tuple
+    // `(instanceId, node, attempt, payloadRev)` is HOISTED out of the body; only
+    // `criteria` is review-specific. The alias adapter's mapping, forward.
     this.deps.emit([
-      reviewReported({
-        taskId: owningTask.taskId,
-        stage: 'review',
+      reportFiled({
+        instanceId: owningTask.taskId,
+        node: 'review',
         attempt: reviewAttempt,
-        workOrderRev,
-        criteria,
+        payloadRev: workOrderRev,
+        reportKind: 'review',
+        body: { criteria },
       }),
     ]);
 
     // 4. DERIVE the outcome (S7·6a's pure function) and PROPOSE the transition
     // through I7's choke point — LAST, and never a hand-rolled emit. `done` when
     // every task criterion has a reported pass; `implementing` on any fail or
-    // incomplete coverage. The writer emits `task_transitioned` (or an evented
+    // incomplete coverage. The writer emits `instance_moved` (or an evented
     // rejection if the task is not in `review`, which is correct and recorded).
     const toStage = deriveReviewOutcome(
       criteria,
       owningTask.acceptanceCriteria?.map((criterion) => criterion.id) ?? [],
     );
-    this.deps.taskWriter.proposeTaskTransition(owningTask.taskId, {
+    this.deps.instanceWriter.proposeMove(owningTask.taskId, {
       toStage,
       proposedBy: 'dispatcher',
     });
@@ -846,10 +856,10 @@ export class TaskDispatcher {
    * through the `report_completion` tool (S7·7b's SDK-adapter trigger).
    *
    * Two writes, IN THIS ORDER, and the order is the contract (recordReview's, and
-   * recordPlan's before it): emit `completion_reported` (the durable record, and
-   * the source of the `lastCompletion` fold that seeds the NEXT attempt's briefing)
-   * → propose the transition through `taskWriter.proposeTaskTransition`. Record the
-   * FACT before the CONSEQUENCE. No artifact store: the worklog is small structured
+   * recordPlan's before it): emit `report_filed` with `reportKind: 'completion'`
+   * (the durable record, and the source of the `lastCompletion` fold that seeds the
+   * NEXT attempt's briefing) → propose the move through
+   * `instanceWriter.proposeMove`. Record the FACT before the CONSEQUENCE. No artifact store: the worklog is small structured
    * data carried inline, like the review verdict and unlike a plan.
    *
    * ⚠ **THE TRANSITION IS `implementing → review`, AND THAT IS D53's OUTCOME RULE
@@ -873,7 +883,7 @@ export class TaskDispatcher {
    *     EVERY DISPATCHED SESSION IS SAFE: a review session that never calls it is a
    *     no-op, and one that spuriously calls it is guarded here.
    *
-   * ⚠ NEVER a `task_transitioned` this module emits — same I7 contract as its two
+   * ⚠ NEVER an `instance_moved` this module emits — same I7 contract as its two
    * siblings. The writer adjudicates; a task that has already left `implementing`
    * gets the writer's EVENTED REJECTION, not a throw and not a silent success.
    */
@@ -906,17 +916,20 @@ export class TaskDispatcher {
     ).length;
     const workOrderRev = owningTask.workOrderRev ?? 0;
 
-    // 3. EMIT `completion_reported` (S7·7b-core) — the durable record, FIRST, so the
-    // fact is written before the consequence is proposed. The fold puts the whole
-    // payload on `TaskRecord.lastCompletion` (latest-wins), which is what
-    // `deliverStageInstruction` reads back as the next attempt's fix-seed.
+    // 3. EMIT `report_filed` with `reportKind: 'completion'` (S7·7b-core's
+    // `completion_reported`, generalised S11·U2) — the durable record, FIRST, so
+    // the fact is written before the consequence is proposed. The fold puts the
+    // body on `TaskRecord.lastCompletion` (latest-wins), which is what
+    // `deliverStageInstruction` reads back as the next attempt's fix-seed. Same
+    // hoisted D46 identity tuple as the review case; only `worklog` differs.
     this.deps.emit([
-      completionReported({
-        taskId: owningTask.taskId,
-        stage: 'implementing',
+      reportFiled({
+        instanceId: owningTask.taskId,
+        node: 'implementing',
         attempt: implementingAttempt,
-        workOrderRev,
-        worklog,
+        payloadRev: workOrderRev,
+        reportKind: 'completion',
+        body: { worklog },
       }),
     ]);
 
@@ -926,7 +939,7 @@ export class TaskDispatcher {
     // Outcome` and no pure function to call. If a rule ever makes the target depend
     // on the worklog's content, THAT is when a pure deriver earns its place in core
     // — not before.
-    this.deps.taskWriter.proposeTaskTransition(owningTask.taskId, {
+    this.deps.instanceWriter.proposeMove(owningTask.taskId, {
       toStage: 'review',
       proposedBy: 'dispatcher',
     });
@@ -1066,7 +1079,8 @@ export class TaskDispatcher {
     //
     // NO IO AT ALL, in deliberate contrast to the plan above: `lastReview` and
     // `lastCompletion` are FOLDED FIELDS (S7·7b-core's projection folds of
-    // `review_reported` / `completion_reported`), so the seed is already in the
+    // `report_filed`, both report kinds — `review_reported` /
+    // `completion_reported` before S11·U2), so the seed is already in the
     // record this method was handed. That is the whole reason the payloads are
     // carried inline on their events rather than stored as blobs — a fix-seed that
     // needed a fetch would need a degrade path, and this one cannot fail.

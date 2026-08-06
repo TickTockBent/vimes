@@ -1150,6 +1150,17 @@ describe('TRANSCRIPT_APPEND_EVENT_TYPES — what may advance the heartbeat', () 
       EVENT_TYPES.taskSessionAttached,
       EVENT_TYPES.taskQuarantined,
       EVENT_TYPES.dispatchRefused,
+      // S11·U2: the kinds the daemon actually WRITES now. The retired spellings
+      // above stay on the list — recorded history is forever, and a heartbeat
+      // classification that only covered the current vocabulary would misjudge
+      // every event written before this slice.
+      EVENT_TYPES.instanceCreated,
+      EVENT_TYPES.instanceMoved,
+      EVENT_TYPES.instanceMoveRejected,
+      EVENT_TYPES.instancePayloadRevised,
+      EVENT_TYPES.instanceRunAttached,
+      EVENT_TYPES.reportFiled,
+      EVENT_TYPES.captureRecorded,
     ];
     for (const eventType of daemonAuthoredTypes) {
       expect(TRANSCRIPT_APPEND_EVENT_TYPES.has(eventType), `${eventType} must not be a heartbeat`).toBe(
@@ -1162,9 +1173,12 @@ describe('TRANSCRIPT_APPEND_EVENT_TYPES — what may advance the heartbeat', () 
     }
     // Named explicitly, because this is THE one: the watchdog's own event.
     expect(TRANSCRIPT_APPEND_EVENT_TYPES.has('watchdog_stale')).toBe(false);
-    // And every `task_*` type in the vocabulary, found by shape rather than by
-    // the hand-written list above, so a task event added later is covered too.
-    for (const eventType of ALL_EVENT_TYPES.filter((type) => type.startsWith('task_'))) {
+    // And every `task_*` / `instance_*` type in the vocabulary, found by shape
+    // rather than by the hand-written list above, so an instance event added later
+    // is covered too.
+    for (const eventType of ALL_EVENT_TYPES.filter(
+      (type) => type.startsWith('task_') || type.startsWith('instance_'),
+    )) {
       expect(TRANSCRIPT_APPEND_EVENT_TYPES.has(eventType), `${eventType} must not be a heartbeat`).toBe(
         false,
       );
