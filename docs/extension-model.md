@@ -273,12 +273,22 @@ on      = "run_completed"      # allowlist-validated; UNKNOWN = warning, not err
 deliver = "worker"             # "worker" | "command"
 # command = ["bin/on-run-completed"]        # for deliver = "command"
 
-# ── RESERVED: the node kit (S9·4 designs it; see node-kit.md) ───────────────
+# ── The node kit — SPECIFIED IN `node-kit.md` (S9·4) ───────────────────────
 [[node-kinds]]
-# id / kind (work|review|hold) / briefing / acceptance / auto_dispatch — the
-# table shape is reserved here and specified in S9·4. A manifest declaring
-# node-kinds against api_version 1 parses, lists, and is refused at activation
-# with "node-kinds require api_version >= 2".
+# This slot is no longer a stub. `docs/node-kit.md` owns the schema:
+# `[[node-kinds]]` declares reusable PROPERTY BUNDLES (attaches_session,
+# terminal, dispatch_on_entry, isolation, permission_mode, attention) whose
+# mechanics vocabulary is CLOSED and whose kind NAMES are open — work / review
+# / hold are names the tasks extension declares, not names the engine knows.
+# The graph itself lives in the companion sections `[[workflows]]`,
+# `[[workflows.nodes]]`, `[[workflows.edges]]` and `[[workflows.forbidden]]`
+# (node-kit.md §1.2–§1.9), with briefings, acceptance shapes and auto-dispatch
+# per node. A manifest declaring any of them against api_version 1 parses,
+# lists, and is refused at activation with "node-kinds require api_version >= 2".
+# node-kit.md also proposes two amendments up here, both flagged for S9·6:
+# retiring `[[verbs]].offered_when` (§1.8.2 — exposure is a property of the node
+# a session was dispatched into) and an engine-side workflow-INSTANCE record
+# store (§1.7 — the answer to §4.2 question 6).
 ```
 
 ### 2.2 Identity and versions
