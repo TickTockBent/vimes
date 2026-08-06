@@ -41,7 +41,7 @@ import {
   type WorkOrderFieldDescriptor,
   type WorkOrderSchemaResponse,
 } from './taskApi.js';
-import { TaskWriter } from './taskWriter.js';
+import { InstanceWriter } from './instanceWriter.js';
 import { TaskDispatcher, type DispatchAttemptResult } from './taskDispatcher.js';
 import type {
   ResumeResult,
@@ -94,7 +94,7 @@ function authHeaders(token: string | null = ANY_TOKEN): Record<string, string> {
 // ── the composed-app harness ─────────────────────────────────────────────────
 //
 // Composed the SAME WAY app.ts composes it: the real auth middleware on `*`,
-// then registerTaskApi, over a real TaskWriter and a real TaskDispatcher. The
+// then registerTaskApi, over a real InstanceWriter and a real TaskDispatcher. The
 // only fakes are the session host and the meters.
 
 interface RecordedSpawn {
@@ -206,7 +206,7 @@ function buildApiHarness(
     store.append(events);
   };
 
-  const taskWriter = new TaskWriter({ emit, readTasks, ids: new CountingIdSource() });
+  const instanceWriter = new InstanceWriter({ emit, readTasks, ids: new CountingIdSource() });
   const taskDispatcher = new TaskDispatcher({
     sessionHost,
     emit,
@@ -216,9 +216,9 @@ function buildApiHarness(
     staleAfterMs: options.staleAfterMs ?? FRESH_STALE_BAND_MS,
     // S7·5b-i deps — inert here (no test in this file calls recordPlan), but
     // required now that the dispatcher owns the plan-capture seam. The SAME
-    // taskWriter instance, so the transition would go through I7's one writer.
+    // instanceWriter instance, so the move would go through I7's one writer.
     artifactStore: new MemoryArtifactStore(),
-    taskWriter,
+    instanceWriter,
   });
 
   const app = new Hono();
@@ -235,7 +235,7 @@ function buildApiHarness(
     }),
   );
   registerTaskApi(app, {
-    taskWriter,
+    instanceWriter,
     dispatchTask: (taskId) => {
       dispatchCallCount += 1;
       dispatchedTaskIds.push(taskId);
@@ -300,7 +300,7 @@ describe('POST /api/tasks — create', () => {
     expect(body.task.manualReviewRequired).toBe(false);
 
     // Exactly one event, and it is the birth record.
-    expect(harness.taskEventTypes()).toEqual([EVENT_TYPES.taskCreated]);
+    expect(harness.taskEventTypes()).toEqual([EVENT_TYPES.instanceCreated]);
   });
 
   it('honours an explicit isolation and stage over the defaults', async () => {
@@ -341,9 +341,10 @@ describe('POST /api/tasks — create', () => {
     const task = await createTaskThrough(harness, { title: 'add a card title to the board' });
     expect(task.title).toBe('add a card title to the board');
 
-    expect(harness.taskEventTypes()).toEqual([EVENT_TYPES.taskCreated]);
+    expect(harness.taskEventTypes()).toEqual([EVENT_TYPES.instanceCreated]);
     const birthRecord = harness.taskEvents()[0]!;
-    expect((birthRecord.payload as { title?: unknown }).title).toBe(
+    // Under the record split the authored title lives in the OPAQUE `payload`.
+    expect((birthRecord.payload as { payload: { title?: unknown } }).payload.title).toBe(
       'add a card title to the board',
     );
   });
@@ -374,7 +375,7 @@ describe('POST /api/tasks — create', () => {
     );
     expect(overTheCap.status).toBe(400);
     expect(harness.tasksHead()).toBe(headAfterAcceptedTitle);
-    expect(harness.taskEventTypes()).toEqual([EVENT_TYPES.taskCreated]);
+    expect(harness.taskEventTypes()).toEqual([EVENT_TYPES.instanceCreated]);
   });
 
   it('a NON-STRING title is 400 with no event — the cap is not the only guard', async () => {
@@ -403,7 +404,7 @@ describe('POST /api/tasks — create', () => {
     expect('title' in task).toBe(false);
 
     const birthRecord = harness.taskEvents()[0]!;
-    expect('title' in (birthRecord.payload as object)).toBe(false);
+    expect('title' in (birthRecord.payload as { payload: object }).payload).toBe(false);
   });
 
   it('an EMPTY-STRING title is accepted verbatim — the route does not editorialise', async () => {
@@ -444,13 +445,15 @@ describe('POST /api/tasks — create', () => {
     ]);
 
     // The LOG carries the minted `{id,text}` criteria, not the bare `{text}` input.
-    expect(harness.taskEventTypes()).toEqual([EVENT_TYPES.taskCreated]);
+    expect(harness.taskEventTypes()).toEqual([EVENT_TYPES.instanceCreated]);
     expect(harness.taskEvents()[0]!.payload).toMatchObject({
-      scope: 'fold the work-order fields onto the born record',
-      acceptanceCriteria: [
-        { id: '00000000-0000-4000-8000-000000000002', text: 'both suites pass' },
-        { id: '00000000-0000-4000-8000-000000000003', text: 'ids are minted server-side' },
-      ],
+      payload: {
+        scope: 'fold the work-order fields onto the born record',
+        acceptanceCriteria: [
+          { id: '00000000-0000-4000-8000-000000000002', text: 'both suites pass' },
+          { id: '00000000-0000-4000-8000-000000000003', text: 'ids are minted server-side' },
+        ],
+      },
     });
   });
 
@@ -466,8 +469,9 @@ describe('POST /api/tasks — create', () => {
     expect('killCriterion' in task).toBe(false);
 
     const birthRecord = harness.taskEvents()[0]!;
-    expect('scope' in (birthRecord.payload as object)).toBe(false);
-    expect('acceptanceCriteria' in (birthRecord.payload as object)).toBe(false);
+    const authoredPayload = (birthRecord.payload as { payload: object }).payload;
+    expect('scope' in authoredPayload).toBe(false);
+    expect('acceptanceCriteria' in authoredPayload).toBe(false);
   });
 
   it('a `scope` one character OVER the 8000 cap is 400 with NO EVENT', async () => {
@@ -495,7 +499,7 @@ describe('POST /api/tasks — create', () => {
     );
     expect(overTheCap.status).toBe(400);
     expect(harness.tasksHead()).toBe(headAfterAccepted);
-    expect(harness.taskEventTypes()).toEqual([EVENT_TYPES.taskCreated]);
+    expect(harness.taskEventTypes()).toEqual([EVENT_TYPES.instanceCreated]);
   });
 
   it('MORE than 100 acceptance criteria is 400 with NO EVENT (the list cap)', async () => {
@@ -611,7 +615,7 @@ describe('POST /api/tasks — the projectRoot allowlist wall (403, and NOTHING i
     expect(task.projectRoot).toBe(harness.allowedRoot);
     expect(task.projectRoot).not.toContain('..');
     // And the LOG carries the resolved path too, not just the response.
-    expect(harness.taskEvents()[0]!.payload).toMatchObject({ projectRoot: harness.allowedRoot });
+    expect(harness.taskEvents()[0]!.payload).toMatchObject({ project: harness.allowedRoot });
   });
 });
 
@@ -654,9 +658,9 @@ describe('POST /api/tasks/:taskId/transitions — I7 over HTTP', () => {
       },
     });
     expect(harness.taskEventTypes()).toEqual([
-      EVENT_TYPES.taskCreated,
-      EVENT_TYPES.taskTransitioned,
-      EVENT_TYPES.taskSessionAttached,
+      EVENT_TYPES.instanceCreated,
+      EVENT_TYPES.instanceMoved,
+      EVENT_TYPES.instanceRunAttached,
     ]);
     // ONE attempt, on THIS task. The route is not a scheduler.
     expect(harness.dispatchedTaskIds()).toEqual([task.taskId]);
@@ -681,13 +685,13 @@ describe('POST /api/tasks/:taskId/transitions — I7 over HTTP', () => {
 
     // Half two: THE LOG.
     expect(harness.taskEventTypes()).toEqual([
-      EVENT_TYPES.taskCreated,
-      EVENT_TYPES.taskTransitionRejected,
+      EVENT_TYPES.instanceCreated,
+      EVENT_TYPES.instanceMoveRejected,
     ]);
     expect(harness.taskEvents()[1]!.payload).toEqual({
-      taskId: task.taskId,
-      fromStage: 'backlog',
-      attemptedToStage: 'review',
+      instanceId: task.taskId,
+      fromNode: 'backlog',
+      attemptedToNode: 'review',
       reason: 'illegal-edge',
       proposedBy: 'orchestrator',
     });
@@ -708,9 +712,9 @@ describe('POST /api/tasks/:taskId/transitions — I7 over HTTP', () => {
 
     expect(response.status).toBe(409);
     expect(await response.json()).toEqual({ accepted: false, reason: 'unknown-stage' });
-    expect(harness.taskEvents()[1]!.type).toBe(EVENT_TYPES.taskTransitionRejected);
+    expect(harness.taskEvents()[1]!.type).toBe(EVENT_TYPES.instanceMoveRejected);
     expect(harness.taskEvents()[1]!.payload).toMatchObject({
-      attemptedToStage: 'shipped-it-lol',
+      attemptedToNode: 'shipped-it-lol',
       reason: 'unknown-stage',
     });
   });
@@ -743,11 +747,11 @@ describe('POST /api/tasks/:taskId/transitions — I7 over HTTP', () => {
       expect(response.status, rejectionCase.reason).toBe(409);
       expect(await response.json()).toEqual({ accepted: false, reason: rejectionCase.reason });
       expect(harness.taskEventTypes()).toEqual([
-        EVENT_TYPES.taskCreated,
-        EVENT_TYPES.taskTransitionRejected,
+        EVENT_TYPES.instanceCreated,
+        EVENT_TYPES.instanceMoveRejected,
       ]);
       // No `task_transitioned` rode along: the board did not move.
-      expect(harness.taskEventTypes()).not.toContain(EVENT_TYPES.taskTransitioned);
+      expect(harness.taskEventTypes()).not.toContain(EVENT_TYPES.instanceMoved);
     }
   });
 
@@ -899,8 +903,8 @@ describe('POST /api/tasks/:taskId/transitions — the D53 dispatch rider (S7·7c
     expect(response.status).toBe(409);
     expect(await response.json()).toEqual({ accepted: false, reason: 'illegal-edge' });
     expect(harness.taskEventTypes()).toEqual([
-      EVENT_TYPES.taskCreated,
-      EVENT_TYPES.taskTransitionRejected,
+      EVENT_TYPES.instanceCreated,
+      EVENT_TYPES.instanceMoveRejected,
     ]);
     expect(harness.dispatchedTaskIds()).toEqual([]);
   });
@@ -913,7 +917,7 @@ describe('POST /api/tasks/:taskId/transitions — the D53 dispatch rider (S7·7c
 
     expect(task.stage).toBe('planning');
     expect(harness.dispatchedTaskIds()).toEqual([]);
-    expect(harness.taskEventTypes()).toEqual([EVENT_TYPES.taskCreated]);
+    expect(harness.taskEventTypes()).toEqual([EVENT_TYPES.instanceCreated]);
   });
 
   it('EVERY dispatch outcome rides the 200 verbatim — refusals are not HTTP errors', async () => {
@@ -949,8 +953,8 @@ describe('POST /api/tasks/:taskId/transitions — the D53 dispatch rider (S7·7c
       });
       // The transition is in the log regardless of what the dispatch said.
       expect(harness.taskEventTypes(), dispatchResult.outcome).toEqual([
-        EVENT_TYPES.taskCreated,
-        EVENT_TYPES.taskTransitioned,
+        EVENT_TYPES.instanceCreated,
+        EVENT_TYPES.instanceMoved,
       ]);
     }
   });
@@ -992,14 +996,14 @@ describe('POST /api/tasks/:taskId/amendments — amend the work order (S7·2b)',
     });
 
     expect(harness.taskEventTypes()).toEqual([
-      EVENT_TYPES.taskCreated,
-      EVENT_TYPES.workOrderAmended,
+      EVENT_TYPES.instanceCreated,
+      EVENT_TYPES.instancePayloadRevised,
     ]);
     expect(harness.taskEvents()[1]!.payload).toEqual({
-      taskId: task.taskId,
-      workOrderRev: 1,
-      amendedBy: 'human',
-      scope: 'the narrowed scope',
+      instanceId: task.taskId,
+      payloadRev: 1,
+      revisedBy: 'human',
+      patch: { scope: 'the narrowed scope' },
     });
 
     // ⚠ THE D53 HALF. Its sibling route dispatches on a promotion; this one must
@@ -1083,7 +1087,7 @@ describe('POST /api/tasks/:taskId/amendments — amend the work order (S7·2b)',
     });
     // Refused WHOLE: the `scope` that rode along with it was not written either.
     expect(harness.tasksHead()).toBe(headAfterCreate);
-    expect(harness.taskEventTypes()).toEqual([EVENT_TYPES.taskCreated]);
+    expect(harness.taskEventTypes()).toEqual([EVENT_TYPES.instanceCreated]);
   });
 
   it('400 for an amendment that names no work-order field at all', async () => {
@@ -1119,8 +1123,8 @@ describe('POST /api/tasks/:taskId/amendments — amend the work order (S7·2b)',
     expect(response.status).toBe(200);
     expect(((await response.json()) as AmendWorkOrderResponse).task.acceptanceCriteria).toEqual([]);
     expect(harness.taskEventTypes()).toEqual([
-      EVENT_TYPES.taskCreated,
-      EVENT_TYPES.workOrderAmended,
+      EVENT_TYPES.instanceCreated,
+      EVENT_TYPES.instancePayloadRevised,
     ]);
   });
 
@@ -1180,7 +1184,7 @@ describe('malformed input — 400, nothing evented, nothing crashes (I8)', () =>
 
       expect(response.status).toBe(400);
       expect(harness.tasksHead()).toBe(headAfterCreate);
-      expect(harness.taskEventTypes()).toEqual([EVENT_TYPES.taskCreated]);
+      expect(harness.taskEventTypes()).toEqual([EVENT_TYPES.instanceCreated]);
     });
   }
 
@@ -1255,7 +1259,7 @@ describe('malformed input — 400, nothing evented, nothing crashes (I8)', () =>
 
       expect(response.status).toBe(400);
       expect(harness.tasksHead()).toBe(headAfterCreate);
-      expect(harness.taskEventTypes()).toEqual([EVENT_TYPES.taskCreated]);
+      expect(harness.taskEventTypes()).toEqual([EVENT_TYPES.instanceCreated]);
       expect(harness.dispatchCallCount()).toBe(0);
     });
   }
@@ -1291,7 +1295,7 @@ describe('malformed input — 400, nothing evented, nothing crashes (I8)', () =>
       postJson({ toStage: 'nonsense', proposedBy: 'human' }),
     );
     expect(transitionResponse.status).toBe(409);
-    expect(harness.taskEvents()[1]!.type).toBe(EVENT_TYPES.taskTransitionRejected);
+    expect(harness.taskEvents()[1]!.type).toBe(EVENT_TYPES.instanceMoveRejected);
   });
 
   it('the daemon survives a barrage of hostile bodies (I8)', async () => {
@@ -1327,10 +1331,10 @@ describe('malformed input — 400, nothing evented, nothing crashes (I8)', () =>
     const finalTypes = harness.taskEventTypes();
     expect(new Set(finalTypes)).toEqual(
       new Set([
-        EVENT_TYPES.taskCreated,
-        EVENT_TYPES.taskTransitionRejected,
-        EVENT_TYPES.taskTransitioned,
-        EVENT_TYPES.taskSessionAttached,
+        EVENT_TYPES.instanceCreated,
+        EVENT_TYPES.instanceMoveRejected,
+        EVENT_TYPES.instanceMoved,
+        EVENT_TYPES.instanceRunAttached,
       ]),
     );
   });

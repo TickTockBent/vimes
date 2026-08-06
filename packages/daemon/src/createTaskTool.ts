@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { createTaskToolPayloadSchema, type CreateTaskToolPayload } from '@vimes/core';
 import type { SdkReportToolSpec } from './sessionHost.js';
-import type { CreateTaskInput } from './taskWriter.js';
+import type { CreateInstanceInput } from './instanceWriter.js';
 
 // ─── S8·6 — the AUTHOR GRANT: `create_task` on the D52 tool channel ───────────
 //
@@ -22,9 +22,9 @@ import type { CreateTaskInput } from './taskWriter.js';
 // every other cross-module wire is made, and handed in.
 //
 // ⚠ **I7, STRUCTURALLY — READ `CreateTaskToolDeps` BEFORE WIDENING IT.** The
-// handler closure receives ONE capability, `createTask`, and NOT the `TaskWriter`.
-// That is not tidiness: a closure holding the writer could call
-// `proposeTaskTransition` or `amendWorkOrder`, and "the orchestrator cannot move
+// handler closure receives ONE capability, `createTask`, and NOT the
+// `InstanceWriter`. That is not tidiness: a closure holding the writer could call
+// `proposeMove` or `revisePayload`, and "the orchestrator cannot move
 // the board" would then be a property of this file's current text rather than of
 // its types. As written, the drive verbs are UNREACHABLE from here — the compiler
 // says so. When a drive verb IS granted (S8·7+, one individually-revertible grant
@@ -36,9 +36,9 @@ import type { CreateTaskInput } from './taskWriter.js';
 
 export interface CreateTaskToolDeps {
   // THE ONE CAPABILITY (see the I7 note above). Composed at `app.ts` off the
-  // daemon's single `TaskWriter` instance — the same writer the HTTP create door
-  // uses, never a second write path (principle 10).
-  readonly createTask: (input: CreateTaskInput) => { readonly taskId: string };
+  // daemon's single `InstanceWriter` instance — the same writer the HTTP create
+  // door uses, never a second write path (principle 10).
+  readonly createTask: (input: CreateInstanceInput) => { readonly taskId: string };
   // The orchestrator's project ROOT, read FRESH on every call and never captured
   // at spawn time. D42 roots are editable and projects are archivable, so a root
   // closed over at founding could be hours stale by the time the model authors
@@ -217,7 +217,7 @@ export function buildCreateTaskSpec(deps: CreateTaskToolDeps): SdkReportToolSpec
         // as `[]`, so "nothing was fenced off" and "the author named no fence"
         // stay the same fact they are on the human door.
         ...(payload.explicitlyOut === undefined ? {} : { explicitlyOut: payload.explicitlyOut }),
-        // TEXT ONLY. `createTask` mints one id per criterion from the injected id
+        // TEXT ONLY. `createInstance` mints one id per criterion from the injected id
         // source; this handler never sees an id and never invents one.
         acceptanceCriteria: payload.acceptanceCriteria,
         killCriterion: payload.killCriterion,

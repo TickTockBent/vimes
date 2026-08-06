@@ -11,7 +11,7 @@ import {
   type WorkOrderAmendedPayload,
 } from '@vimes/core';
 import { resolveWithinRoots, realpathProbe, type RealpathProbe } from './filePaths.js';
-import { TaskProjectionDisagreementError, type TaskWriter } from './taskWriter.js';
+import { InstanceProjectionDisagreementError, type InstanceWriter } from './instanceWriter.js';
 import type { DispatchAttemptResult } from './taskDispatcher.js';
 
 // ─── slice 6 step 4b — the task API (REST, behind the auth wall) ─────────────
@@ -21,10 +21,11 @@ import type { DispatchAttemptResult } from './taskDispatcher.js';
 //
 // ⚠ THIS FILE IS A PROPOSER, NEVER A SECOND WRITER (principle 10, I7).
 // A route here MAY NOT compute a next stage, MAY NOT decide a dispatch, and MAY
-// NOT construct a `task_transitioned` from its own reasoning. It parses input at
-// the boundary, hands it to `TaskWriter` / `TaskDispatcher`, and reports exactly
-// what came back. Everything that DECIDES lives in packages/core; everything that
-// WRITES lives in `taskWriter.ts`; this file is the adapter between HTTP and
+// NOT construct an `instance_moved` from its own reasoning. It parses input at
+// the boundary, hands it to `InstanceWriter` / `TaskDispatcher`, and reports
+// exactly what came back. Everything that DECIDES lives in packages/core;
+// everything that WRITES lives in `instanceWriter.ts`; this file is the adapter
+// between HTTP and
 // those two, and it holds no state of its own.
 //
 // ⚠ SLICE 7'S MCP SURFACE WILL BE A THIN CLIENT OF THESE ROUTES (slice-6
@@ -37,10 +38,10 @@ import type { DispatchAttemptResult } from './taskDispatcher.js';
 // file. Every route runs to completion inside the request that invoked it.
 
 export interface TaskApiDeps {
-  // The SOLE task writer (step 4b). Not an emit function: routing every write
-  // through the one class is what keeps step 5's in-process watchdog and this
-  // HTTP surface from becoming two writers.
-  taskWriter: TaskWriter;
+  // The SOLE instance writer (step 4b, re-homed S11·U2). Not an emit function:
+  // routing every write through the one class is what keeps step 5's in-process
+  // watchdog and this HTTP surface from becoming two writers.
+  instanceWriter: InstanceWriter;
   // ONE explicit dispatch attempt. Deliberately a narrow function rather than the
   // `TaskDispatcher` itself, so no route can reach past it into the session host.
   //
@@ -254,9 +255,9 @@ export const createTaskBodySchema = z.object({
   // ── S7·2a: the four AUTHORED work-order fields, bounded (see caps above) ─────
   //
   // ⚠ THE ACCEPTANCE-CRITERION INPUT SHAPE IS `{ text }` — TEXT ONLY, NO id. The
-  // id is MINTED SERVER-SIDE in `TaskWriter.createTask` from the injected id
-  // source; the client/form never supplies it (see the CreateTaskInput note in
-  // taskWriter.ts). The record/event shape is `{ id, text }`; these are
+  // id is MINTED SERVER-SIDE in `InstanceWriter.createInstance` from the injected id
+  // source; the client/form never supplies it (see the CreateInstanceInput note in
+  // instanceWriter.ts). The record/event shape is `{ id, text }`; these are
   // deliberately different and must not be unified. Each field is optional, so an
   // unauthored creation still succeeds exactly as it did before slice 7.
   scope: z.string().min(1).max(MAX_WORK_ORDER_TEXT).optional(),
@@ -283,7 +284,7 @@ export const createTaskBodySchema = z.object({
 //   • longtext      → a <textarea> (the prose fields, scope / killCriterion).
 //   • list          → repeatable plain-string rows (explicitlyOut lines).
 //   • criteria-list → repeatable rows, each ONE criterion's TEXT. The id is
-//     minted server-side in TaskWriter.createTask; the form sends `{ text }`
+//     minted server-side in InstanceWriter.createInstance; the form sends `{ text }`
 //     only (S7·2a), which is why this is a distinct kind from `list`.
 export interface WorkOrderFieldDescriptor {
   key: 'scope' | 'explicitlyOut' | 'acceptanceCriteria' | 'killCriterion';
@@ -363,7 +364,7 @@ const proposeTransitionBodySchema = z.object({
 // minted; on amend the caller RESTATES the criteria it is keeping, by the ids the
 // record already carries, and the writer mints only for entries without one. That
 // is what lets a reworded work order preserve the per-criterion identity
-// `report_review` keys its verdicts to (see `AmendWorkOrderInput`).
+// `report_review` keys its verdicts to (see `RevisePayloadInput`).
 const amendWorkOrderBodySchema = z.object({
   amendedBy: z.enum(AMENDED_BY_VALUES),
   scope: z.string().min(1).max(MAX_WORK_ORDER_TEXT).optional(),
@@ -416,7 +417,7 @@ export function registerTaskApi(app: Hono, deps: TaskApiDeps): void {
     }
 
     try {
-      const task = deps.taskWriter.createTask({
+      const task = deps.instanceWriter.createInstance({
         // The RESOLVED path, never the raw input — so the record cannot carry a
         // `..` segment or a symlink that resolves somewhere else later. The
         // allowlist is checked once, here; what gets persisted is what was checked.
@@ -512,12 +513,12 @@ export function registerTaskApi(app: Hono, deps: TaskApiDeps): void {
     };
 
     try {
-      const result = deps.taskWriter.proposeTaskTransition(context.req.param('taskId'), proposal);
+      const result = deps.instanceWriter.proposeMove(context.req.param('taskId'), proposal);
       switch (result.outcome) {
         case 'unknown-task':
           return context.json({ error: 'not found' }, 404);
         case 'rejected': {
-          // The writer ALREADY emitted the `task_transition_rejected`. This branch
+          // The writer ALREADY emitted the `instance_move_rejected`. This branch
           // only reports it — I7 is satisfied by the record, not by this response.
           const response: ProposeTransitionResponse = { accepted: false, reason: result.reason };
           return context.json(response, 409);
@@ -594,7 +595,7 @@ export function registerTaskApi(app: Hono, deps: TaskApiDeps): void {
     }
 
     try {
-      const result = deps.taskWriter.amendWorkOrder(context.req.param('taskId'), {
+      const result = deps.instanceWriter.revisePayload(context.req.param('taskId'), {
         amendedBy: parsedBody.value.amendedBy,
         // Absent stays absent all the way down to the event — and here the fold
         // READS that absence to decide what to leave alone, so an `undefined`-valued
@@ -731,7 +732,7 @@ async function parseJsonBody<OutputType>(
 // to reconcile. Any other throw is re-raised: swallowing an unknown failure here
 // would turn a bug into a quiet wrong answer.
 function findingResponse(context: Context, error: unknown): Response {
-  if (error instanceof TaskProjectionDisagreementError) {
+  if (error instanceof InstanceProjectionDisagreementError) {
     return context.json({ error: 'task store finding', detail: error.message }, 500);
   }
   throw error;

@@ -4,6 +4,7 @@ import {
   EVENT_TYPES,
   MemoryArtifactStore,
   MemoryEventStore,
+  RETIRED_EVENT_KINDS,
   SteppingClock,
   readAllStreamsGrouped,
   replayFromEmpty,
@@ -25,7 +26,7 @@ import {
   type TransitionProposal,
 } from '@vimes/core';
 import type { ResumeResult, SendResult, SpawnResult } from './sessionHost.js';
-import { TaskWriter, type ProposeTransitionResult } from './taskWriter.js';
+import { InstanceWriter, type ProposeMoveResult } from './instanceWriter.js';
 import type { GitRunResult, GitRunner } from './gitAdapter.js';
 import { loadConfigFromEnv } from './config.js';
 import { WorktreeManager } from './worktreeManager.js';
@@ -169,17 +170,17 @@ class RecordingSessionHost {
   }
 }
 
-// A task writer that RECORDS its `proposeTaskTransition` calls instead of touching
+// An instance writer that RECORDS its `proposeMove` calls instead of touching
 // the log. It is the instrument for S7·5b-i's I10 assertion: `recordPlan` must move
-// the task to `plan-ready` THROUGH this seam (I7's choke point), never by emitting a
-// `task_transitioned` itself. `proposeTransitionCalls.length` alongside the emitted
+// the task to `plan-ready` THROUGH this seam (I7's choke point), never by emitting an
+// `instance_moved` itself. `proposeMoveCalls.length` alongside the emitted
 // events is what proves which of the two happened. Structurally satisfies
-// `Pick<TaskWriter, 'proposeTaskTransition'>`; the real class is never constructed.
-class RecordingTaskWriter {
+// `Pick<InstanceWriter, 'proposeMove'>`; the real class is never constructed.
+class RecordingInstanceWriter {
   // Each call also captures how many events had been emitted at the moment it ran,
-  // which is the ordering evidence for `recordPlan`'s store → emit → transition
-  // contract: a transition proposed AFTER the `plan_submitted` emit sees a count of 1.
-  readonly proposeTransitionCalls: Array<{
+  // which is the ordering evidence for `recordPlan`'s store → emit → move
+  // contract: a move proposed AFTER the `capture_recorded` emit sees a count of 1.
+  readonly proposeMoveCalls: Array<{
     taskId: string;
     proposal: TransitionProposal;
     emittedCountBefore: number;
@@ -187,10 +188,10 @@ class RecordingTaskWriter {
 
   constructor(private readonly emittedCount: () => number = () => 0) {}
 
-  proposeTaskTransition(taskId: string, proposal: TransitionProposal): ProposeTransitionResult {
-    this.proposeTransitionCalls.push({ taskId, proposal, emittedCountBefore: this.emittedCount() });
-    // recordPlan ignores the return value — the transition's OWN outcome is the
-    // writer's business and is asserted in taskWriter.test.ts, not here. A fixed
+  proposeMove(taskId: string, proposal: TransitionProposal): ProposeMoveResult {
+    this.proposeMoveCalls.push({ taskId, proposal, emittedCountBefore: this.emittedCount() });
+    // recordPlan ignores the return value — the move's OWN outcome is the
+    // writer's business and is asserted in instanceWriter.test.ts, not here. A fixed
     // stub keeps this fake from re-implementing the state machine.
     return { outcome: 'unknown-task', taskId };
   }
@@ -240,7 +241,7 @@ interface Harness {
   // (so a test can fetch the stored plan back by the returned hash), and the
   // recording task writer that proves the transition went through I7's choke point.
   artifactStore: MemoryArtifactStore;
-  taskWriter: RecordingTaskWriter;
+  instanceWriter: RecordingInstanceWriter;
   nowIsoCallCount: () => number;
   // Step 8's instruments. `worktreeCalls` is what proves the manager was consulted;
   // `gitCalls` is the stronger claim underneath it — that no git SUBPROCESS was
@@ -267,14 +268,14 @@ function buildHarness(options: {
   // S7·7c. A manager supplied WHOLE, replacing the git-backed one, so a case can
   // hold `ensureWorktree` open on a promise it releases by hand. That is the only
   // way to make the D54 window — the `await` between the decision and
-  // `task_session_attached` — wide enough to assert against rather than a
+  // `instance_run_attached` — wide enough to assert against rather than a
   // microtask nobody can stand inside.
   worktreeManagerOverride?: Pick<WorktreeManager, 'ensureWorktree'>;
 } = {}): Harness {
   const sessionHost = new RecordingSessionHost();
   const artifactStore = new MemoryArtifactStore();
   const emitted: EventInput[] = [];
-  const recordingTaskWriter = new RecordingTaskWriter(() => emitted.length);
+  const recordingInstanceWriter = new RecordingInstanceWriter(() => emitted.length);
   const tasksById: Record<string, TaskRecord> = {};
   for (const task of options.tasks ?? [taskRecord()]) {
     tasksById[task.taskId] = task;
@@ -359,14 +360,14 @@ function buildHarness(options: {
     // carries them; the fakes are inert on the dispatch path (nothing there calls
     // recordPlan), so no prior assertion moves.
     artifactStore,
-    taskWriter: recordingTaskWriter,
+    instanceWriter: recordingInstanceWriter,
   };
   return {
     dispatcher: new TaskDispatcher(deps),
     sessionHost,
     emitted,
     artifactStore,
-    taskWriter: recordingTaskWriter,
+    instanceWriter: recordingInstanceWriter,
     nowIsoCallCount: () => nowIsoCallCount,
     worktreeCalls: () => worktreeCalls,
     gitCalls: () => gitCalls,
@@ -402,7 +403,7 @@ async function dispatchWithoutRejecting(
 }
 
 describe('TaskDispatcher — the spawn path', () => {
-  it('spawns exactly once in the resolved cwd and emits exactly one task_session_attached', async () => {
+  it('spawns exactly once in the resolved cwd and emits exactly one instance_run_attached', async () => {
     // Assertion 5.
     const harness = buildHarness();
     const result = await harness.dispatcher.dispatchTask(TASK_ID);
@@ -412,11 +413,11 @@ describe('TaskDispatcher — the spawn path', () => {
     ]);
     expect(harness.emitted).toHaveLength(1);
     const attachEvent = harness.emitted[0]!;
-    expect(attachEvent.type).toBe(EVENT_TYPES.taskSessionAttached);
+    expect(attachEvent.type).toBe(EVENT_TYPES.instanceRunAttached);
     expect(attachEvent.stream).toBe('tasks');
     expect(attachEvent.payload).toEqual({
-      taskId: TASK_ID,
-      stage: 'implementing',
+      instanceId: TASK_ID,
+      node: 'implementing',
       // The appSessionId the HOST returned — never one the dispatcher invented.
       appSessionId: SPAWNED_SESSION_ID,
     });
@@ -440,7 +441,7 @@ describe('TaskDispatcher — the spawn path', () => {
 
     expect(harness.sessionHost.spawnCalls).toHaveLength(1);
     expect(result.outcome).toBe('spawned');
-    expect(eventTypes(harness.emitted)).toEqual([EVENT_TYPES.taskSessionAttached]);
+    expect(eventTypes(harness.emitted)).toEqual([EVENT_TYPES.instanceRunAttached]);
   });
 });
 
@@ -606,7 +607,7 @@ describe('TaskDispatcher — a defer emits NOTHING', () => {
 });
 
 describe('TaskDispatcher — a failed spawn is an EXECUTION outcome, not a decision', () => {
-  it('emits no task_session_attached, does not throw, and reports the host reason', async () => {
+  it('emits no instance_run_attached, does not throw, and reports the host reason', async () => {
     // Assertion 8. The session host already evented its OWN refusal
     // (transition_rejected / preflight-failed), so nothing is double-recorded
     // here — and no `dispatch_refused` is invented, because that enum is the
@@ -802,11 +803,11 @@ describe('TaskDispatcher — D46 INVERSION: the FIX LOOP spawns FRESH (was: resu
     // The attach names the NEW session, not the author — this is what makes the
     // next attempt's `attempt` count (recordCompletion) a true count of attempts.
     expect(harness.emitted).toHaveLength(1);
-    expect(harness.emitted[0]!.type).toBe(EVENT_TYPES.taskSessionAttached);
+    expect(harness.emitted[0]!.type).toBe(EVENT_TYPES.instanceRunAttached);
     expect(harness.emitted[0]!.stream).toBe('tasks');
     expect(harness.emitted[0]!.payload).toEqual({
-      taskId: TASK_ID,
-      stage: 'implementing',
+      instanceId: TASK_ID,
+      node: 'implementing',
       appSessionId: SPAWNED_SESSION_ID,
     });
     // A SPAWN result, which — unlike the old `resumed` — carries a resolved `cwd`.
@@ -922,8 +923,8 @@ describe('TaskDispatcher — THE INDEPENDENCE RULE, executed', () => {
     // board shows two distinct sessions on the task rather than one wearing both
     // hats.
     expect(harness.emitted[0]!.payload).toEqual({
-      taskId: TASK_ID,
-      stage: 'review',
+      instanceId: TASK_ID,
+      node: 'review',
       appSessionId: reviewingSessionId,
     });
   });
@@ -949,7 +950,7 @@ describe('TaskDispatcher — THE INDEPENDENCE RULE, executed', () => {
 // what they really guard is FIX-PATH specific and still true — a failed fix must
 // not fall back, must not event, and must not touch the prior author.
 describe('TaskDispatcher — a fix that cannot start is a spawn-failure (D46 inversion)', () => {
-  it('emits no task_session_attached, does not throw, and reports the host reason', async () => {
+  it('emits no instance_run_attached, does not throw, and reports the host reason', async () => {
     // The host already evented its own refusal (a preflight rejection, typically),
     // so nothing is double-recorded — and no `dispatch_refused` is invented, because
     // that enum is the DECISION vocabulary and this decision was to run the stage.
@@ -1135,7 +1136,7 @@ describe('TaskDispatcher — the instruction seam (MACHINERY; the words are defe
       outcome: 'spawned',
       instructionDelivery: { status: 'not-delivered', reason: 'session-dead' },
     });
-    expect(eventTypes(refusedHarness.emitted)).toEqual([EVENT_TYPES.taskSessionAttached]);
+    expect(eventTypes(refusedHarness.emitted)).toEqual([EVENT_TYPES.instanceRunAttached]);
 
     const throwingHarness = buildHarness({ composeStageInstruction: () => STUB_INSTRUCTION });
     throwingHarness.sessionHost.throwOnSend(new Error('transport gone'));
@@ -1415,7 +1416,7 @@ describe('TaskDispatcher — assertion 8: with the flag OFF, NOTHING changed', (
       expect(harness.worktreeCalls()).toEqual([]);
       expect(harness.gitCalls()).toEqual([]);
       // And no worktree event, so the tasks stream is byte-identical too.
-      expect(eventTypes(harness.emitted)).toEqual([EVENT_TYPES.taskSessionAttached]);
+      expect(eventTypes(harness.emitted)).toEqual([EVENT_TYPES.instanceRunAttached]);
     });
   });
 
@@ -1490,7 +1491,7 @@ describe('TaskDispatcher — assertion 9: flag ON + worktree isolation', () => {
     // agent is running somewhere the log has never mentioned.
     expect(eventTypes(harness.emitted)).toEqual([
       EVENT_TYPES.taskWorktreeCreated,
-      EVENT_TYPES.taskSessionAttached,
+      EVENT_TYPES.instanceRunAttached,
     ]);
     const worktreeEvent = harness.emitted[0]!;
     expect(worktreeEvent.stream).toBe('tasks');
@@ -1555,7 +1556,7 @@ describe('TaskDispatcher — assertion 10: flag ON + shared-dir is still project
     expect(result).toMatchObject({ outcome: 'spawned', cwd: PROJECT_ROOT });
     expect(harness.worktreeCalls()).toEqual([]);
     expect(harness.gitCalls()).toEqual([]);
-    expect(eventTypes(harness.emitted)).toEqual([EVENT_TYPES.taskSessionAttached]);
+    expect(eventTypes(harness.emitted)).toEqual([EVENT_TYPES.instanceRunAttached]);
   });
 });
 
@@ -1594,7 +1595,7 @@ describe('TaskDispatcher — ASSERTION 11, THE SAFETY ONE: a failed worktree run
       // 1. NOTHING RAN. Not in the worktree, not in the project root, not anywhere.
       expect(harness.sessionHost.spawnCalls).toHaveLength(0);
       expect(harness.sessionHost.resumeCalls).toEqual([]);
-      // 2. NO `task_session_attached` — there is no session to attach — and no
+      // 2. NO `instance_run_attached` — there is no session to attach — and no
       //    `task_worktree_created`, because nothing was created.
       expect(harness.emitted).toEqual([]);
       // 3. The outcome names what happened, in the EXECUTION vocabulary.
@@ -1663,7 +1664,7 @@ describe('TaskDispatcher — ASSERTION 11, THE SAFETY ONE: a failed worktree run
         },
       },
       artifactStore: new MemoryArtifactStore(),
-      taskWriter: new RecordingTaskWriter(),
+      instanceWriter: new RecordingInstanceWriter(),
     });
 
     const result = await dispatchWithoutRejecting(dispatcher, TASK_ID);
@@ -1699,7 +1700,7 @@ describe('TaskDispatcher — ASSERTION 11, THE SAFETY ONE: a failed worktree run
     const result = await harness.dispatcher.dispatchTask(TASK_ID);
 
     expect(result).toMatchObject({ outcome: 'spawned', cwd: WORKTREE_PATH });
-    expect(eventTypes(harness.emitted)).toEqual([EVENT_TYPES.taskSessionAttached]);
+    expect(eventTypes(harness.emitted)).toEqual([EVENT_TYPES.instanceRunAttached]);
     // One command: the list. No second `add`.
     expect(harness.gitCalls()).toEqual([['worktree', 'list', '--porcelain']]);
   });
@@ -1836,12 +1837,12 @@ describe('TaskDispatcher — planning spawns in plan mode (D48) + every spawn na
 //
 // recordPlan is the STATE-OWNING half of the D48 seam. The fragile SDK adapter
 // (5b-ii) will only OBSERVE a plan and PROPOSE it back through a callback; THIS
-// method does the writing — store the blob, emit `plan_submitted`, propose the
+// method does the writing — store the blob, emit `capture_recorded`, propose the
 // planning→plan-ready transition THROUGH the task writer (I7's choke point).
 //
 // The instruments: `harness.artifactStore` (was the blob stored, and under the
-// returned hash?), `harness.emitted` (exactly one `plan_submitted`, and — the I10
-// point — NO hand-rolled `task_transitioned`), and `harness.taskWriter`
+// returned hash?), `harness.emitted` (exactly one `capture_recorded`, and — the I10
+// point — NO hand-rolled `instance_moved`), and `harness.instanceWriter`
 // (`proposeTransitionCalls` proves the transition went through the writer, and
 // `emittedCountBefore` proves it went AFTER the emit).
 
@@ -1860,40 +1861,43 @@ function planningTask(overrides: Partial<TaskRecord> = {}): TaskRecord {
 }
 
 describe('TaskDispatcher — recordPlan: the native plan-capture seam (S7·5b-i)', () => {
-  it('happy path: stores the blob, emits ONE plan_submitted, then proposes the transition — in that order', () => {
+  it('happy path: stores the blob, emits ONE capture_recorded, then proposes the move — in that order', () => {
     const harness = buildHarness({ tasks: [planningTask()] });
 
     harness.dispatcher.recordPlan(PLANNER_SESSION_ID, PLAN_TEXT);
 
-    // Exactly one event, and it is the S7·5a plan_submitted with the full payload.
+    // Exactly one event, and it is S7·5a's plan capture — now `capture_recorded`
+    // (captureKind 'plan') — with the full payload.
     expect(harness.emitted).toHaveLength(1);
     const planEvent = harness.emitted[0]!;
-    expect(planEvent.type).toBe(EVENT_TYPES.planSubmitted);
+    expect(planEvent.type).toBe(EVENT_TYPES.captureRecorded);
     expect(planEvent.stream).toBe('tasks');
     const payload = planEvent.payload as {
-      taskId: string;
-      stage: string;
+      instanceId: string;
+      captureKind: string;
+      artifactHash: string;
+      node: string;
       attempt: number;
-      workOrderRev: number;
-      planArtifactHash: string;
-      plannerSessionRef: { appSessionId: string };
+      payloadRev: number;
+      capturedFrom: { appSessionId: string };
     };
     expect(payload).toEqual({
-      taskId: TASK_ID,
-      stage: 'planning',
+      instanceId: TASK_ID,
+      captureKind: 'plan',
+      artifactHash: payload.artifactHash,
+      node: 'planning',
       attempt: 1,
-      workOrderRev: 0,
-      planArtifactHash: payload.planArtifactHash,
-      plannerSessionRef: { appSessionId: PLANNER_SESSION_ID },
+      payloadRev: 0,
+      capturedFrom: { appSessionId: PLANNER_SESSION_ID },
     });
 
     // store → emit: the blob is retrievable under the hash the event carries, so
     // the put ran and produced the hash before the event was built.
-    expect(harness.artifactStore.getBlob(payload.planArtifactHash)).toBe(PLAN_TEXT);
+    expect(harness.artifactStore.getBlob(payload.artifactHash)).toBe(PLAN_TEXT);
 
     // The transition went through the writer's choke point (I7), once, with the
     // right proposal — and AFTER the emit (emittedCountBefore === 1).
-    expect(harness.taskWriter.proposeTransitionCalls).toEqual([
+    expect(harness.instanceWriter.proposeMoveCalls).toEqual([
       {
         taskId: TASK_ID,
         proposal: { toStage: 'plan-ready', proposedBy: 'dispatcher' },
@@ -1902,18 +1906,18 @@ describe('TaskDispatcher — recordPlan: the native plan-capture seam (S7·5b-i)
     ]);
   });
 
-  it('I10: the transition goes through the writer, NOT a hand-rolled task_transitioned emit', () => {
+  it('I10: the transition goes through the writer, NOT a hand-rolled instance_moved emit', () => {
     const harness = buildHarness({ tasks: [planningTask()] });
 
     harness.dispatcher.recordPlan(PLANNER_SESSION_ID, PLAN_TEXT);
 
     // The dispatcher is NOT a second writer of task state: the ONLY event it emits
-    // is plan_submitted. If recordPlan is "simplified" to emit task_transitioned
+    // is capture_recorded. If recordPlan is "simplified" to emit instance_moved
     // itself, this reddens (a second event type appears) AND the writer call below
     // vanishes — the two halves of the I10/I7 guard.
-    expect(eventTypes(harness.emitted)).toEqual([EVENT_TYPES.planSubmitted]);
-    expect(harness.emitted.some((event) => event.type === EVENT_TYPES.taskTransitioned)).toBe(false);
-    expect(harness.taskWriter.proposeTransitionCalls).toHaveLength(1);
+    expect(eventTypes(harness.emitted)).toEqual([EVENT_TYPES.captureRecorded]);
+    expect(harness.emitted.some((event) => event.type === EVENT_TYPES.instanceMoved)).toBe(false);
+    expect(harness.instanceWriter.proposeMoveCalls).toHaveLength(1);
   });
 
   it('empty plan → total no-op: no put, no emit, no transition', () => {
@@ -1922,7 +1926,7 @@ describe('TaskDispatcher — recordPlan: the native plan-capture seam (S7·5b-i)
     harness.dispatcher.recordPlan(PLANNER_SESSION_ID, '   \n\t  ');
 
     expect(harness.emitted).toEqual([]);
-    expect(harness.taskWriter.proposeTransitionCalls).toEqual([]);
+    expect(harness.instanceWriter.proposeMoveCalls).toEqual([]);
     // Nothing was stored: the task has no artifacts recorded against it.
     expect(harness.artifactStore.listByTask(TASK_ID)).toEqual([]);
   });
@@ -1935,7 +1939,7 @@ describe('TaskDispatcher — recordPlan: the native plan-capture seam (S7·5b-i)
       harness.dispatcher.recordPlan('cccccccc-0000-4000-8000-00000000dead', PLAN_TEXT),
     ).not.toThrow();
     expect(harness.emitted).toEqual([]);
-    expect(harness.taskWriter.proposeTransitionCalls).toEqual([]);
+    expect(harness.instanceWriter.proposeMoveCalls).toEqual([]);
     expect(harness.artifactStore.listByTask(TASK_ID)).toEqual([]);
   });
 
@@ -1954,7 +1958,7 @@ describe('TaskDispatcher — recordPlan: the native plan-capture seam (S7·5b-i)
     harness.dispatcher.recordPlan(PLANNER_SESSION_ID, PLAN_TEXT);
 
     expect(harness.emitted).toEqual([]);
-    expect(harness.taskWriter.proposeTransitionCalls).toEqual([]);
+    expect(harness.instanceWriter.proposeMoveCalls).toEqual([]);
   });
 
   it('attempt counts the planning refs — two prior planning runs → attempt 2', () => {
@@ -1981,11 +1985,11 @@ describe('TaskDispatcher — recordPlan: the native plan-capture seam (S7·5b-i)
   it('workOrderRev is read from the task and defaults to 0 when absent', () => {
     const withoutRev = buildHarness({ tasks: [planningTask()] });
     withoutRev.dispatcher.recordPlan(PLANNER_SESSION_ID, PLAN_TEXT);
-    expect((withoutRev.emitted[0]!.payload as { workOrderRev: number }).workOrderRev).toBe(0);
+    expect((withoutRev.emitted[0]!.payload as { payloadRev: number }).payloadRev).toBe(0);
 
     const withRev = buildHarness({ tasks: [planningTask({ workOrderRev: 3 })] });
     withRev.dispatcher.recordPlan(PLANNER_SESSION_ID, PLAN_TEXT);
-    expect((withRev.emitted[0]!.payload as { workOrderRev: number }).workOrderRev).toBe(3);
+    expect((withRev.emitted[0]!.payload as { payloadRev: number }).payloadRev).toBe(3);
     // The artifact envelope is stamped with the same rev the plan was produced against.
     expect(withRev.artifactStore.listByTask(TASK_ID)[0]!.rev).toBe(3);
   });
@@ -1994,7 +1998,7 @@ describe('TaskDispatcher — recordPlan: the native plan-capture seam (S7·5b-i)
     // **THE SLICE ASSERTION "STAGE-RUN IDENTITY CARRIES REV", PROVED THROUGH THE
     // REAL PARTS.** The case above pins the READ (a hand-built record carrying
     // rev 3); this one pins the whole chain that PRODUCES the number — a real
-    // `TaskWriter.amendWorkOrder` emits `work_order_amended`, the real projection
+    // `InstanceWriter.revisePayload` emits `instance_payload_revised`, the real projection
     // folds it onto the record, and `recordPlan` reads the rev back off that fold.
     // Without it, the `?? 0` sites are only ever exercised against revs a test
     // typed in by hand, and nothing would catch a writer/fold pair that agreed
@@ -2020,7 +2024,7 @@ describe('TaskDispatcher — recordPlan: the native plan-capture seam (S7·5b-i)
       taskSessionAttached({ taskId: TASK_ID, stage: 'planning', appSessionId: PLANNER_SESSION_ID }),
     ]);
 
-    const amendResult = new TaskWriter({ emit, readTasks, ids: new CountingIdSource() }).amendWorkOrder(
+    const amendResult = new InstanceWriter({ emit, readTasks, ids: new CountingIdSource() }).revisePayload(
       TASK_ID,
       { amendedBy: 'human', scope: 'the scope as amended mid-planning' },
     );
@@ -2038,11 +2042,11 @@ describe('TaskDispatcher — recordPlan: the native plan-capture seam (S7·5b-i)
       artifactStore,
       // The transition is the writer's business and irrelevant here; the fake keeps
       // it out of the log so the only events below are the amendment and the plan.
-      taskWriter: new RecordingTaskWriter(),
+      instanceWriter: new RecordingInstanceWriter(),
     }).recordPlan(PLANNER_SESSION_ID, PLAN_TEXT);
 
-    const planEvent = store.read('tasks', 1).find((record) => record.type === EVENT_TYPES.planSubmitted)!;
-    expect((planEvent.payload as { workOrderRev: number }).workOrderRev).toBe(1);
+    const planEvent = store.read('tasks', 1).find((record) => record.type === EVENT_TYPES.captureRecorded)!;
+    expect((planEvent.payload as { payloadRev: number }).payloadRev).toBe(1);
     // The artifact envelope is stamped with the SAME rev, so the stored plan is
     // attributable to the revision it was produced against.
     expect(artifactStore.listByTask(TASK_ID)[0]!.rev).toBe(1);
@@ -2058,7 +2062,7 @@ describe('TaskDispatcher — recordPlan: the native plan-capture seam (S7·5b-i)
     expect(envelope.taskRef).toEqual({ taskId: TASK_ID, stage: 'planning' });
   });
 
-  it('I6 replay: the emitted plan_submitted folds to a task carrying planArtifactHash, deterministically', () => {
+  it('I6 replay: the emitted capture_recorded folds to a task carrying planArtifactHash, deterministically', () => {
     // End-to-end against the REAL tasks projection over a real MemoryEventStore:
     // recordPlan emits into the log, and the fold must augment the record with the
     // stored plan's hash — the S7·5a fold, exercised through recordPlan.
@@ -2090,8 +2094,8 @@ describe('TaskDispatcher — recordPlan: the native plan-capture seam (S7·5b-i)
       staleAfterMs: STALE_AFTER_MS,
       artifactStore,
       // The transition's own event is the writer's business; the fake keeps it out
-      // of the log so this test isolates the plan_submitted fold.
-      taskWriter: new RecordingTaskWriter(),
+      // of the log so this test isolates the capture_recorded fold.
+      instanceWriter: new RecordingInstanceWriter(),
     });
 
     dispatcher.recordPlan(PLANNER_SESSION_ID, PLAN_TEXT);
@@ -2114,13 +2118,13 @@ describe('TaskDispatcher — recordPlan: the native plan-capture seam (S7·5b-i)
 //
 // recordReview mirrors recordPlan. The SDK adapter (S7·6b) only OBSERVES a review
 // session's report_review verdicts and PROPOSES them back through a callback; THIS
-// method does the writing — emit `review_reported`, then propose the
+// method does the writing — emit `report_filed (review)`, then propose the
 // review→done/implementing transition THROUGH the task writer (I7's choke point).
 // No artifact store: the review payload is small structured data carried inline.
 //
-// Instruments: `harness.emitted` (exactly one `review_reported` with the built
-// payload, and — the I10 point — NO hand-rolled `task_transitioned`), and
-// `harness.taskWriter` (`proposeTransitionCalls` proves the transition went through
+// Instruments: `harness.emitted` (exactly one `report_filed (review)` with the built
+// payload, and — the I10 point — NO hand-rolled `instance_moved`), and
+// `harness.instanceWriter` (`proposeMoveCalls` proves the move went through
 // the writer with the DERIVED toStage, `emittedCountBefore` proves it went AFTER
 // the emit).
 
@@ -2141,7 +2145,7 @@ function reviewTask(overrides: Partial<TaskRecord> = {}): TaskRecord {
 }
 
 describe('TaskDispatcher — recordReview: the review path seam (S7·6b)', () => {
-  it('all pass + full coverage → emits ONE review_reported then proposes done — in that order', () => {
+  it('all pass + full coverage → emits ONE report_filed (review) then proposes done — in that order', () => {
     const harness = buildHarness({ tasks: [reviewTask()] });
     const criteria = [
       { criterionId: 'c1', verdict: 'pass' as const },
@@ -2150,22 +2154,24 @@ describe('TaskDispatcher — recordReview: the review path seam (S7·6b)', () =>
 
     harness.dispatcher.recordReview(REVIEWER_SESSION_ID, criteria);
 
-    // Exactly one event, and it is the S7·6a review_reported with the full payload.
+    // Exactly one event, and it is S7·6a's review report — now `report_filed`
+    // (reportKind 'review') — with the full payload.
     expect(harness.emitted).toHaveLength(1);
     const event = harness.emitted[0]!;
-    expect(event.type).toBe(EVENT_TYPES.reviewReported);
+    expect(event.type).toBe(EVENT_TYPES.reportFiled);
     expect(event.stream).toBe('tasks');
     expect(event.payload).toEqual({
-      taskId: TASK_ID,
-      stage: 'review',
+      instanceId: TASK_ID,
+      node: 'review',
       attempt: 1,
-      workOrderRev: 0,
-      criteria,
+      payloadRev: 0,
+      reportKind: 'review',
+      body: { criteria },
     });
 
     // The transition went through the writer's choke point (I7), once, with the
     // DERIVED toStage (done), and AFTER the emit (emittedCountBefore === 1).
-    expect(harness.taskWriter.proposeTransitionCalls).toEqual([
+    expect(harness.instanceWriter.proposeMoveCalls).toEqual([
       {
         taskId: TASK_ID,
         proposal: { toStage: 'done', proposedBy: 'dispatcher' },
@@ -2180,20 +2186,20 @@ describe('TaskDispatcher — recordReview: the review path seam (S7·6b)', () =>
       { criterionId: 'c1', verdict: 'pass' },
       { criterionId: 'c2', verdict: 'fail', note: 'regression' },
     ]);
-    expect(harness.taskWriter.proposeTransitionCalls[0]!.proposal.toStage).toBe('implementing');
+    expect(harness.instanceWriter.proposeMoveCalls[0]!.proposal.toStage).toBe('implementing');
   });
 
   it('incomplete coverage (a task criterion never passed) → proposes implementing', () => {
     const harness = buildHarness({ tasks: [reviewTask()] });
     // Only c1 reported; c2 is uncovered → implementing.
     harness.dispatcher.recordReview(REVIEWER_SESSION_ID, [{ criterionId: 'c1', verdict: 'pass' }]);
-    expect(harness.taskWriter.proposeTransitionCalls[0]!.proposal.toStage).toBe('implementing');
+    expect(harness.instanceWriter.proposeMoveCalls[0]!.proposal.toStage).toBe('implementing');
   });
 
   it('a bare task (no acceptance criteria) → vacuously covered → done', () => {
     const harness = buildHarness({ tasks: [reviewTask({ acceptanceCriteria: undefined })] });
     harness.dispatcher.recordReview(REVIEWER_SESSION_ID, []);
-    expect(harness.taskWriter.proposeTransitionCalls[0]!.proposal.toStage).toBe('done');
+    expect(harness.instanceWriter.proposeMoveCalls[0]!.proposal.toStage).toBe('done');
   });
 
   it('unknown / non-review session → total no-op: no event, no proposal', () => {
@@ -2204,7 +2210,7 @@ describe('TaskDispatcher — recordReview: the review path seam (S7·6b)', () =>
       ]),
     ).not.toThrow();
     expect(harness.emitted).toEqual([]);
-    expect(harness.taskWriter.proposeTransitionCalls).toEqual([]);
+    expect(harness.instanceWriter.proposeMoveCalls).toEqual([]);
   });
 
   it('a ref that matches the session but NOT the review stage → no-op', () => {
@@ -2221,21 +2227,21 @@ describe('TaskDispatcher — recordReview: the review path seam (S7·6b)', () =>
     });
     harness.dispatcher.recordReview(REVIEWER_SESSION_ID, [{ criterionId: 'c1', verdict: 'pass' }]);
     expect(harness.emitted).toEqual([]);
-    expect(harness.taskWriter.proposeTransitionCalls).toEqual([]);
+    expect(harness.instanceWriter.proposeMoveCalls).toEqual([]);
   });
 
-  it('I7: the transition goes through the writer, NOT a hand-rolled task_transitioned emit', () => {
+  it('I7: the transition goes through the writer, NOT a hand-rolled instance_moved emit', () => {
     const harness = buildHarness({ tasks: [reviewTask()] });
     harness.dispatcher.recordReview(REVIEWER_SESSION_ID, [
       { criterionId: 'c1', verdict: 'pass' },
       { criterionId: 'c2', verdict: 'pass' },
     ]);
-    // The ONLY event the dispatcher emits is review_reported. If recordReview is
-    // "simplified" to emit task_transitioned itself, this reddens (a second event
+    // The ONLY event the dispatcher emits is report_filed (review). If recordReview is
+    // "simplified" to emit instance_moved itself, this reddens (a second event
     // type appears) AND the writer call below vanishes — the two halves of I10/I7.
-    expect(eventTypes(harness.emitted)).toEqual([EVENT_TYPES.reviewReported]);
-    expect(harness.emitted.some((event) => event.type === EVENT_TYPES.taskTransitioned)).toBe(false);
-    expect(harness.taskWriter.proposeTransitionCalls).toHaveLength(1);
+    expect(eventTypes(harness.emitted)).toEqual([EVENT_TYPES.reportFiled]);
+    expect(harness.emitted.some((event) => event.type === EVENT_TYPES.instanceMoved)).toBe(false);
+    expect(harness.instanceWriter.proposeMoveCalls).toHaveLength(1);
   });
 
   it('attempt counts the review refs — two prior review runs → attempt 2', () => {
@@ -2267,16 +2273,16 @@ describe('TaskDispatcher — recordReview: the review path seam (S7·6b)', () =>
     ];
     const withoutRev = buildHarness({ tasks: [reviewTask()] });
     withoutRev.dispatcher.recordReview(REVIEWER_SESSION_ID, bothPass);
-    expect((withoutRev.emitted[0]!.payload as { workOrderRev: number }).workOrderRev).toBe(0);
+    expect((withoutRev.emitted[0]!.payload as { payloadRev: number }).payloadRev).toBe(0);
 
     const withRev = buildHarness({ tasks: [reviewTask({ workOrderRev: 4 })] });
     withRev.dispatcher.recordReview(REVIEWER_SESSION_ID, bothPass);
-    expect((withRev.emitted[0]!.payload as { workOrderRev: number }).workOrderRev).toBe(4);
+    expect((withRev.emitted[0]!.payload as { payloadRev: number }).payloadRev).toBe(4);
   });
 
-  it('I6 replay: an emitted review_reported folds deterministically and does not perturb the record', () => {
+  it('I6 replay: an emitted report_filed (review) folds deterministically and does not perturb the record', () => {
     // End-to-end against the REAL tasks projection over a real MemoryEventStore.
-    // S7·6a added review_reported as an event with NO fold, so it must not change
+    // S7·6a added report_filed (review) as an event with NO fold, so it must not change
     // the task record; the transition (which WOULD) goes through the fake writer,
     // which does not emit — so the stage stays 'review'.
     const store = new MemoryEventStore({
@@ -2305,7 +2311,7 @@ describe('TaskDispatcher — recordReview: the review path seam (S7·6b)', () =>
       nowIso: () => FIXED_NOW,
       staleAfterMs: STALE_AFTER_MS,
       artifactStore: new MemoryArtifactStore(),
-      taskWriter: new RecordingTaskWriter(),
+      instanceWriter: new RecordingInstanceWriter(),
     });
 
     dispatcher.recordReview(REVIEWER_SESSION_ID, [{ criterionId: 'c1', verdict: 'pass' }]);
@@ -2327,7 +2333,7 @@ describe('TaskDispatcher — recordReview: the review path seam (S7·6b)', () =>
 // recordCompletion mirrors recordReview exactly. The SDK adapter only OBSERVES a
 // dispatched implementing session's `report_completion` call and PROPOSES the
 // worklog back through a callback; THIS method does the writing — emit
-// `completion_reported`, then propose `implementing → review` THROUGH the task
+// `report_filed (completion)`, then propose `implementing → review` THROUGH the task
 // writer (I7's choke point). No artifact store: the worklog is small structured
 // data carried inline.
 //
@@ -2337,9 +2343,9 @@ describe('TaskDispatcher — recordReview: the review path seam (S7·6b)', () =>
 // it — a completion report never chains into a reviewer spawn, and the assertion
 // below that the session host is never touched is what pins that.
 //
-// Instruments: `harness.emitted` (exactly one `completion_reported` with the built
-// payload, and — the I10 point — NO hand-rolled `task_transitioned`), and
-// `harness.taskWriter` (`proposeTransitionCalls` proves the transition went through
+// Instruments: `harness.emitted` (exactly one `report_filed (completion)` with the built
+// payload, and — the I10 point — NO hand-rolled `instance_moved`), and
+// `harness.instanceWriter` (`proposeMoveCalls` proves the move went through
 // the writer, `emittedCountBefore` proves it went AFTER the emit).
 
 const IMPLEMENTER_SESSION_ID = 'cccccccc-0000-4000-8000-000000000007';
@@ -2360,29 +2366,31 @@ function implementingTask(overrides: Partial<TaskRecord> = {}): TaskRecord {
 }
 
 describe('TaskDispatcher — recordCompletion: the completion path seam (S7·7b)', () => {
-  it('emits ONE completion_reported then proposes implementing→review — in that order', () => {
+  it('emits ONE report_filed (completion) then proposes implementing→review — in that order', () => {
     const harness = buildHarness({ tasks: [implementingTask()] });
 
     harness.dispatcher.recordCompletion(IMPLEMENTER_SESSION_ID, SAMPLE_WORKLOG);
 
-    // Exactly one event, and it is completion_reported with the FULL payload — the
-    // identity tuple VIMES supplied plus the worklog the session reported.
+    // Exactly one event, and it is `report_filed` (reportKind 'completion') with
+    // the FULL payload — the identity tuple VIMES supplied plus the worklog the
+    // session reported.
     expect(harness.emitted).toHaveLength(1);
     const event = harness.emitted[0]!;
-    expect(event.type).toBe(EVENT_TYPES.completionReported);
+    expect(event.type).toBe(EVENT_TYPES.reportFiled);
     expect(event.stream).toBe('tasks');
     expect(event.payload).toEqual({
-      taskId: TASK_ID,
-      stage: 'implementing',
+      instanceId: TASK_ID,
+      node: 'implementing',
       attempt: 1,
-      workOrderRev: 0,
-      worklog: SAMPLE_WORKLOG,
+      payloadRev: 0,
+      reportKind: 'completion',
+      body: { worklog: SAMPLE_WORKLOG },
     });
 
     // The transition went through the writer's choke point (I7), once, to `review`,
     // and AFTER the emit (`emittedCountBefore === 1` is the ordering proof — record
     // the FACT before the CONSEQUENCE).
-    expect(harness.taskWriter.proposeTransitionCalls).toEqual([
+    expect(harness.instanceWriter.proposeMoveCalls).toEqual([
       {
         taskId: TASK_ID,
         proposal: { toStage: 'review', proposedBy: 'dispatcher' },
@@ -2401,15 +2409,15 @@ describe('TaskDispatcher — recordCompletion: the completion path seam (S7·7b)
     expect(harness.sessionHost.sendCalls).toEqual([]);
   });
 
-  it('I7: the transition goes through the writer, NOT a hand-rolled task_transitioned emit', () => {
+  it('I7: the transition goes through the writer, NOT a hand-rolled instance_moved emit', () => {
     const harness = buildHarness({ tasks: [implementingTask()] });
     harness.dispatcher.recordCompletion(IMPLEMENTER_SESSION_ID, SAMPLE_WORKLOG);
-    // The ONLY event the dispatcher emits is completion_reported. If this is
-    // "simplified" to emit task_transitioned itself, a second event type appears
+    // The ONLY event the dispatcher emits is report_filed (completion). If this is
+    // "simplified" to emit instance_moved itself, a second event type appears
     // AND the writer call vanishes — the two halves of I10/I7.
-    expect(eventTypes(harness.emitted)).toEqual([EVENT_TYPES.completionReported]);
-    expect(harness.emitted.some((event) => event.type === EVENT_TYPES.taskTransitioned)).toBe(false);
-    expect(harness.taskWriter.proposeTransitionCalls).toHaveLength(1);
+    expect(eventTypes(harness.emitted)).toEqual([EVENT_TYPES.reportFiled]);
+    expect(harness.emitted.some((event) => event.type === EVENT_TYPES.instanceMoved)).toBe(false);
+    expect(harness.instanceWriter.proposeMoveCalls).toHaveLength(1);
   });
 
   it('unknown / non-implementing session → total no-op: no event, no proposal', () => {
@@ -2418,7 +2426,7 @@ describe('TaskDispatcher — recordCompletion: the completion path seam (S7·7b)
       harness.dispatcher.recordCompletion('cccccccc-0000-4000-8000-00000000dead', SAMPLE_WORKLOG),
     ).not.toThrow();
     expect(harness.emitted).toEqual([]);
-    expect(harness.taskWriter.proposeTransitionCalls).toEqual([]);
+    expect(harness.instanceWriter.proposeMoveCalls).toEqual([]);
   });
 
   it('a ref that matches the session but NOT the implementing stage → no-op', () => {
@@ -2436,7 +2444,7 @@ describe('TaskDispatcher — recordCompletion: the completion path seam (S7·7b)
     });
     harness.dispatcher.recordCompletion(IMPLEMENTER_SESSION_ID, SAMPLE_WORKLOG);
     expect(harness.emitted).toEqual([]);
-    expect(harness.taskWriter.proposeTransitionCalls).toEqual([]);
+    expect(harness.instanceWriter.proposeMoveCalls).toEqual([]);
   });
 
   it('attempt counts the IMPLEMENTING refs — two prior implementing runs → attempt 2', () => {
@@ -2462,11 +2470,11 @@ describe('TaskDispatcher — recordCompletion: the completion path seam (S7·7b)
   it('workOrderRev is read from the task and defaults to 0 when absent', () => {
     const withoutRev = buildHarness({ tasks: [implementingTask()] });
     withoutRev.dispatcher.recordCompletion(IMPLEMENTER_SESSION_ID, SAMPLE_WORKLOG);
-    expect((withoutRev.emitted[0]!.payload as { workOrderRev: number }).workOrderRev).toBe(0);
+    expect((withoutRev.emitted[0]!.payload as { payloadRev: number }).payloadRev).toBe(0);
 
     const withRev = buildHarness({ tasks: [implementingTask({ workOrderRev: 3 })] });
     withRev.dispatcher.recordCompletion(IMPLEMENTER_SESSION_ID, SAMPLE_WORKLOG);
-    expect((withRev.emitted[0]!.payload as { workOrderRev: number }).workOrderRev).toBe(3);
+    expect((withRev.emitted[0]!.payload as { payloadRev: number }).payloadRev).toBe(3);
   });
 
   it('an EMPTY worklog is recorded, not dropped — it is a real report', () => {
@@ -2478,14 +2486,14 @@ describe('TaskDispatcher — recordCompletion: the completion path seam (S7·7b)
       pathsRejected: [],
     });
     expect(harness.emitted).toHaveLength(1);
-    expect((harness.emitted[0]!.payload as { worklog: unknown }).worklog).toEqual({
+    expect((harness.emitted[0]!.payload as { body: { worklog: unknown } }).body.worklog).toEqual({
       decisionsMade: [],
       pathsRejected: [],
     });
-    expect(harness.taskWriter.proposeTransitionCalls).toHaveLength(1);
+    expect(harness.instanceWriter.proposeMoveCalls).toHaveLength(1);
   });
 
-  it('I6 replay: an emitted completion_reported folds lastCompletion deterministically', () => {
+  it('I6 replay: an emitted report_filed (completion) folds lastCompletion deterministically', () => {
     // End-to-end against the REAL tasks projection over a real MemoryEventStore.
     // S7·7b-core added the `lastCompletion` fold, so unlike the S7·6b review case
     // this event DOES change the record — and the change must be replay-stable.
@@ -2519,7 +2527,7 @@ describe('TaskDispatcher — recordCompletion: the completion path seam (S7·7b)
       nowIso: () => FIXED_NOW,
       staleAfterMs: STALE_AFTER_MS,
       artifactStore: new MemoryArtifactStore(),
-      taskWriter: new RecordingTaskWriter(),
+      instanceWriter: new RecordingInstanceWriter(),
     });
 
     dispatcher.recordCompletion(IMPLEMENTER_SESSION_ID, SAMPLE_WORKLOG);
@@ -2692,7 +2700,7 @@ describe('TaskDispatcher — S7·7b fix-seed threading', () => {
 // ─── S7·7c — THE D54 PER-TASK IN-FLIGHT LOCK ─────────────────────────────────
 //
 // D54's finding: `already-running` is derived from the task's OWN refs against
-// live processes, so it cannot fire until `task_session_attached` has LANDED.
+// live processes, so it cannot fire until `instance_run_attached` has LANDED.
 // Since step 8 there is an `await` between the decision and that event (worktree
 // creation is a subprocess), and a second attempt arriving INSIDE that window
 // used to reach a second spawn — two live sessions on one task.
@@ -2787,7 +2795,7 @@ describe('TaskDispatcher — the D54 in-flight lock (S7·7c)', () => {
     // (the decision function never saw it) and no event of its own (nothing
     // happened and nothing changed; the winner's result is the record).
     expect(harness.sessionHost.spawnCalls).toHaveLength(1);
-    expect(eventTypes(harness.emitted)).toEqual([EVENT_TYPES.taskSessionAttached]);
+    expect(eventTypes(harness.emitted)).toEqual([EVENT_TYPES.instanceRunAttached]);
   });
 
   it('holds on the SHIPPED default path too (flag off, no manager at all)', async () => {
@@ -2805,7 +2813,7 @@ describe('TaskDispatcher — the D54 in-flight lock (S7·7c)', () => {
     expect(firstResult).toMatchObject({ outcome: 'spawned', taskId: TASK_ID });
     expect(secondResult).toEqual({ outcome: 'in-flight', taskId: TASK_ID });
     expect(harness.sessionHost.spawnCalls).toHaveLength(1);
-    expect(eventTypes(harness.emitted)).toEqual([EVENT_TYPES.taskSessionAttached]);
+    expect(eventTypes(harness.emitted)).toEqual([EVENT_TYPES.instanceRunAttached]);
   });
 
   it('RELEASES: a third attempt after both settle is never in-flight', async () => {
@@ -2906,8 +2914,63 @@ describe('TaskDispatcher — the D54 in-flight lock (S7·7c)', () => {
     expect(secondResult).toMatchObject({ outcome: 'spawned', taskId: SECOND_TASK_ID });
     expect(harness.sessionHost.spawnCalls).toHaveLength(2);
     expect(eventTypes(harness.emitted)).toEqual([
-      EVENT_TYPES.taskSessionAttached,
-      EVENT_TYPES.taskSessionAttached,
+      EVENT_TYPES.instanceRunAttached,
+      EVENT_TYPES.instanceRunAttached,
     ]);
+  });
+});
+
+// ─── S11-A6 — SINGLE SPELLING ON THE WRITE PATH (the dispatcher's half) ──────
+//
+// The writer's four kinds are guarded in instanceWriter.test.ts; these are the
+// dispatcher's four. One flow per emission site, folded together, and every
+// emitted `type` is checked against `RETIRED_EVENT_KINDS` — the table itself is
+// the oracle, so a kind retired in a later wave starts being guarded here for
+// free rather than needing a new string added to a hand-written list.
+//
+// ⚠ `dispatch_refused` and `task_worktree_created` are DELIBERATELY still their
+// original spelling and are NOT in the alias table (slice-11.md's explicitly-out):
+// their generic siblings arrive with the watchdog/dispatcher splits and the E2
+// tree store. This assertion is therefore exactly right about them too — it asks
+// "is this a RETIRED kind", not "does this start with task_".
+describe('TaskDispatcher — S11-A6: every emitted kind is the GENERIC one', () => {
+  it('attach + capture + both reports emit NO retired kind', async () => {
+    const emittedAcrossFlows: EventInput[] = [];
+
+    const attachHarness = buildHarness();
+    await attachHarness.dispatcher.dispatchTask(TASK_ID);
+    emittedAcrossFlows.push(...attachHarness.emitted);
+
+    const planHarness = buildHarness({ tasks: [planningTask()] });
+    planHarness.dispatcher.recordPlan(PLANNER_SESSION_ID, PLAN_TEXT);
+    emittedAcrossFlows.push(...planHarness.emitted);
+
+    const reviewHarness = buildHarness({ tasks: [reviewTask()] });
+    reviewHarness.dispatcher.recordReview(REVIEWER_SESSION_ID, [
+      { criterionId: 'c1', verdict: 'pass' },
+      { criterionId: 'c2', verdict: 'pass' },
+    ]);
+    emittedAcrossFlows.push(...reviewHarness.emitted);
+
+    const completionHarness = buildHarness({ tasks: [implementingTask()] });
+    completionHarness.dispatcher.recordCompletion(IMPLEMENTER_SESSION_ID, SAMPLE_WORKLOG);
+    emittedAcrossFlows.push(...completionHarness.emitted);
+
+    // The flows really did produce all three generic kinds — otherwise the
+    // containment check below would pass vacuously over a shorter log than it
+    // claims to cover.
+    expect(new Set(eventTypes(emittedAcrossFlows))).toEqual(
+      new Set([
+        EVENT_TYPES.instanceRunAttached,
+        EVENT_TYPES.captureRecorded,
+        EVENT_TYPES.reportFiled,
+      ]),
+    );
+
+    const retiredKinds = Object.keys(RETIRED_EVENT_KINDS);
+    expect(retiredKinds.length).toBeGreaterThan(0);
+    for (const event of emittedAcrossFlows) {
+      expect(retiredKinds, `${event.type} is a RETIRED kind`).not.toContain(event.type);
+    }
   });
 });
