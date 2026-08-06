@@ -355,3 +355,29 @@ export {
 } from './usageBackoff.js';
 
 export * from './harness/index.js';
+
+// S10·Move-1b — the manifest parser reaches its first consumer. Move 1a landed
+// `extensions/manifest.ts` unexported on purpose (nothing outside core needed
+// it yet, rule 0.5); the daemon-side registry
+// (`packages/daemon/src/extensionRegistry.ts`) is that consumer, and the
+// package's convention is the barrel. A NAMED list rather than `export *`:
+// the parser's vocabulary is large and generically-spelled, and a wildcard
+// would put ~40 names into a barrel the UI also reads from.
+export {
+  parseExtensionManifest,
+  preParseApiVersion,
+  isSemver,
+  isSemverRange,
+  API_VERSION,
+  KNOWN_CAPABILITIES,
+  KNOWN_ATTENTION_RANKS,
+  RESERVED_AUTHORITY_PROPERTIES,
+  type ParseManifestOptions,
+  type ParseManifestResult,
+  type ParsedManifest,
+  type ParsedVerb,
+  type ParsedWorkflow,
+  type ManifestIssue,
+  type ManifestError,
+  type ManifestWarning,
+} from './extensions/manifest.js';
