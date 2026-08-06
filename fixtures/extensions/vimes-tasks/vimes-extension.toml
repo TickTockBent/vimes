@@ -1,0 +1,321 @@
+# ─── vimes-tasks — the task machine as a manifest (S10·Move-1a fixture) ──────
+#
+# THE REAL MANIFEST, assembled from the SIGNED references (D71) and from
+# nothing else:
+#
+#   • docs/extension-model.md §3.1 — identity, capabilities, the seven verbs
+#     (three of them shipped today), overlays, panes, events.
+#   • docs/node-kit.md §1.9 — the four node kinds, the `software` workflow, the
+#     full edges array with its placement hazard, the forbidden row, and the
+#     nine nodes with their briefings and acceptance shapes.
+#
+# TWO deliberate differences from §3.1's text, both of them the SIGNED answer
+# rather than an amendment:
+#
+#   1. **No `offered_when` anywhere.** §3.1 wrote it on three verbs; node-kit
+#      §1.8.2 (D71/q14) RETIRED it — "there is no predicate, and there never
+#      needs to be one." The same three facts are expressed where §1.9 already
+#      expresses them: as the per-node `[workflows.nodes.briefing].tools` lists
+#      (planning → nothing, implementing → report_completion, review →
+#      report_review). D55's matrix is three `tools` lists.
+#   2. **`task-stage-node`'s vocabulary is written out.** §3.1 elided it as
+#      "…same vocabulary…"; an overlay's `values` are a CLOSED vocabulary, so
+#      the ellipsis is prose, not data.
+#
+# The `schemas/*.json` files beside this manifest are STUBS. This manifest only
+# NAMES them; the pure parser never opens a file (S10-A5), and Move 1b's
+# registry is what reads them.
+
+# ── identity ────────────────────────────────────────────────────────────────
+id          = "vimes-tasks"
+name        = "Tasks"
+version     = "1.0.0"
+api_version = 1
+description = "Work orders, stages, dispatch, review — VIMES's first workflow."
+
+# ⚠ TOP-LEVEL KEYS COME BEFORE ANY TABLE HEADER (§2.1). TOML binds a bare key
+# to the most recently opened table, so a `capabilities = [...]` written after
+# [runtime] would silently become `runtime.capabilities`. The ordering below is
+# load-bearing, and the parser refuses the common failure by name.
+capabilities = [
+  "tree.read", "tree.write",                # worktree nodes for isolated runs
+  "session.dispatch", "session.unattended", # stage runs, no human present
+  "session.read", "session.kill",
+  "blob.read", "blob.write",                # plans, review reports (D43)
+  "overlay.write", "notify", "ledger.read",
+]
+
+# ── how it runs ─────────────────────────────────────────────────────────────
+[runtime]
+kind = "in-process"                         # Tier 1 (builtin trust), D66 §1.3
+
+# ── verbs: seven, each two-faced (§2.4) ─────────────────────────────────────
+[[verbs]]
+id     = "create_task"                      # SHIPPED today (createTaskTool.ts)
+title  = "Create task"
+target = "project"
+input  = "schemas/create-task.json"
+agent  = { server = "vimes_board", tool = "create_task" }
+human  = { command = "task new" }
+
+[[verbs]]
+id     = "promote"
+title  = "Promote"
+target = "task"
+input  = "schemas/promote.json"
+agent  = { server = "vimes_board", tool = "promote_task" }
+human  = { command = "promote" }
+
+[[verbs]]
+id     = "move"
+title  = "Move"
+target = "task"
+input  = "schemas/move.json"
+agent  = { server = "vimes_board", tool = "move_task" }
+human  = { command = "move" }
+
+[[verbs]]
+id     = "dispatch"
+title  = "Dispatch stage run"
+target = "task"
+input  = "schemas/dispatch.json"
+agent  = { server = "vimes_board", tool = "dispatch_task" }
+human  = { command = "dispatch" }
+
+[[verbs]]
+id     = "amend"
+title  = "Amend work order"
+target = "task"
+input  = "schemas/amend.json"
+agent  = { server = "vimes_board", tool = "amend_work_order" }
+human  = { command = "amend" }
+
+[[verbs]]
+id     = "report_review"                    # SHIPPED today (sessionHost.ts)
+title  = "File review"
+target = "session"
+input  = "schemas/report-review.json"
+agent  = { server = "vimes_report", tool = "report_review" }
+human  = { command = "review file" }
+
+[[verbs]]
+id     = "report_completion"                # SHIPPED today (sessionHost.ts)
+title  = "Report completion"
+target = "session"
+input  = "schemas/report-completion.json"
+agent  = { server = "vimes_report", tool = "report_completion" }
+human  = { command = "complete" }
+
+# `submit_plan` is NOT a verb: D48 captures the plan by intercepting
+# ExitPlanMode (deny-and-harvest), so no tool is offered. The node kit expresses
+# the same fact as `capture = ["plan"]` on the planning node below (§1.8.3).
+
+# ── overlays: the stage glyph the mockups' TUI shows on a session row ───────
+[[overlays]]
+id     = "task-stage"
+target = "session"
+key    = "stage"
+type   = "enum"
+values = ["backlog", "planning", "plan-ready", "implementing", "review",
+          "done", "blocked-external", "quarantined", "cancelled"]
+# DECLARED, never computed — E2-b's total order is authoritative and the overlay
+# only says which existing rank a value claims (§2.5).
+attention = [
+  { value = "review",      rank = "attention.v1.needs-human" },
+  { value = "quarantined", rank = "attention.v1.blocked" },
+]
+
+[[overlays]]
+id     = "task-stage-node"                  # a worktree node carries its task's stage
+target = "node"
+key    = "stage"
+type   = "enum"
+values = ["backlog", "planning", "plan-ready", "implementing", "review",
+          "done", "blocked-external", "quarantined", "cancelled"]
+
+# ── panes ───────────────────────────────────────────────────────────────────
+[[panes]]
+id        = "board"
+title     = "Board"
+kind      = "blocks"
+scope     = "project"
+placement = "main"
+source    = "panes/board"
+degrade   = "link"
+
+[[panes]]
+id        = "work-order"
+title     = "Work order"
+kind      = "blocks"
+scope     = "session"
+placement = "context"
+source    = "panes/work-order"
+degrade   = "omit"
+
+# ── events ──────────────────────────────────────────────────────────────────
+[[events]]
+on      = "run_completed"                   # fold the outcome into the task
+deliver = "worker"
+
+[[events]]
+on      = "liveness_changed"                # watchdog input
+deliver = "worker"
+
+[[events]]
+on      = "dispatch_refused"
+deliver = "worker"
+
+# `meter_alert`, NOT the deprecated `meter_threshold_crossed` — the latter is
+# retained-for-validation with zero producers (events.ts:66-78), so subscribing
+# to it would wait forever (§4.2 q8's own near-miss).
+[[events]]
+on      = "meter_alert"                     # principle 14's unattended branch
+deliver = "worker"
+
+# ── node kinds: the property bundles this extension composes (§1.9) ─────────
+[[node-kinds]]
+id = "work"
+attaches_session  = true
+dispatch_on_entry = { enabled = true, by = ["human", "orchestrator"] }
+isolation         = "worktree"
+
+[[node-kinds]]
+id = "review"
+attaches_session  = true
+dispatch_on_entry = { enabled = false }     # D53: review is a HOLDING PEN
+isolation         = "inherit"
+attention         = "attention.v1.needs-human"
+
+[[node-kinds]]
+id = "hold"
+attaches_session  = false
+
+[[node-kinds]]
+id = "closed"
+attaches_session  = false
+terminal          = true
+
+# ── the workflow ────────────────────────────────────────────────────────────
+[[workflows]]
+id      = "software"
+title   = "Software task"
+initial = "backlog"
+record  = "schemas/task-record.json"
+
+# ── edges: TASK_STAGE_EDGES, declared ───────────────────────────────────────
+# ⚠ THE PLACEMENT IS LOAD-BEARING. These are bare keys, so they bind to the most
+# recently opened table — they must sit HERE, under [[workflows]], and never
+# after the [[workflows.nodes]] run below, where they would silently become
+# properties of the LAST node. Same TOML hazard §2.1 calls out for
+# `capabilities`. Written as arrays of inline tables because the edge table is
+# the artifact a reviewer reads (`taskStateMachine.ts:47-51`); a run of
+# [[workflows.edges]] headers carries identical data.
+edges = [
+  # the spine
+  { from = "backlog",      to = "planning",     by = ["human", "orchestrator"] },
+  { from = "planning",     to = "plan-ready",   by = ["dispatcher"] },
+  { from = "planning",     to = "backlog",      by = ["human", "orchestrator"] },
+  { from = "plan-ready",   to = "implementing", by = ["human", "orchestrator"] },
+  { from = "plan-ready",   to = "planning",     by = ["human", "orchestrator"] },
+  { from = "plan-ready",   to = "backlog",      by = ["human", "orchestrator"] },
+  { from = "implementing", to = "review",       by = ["dispatcher"] },
+  { from = "review",       to = "done",         by = ["dispatcher", "human"] },
+  # the review/fix loop, bounded — its exhaustion is the convergence exit
+  { from = "review", to = "implementing", by = ["dispatcher", "human", "orchestrator"], max_traversals = 3, on_exhausted = "manual-review" },
+  # quarantine: reachable ONLY from nodes that attach a session, because the
+  # watchdog governs live runs and nothing else (WATCHDOG_GOVERNED_LIVENESS)
+  { from = "planning",     to = "quarantined",  by = ["watchdog"] },
+  { from = "implementing", to = "quarantined",  by = ["watchdog"] },
+  { from = "review",       to = "quarantined",  by = ["watchdog"] },
+  { from = "quarantined",  to = "backlog",      by = ["human", "orchestrator"] },
+  { from = "quarantined",  to = "planning",     by = ["human", "orchestrator"] },
+  { from = "quarantined",  to = "implementing", by = ["human", "orchestrator"] },
+  # the park, permissive by design: unblocking NAMES the node to resume into
+  { from = "*", to = "blocked-external", except_from = ["done", "cancelled", "manual-review"], by = ["human", "orchestrator"] },
+  { from = "blocked-external", to = "*", except_to = ["done", "blocked-external", "quarantined", "manual-review"], by = ["human", "orchestrator"] },
+  # the give-up that can be undone
+  { from = "*", to = "cancelled", except_from = ["done"], by = ["human", "orchestrator"] },
+  { from = "cancelled", to = "backlog", by = ["human", "orchestrator"] },
+  # the convergence exit's own out-edges (the one node this table adds)
+  { from = "manual-review", to = "done",         by = ["human"] },
+  { from = "manual-review", to = "implementing", by = ["human", "orchestrator"] },
+]
+
+forbidden = [
+  { from = "quarantined", to = "done", reason = "quarantined-cannot-complete" },
+]
+
+# ── the nodes ───────────────────────────────────────────────────────────────
+[[workflows.nodes]]
+id = "backlog"
+kind = "hold"
+
+[[workflows.nodes]]
+id = "planning"
+kind = "work"
+permission_mode = "plan"                    # D48
+  [workflows.nodes.briefing]
+  composer = "briefings/planning"
+  inputs   = ["instance.record", "doctrine/planning.md"]
+  tools    = []                             # D55: planning is offered NOTHING
+  capture  = ["plan"]                       # deny-and-harvest at the plan boundary
+  [workflows.nodes.acceptance]
+  kind     = "artifact"                     # the captured plan IS the deliverable
+  requires = ["capture:plan"]               # satisfied by §1.8.3's interception
+  on_pass  = "plan-ready"
+
+[[workflows.nodes]]
+id = "plan-ready"
+kind = "hold"                               # awaits a promotion DECISION
+
+[[workflows.nodes]]
+id = "implementing"
+kind = "work"
+  [workflows.nodes.briefing]
+  composer = "briefings/implementing"
+  inputs   = ["instance.record", "artifact:plan",
+              "report:last-review", "report:last-completion",
+              "doctrine/implementing.md"]
+  tools    = ["vimes_report.report_completion"]
+  [workflows.nodes.acceptance]
+  kind    = "report"                        # the report IS the outcome (D53)
+  report  = "vimes_report.report_completion"
+  on_pass = "review"
+
+[[workflows.nodes]]
+id = "review"
+kind = "review"
+  [workflows.nodes.briefing]
+  composer = "briefings/review"
+  inputs   = ["instance.record", "doctrine/review.md"]
+  tools    = ["vimes_report.report_review"]
+  [workflows.nodes.acceptance]
+  kind          = "rubric"
+  report        = "vimes_report.report_review"
+  criteria_from = "instance.acceptanceCriteria"
+  coverage      = "all-criteria-pass"
+  unlisted_ids  = "ignore"
+  on_pass       = "done"
+  on_fail       = "implementing"
+
+[[workflows.nodes]]
+id = "done"
+kind = "closed"
+
+[[workflows.nodes]]
+id = "manual-review"                        # the convergence exit (A-11)
+kind = "hold"
+attention = "attention.v1.needs-human"
+
+[[workflows.nodes]]
+id = "blocked-external"
+kind = "hold"
+
+[[workflows.nodes]]
+id = "quarantined"
+kind = "hold"
+attention = "attention.v1.blocked"
+
+[[workflows.nodes]]
+id = "cancelled"
+kind = "hold"
