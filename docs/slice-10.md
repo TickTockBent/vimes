@@ -1,5 +1,22 @@
 # Slice 10 — the seam foundation (D72 Moves 0 + 1)
 
+> **✅ CLOSED 2026-08-06 — exit gate PASSED (machine).** Commits `445faed`
+> (Move 0), `13cc031` (Move 1a), `4ec262b` (Move 1b). Suite 3188 → 3276,
+> green twice byte-identically at the exit gate. S10-A1..A5 all landed and
+> verified. **Kit amendments needed to write the vimes-tasks manifest: ZERO**
+> — the Move-1 kill criterion held at first contact; the differential
+> (S10-A2) passes both directions. Gate findings, all fixed in-diff: one
+> misleading green-run test name (Move 0); two raw NUL bytes respelled as
+> escapes (Move 1a — the control-byte census is now standing gate practice).
+> Known simplification carried: npm prerelease-range exclusion rule
+> (documented in extensionRegistry.ts, D-record on first prerelease pin).
+> Deploy note: core+daemon changed → the NEXT deploy is a daemon deploy,
+> though nothing here has a consumer, so no restart is needed FOR this
+> slice. Parallel verifications same day: 502 resilience ORGANICALLY
+> CONFIRMED (loose end closed); S8·4 compaction door still awaiting first
+> organic firing; CLI drift NONE (pin bump 2.1.220→2.1.223 rides next
+> deploy, warn-only).
+
 Opened 2026-08-06 on the slice-9 pass signature (D71/D72). First build slice
 of the extension-engine era. **Zero behavior change by design**: everything
 this slice lands is a fixture, a parser, a registry, and tests — nothing
