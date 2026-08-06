@@ -303,9 +303,47 @@ export const EVENT_TYPES = {
   // evented; see the payload schema for why.
   compactionNudgeSent: 'compaction_nudge_sent',
   compactionHeld: 'compaction_held',
+  // ── S9·1 — the session-tree spine (architecture.md E2), on the 'nodes' stream ─
+  //
+  // ⚠ **RESERVED (rule 0.5) — NOTHING EMITS THESE.** The tree is the one new
+  // engine primitive E2 settles: sessions live in a FOREST rooted in D42
+  // projects, not a flat list. The vocabulary lands now — type + payload schema +
+  // constructor + the two projections that read it back — and the daemon wiring,
+  // the API and the clients land with their consumers (D11, first-consumer rule).
+  // Same posture as `project_initialized` and `work_order_amended` before S7·2b.
+  //
+  // THREE events, and the shape of the set is itself the decision (E2, walked
+  // 2026-08-05):
+  //
+  // - `node_created` — ONE node kind (E2-a), worktree-ness carried as a nullable
+  //   `provenance` PROPERTY rather than a second identity. Provenance is
+  //   WRITE-ONCE-AT-CREATION: `null` stays `null` forever, and "converting" a
+  //   group to a checkout means creating a worktree CHILD under it. That closes
+  //   the mutation loophole while keeping one table and one event family.
+  // - `node_closed` — closure is TREE-state, axis 1 of E2's three orthogonal
+  //   axes. It kills no process (axis 2) and removes nothing on disk (axis 3);
+  //   every cross-axis act is its own explicit event, so nothing here may ever
+  //   grow a "and also kill/remove" clause.
+  // - `session_attached_to_node` — the one-parent-per-session link.
+  //
+  // ⚠ **THERE IS NO `node_moved`, AND ITS ABSENCE IS THE DESIGN.** E2 bans moves
+  // in v1: the forest invariant (no cycles, no orphans) is trivially preserved
+  // while nothing is ever re-parented, and provenance-bearing nodes make
+  // cross-project moves genuinely weird — the disk path divorces from the tree
+  // position. Adding one is a D-record somebody has to write, not a widening.
+  nodeCreated: 'node_created',
+  nodeClosed: 'node_closed',
+  sessionAttachedToNode: 'session_attached_to_node',
 } as const;
 
 export const SYSTEM_STREAM = 'system';
+
+// The tree's own stream, beside SYSTEM_STREAM: the forest is ENGINE STATE, not
+// display sugar (E2), and it is scoped to no single session — so it gets a
+// system-adjacent stream of its own rather than riding a session's. Same shape
+// of decision as the 'projects' and 'tasks' streams its neighbours use, spelled
+// as a constant here because the tree projections are the only readers.
+export const NODES_STREAM = 'nodes';
 
 const livenessSchema = z.enum(['spawning', 'running', 'dormant', 'interrupted', 'dead']);
 export type Liveness = z.infer<typeof livenessSchema>;
@@ -1033,6 +1071,64 @@ export const compactionHeldPayloadSchema = z.object({
   contextTokens: z.number().int().nonnegative().optional(),
 });
 
+// ── S9·1 — the session-tree payloads (architecture.md E2), 'nodes' stream ─────
+//
+// See the EVENT_TYPES block above for why there are exactly three of these and
+// why `node_moved` is not among them. All three are RESERVED (rule 0.5): the
+// shapes land now, the emitters land with their consumers.
+
+// The checkout a worktree node was born against — the four facts that make a
+// provenance claim checkable later (E2's worktree lineage, herdr's model).
+// `resolvedCommit` is what `baseRef` MEANT at creation time, recorded because a
+// ref moves and a commit does not: without it, "branched off main" degrades into
+// an unfalsifiable story the moment main advances.
+//
+// Every field is required and non-empty: a partial provenance is worse than
+// none, because it reads as a checkout while naming nothing checkable. A node
+// with no checkout carries `provenance: null` instead (below).
+export const nodeProvenanceSchema = z.object({
+  branch: z.string().min(1),
+  baseRef: z.string().min(1),
+  resolvedCommit: z.string().min(1),
+  path: z.string().min(1),
+});
+
+// node_created — the birth record of one node in the forest. ONE node kind
+// (E2-a): `project`, `group` and `worktree` are not separate families, they are
+// this shape with different fields filled in.
+export const nodeCreatedPayloadSchema = z.object({
+  nodeId: z.string().min(1),
+  parentNodeId: z.string().min(1).nullable(), // null = tree root (a project node)
+  projectId: z.string().min(1),               // the D42 root this tree hangs off
+  name: z.string().min(1),
+  // E2-a: WRITE-ONCE-AT-CREATION. null stays null forever; a checkout is a
+  // new child node, never a mutation of this one.
+  provenance: nodeProvenanceSchema.nullable(),
+  // E3-a: directory OPTIONAL — label-only groups scope nothing. When present,
+  // spawn-default cwd (meaning #2 of three; never containment).
+  directory: z.string().min(1).nullable(),
+  // E3-a: RESERVED (rule 0.5) — per-node config arrives with its first real
+  // tenant need. Schema reserves the key, accepts only null tonight.
+  nodeConfig: z.null(),
+});
+
+// node_closed — carries the nodeId and nothing else, because closure IS the
+// whole fact.
+export const nodeClosedPayloadSchema = z.object({
+  nodeId: z.string().min(1),
+  // Closure is TREE-state (axis 1 of three): closing kills no process,
+  // removes nothing on disk. Subtree closure is the projection's fold.
+});
+
+// session_attached_to_node — the link that gives every session exactly one
+// parent node. On the tree's stream rather than the session's: it is a fact
+// about the NODE's membership list, and the nodes projection folds only its own
+// stream (D34, stream-local).
+export const sessionAttachedToNodePayloadSchema = z.object({
+  nodeId: z.string().min(1),
+  appSessionId: z.string().min(1),
+});
+
 export const EVENT_PAYLOAD_SCHEMAS = {
   [EVENT_TYPES.sessionCreated]: sessionCreatedPayloadSchema,
   [EVENT_TYPES.livenessChanged]: livenessChangedPayloadSchema,
@@ -1095,6 +1191,9 @@ export const EVENT_PAYLOAD_SCHEMAS = {
   [EVENT_TYPES.compactionObserved]: compactionObservedPayloadSchema,
   [EVENT_TYPES.compactionNudgeSent]: compactionNudgeSentPayloadSchema,
   [EVENT_TYPES.compactionHeld]: compactionHeldPayloadSchema,
+  [EVENT_TYPES.nodeCreated]: nodeCreatedPayloadSchema,
+  [EVENT_TYPES.nodeClosed]: nodeClosedPayloadSchema,
+  [EVENT_TYPES.sessionAttachedToNode]: sessionAttachedToNodePayloadSchema,
 } as const;
 
 export type SessionCreatedPayload = z.infer<typeof sessionCreatedPayloadSchema>;
@@ -1141,6 +1240,10 @@ export type ProjectInitializedPayload = z.infer<typeof projectInitializedPayload
 export type CompactionObservedPayload = z.infer<typeof compactionObservedPayloadSchema>;
 export type CompactionNudgeSentPayload = z.infer<typeof compactionNudgeSentPayloadSchema>;
 export type CompactionHeldPayload = z.infer<typeof compactionHeldPayloadSchema>;
+export type NodeProvenance = z.infer<typeof nodeProvenanceSchema>;
+export type NodeCreatedPayload = z.infer<typeof nodeCreatedPayloadSchema>;
+export type NodeClosedPayload = z.infer<typeof nodeClosedPayloadSchema>;
+export type SessionAttachedToNodePayload = z.infer<typeof sessionAttachedToNodePayloadSchema>;
 // WorkOrderAmendedPayload is exported alongside `workOrderAmendedPayloadSchema`
 // above, adjacent to its schema rather than grouped down here with the rest —
 // no functional difference, kept next to the RESERVATION note it belongs with.
@@ -1199,7 +1302,10 @@ export type DomainEvent =
   | { type: typeof EVENT_TYPES.projectInitialized; payload: ProjectInitializedPayload }
   | { type: typeof EVENT_TYPES.compactionObserved; payload: CompactionObservedPayload }
   | { type: typeof EVENT_TYPES.compactionNudgeSent; payload: CompactionNudgeSentPayload }
-  | { type: typeof EVENT_TYPES.compactionHeld; payload: CompactionHeldPayload };
+  | { type: typeof EVENT_TYPES.compactionHeld; payload: CompactionHeldPayload }
+  | { type: typeof EVENT_TYPES.nodeCreated; payload: NodeCreatedPayload }
+  | { type: typeof EVENT_TYPES.nodeClosed; payload: NodeClosedPayload }
+  | { type: typeof EVENT_TYPES.sessionAttachedToNode; payload: SessionAttachedToNodePayload };
 
 // Maps each attention-setting event type to the needsAttention reason it sets.
 const ATTENTION_SETTER_REASON: Readonly<Record<string, AttentionReason>> = {
@@ -1411,6 +1517,23 @@ export function compactionNudgeSent(payload: CompactionNudgeSentPayload): EventI
 }
 export function compactionHeld(payload: CompactionHeldPayload): EventInput {
   return { stream: payload.appSessionId, type: EVENT_TYPES.compactionHeld, payload };
+}
+
+// ── S9·1 — the session-tree constructors (RESERVED, rule 0.5) ────────────────
+//
+// All three on NODES_STREAM, including `session_attached_to_node`: the tree is
+// engine state scoped to no single session, and `projections/nodes.ts` folds
+// only this stream (D34, stream-local). Nothing in the tree calls these yet —
+// see the EVENT_TYPES block for the reservation note and for why there is no
+// `nodeMoved` beside them.
+export function nodeCreated(payload: NodeCreatedPayload): EventInput {
+  return { stream: NODES_STREAM, type: EVENT_TYPES.nodeCreated, payload };
+}
+export function nodeClosed(payload: NodeClosedPayload): EventInput {
+  return { stream: NODES_STREAM, type: EVENT_TYPES.nodeClosed, payload };
+}
+export function sessionAttachedToNode(payload: SessionAttachedToNodePayload): EventInput {
+  return { stream: NODES_STREAM, type: EVENT_TYPES.sessionAttachedToNode, payload };
 }
 
 // The task↔session link (step 4a). On the 'tasks' stream and NOT the session's

@@ -44,6 +44,14 @@ import {
   compactionHeldPayloadSchema,
   usageBlock,
   messagePayloadSchema,
+  NODES_STREAM,
+  nodeCreated,
+  nodeCreatedPayloadSchema,
+  nodeClosed,
+  nodeClosedPayloadSchema,
+  nodeProvenanceSchema,
+  sessionAttachedToNode,
+  sessionAttachedToNodePayloadSchema,
 } from './events.js';
 import { cacheObservabilityProjection } from './projections/cacheObservability.js';
 import { replayFromEmpty } from './projections/projection.js';
@@ -887,5 +895,184 @@ describe('taskCreatedPayloadSchema — the S7·2a work-order widening (OPTIONAL-
       acceptanceCriteria: [{ text: 'no id was minted for this one' }],
     };
     expect(taskCreatedPayloadSchema.safeParse(missingId).success).toBe(false);
+  });
+});
+
+// ── S9·1 — the session-tree vocabulary, on its own 'nodes' stream (E2) ────────
+//
+// RESERVED (rule 0.5): nothing emits these yet, so what is under test here is
+// exactly what a reservation is worth — the SHAPES. Two of them are load-bearing
+// design decisions rather than field lists: `provenance` nullable (E2-a's one
+// node kind, worktree-ness as a property) and `nodeConfig` reserved as
+// null-only (E3-a's (iii) deferred until a real tenant needs it).
+
+describe('node_created (S9·1 — the forest birth record E2-a settled)', () => {
+  const rootNodePayload = {
+    nodeId: 'node-aaaa-0001',
+    parentNodeId: null,
+    projectId: 'project-aaaa-0001',
+    name: 'vimes',
+    provenance: null,
+    directory: '/home/user/projects/vimes',
+    nodeConfig: null,
+  };
+
+  const checkoutProvenance = {
+    branch: 'feature/session-tree',
+    baseRef: 'main',
+    resolvedCommit: '975d22f0c0ffee0000000000000000000000beef',
+    path: '/home/user/projects/vimes-worktrees/session-tree',
+  };
+
+  it('constructs on the nodes stream and validates', () => {
+    expect(nodeCreated(rootNodePayload)).toEqual({
+      stream: 'nodes',
+      type: 'node_created',
+      payload: rootNodePayload,
+    });
+    expect(NODES_STREAM).toBe('nodes');
+    expect(nodeCreatedPayloadSchema.safeParse(rootNodePayload).success).toBe(true);
+    expect(EVENT_TYPES.nodeCreated).toBe('node_created');
+    expect(EVENT_PAYLOAD_SCHEMAS[EVENT_TYPES.nodeCreated]).toBe(nodeCreatedPayloadSchema);
+  });
+
+  it('round-trips a PROVENANCE-BEARING create — worktree-ness is a property, not a kind', () => {
+    // E2-a: ONE node table. A worktree node is this same shape with `provenance`
+    // filled in, which is why there is no parallel `worktree_created` family.
+    const worktreeNodePayload = {
+      ...rootNodePayload,
+      nodeId: 'node-aaaa-0002',
+      parentNodeId: 'node-aaaa-0001',
+      name: 'session-tree checkout',
+      provenance: checkoutProvenance,
+      directory: checkoutProvenance.path,
+    };
+    const parsed = nodeCreatedPayloadSchema.safeParse(worktreeNodePayload);
+    expect(parsed.success, JSON.stringify(parsed.error?.issues)).toBe(true);
+    expect(parsed.success && parsed.data.provenance).toEqual(checkoutProvenance);
+  });
+
+  it('round-trips a PROVENANCE-NULL create — a group carries no checkout claim', () => {
+    const groupNodePayload = {
+      ...rootNodePayload,
+      nodeId: 'node-aaaa-0003',
+      parentNodeId: 'node-aaaa-0001',
+      name: 'frontend/checkout',
+      provenance: null,
+      directory: null, // E3-a: a label-only group scopes nothing
+    };
+    const parsed = nodeCreatedPayloadSchema.safeParse(groupNodePayload);
+    expect(parsed.success, JSON.stringify(parsed.error?.issues)).toBe(true);
+    expect(parsed.success && parsed.data.directory).toBeNull();
+  });
+
+  it('REFUSES a partial provenance — a checkout claim names all four facts or none', () => {
+    // A provenance missing its resolved commit reads as a checkout while naming
+    // nothing checkable: `baseRef` alone goes stale the moment the ref moves.
+    const { resolvedCommit: _omittedCommit, ...partialProvenance } = checkoutProvenance;
+    expect(
+      nodeCreatedPayloadSchema.safeParse({ ...rootNodePayload, provenance: partialProvenance })
+        .success,
+    ).toBe(false);
+    expect(nodeProvenanceSchema.safeParse(checkoutProvenance).success).toBe(true);
+    expect(nodeProvenanceSchema.safeParse({ ...checkoutProvenance, branch: '' }).success).toBe(false);
+  });
+
+  it('nodeConfig is RESERVED and accepts ONLY null (E3-a, rule 0.5)', () => {
+    // The key is reserved so the shape is pinned before (iii) exists; accepting
+    // a value would be shipping half of per-node config with no consumer and no
+    // semantics. A non-null nodeConfig must not parse.
+    expect(nodeCreatedPayloadSchema.safeParse({ ...rootNodePayload, nodeConfig: {} }).success).toBe(
+      false,
+    );
+    expect(
+      nodeCreatedPayloadSchema.safeParse({ ...rootNodePayload, nodeConfig: { rules: [] } }).success,
+    ).toBe(false);
+    expect(nodeCreatedPayloadSchema.safeParse({ ...rootNodePayload, nodeConfig: null }).success).toBe(
+      true,
+    );
+  });
+
+  it('requires nodeId, projectId and name — an unnamed node in no project is not one', () => {
+    const { nodeId: _omittedId, ...idlessPayload } = rootNodePayload;
+    expect(nodeCreatedPayloadSchema.safeParse(idlessPayload).success).toBe(false);
+    const { projectId: _omittedProject, ...projectlessPayload } = rootNodePayload;
+    expect(nodeCreatedPayloadSchema.safeParse(projectlessPayload).success).toBe(false);
+    expect(nodeCreatedPayloadSchema.safeParse({ ...rootNodePayload, name: '' }).success).toBe(false);
+  });
+});
+
+describe('node_closed (S9·1 — closure is TREE-state, axis 1 of three)', () => {
+  it('constructs on the nodes stream and carries only the nodeId', () => {
+    const closurePayload = { nodeId: 'node-aaaa-0001' };
+    expect(nodeClosed(closurePayload)).toEqual({
+      stream: 'nodes',
+      type: 'node_closed',
+      payload: closurePayload,
+    });
+    expect(nodeClosedPayloadSchema.safeParse(closurePayload).success).toBe(true);
+    expect(EVENT_TYPES.nodeClosed).toBe('node_closed');
+    expect(EVENT_PAYLOAD_SCHEMAS[EVENT_TYPES.nodeClosed]).toBe(nodeClosedPayloadSchema);
+  });
+
+  it('carries NO kill or removal field — the three axes stay independent (E2)', () => {
+    // Axis 2 is kill (process-state), axis 3 is removal (disk-state); both are
+    // their own named, explicit acts. zod strips unknown keys, so the proof is
+    // that a payload smuggling either does not survive the parse.
+    const parsed = nodeClosedPayloadSchema.safeParse({
+      nodeId: 'node-aaaa-0001',
+      killSessions: true,
+      removeWorktree: true,
+    });
+    expect(parsed.success).toBe(true);
+    expect(parsed.success && 'killSessions' in parsed.data).toBe(false);
+    expect(parsed.success && 'removeWorktree' in parsed.data).toBe(false);
+  });
+
+  it('requires a nodeId', () => {
+    expect(nodeClosedPayloadSchema.safeParse({}).success).toBe(false);
+  });
+});
+
+describe('session_attached_to_node (S9·1 — one parent per session)', () => {
+  it('constructs on the NODES stream, not the session stream', () => {
+    // Deliberate: the fact recorded is about the NODE's membership list, and
+    // projections/nodes.ts folds only its own stream (D34, stream-local).
+    const attachmentPayload = { nodeId: 'node-aaaa-0001', appSessionId: 'app-session-0001' };
+    expect(sessionAttachedToNode(attachmentPayload)).toEqual({
+      stream: 'nodes',
+      type: 'session_attached_to_node',
+      payload: attachmentPayload,
+    });
+    expect(sessionAttachedToNodePayloadSchema.safeParse(attachmentPayload).success).toBe(true);
+    expect(EVENT_TYPES.sessionAttachedToNode).toBe('session_attached_to_node');
+    expect(EVENT_PAYLOAD_SCHEMAS[EVENT_TYPES.sessionAttachedToNode]).toBe(
+      sessionAttachedToNodePayloadSchema,
+    );
+  });
+
+  it('requires both ends of the link', () => {
+    expect(sessionAttachedToNodePayloadSchema.safeParse({ nodeId: 'node-aaaa-0001' }).success).toBe(
+      false,
+    );
+    expect(
+      sessionAttachedToNodePayloadSchema.safeParse({ appSessionId: 'app-session-0001' }).success,
+    ).toBe(false);
+  });
+});
+
+describe('the tree vocabulary has NO node_moved (E2 — banned in v1)', () => {
+  it('registers exactly three node event types', () => {
+    // The absence is the design: moves are banned until someone wants one, and
+    // then it is a D-record. A `node_moved` appearing in EVENT_TYPES without one
+    // is the drift this assertion exists to catch.
+    const nodeEventTypes = Object.values(EVENT_TYPES).filter(
+      (eventType) => eventType.startsWith('node_') || eventType === 'session_attached_to_node',
+    );
+    expect(nodeEventTypes.sort()).toEqual([
+      'node_closed',
+      'node_created',
+      'session_attached_to_node',
+    ]);
   });
 });
