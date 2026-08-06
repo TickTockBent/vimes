@@ -1,9 +1,11 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { RETIRED_EVENT_KINDS } from '../events.js';
 import { TASK_STAGE_EDGES } from '../tasks/taskStateMachine.js';
 import {
   API_VERSION,
+  DEPRECATED_EVENT_KINDS,
   KNOWN_ATTENTION_RANKS,
   KNOWN_CAPABILITIES,
   RESERVED_AUTHORITY_PROPERTIES,
@@ -869,6 +871,32 @@ deliver = "worker"
     expect(result.ok).toBe(true);
     expect(codes(result.warnings)).toEqual(['deprecated-event-kind']);
     expect(result.warnings[0]?.message).toContain('meter_alert');
+  });
+
+  // ── S11-A3 (D72 Move 2): the alias table populates this map ────────────────
+  it('WARNS on the RETIRED `task_transitioned`, naming `instance_moved` as the replacement (S11-A3)', () => {
+    // The mechanism above was proved on `meter_threshold_crossed`; this is the
+    // same mechanism carrying the S11 rename, and it is the reason the map is
+    // DERIVED from `RETIRED_EVENT_KINDS` rather than hand-listed: a manifest
+    // written against the task vocabulary keeps loading, and the hook that would
+    // never fire says so instead of waiting forever.
+    const result = parseExtensionManifest(withEvent('task_transitioned'));
+    expect(result.ok).toBe(true);
+    expect(codes(result.warnings)).toEqual(['deprecated-event-kind']);
+    expect(result.warnings[0]?.message).toContain('instance_moved');
+  });
+
+  it('carries EVERY alias-table row into DEPRECATED_EVENT_KINDS, pointing at the same sibling (S11-A3)', () => {
+    // Derivation asserted rather than assumed: the day a row is added to the
+    // alias table with no thought for the manifest, this stays green — which is
+    // the point of deriving — and the day someone hand-edits this map apart from
+    // the table, it reddens.
+    for (const [retiredKind, row] of Object.entries(RETIRED_EVENT_KINDS)) {
+      expect(DEPRECATED_EVENT_KINDS[retiredKind]).toBe(row.canonical);
+    }
+    // The pre-S11 row survives the spread — a deprecation is never displaced by
+    // a later one.
+    expect(DEPRECATED_EVENT_KINDS['meter_threshold_crossed']).toBe('meter_alert');
   });
 
   it('WARNS on a deprecated capability rather than silently no-oping it (§5.3 rule 3)', () => {

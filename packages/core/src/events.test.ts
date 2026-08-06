@@ -479,7 +479,7 @@ describe('review_reported (S7·6a — RESERVED, payload REUSED from tasks/workOr
 
 describe('completion_reported (S7·7b — payload REUSED, folds, emitter in 7b-daemon)', () => {
   // The mirror of review_reported above, for the FIX side. As of S7·7b-core the
-  // constructor is real and `projections/tasks.ts` folds it onto
+  // constructor is real and the instance fold writes it onto
   // `TaskRecord.lastCompletion`; the EMITTER (the `report_completion` tool) is
   // 7b-daemon's, so nothing in the tree calls this constructor yet.
   const completionPayload = {

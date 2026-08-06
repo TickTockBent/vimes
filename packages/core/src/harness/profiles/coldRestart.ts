@@ -8,7 +8,7 @@ import {
 } from '../../projections/projection.js';
 import { sessionsProjection } from '../../projections/sessions.js';
 import { metersProjection } from '../../projections/meters.js';
-import { tasksProjection } from '../../projections/tasks.js';
+import { instancesProjection } from '../../projections/instances.js';
 import { orphanScan, recoveryRoutine } from '../registry.js';
 import { restart } from '../world.js';
 import type { ScenarioProfile } from '../scenario.js';
@@ -16,7 +16,7 @@ import type { ScenarioProfile } from '../scenario.js';
 const ALL_PROJECTIONS: ReadonlyArray<Projection<unknown>> = [
   sessionsProjection as Projection<unknown>,
   metersProjection as Projection<unknown>,
-  tasksProjection as Projection<unknown>,
+  instancesProjection as Projection<unknown>,
 ];
 
 // cold-restart (spec §7.4, the flagship): host dies mid-run with 3 live sessions

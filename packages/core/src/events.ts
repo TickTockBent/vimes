@@ -139,6 +139,24 @@ export const EVENT_TYPES = {
   // machine returns a rejection", it is "the rejection is *evented*" — a
   // rejection nobody wrote down is, for I7's purposes, a rejection that never
   // happened. Every REJECT outcome from `proposeTransition` gets one of these.
+  //
+  // ⚠ **THE WHOLE TASK FAMILY BELOW IS RETIRED AS OF S11 (D72 Move 2).** Each
+  // kind keeps its type, schema and constructor FOREVER — the precedent
+  // `meter_threshold_crossed` set above, for the same reason: the log is
+  // append-only, and history has to keep validating. What changed is the WRITE
+  // side: nothing in production emits one after S11·U2, and the reducer reads
+  // them through `RETIRED_EVENT_KINDS` (below) into their generic siblings.
+  // DO NOT EMIT THEM. The siblings are, in order:
+  //   task_created             -> instance_created
+  //   task_transitioned        -> instance_moved
+  //   task_transition_rejected -> instance_move_rejected
+  //   task_session_attached    -> instance_run_attached
+  //   work_order_amended       -> instance_payload_revised
+  //   plan_submitted           -> capture_recorded
+  //   review_reported          -> report_filed (reportKind: 'review')
+  //   completion_reported      -> report_filed (reportKind: 'completion')
+  // `task_worktree_created`, `task_quarantined` and `dispatch_refused` are NOT
+  // retired — this slice does not rename kinds whose consumers it has not moved.
   taskCreated: 'task_created',
   taskTransitioned: 'task_transitioned',
   taskTransitionRejected: 'task_transition_rejected',
@@ -200,8 +218,13 @@ export const EVENT_TYPES = {
   // **S7·2b SPENT THE RESERVATION AND LANDED THE EMITTER:
   // `TaskWriter.amendWorkOrder` (packages/daemon — the SOLE writer of task
   // state, I7), reached over HTTP by `POST /api/tasks/:taskId/amendments`.** The
-  // grep that used to come up empty now lands there, and `projections/tasks.ts`
+  // grep that used to come up empty now lands there, and the instance store
   // folds the patch onto the record. D46's second correction door is this event.
+  //
+  // ⚠ **RETIRED BY S11 (D72 Move 2).** Its generic sibling is
+  // `instance_payload_revised`; this kind keeps its type, schema and constructor
+  // forever so history still validates, and `RETIRED_EVENT_KINDS` adapts it on
+  // the way into the fold. DO NOT EMIT IT.
   workOrderAmended: 'work_order_amended',
   // Slice-7 D48: a plan crossed the tool boundary. RESERVED, no emitter yet
   // (S7·5b — the daemon's SDK adapter — intercepts `ExitPlanMode` and emits
@@ -226,8 +249,11 @@ export const EVENT_TYPES = {
   // deriving the target via `deriveReviewOutcome` (tasks/reviewOutcome.ts) directly
   // from this event's payload. Folding a stage change in here too would give the
   // record two authorities over its own stage (principle 9). It DOES fold as of
-  // S7·7b: `projections/tasks.ts` writes the payload onto `TaskRecord.lastReview`
-  // (latest-wins), which is the fix-seed the next implementer's briefing renders.
+  // S7·7b: the fold writes the payload onto `lastReview` (latest-wins), which is
+  // the fix-seed the next implementer's briefing renders.
+  //
+  // ⚠ **RETIRED BY S11 (D72 Move 2)** — absorbed by `report_filed`
+  // (`reportKind: 'review'`). Retained for history; DO NOT EMIT IT.
   reviewReported: 'review_reported',
   // Slice-7 S7·7b: the worklog FIX-SEED (D46). Folds onto `TaskRecord.lastCompletion`
   // (latest-wins), the sibling of `lastReview` above — together they are the two
@@ -334,6 +360,36 @@ export const EVENT_TYPES = {
   nodeCreated: 'node_created',
   nodeClosed: 'node_closed',
   sessionAttachedToNode: 'session_attached_to_node',
+  // ── S11 (D72 Move 2) — THE GENERIC INSTANCE VOCABULARY ─────────────────────
+  //
+  // The task family above, re-spelled in the engine's own words (node-kit §1.7):
+  // an INSTANCE of a workflow sitting on a NODE, with a tenant-shaped PAYLOAD the
+  // engine never reads to decide anything. The seven kinds here absorb the seven
+  // the old tasks reducer folded, and `RETIRED_EVENT_KINDS` (below, beside the
+  // payload schemas) maps each retired spelling to its sibling here so recorded
+  // history replays without being rewritten.
+  //
+  // ⚠ **SAME `'tasks'` STREAM — the stream name is NOT part of this rename.**
+  // The stream is persisted state: (stream, seq) contiguity and the deployed
+  // UI's re-read trigger both live on it, so generic kinds append to the stream
+  // that already exists (slice-11.md, "The persisted stream stays 'tasks'").
+  // Per-workflow stream naming is a decision for the day a second workflow
+  // exists, not a side effect of a vocabulary move.
+  //
+  // ⚠ `report_filed` absorbs BOTH `review_reported` and `completion_reported`,
+  // discriminated in the payload by `reportKind`, and `capture_recorded`
+  // absorbs `plan_submitted` with `captureKind` drawn from the engine's closed
+  // capture catalogue (`CAPTURE_CATALOGUE` in extensions/manifest.ts, whose one
+  // v1 entry is 'plan'). Two events for one fact would be principle 9 all over
+  // again; the discriminator is what keeps the catalogue extendable without a
+  // new kind per entry.
+  instanceCreated: 'instance_created',
+  instanceMoved: 'instance_moved',
+  instanceMoveRejected: 'instance_move_rejected',
+  instancePayloadRevised: 'instance_payload_revised',
+  instanceRunAttached: 'instance_run_attached',
+  reportFiled: 'report_filed',
+  captureRecorded: 'capture_recorded',
 } as const;
 
 export const SYSTEM_STREAM = 'system';
@@ -1129,6 +1185,191 @@ export const sessionAttachedToNodePayloadSchema = z.object({
   appSessionId: z.string().min(1),
 });
 
+// ── S11 (D72 Move 2) — the GENERIC INSTANCE payloads ─────────────────────────
+//
+// Each one generalises exactly one retired task payload, field for field. The
+// three renames that carry the whole move are `taskId` -> `instanceId`,
+// `projectRoot` -> `project`, and every `stage` -> a `node` (workflow node ids
+// are the tenant's vocabulary, not an engine enum).
+//
+// ⚠ **THE NODE FIELDS ARE `z.string()`, NEVER `taskStageSchema`, AND THAT IS THE
+// POINT OF THE MOVE.** A node id belongs to the workflow definition that
+// declares it (node-kit §1.7); validating one against the compiled task enum
+// would make the generic vocabulary unable to express any workflow but the one
+// hard-coded today, which is the carve-out this slice exists to remove. The old
+// enum still guards the LEGACY spelling — every adapter in `RETIRED_EVENT_KINDS`
+// below parses its legacy schema first, so a `task_created` with a stage outside
+// the enum is still a malformed payload and still folds to nothing.
+//
+// ⚠ **ABSENT-VS-EMPTY DISCIPLINE IS CARRIED OVER EXACTLY.** `gates` is optional
+// here for the same reason it is optional on `task_created` (the fold defaults it
+// to `{}` — an ungated instance and an instance with no gates are the same fact),
+// while every field inside `payload` is optional AND absent-stays-absent (an
+// empty scope is a scope someone chose). Read `taskCreatedPayloadSchema`'s note
+// and the fold in projections/instances.ts together; the asymmetry is designed.
+
+// The workflow this instance is an instance OF (node-kit §1.7's identity).
+//
+// ⚠ **STAMPED `null` THIS SLICE, DELIBERATELY** (slice-11.md, the record split):
+// no pinned workflow definition governs adjudication until Move 3 — the writer
+// still calls the compiled task machine — so stamping an identity nothing pinned
+// would be DECLARED truth over observed (rule 0.7). The shape is reserved now
+// (rule 0.5) so Move 3 fills it rather than widening a written payload.
+export const workflowRefSchema = z.object({
+  // The extension package that declares the workflow.
+  extension: z.string(),
+  // The workflow id within that package.
+  workflow: z.string(),
+  // The manifest revision the instance was created against.
+  rev: z.number().int().nonnegative(),
+});
+export type WorkflowRef = z.infer<typeof workflowRefSchema>;
+
+// The tenant-shaped payload (slice-11.md's record split). The engine NEVER reads
+// a field in here to decide anything — that is what makes it opaque, and it is
+// why the five authored work-order fields moved under one key rather than staying
+// scattered across the core record. Each field DERIVES from `taskRecordSchema`
+// rather than being re-typed, so the two spellings cannot drift while both exist
+// (the same discipline `taskCreatedPayloadSchema` follows).
+export const instancePayloadSchema = z.object({
+  title: taskRecordSchema.shape.title,
+  scope: taskRecordSchema.shape.scope,
+  explicitlyOut: taskRecordSchema.shape.explicitlyOut,
+  acceptanceCriteria: taskRecordSchema.shape.acceptanceCriteria,
+  killCriterion: taskRecordSchema.shape.killCriterion,
+});
+export type InstancePayload = z.infer<typeof instancePayloadSchema>;
+
+// instance_created — the birth record, generalising `task_created`.
+export const instanceCreatedPayloadSchema = z.object({
+  instanceId: z.string(),
+  project: z.string(),
+  // The node the instance starts on — carried, never re-derived, exactly as
+  // `task_created.stage` was.
+  node: z.string(),
+  createdBy: taskRecordSchema.shape.createdBy,
+  // Nullable, not optional: `null` is the stated fact "no workflow definition
+  // governs this instance yet", which is different from a field nobody wrote.
+  workflow: workflowRefSchema.nullable(),
+  // TRANSITIONAL core (slice-11.md's fence): the engine still reads both to
+  // decide, so neither may live in `payload`. `isolation` retires into the
+  // node-kind declaration, `gates` into the dispatch-gates declaration.
+  isolation: taskRecordSchema.shape.isolation,
+  gates: taskRecordSchema.shape.gates.optional(),
+  payload: instancePayloadSchema,
+});
+
+// instance_moved — one ACCEPTED move, generalising `task_transitioned`.
+// `manualReviewRequired` is the RESULTING flag as the machine decided it, and it
+// rides along TRANSITIONALLY: it retires into workflow data at Move 3
+// (slice-11.md's fence), which is why it sits here rather than in the payload.
+export const instanceMovedPayloadSchema = z.object({
+  instanceId: z.string(),
+  fromNode: z.string(),
+  toNode: z.string(),
+  manualReviewRequired: z.boolean(),
+  proposedBy: transitionProposedBySchema,
+  note: z.string().optional(),
+});
+
+// instance_move_rejected — I7's record, generalising `task_transition_rejected`
+// field for field. `attemptedToNode` is named distinctly from `toNode` precisely
+// because NO move happened: the instance is still on `fromNode`.
+//
+// ⚠ Both node fields stay LOOSE for the reason the legacy schema states in full:
+// one of the recordable refusals IS `unknown-stage`, so validating the attempted
+// end against any vocabulary would make exactly that rejection unrecordable.
+export const instanceMoveRejectedPayloadSchema = z.object({
+  instanceId: z.string(),
+  fromNode: z.string(),
+  attemptedToNode: z.string(),
+  reason: transitionRejectionReasonSchema,
+  proposedBy: transitionProposedBySchema,
+});
+
+// instance_payload_revised — generalising `work_order_amended` (D43: revisioned,
+// never mutated). PATCH SEMANTICS, unchanged: present in `patch` REPLACES the
+// record's field, absent leaves it exactly as it was, and an explicit `[]` IS a
+// replacement rather than an omission. `payloadRev` is RECORDED, NEVER COMPUTED —
+// the payload states the rev the record reflects AFTER this revision and the fold
+// writes down what the event says (a fold that counted events would be a second
+// authority over the rev and would break replay from a snapshot).
+export const instancePayloadRevisedPayloadSchema = z.object({
+  instanceId: z.string(),
+  payloadRev: z.number().int().nonnegative(),
+  // WHO revised it — two values, not the proposer's three, for the reason
+  // `workOrderAmendedPayloadSchema.amendedBy` gives at length: the dispatcher
+  // never revises the payload it was dispatched against.
+  revisedBy: z.enum(['human', 'orchestrator']),
+  // ⚠ `title` is deliberately NOT patchable, exactly as `work_order_amended`
+  // could not amend it: a title is set at creation and there is no rename event.
+  patch: z.object({
+    scope: taskRecordSchema.shape.scope,
+    explicitlyOut: taskRecordSchema.shape.explicitlyOut,
+    acceptanceCriteria: taskRecordSchema.shape.acceptanceCriteria,
+    killCriterion: taskRecordSchema.shape.killCriterion,
+  }),
+});
+
+// instance_run_attached — one run of one node, linked to its instance;
+// generalising `task_session_attached`. The fold is idempotent on
+// `appSessionId` and deliberately NOT on `node` (see projections/instances.ts).
+export const instanceRunAttachedPayloadSchema = z.object({
+  instanceId: z.string(),
+  node: z.string(),
+  appSessionId: z.string(),
+});
+
+// report_filed — ONE event absorbing `review_reported` AND `completion_reported`,
+// discriminated on `reportKind`. The `(instanceId, node, attempt, payloadRev)`
+// prefix is D46's identity tuple — what makes a filed report attributable to a
+// specific run — and it is hoisted OUT of the kind-specific body precisely
+// because it is the same four facts either way. The body carries what only that
+// kind has, DERIVED from the legacy schemas so the two cannot drift: `criteria`
+// for a review, `worklog` for a completion. Nothing is lost in the generalisation
+// — every field of both legacy payloads lands in exactly one place here.
+export const reportFiledPayloadSchema = z.discriminatedUnion('reportKind', [
+  z.object({
+    instanceId: z.string(),
+    node: z.string(),
+    attempt: z.number().int().positive(),
+    payloadRev: z.number().int().nonnegative(),
+    reportKind: z.literal('review'),
+    body: z.object({ criteria: reportReviewPayloadSchema.shape.criteria }),
+  }),
+  z.object({
+    instanceId: z.string(),
+    node: z.string(),
+    attempt: z.number().int().positive(),
+    payloadRev: z.number().int().nonnegative(),
+    reportKind: z.literal('completion'),
+    body: z.object({ worklog: reportCompletionPayloadSchema.shape.worklog }),
+  }),
+]);
+
+// capture_recorded — the engine CAPTURE event, absorbing `plan_submitted`.
+//
+// ⚠ `captureKind` is a CLOSED catalogue with exactly one v1 entry, and it must
+// agree with `CAPTURE_CATALOGUE` in extensions/manifest.ts (node-kit §1.8.3: "an
+// extension can opt into an interception; it cannot add one"). It is spelled
+// literally here rather than imported because the dependency runs the other way
+// — manifest.ts imports this module — and a cycle would be a worse price than a
+// restated one-entry enum. A test asserts the two agree, so a second entry
+// added on one side reddens rather than drifting.
+export const captureKindSchema = z.enum(['plan']);
+export const captureRecordedPayloadSchema = z.object({
+  instanceId: z.string(),
+  captureKind: captureKindSchema,
+  // The captured artifact's address in the artifact store — the blob itself
+  // never rides on the event (D48: by reference only).
+  artifactHash: z.string(),
+  node: z.string(),
+  attempt: z.number().int().positive(),
+  payloadRev: z.number().int().nonnegative(),
+  // The session the capture was taken from (`plannerSessionRef`, generalised).
+  capturedFrom: z.object({ appSessionId: z.string() }),
+});
+
 export const EVENT_PAYLOAD_SCHEMAS = {
   [EVENT_TYPES.sessionCreated]: sessionCreatedPayloadSchema,
   [EVENT_TYPES.livenessChanged]: livenessChangedPayloadSchema,
@@ -1194,6 +1435,15 @@ export const EVENT_PAYLOAD_SCHEMAS = {
   [EVENT_TYPES.nodeCreated]: nodeCreatedPayloadSchema,
   [EVENT_TYPES.nodeClosed]: nodeClosedPayloadSchema,
   [EVENT_TYPES.sessionAttachedToNode]: sessionAttachedToNodePayloadSchema,
+  // S11 (D72 Move 2) — the generic instance family. Registered beside the task
+  // rows they retire, which stay registered forever: history still validates.
+  [EVENT_TYPES.instanceCreated]: instanceCreatedPayloadSchema,
+  [EVENT_TYPES.instanceMoved]: instanceMovedPayloadSchema,
+  [EVENT_TYPES.instanceMoveRejected]: instanceMoveRejectedPayloadSchema,
+  [EVENT_TYPES.instancePayloadRevised]: instancePayloadRevisedPayloadSchema,
+  [EVENT_TYPES.instanceRunAttached]: instanceRunAttachedPayloadSchema,
+  [EVENT_TYPES.reportFiled]: reportFiledPayloadSchema,
+  [EVENT_TYPES.captureRecorded]: captureRecordedPayloadSchema,
 } as const;
 
 export type SessionCreatedPayload = z.infer<typeof sessionCreatedPayloadSchema>;
@@ -1244,6 +1494,14 @@ export type NodeProvenance = z.infer<typeof nodeProvenanceSchema>;
 export type NodeCreatedPayload = z.infer<typeof nodeCreatedPayloadSchema>;
 export type NodeClosedPayload = z.infer<typeof nodeClosedPayloadSchema>;
 export type SessionAttachedToNodePayload = z.infer<typeof sessionAttachedToNodePayloadSchema>;
+export type InstanceCreatedPayload = z.infer<typeof instanceCreatedPayloadSchema>;
+export type InstanceMovedPayload = z.infer<typeof instanceMovedPayloadSchema>;
+export type InstanceMoveRejectedPayload = z.infer<typeof instanceMoveRejectedPayloadSchema>;
+export type InstancePayloadRevisedPayload = z.infer<typeof instancePayloadRevisedPayloadSchema>;
+export type InstanceRunAttachedPayload = z.infer<typeof instanceRunAttachedPayloadSchema>;
+export type ReportFiledPayload = z.infer<typeof reportFiledPayloadSchema>;
+export type CaptureKind = z.infer<typeof captureKindSchema>;
+export type CaptureRecordedPayload = z.infer<typeof captureRecordedPayloadSchema>;
 // WorkOrderAmendedPayload is exported alongside `workOrderAmendedPayloadSchema`
 // above, adjacent to its schema rather than grouped down here with the rest —
 // no functional difference, kept next to the RESERVATION note it belongs with.
@@ -1305,7 +1563,14 @@ export type DomainEvent =
   | { type: typeof EVENT_TYPES.compactionHeld; payload: CompactionHeldPayload }
   | { type: typeof EVENT_TYPES.nodeCreated; payload: NodeCreatedPayload }
   | { type: typeof EVENT_TYPES.nodeClosed; payload: NodeClosedPayload }
-  | { type: typeof EVENT_TYPES.sessionAttachedToNode; payload: SessionAttachedToNodePayload };
+  | { type: typeof EVENT_TYPES.sessionAttachedToNode; payload: SessionAttachedToNodePayload }
+  | { type: typeof EVENT_TYPES.instanceCreated; payload: InstanceCreatedPayload }
+  | { type: typeof EVENT_TYPES.instanceMoved; payload: InstanceMovedPayload }
+  | { type: typeof EVENT_TYPES.instanceMoveRejected; payload: InstanceMoveRejectedPayload }
+  | { type: typeof EVENT_TYPES.instancePayloadRevised; payload: InstancePayloadRevisedPayload }
+  | { type: typeof EVENT_TYPES.instanceRunAttached; payload: InstanceRunAttachedPayload }
+  | { type: typeof EVENT_TYPES.reportFiled; payload: ReportFiledPayload }
+  | { type: typeof EVENT_TYPES.captureRecorded; payload: CaptureRecordedPayload };
 
 // Maps each attention-setting event type to the needsAttention reason it sets.
 const ATTENTION_SETTER_REASON: Readonly<Record<string, AttentionReason>> = {
@@ -1408,6 +1673,11 @@ export function dispatchRefused(payload: DispatchRefusedPayload): EventInput {
 // The slice-6 task constructors. Same 'tasks' stream as `dispatch_refused`,
 // literal for the same reason the meter constructors use a literal 'usage': the
 // vocabulary module stays free-standing (no dependency on a projection).
+//
+// ⚠ **RETIRED (S11, D72 Move 2) — DO NOT CALL THESE FROM PRODUCTION CODE.** They
+// are retained so tests and fixtures can still WRITE the historical spelling the
+// alias table exists to READ; the generic constructors are further down this
+// file. S11-A6 is the grep that keeps this honest.
 export function taskCreated(payload: TaskCreatedPayload): EventInput {
   return { stream: 'tasks', type: EVENT_TYPES.taskCreated, payload };
 }
@@ -1425,8 +1695,8 @@ export function taskTransitionRejected(payload: TaskTransitionRejectedPayload): 
 //
 // ITS ONE CALLER IS `TaskWriter.amendWorkOrder` (packages/daemon), which is the
 // SOLE writer of task state (I7) and the only place `workOrderRev` is computed;
-// the fold in `projections/tasks.ts` records the rev this payload states rather
-// than deriving one of its own, which is what keeps replay deterministic (I6).
+// the fold records the rev this payload states rather than deriving one of its
+// own, which is what keeps replay deterministic (I6).
 export function workOrderAmended(payload: WorkOrderAmendedPayload): EventInput {
   return { stream: 'tasks', type: EVENT_TYPES.workOrderAmended, payload };
 }
@@ -1435,7 +1705,7 @@ export function workOrderAmended(payload: WorkOrderAmendedPayload): EventInput {
 // literal-string reasoning as its siblings: the vocabulary module stays
 // free-standing. NO CALLER INVOKES THIS YET — S7·5b (the daemon's SDK adapter,
 // after intercepting `ExitPlanMode`) is the emitter. It AUGMENTS the task
-// record (folds `planArtifactHash` — see projections/tasks.ts) and is not a
+// record (folds `planArtifactHash` — see projections/instances.ts) and is not a
 // stage transition; the dispatcher's own `task_transitioned` handles
 // planning -> plan-ready separately.
 export function planSubmitted(payload: SubmitPlanPayload): EventInput {
@@ -1456,7 +1726,7 @@ export function reviewReported(payload: ReportReviewPayload): EventInput {
 // completion_reported (S7·7b — see EVENT_TYPES.completionReported above). Same
 // 'tasks' stream and same free-standing reasoning as its siblings; the mirror of
 // `reviewReported` for the FIX side. It AUGMENTS the task record (folds
-// `lastCompletion` — see projections/tasks.ts) and is not a stage transition; the
+// `lastCompletion` — see projections/instances.ts) and is not a stage transition; the
 // implementing -> review move D53 makes an OUTCOME is a separate `task_transitioned`
 // the dispatcher proposes through the I7 choke.
 //
@@ -1467,6 +1737,271 @@ export function reviewReported(payload: ReportReviewPayload): EventInput {
 export function completionReported(payload: ReportCompletionPayload): EventInput {
   return { stream: 'tasks', type: EVENT_TYPES.completionReported, payload };
 }
+
+// ── S11 (D72 Move 2) — the GENERIC INSTANCE constructors ─────────────────────
+//
+// Same literal `'tasks'` stream as the retired siblings above, for BOTH reasons
+// those siblings state: the vocabulary module stays free-standing (no dependency
+// on a projection), and the stream name is persisted state this rename does not
+// touch (slice-11.md). The writer that calls these is `instanceWriter.ts`
+// (S11·U2); as of U1 the only callers are tests — the reducer already folds
+// these kinds, and the old writer's legacy spellings reach the same fold through
+// `RETIRED_EVENT_KINDS` below. That is one writer with one spelling at every
+// moment, never a dual write of the spine (D72's governing rule).
+export function instanceCreated(payload: InstanceCreatedPayload): EventInput {
+  return { stream: 'tasks', type: EVENT_TYPES.instanceCreated, payload };
+}
+export function instanceMoved(payload: InstanceMovedPayload): EventInput {
+  return { stream: 'tasks', type: EVENT_TYPES.instanceMoved, payload };
+}
+// I7's record — emitted for EVERY rejected proposal, never conditionally, exactly
+// as `taskTransitionRejected` was. Folded by nothing (a refusal changed nothing);
+// it is evidence, and it lives in the log.
+export function instanceMoveRejected(payload: InstanceMoveRejectedPayload): EventInput {
+  return { stream: 'tasks', type: EVENT_TYPES.instanceMoveRejected, payload };
+}
+export function instancePayloadRevised(payload: InstancePayloadRevisedPayload): EventInput {
+  return { stream: 'tasks', type: EVENT_TYPES.instancePayloadRevised, payload };
+}
+export function instanceRunAttached(payload: InstanceRunAttachedPayload): EventInput {
+  return { stream: 'tasks', type: EVENT_TYPES.instanceRunAttached, payload };
+}
+export function reportFiled(payload: ReportFiledPayload): EventInput {
+  return { stream: 'tasks', type: EVENT_TYPES.reportFiled, payload };
+}
+export function captureRecorded(payload: CaptureRecordedPayload): EventInput {
+  return { stream: 'tasks', type: EVENT_TYPES.captureRecorded, payload };
+}
+
+// ── S11 (D72 Move 2, q21) — THE ALIAS TABLE ──────────────────────────────────
+//
+// **PERMANENT AND VERSIONED, not a migration script.** The log is append-only and
+// forever: every `task_created` ever written stays a `task_created`, and nothing
+// in this codebase may ever rewrite one. This table is how the engine keeps
+// READING them — the instances reducer resolves an incoming kind through it
+// before switching, so recorded history folds through exactly one code path with
+// the current vocabulary, and the retired cases never accumulate as a second
+// (inevitably diverging) fold.
+//
+// `since` is the ALIAS-TABLE VERSION that introduced the row, not the engine
+// version and not a date: it is what lets a later reader tell a row that has been
+// answering for three years from one added last week, and it is why the type pins
+// `1` as a literal — a second wave of retirements adds `since: 2` rows in a diff
+// somebody reviews, rather than silently joining the first.
+//
+// Each `adapt` is PURE and LOSSLESS:
+//   • PURE — no clocks, no ids, no I/O; the same legacy payload always adapts to
+//     the same generic payload, which is what keeps replay deterministic (I6).
+//   • LOSSLESS — every field of the legacy payload lands somewhere in the generic
+//     one. A field quietly dropped here is a fact that survives in the log but
+//     disappears from every read of it, which is the worst shape a migration can
+//     take: silent, and only visible years later.
+//   • TOTAL — the legacy schema is `safeParse`d and a failure returns `null`,
+//     meaning "malformed, fold nothing". The reducer turns `null` into a no-op
+//     that returns its state object by IDENTITY. Hostile input must not crash a
+//     fold (I8), and it must not fabricate a record either.
+//
+// ⚠ **NOT IN THIS TABLE, DELIBERATELY:** `task_worktree_created`,
+// `task_quarantined`, `dispatch_refused`. The old reducer folded none of them
+// (see its "deliberately NOT folded" block, carried into projections/
+// instances.ts), and their generic siblings arrive with the E2 tree store and the
+// watchdog/dispatcher splits — renaming a kind whose consumer has not been
+// designed yet would be reserving the wrong shape. `task_transition_rejected` IS
+// in the table even though nothing folds it either, because it is the direct
+// sibling of a kind this slice DOES generalise: the rename is settled, so the row
+// is real, and the fold still does nothing with it.
+export interface RetiredEventKind {
+  // The generic sibling's kind — a value from `EVENT_TYPES`.
+  canonical: string;
+  // The alias-table version that introduced this row.
+  since: 1;
+  // Legacy payload -> the canonical kind's payload; `null` when the legacy
+  // payload does not parse (fold nothing). TypeScript collapses the written
+  // `unknown | null` to `unknown`; the `null` is load-bearing at runtime and is
+  // spelled in the return position so the contract reads off the type.
+  adapt: (legacyPayload: unknown) => unknown | null;
+}
+
+export const RETIRED_EVENT_KINDS: Readonly<Record<string, RetiredEventKind>> = {
+  [EVENT_TYPES.taskCreated]: {
+    canonical: EVENT_TYPES.instanceCreated,
+    since: 1,
+    adapt: (legacyPayload) => {
+      const parsed = taskCreatedPayloadSchema.safeParse(legacyPayload);
+      if (!parsed.success) {
+        return null;
+      }
+      const legacy = parsed.data;
+      return {
+        instanceId: legacy.taskId,
+        project: legacy.projectRoot,
+        node: legacy.stage,
+        createdBy: legacy.createdBy,
+        // No `task_created` ever named a workflow — there were no workflow
+        // definitions when they were written. `null` is the honest answer
+        // (rule 0.7: observed truth), and it is the same value this slice's own
+        // writer stamps, so a legacy and a generic birth record fold alike.
+        workflow: null,
+        isolation: legacy.isolation,
+        // ABSENT STAYS ABSENT here so the FOLD keeps its one defaulting rule in
+        // one place (`gates ?? {}` lives in the reducer, exactly where it lived
+        // in the old one). An adapter that defaulted would move a documented
+        // asymmetry into a second file.
+        ...(legacy.gates === undefined ? {} : { gates: legacy.gates }),
+        payload: {
+          ...(legacy.title === undefined ? {} : { title: legacy.title }),
+          ...(legacy.scope === undefined ? {} : { scope: legacy.scope }),
+          ...(legacy.explicitlyOut === undefined ? {} : { explicitlyOut: legacy.explicitlyOut }),
+          ...(legacy.acceptanceCriteria === undefined
+            ? {}
+            : { acceptanceCriteria: legacy.acceptanceCriteria }),
+          ...(legacy.killCriterion === undefined ? {} : { killCriterion: legacy.killCriterion }),
+        },
+      };
+    },
+  },
+  [EVENT_TYPES.taskTransitioned]: {
+    canonical: EVENT_TYPES.instanceMoved,
+    since: 1,
+    adapt: (legacyPayload) => {
+      const parsed = taskTransitionedPayloadSchema.safeParse(legacyPayload);
+      if (!parsed.success) {
+        return null;
+      }
+      const legacy = parsed.data;
+      return {
+        instanceId: legacy.taskId,
+        fromNode: legacy.fromStage,
+        toNode: legacy.toStage,
+        manualReviewRequired: legacy.manualReviewRequired,
+        proposedBy: legacy.proposedBy,
+        // Carried even though no fold reads it: losslessness is the rule, and a
+        // `note` is exactly the kind of audit fact that would vanish silently.
+        ...(legacy.note === undefined ? {} : { note: legacy.note }),
+      };
+    },
+  },
+  [EVENT_TYPES.taskTransitionRejected]: {
+    canonical: EVENT_TYPES.instanceMoveRejected,
+    since: 1,
+    adapt: (legacyPayload) => {
+      const parsed = taskTransitionRejectedPayloadSchema.safeParse(legacyPayload);
+      if (!parsed.success) {
+        return null;
+      }
+      const legacy = parsed.data;
+      return {
+        instanceId: legacy.taskId,
+        fromNode: legacy.fromStage,
+        attemptedToNode: legacy.attemptedToStage,
+        reason: legacy.reason,
+        proposedBy: legacy.proposedBy,
+      };
+    },
+  },
+  [EVENT_TYPES.taskSessionAttached]: {
+    canonical: EVENT_TYPES.instanceRunAttached,
+    since: 1,
+    adapt: (legacyPayload) => {
+      const parsed = taskSessionAttachedPayloadSchema.safeParse(legacyPayload);
+      if (!parsed.success) {
+        return null;
+      }
+      const legacy = parsed.data;
+      return {
+        instanceId: legacy.taskId,
+        node: legacy.stage,
+        appSessionId: legacy.appSessionId,
+      };
+    },
+  },
+  [EVENT_TYPES.workOrderAmended]: {
+    canonical: EVENT_TYPES.instancePayloadRevised,
+    since: 1,
+    adapt: (legacyPayload) => {
+      const parsed = workOrderAmendedPayloadSchema.safeParse(legacyPayload);
+      if (!parsed.success) {
+        return null;
+      }
+      const legacy = parsed.data;
+      return {
+        instanceId: legacy.taskId,
+        payloadRev: legacy.workOrderRev,
+        revisedBy: legacy.amendedBy,
+        // ⚠ ABSENT STAYS ABSENT, and an explicit `[]` RIDES THROUGH. The patch's
+        // whole semantics live in the difference between "this field was not
+        // mentioned" and "this field was set to empty"; an adapter that spread
+        // `undefined`s would turn every amendment into a full rewrite.
+        patch: {
+          ...(legacy.scope === undefined ? {} : { scope: legacy.scope }),
+          ...(legacy.explicitlyOut === undefined ? {} : { explicitlyOut: legacy.explicitlyOut }),
+          ...(legacy.acceptanceCriteria === undefined
+            ? {}
+            : { acceptanceCriteria: legacy.acceptanceCriteria }),
+          ...(legacy.killCriterion === undefined ? {} : { killCriterion: legacy.killCriterion }),
+        },
+      };
+    },
+  },
+  [EVENT_TYPES.planSubmitted]: {
+    canonical: EVENT_TYPES.captureRecorded,
+    since: 1,
+    adapt: (legacyPayload) => {
+      const parsed = submitPlanPayloadSchema.safeParse(legacyPayload);
+      if (!parsed.success) {
+        return null;
+      }
+      const legacy = parsed.data;
+      return {
+        instanceId: legacy.taskId,
+        captureKind: 'plan',
+        artifactHash: legacy.planArtifactHash,
+        node: legacy.stage,
+        attempt: legacy.attempt,
+        payloadRev: legacy.workOrderRev,
+        capturedFrom: legacy.plannerSessionRef,
+      };
+    },
+  },
+  [EVENT_TYPES.reviewReported]: {
+    canonical: EVENT_TYPES.reportFiled,
+    since: 1,
+    adapt: (legacyPayload) => {
+      const parsed = reportReviewPayloadSchema.safeParse(legacyPayload);
+      if (!parsed.success) {
+        return null;
+      }
+      const legacy = parsed.data;
+      return {
+        instanceId: legacy.taskId,
+        node: legacy.stage,
+        attempt: legacy.attempt,
+        payloadRev: legacy.workOrderRev,
+        reportKind: 'review',
+        body: { criteria: legacy.criteria },
+      };
+    },
+  },
+  [EVENT_TYPES.completionReported]: {
+    canonical: EVENT_TYPES.reportFiled,
+    since: 1,
+    adapt: (legacyPayload) => {
+      const parsed = reportCompletionPayloadSchema.safeParse(legacyPayload);
+      if (!parsed.success) {
+        return null;
+      }
+      const legacy = parsed.data;
+      return {
+        instanceId: legacy.taskId,
+        node: legacy.stage,
+        attempt: legacy.attempt,
+        payloadRev: legacy.workOrderRev,
+        reportKind: 'completion',
+        body: { worklog: legacy.worklog },
+      };
+    },
+  },
+};
 
 // ── the project-registry constructors (S8·1, D42) ────────────────────────────
 //

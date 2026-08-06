@@ -5,7 +5,13 @@ import {
   SteppingClock,
   readAllStreamsGrouped,
   replayFromEmpty,
-  tasksProjection,
+  // S11·U1 (D72 Move 2): the fold is the INSTANCE store now; every task-shaped
+  // read below goes through `legacyTasksViewOf`, which is where the shape these
+  // assertions speak lives. The subjects under test (writer/dispatcher/api/tool)
+  // are untouched by the rename — that is what these unchanged assertions prove.
+  canonicalJson,
+  instancesProjection,
+  legacyTasksViewOf,
   type EventInput,
 } from '@vimes/core';
 import {
@@ -294,7 +300,7 @@ describe('buildCreateTaskSpec — against the REAL TaskWriter (I6)', () => {
         emitted.push(...events);
         store.append(events);
       },
-      readTasks: () => replayFromEmpty(tasksProjection, readAllStreamsGrouped(store)),
+      readTasks: () => legacyTasksViewOf(replayFromEmpty(instancesProjection, readAllStreamsGrouped(store))),
       // Counting, injected (rule 0.3): the taskId AND the criterion ids are
       // byte-identical run to run.
       ids: new CountingIdSource(),
@@ -306,7 +312,7 @@ describe('buildCreateTaskSpec — against the REAL TaskWriter (I6)', () => {
     return {
       spec,
       emitted,
-      currentTasks: () => replayFromEmpty(tasksProjection, readAllStreamsGrouped(store)),
+      currentTasks: () => legacyTasksViewOf(replayFromEmpty(instancesProjection, readAllStreamsGrouped(store))),
     };
   }
 

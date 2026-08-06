@@ -36,7 +36,17 @@ import {
 } from './projection.js';
 import { sessionsProjection } from './sessions.js';
 import { metersProjection, meterSample } from './meters.js';
-import { tasksProjection } from './tasks.js';
+import { instancesProjection } from './instances.js';
+// S11·U1 (D72 Move 2): the projection under test here is the INSTANCES fold —
+// `tasksProjection` is gone — and every task assertion below reads through the
+// legacy view, unchanged word for word. That is deliberate: this file's job is
+// the I6 snapshot-cut machinery across projections, not the task vocabulary, so
+// re-pointing the fold while holding the assertions VERBATIM is what proves the
+// move was behaviour-preserving. Cases that pin the legacy shape read
+// `legacyTasksViewOf(...)`; the cut-point helper folds the instances projection
+// directly, because replay equivalence is a property of the FOLD, not of a
+// derivation over it.
+import { legacyTasksViewOf } from './legacyTasksView.js';
 
 const APP_1 = 'aaaaaaaa-0000-4000-8000-000000000001';
 const APP_2 = 'aaaaaaaa-0000-4000-8000-000000000002';
@@ -336,7 +346,7 @@ function buildTaskStreamStore(): MemoryEventStore {
 // a projection whose fold does nothing — an empty state equals an empty state at
 // every cut, and the assertion below would sail through while testing exactly
 // nothing. That is precisely the trap the tasks case sat in while
-// `tasksProjection.apply` was a stub. So this helper first REFUSES a fixture
+// the tasks fold was a stub. So this helper first REFUSES a fixture
 // that folds to the projection's own `init()` state: an I6 case must be given a
 // store whose events actually move the projection, or it fails here rather than
 // passing hollowly.
@@ -456,13 +466,13 @@ describe('projection I6 — boot(snapshot+tail) equals replay-from-empty', () =>
     assertBootEqualsReplayAtCuts(metersProjection, store, new SteppingClock('2026-02-01T00:00:00.000Z', 1000));
   });
 
-  it('holds for the tasks projection over REAL task events at every cut point', () => {
+  it('holds for the INSTANCES projection over REAL task events at every cut point (S11-A5)', () => {
     // Was a vacuous case until slice 6 step 2: it replayed a store with no task
     // events against a projection that folded nothing. It now replays a log of
     // three tasks walking several stages each, and the helper's non-vacuity
     // guard fails the case outright if the fold ever goes hollow again.
     const store = buildTaskStreamStore();
-    assertBootEqualsReplayAtCuts(tasksProjection, store, new SteppingClock('2026-02-01T00:00:00.000Z', 1000));
+    assertBootEqualsReplayAtCuts(instancesProjection, store, new SteppingClock('2026-02-01T00:00:00.000Z', 1000));
   });
 
   it('the tasks I6 fixture folds three tasks to distinct, non-initial stages', () => {
@@ -470,7 +480,7 @@ describe('projection I6 — boot(snapshot+tail) equals replay-from-empty', () =>
     // If `apply` regressed to the stub, this reddens immediately — and so does
     // the non-vacuity guard inside assertBootEqualsReplayAtCuts.
     const store = buildTaskStreamStore();
-    const state = replayFromEmpty(tasksProjection, readAllStreamsGrouped(store));
+    const state = legacyTasksViewOf(replayFromEmpty(instancesProjection, readAllStreamsGrouped(store)));
     expect(Object.keys(state.tasks).sort()).toEqual(
       [TASK_ALPHA, TASK_BETA, TASK_GAMMA, TASK_DELTA].sort(),
     );
@@ -499,10 +509,12 @@ describe('projection I6 — boot(snapshot+tail) equals replay-from-empty', () =>
         (record.payload as { toStage?: unknown }).toStage === 'cancelled',
     );
     expect(cancelledIndex).toBeGreaterThanOrEqual(0);
-    const midCancelState = replayFromEmpty(tasksProjection, records.slice(0, cancelledIndex + 1));
+    const midCancelState = legacyTasksViewOf(
+      replayFromEmpty(instancesProjection, records.slice(0, cancelledIndex + 1)),
+    );
     expect(midCancelState.tasks[TASK_DELTA]!.stage).toBe('cancelled');
 
-    const finalState = replayFromEmpty(tasksProjection, records);
+    const finalState = legacyTasksViewOf(replayFromEmpty(instancesProjection, records));
     expect(finalState.tasks[TASK_DELTA]!.stage).toBe('backlog');
   });
 
@@ -513,7 +525,7 @@ describe('projection I6 — boot(snapshot+tail) equals replay-from-empty', () =>
     // GAMMA: deferUntilReset) and ALPHA is deliberately ungated, so the fixture
     // exercises present-and-absent at every cut point.
     const store = buildTaskStreamStore();
-    const state = replayFromEmpty(tasksProjection, readAllStreamsGrouped(store));
+    const state = legacyTasksViewOf(replayFromEmpty(instancesProjection, readAllStreamsGrouped(store)));
     expect(state.tasks[TASK_ALPHA]!.gates).toEqual({});
     expect(state.tasks[TASK_BETA]!.gates).toEqual({
       requireHeadroom: { meterId: 'window-5h', pct: 40 },
@@ -527,7 +539,7 @@ describe('projection I6 — boot(snapshot+tail) equals replay-from-empty', () =>
     // claimed — the non-vacuity guard only proves the fixture moves the
     // projection AT ALL, and it already cleared that on every pre-step-9 event.
     const store = buildTaskStreamStore();
-    const state = replayFromEmpty(tasksProjection, readAllStreamsGrouped(store));
+    const state = legacyTasksViewOf(replayFromEmpty(instancesProjection, readAllStreamsGrouped(store)));
     expect(state.tasks[TASK_BETA]!.title).toBe('price the D6 cache economics');
     expect(state.tasks[TASK_GAMMA]!.title).toBe(
       'wire the watchdog scenario into the profile suite',
@@ -548,7 +560,9 @@ describe('projection I6 — boot(snapshot+tail) equals replay-from-empty', () =>
     const store = buildTaskStreamStore();
     const records = readAllStreamsGrouped(store);
     const midCut = Math.floor(records.length / 2);
-    const snapshotState = replayFromEmpty(tasksProjection, records.slice(0, midCut));
+    const snapshotState = legacyTasksViewOf(
+      replayFromEmpty(instancesProjection, records.slice(0, midCut)),
+    );
     expect(snapshotState.tasks[TASK_BETA]?.title).toBe('price the D6 cache economics');
     // ...and GAMMA's title arrives in the TAIL, on the far side of that cut, so
     // both routes into the booted state are exercised.
@@ -562,7 +576,7 @@ describe('projection I6 — boot(snapshot+tail) equals replay-from-empty', () =>
     // BETA collapses to one, and the attach for a task that was never created
     // fabricated nothing.
     const store = buildTaskStreamStore();
-    const state = replayFromEmpty(tasksProjection, readAllStreamsGrouped(store));
+    const state = legacyTasksViewOf(replayFromEmpty(instancesProjection, readAllStreamsGrouped(store)));
     expect(state.tasks[TASK_ALPHA]!.sessionRefs).toEqual([
       { stage: 'planning', appSessionId: ALPHA_PLANNING_SESSION },
       { stage: 'implementing', appSessionId: ALPHA_IMPLEMENTING_SESSION },

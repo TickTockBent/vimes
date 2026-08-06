@@ -11,7 +11,7 @@ import {
   replayFromEmpty,
   runScenario,
   sessionsProjection,
-  tasksProjection,
+  instancesProjection,
   type Projection,
   type ScenarioArtifact,
   type ScenarioProfile,
@@ -24,7 +24,7 @@ import { SqliteEventStore } from './sqliteEventStore.js';
 const PROJECTIONS_BY_ID: Record<string, Projection<unknown>> = {
   [sessionsProjection.id]: sessionsProjection as Projection<unknown>,
   [metersProjection.id]: metersProjection as Projection<unknown>,
-  [tasksProjection.id]: tasksProjection as Projection<unknown>,
+  [instancesProjection.id]: instancesProjection as Projection<unknown>,
 };
 
 // The comparable blob for the double-run gate: event-log dump + projection

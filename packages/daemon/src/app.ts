@@ -22,7 +22,9 @@ import {
   metersProjection,
   projectsProjection,
   sessionsProjection,
-  tasksProjection,
+  instancesProjection,
+  legacyTasksViewOf,
+  canonicalJson,
   SYSTEM_STREAM,
   // B1 — the usage-poller auth-failure backoff DECISION. Pure reducer; this
   // boundary owns the actual setTimeout that drives it (rule 0.3).
@@ -148,7 +150,11 @@ export const NO_OBSERVATION_IS_FRESH_STALE_BAND_MS = -1;
 const DAEMON_PROJECTIONS: ReadonlyArray<Projection<unknown>> = [
   sessionsProjection as Projection<unknown>,
   metersProjection as Projection<unknown>,
-  tasksProjection as Projection<unknown>,
+  // S11·U1 (D72 Move 2): the INSTANCE store, registered under its own id
+  // ('instances'). The old 'tasks' snapshot rows are dead but harmless — noted,
+  // not cleaned (slice-11.md) — and the first boot after this deploy replays the
+  // 'tasks' STREAM (a few hundred events) from seq 1 under the new projection id.
+  instancesProjection as Projection<unknown>,
   cacheObservabilityProjection as Projection<unknown>,
   // S8·1 D42 — the project registry. Registered like its siblings so it is
   // snapshotted on the same cadence: the writer and the API both read it FRESH
@@ -159,6 +165,10 @@ const DAEMON_PROJECTIONS: ReadonlyArray<Projection<unknown>> = [
 const PROJECTION_BY_ID = new Map<string, Projection<unknown>>(
   DAEMON_PROJECTIONS.map((projection) => [projection.id, projection]),
 );
+
+// The projection id the deployed UI still asks for. Not a Projection any more —
+// there is no such fold — it is the id the ALIAS answers under.
+const LEGACY_TASKS_PROJECTION_ID = 'tasks';
 
 export interface DaemonDeps {
   config: DaemonConfig;
@@ -418,7 +428,24 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     ]);
   };
 
+  // S11·U1: read the instance store the way every task-shaped consumer in this
+  // file still wants it — as the legacy narrowing. ONE derivation, called from
+  // the alias route and from the four `readTasks` callbacks below, so the alias
+  // and the writers can never answer from different folds.
+  const readTasksAsLegacyView = (): ReturnType<typeof legacyTasksViewOf> =>
+    legacyTasksViewOf(bootFromSnapshot(instancesProjection, snapshotStore, store));
+
   const serializeProjection = (projectionId: string): string | null => {
+    // ⚠ THE ALIAS (q24, one deploy of overlap): `/api/projections/tasks` keeps
+    // answering after the projection behind it was renamed, served as
+    // `legacyTasksViewOf` of the instances fold. The deployed UI reads this path
+    // and is deliberately untouched this slice — a UI that learned the new
+    // vocabulary would ship itself ahead of the daemon (the D37 failure class).
+    // U3 owns the rest of the route story; this row dies with the alias set, one
+    // deploy after the UI migrates.
+    if (projectionId === LEGACY_TASKS_PROJECTION_ID) {
+      return canonicalJson(readTasksAsLegacyView());
+    }
     const projection = PROJECTION_BY_ID.get(projectionId);
     if (projection === undefined) {
       return null;
@@ -488,7 +515,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
   // rather than growing a second path (principle 10).
   const taskWriter = new TaskWriter({
     emit: (events) => router.emit(events),
-    readTasks: () => bootFromSnapshot(tasksProjection, snapshotStore, store),
+    readTasks: () => readTasksAsLegacyView(),
     ids,
   });
 
@@ -534,7 +561,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     // is deliberately deferred — D43/D44, slice 7.
     composeStageInstruction,
     emit: (events) => router.emit(events),
-    readTasks: () => bootFromSnapshot(tasksProjection, snapshotStore, store),
+    readTasks: () => readTasksAsLegacyView(),
     readMeters: () => currentMetersState(),
     // The INJECTED clock, stamped HERE at the boundary and nowhere deeper
     // (rule 0.3). Never `Date.now()`.
@@ -607,7 +634,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
   registerOrchestratorApi(app, {
     readProjects: () => bootFromSnapshot(projectsProjection, snapshotStore, store),
     readSessions: () => bootFromSnapshot(sessionsProjection, snapshotStore, store),
-    readTasks: () => bootFromSnapshot(tasksProjection, snapshotStore, store),
+    readTasks: () => readTasksAsLegacyView(),
     sessionHost: {
       spawnSession: (options) => sessionHost.spawnSession(options),
       // The EXISTING resume op, the same instance wsHub drives for a human's own
@@ -636,7 +663,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
   // sign-off, and note that a `watchdog_stale` raises attention and therefore
   // PUSHES A NOTIFICATION to a real phone.
   const taskWatchdog = new TaskWatchdog({
-    readTasks: () => bootFromSnapshot(tasksProjection, snapshotStore, store),
+    readTasks: () => readTasksAsLegacyView(),
     readSessions: () => bootFromSnapshot(sessionsProjection, snapshotStore, store),
     emit: (events) => router.emit(events),
     nowIso: () => clock.now(),

@@ -23,7 +23,12 @@ let databaseFileCounter = 0;
 
 const permissiveVerifier: AccessVerifier = { verify: async () => ({ ok: true }) };
 const ANY_TOKEN = 'valid-token-stub';
-const PROJECTION_IDS = ['sessions', 'meters', 'tasks'] as const;
+// S11·U1: `tasks` stays in this list on purpose — it is now the ALIAS route
+// (`legacyTasksViewOf` of the instances fold), and the assertion that it boots
+// byte-identically is exactly the guarantee the deployed UI depends on across
+// the one deploy of overlap (q24). `instances` is its generic twin, checked
+// beside it so both answers are pinned.
+const PROJECTION_IDS = ['sessions', 'meters', 'tasks', 'instances'] as const;
 
 function nextDatabasePath(): string {
   databaseFileCounter += 1;
@@ -168,12 +173,20 @@ describe('daemon boot — snapshot+tail cold start over a real sqlite file', () 
       // should be visible in a diff somebody reads, not one that silently
       // satisfies its own assertion. `projects` arrived with S8·1 (D42's
       // registry); the other four predate it.
+      //
+      // ⚠ `instances` is where `tasks` used to be in this list (S11·U1, D72
+      // Move 2). The projection id moved with the fold — the STREAM is still
+      // 'tasks' and the `/api/projections/tasks` ROUTE still answers (as the
+      // legacy view) — so on the real database the old 'tasks' snapshot row
+      // survives, orphaned and harmless, and the first boot after the deploy
+      // replays the tasks stream from seq 1 under the new id (slice-11.md).
+      // This test starts from an empty file, so only the new id appears.
       expect(snapshotRows.map((row) => row.projectionId)).toEqual([
         'cache-observability',
+        'instances',
         'meters',
         'projects',
         'sessions',
-        'tasks',
       ]);
       for (const row of snapshotRows) {
         expect(row.savedAt).toMatch(/^2026-/);
