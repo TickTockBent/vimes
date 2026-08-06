@@ -20,7 +20,7 @@
 // leaf cannot import from a module that imports it. The re-export below is what
 // keeps every existing `from '../tasks/workOrder.js'` import path valid — do not
 // remove it without fixing events.ts, tasks/reviewOutcome.ts, the package index
-// and their tests. (`projections/tasks.ts` reaches for the report schemas at their
+// and their tests. (`projections/instances.ts` reaches for the report schemas at their
 // new home, since S7·7b wrote its fold; it still imports `submitPlanPayloadSchema`
 // from here.)
 

@@ -6,7 +6,13 @@ import {
   SteppingClock,
   readAllStreamsGrouped,
   replayFromEmpty,
-  tasksProjection,
+  // S11·U1 (D72 Move 2): the fold is the INSTANCE store now; every task-shaped
+  // read below goes through `legacyTasksViewOf`, which is where the shape these
+  // assertions speak lives. The subject under test (the writer) is untouched by
+  // the rename — that is what these unchanged assertions prove.
+  canonicalJson,
+  instancesProjection,
+  legacyTasksViewOf,
   type EventInput,
   type TaskRecord,
   type TasksState,
@@ -29,7 +35,8 @@ import {
 // returned reason second, and additionally asserts that NO `task_transitioned`
 // rode along beside it.
 //
-// The harness folds the real `tasksProjection` over a real MemoryEventStore, so
+// The harness folds the real `instancesProjection` over a real MemoryEventStore
+// and narrows it back through `legacyTasksViewOf`, so
 // `readTasks` is a genuine fold of what was actually written — not a hand-held
 // state object the writer could agree with by construction.
 
@@ -54,7 +61,7 @@ function buildHarness(): WriterHarness {
   let readTasksCallCount = 0;
 
   const currentTasks = (): TasksState =>
-    replayFromEmpty(tasksProjection, readAllStreamsGrouped(store));
+    legacyTasksViewOf(replayFromEmpty(instancesProjection, readAllStreamsGrouped(store)));
 
   const writer = new TaskWriter({
     emit: (events) => {
@@ -548,14 +555,14 @@ describe('TaskWriter — amendWorkOrder', () => {
   it('reads the projection FRESH and never mutates the state it was handed', () => {
     const { harness, taskId } = harnessWithAuthoredTask();
     const handedOutState = harness.currentTasks();
-    const serializedBefore = tasksProjection.serialize(handedOutState);
+    const serializedBefore = canonicalJson(handedOutState);
     const readsBefore = harness.readTasksCallCount();
 
     harness.writer.amendWorkOrder(taskId, { amendedBy: 'human', scope: 'a fresh scope' });
 
     expect(harness.readTasksCallCount()).toBeGreaterThan(readsBefore);
-    expect(tasksProjection.serialize(handedOutState)).toBe(serializedBefore);
-    expect(tasksProjection.serialize(harness.currentTasks())).not.toBe(serializedBefore);
+    expect(canonicalJson(handedOutState)).toBe(serializedBefore);
+    expect(canonicalJson(harness.currentTasks())).not.toBe(serializedBefore);
   });
 });
 
@@ -796,14 +803,14 @@ describe('TaskWriter — it reads the projection FRESH and never mutates it', ()
     // would corrupt a snapshot. Serialized before and after, byte-compared.
     const { harness, taskId } = harnessWithTaskAt('backlog');
     const handedOutState = harness.currentTasks();
-    const serializedBefore = tasksProjection.serialize(handedOutState);
+    const serializedBefore = canonicalJson(handedOutState);
 
     harness.writer.proposeTaskTransition(taskId, proposal({ toStage: 'planning' }));
     harness.writer.proposeTaskTransition(taskId, proposal({ toStage: 'nonsense' as TransitionProposal['toStage'] }));
 
-    expect(tasksProjection.serialize(handedOutState)).toBe(serializedBefore);
+    expect(canonicalJson(handedOutState)).toBe(serializedBefore);
     // ...while the store genuinely moved on, so the comparison above is not
     // vacuously true against a board that never changed.
-    expect(tasksProjection.serialize(harness.currentTasks())).not.toBe(serializedBefore);
+    expect(canonicalJson(harness.currentTasks())).not.toBe(serializedBefore);
   });
 });

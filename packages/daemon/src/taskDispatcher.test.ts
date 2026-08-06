@@ -7,7 +7,13 @@ import {
   SteppingClock,
   readAllStreamsGrouped,
   replayFromEmpty,
-  tasksProjection,
+  // S11·U1 (D72 Move 2): the fold is the INSTANCE store now; every task-shaped
+  // read below goes through `legacyTasksViewOf`, which is where the shape these
+  // assertions speak lives. The subjects under test (writer/dispatcher/api/tool)
+  // are untouched by the rename — that is what these unchanged assertions prove.
+  canonicalJson,
+  instancesProjection,
+  legacyTasksViewOf,
   taskCreated,
   taskSessionAttached,
   type EventInput,
@@ -1998,7 +2004,7 @@ describe('TaskDispatcher — recordPlan: the native plan-capture seam (S7·5b-i)
       ids: new CountingIdSource(),
     });
     const readTasks = (): TasksState =>
-      replayFromEmpty(tasksProjection, readAllStreamsGrouped(store));
+      legacyTasksViewOf(replayFromEmpty(instancesProjection, readAllStreamsGrouped(store)));
     const emit = (events: EventInput[]): void => {
       store.append(events);
     };
@@ -2070,7 +2076,7 @@ describe('TaskDispatcher — recordPlan: the native plan-capture seam (S7·5b-i)
       }),
       taskSessionAttached({ taskId: TASK_ID, stage: 'planning', appSessionId: PLANNER_SESSION_ID }),
     ]);
-    const readTasks = (): TasksState => replayFromEmpty(tasksProjection, readAllStreamsGrouped(store));
+    const readTasks = (): TasksState => legacyTasksViewOf(replayFromEmpty(instancesProjection, readAllStreamsGrouped(store)));
 
     const artifactStore = new MemoryArtifactStore();
     const dispatcher = new TaskDispatcher({
@@ -2096,9 +2102,9 @@ describe('TaskDispatcher — recordPlan: the native plan-capture seam (S7·5b-i)
     expect(artifactStore.getBlob(foldedTask.planArtifactHash!)).toBe(PLAN_TEXT);
 
     // Double-fold identical (I6): the same log serializes to the same bytes.
-    const firstSerialization = tasksProjection.serialize(readTasks());
-    const secondSerialization = tasksProjection.serialize(
-      replayFromEmpty(tasksProjection, readAllStreamsGrouped(store)),
+    const firstSerialization = canonicalJson(readTasks());
+    const secondSerialization = canonicalJson(
+      legacyTasksViewOf(replayFromEmpty(instancesProjection, readAllStreamsGrouped(store))),
     );
     expect(secondSerialization).toBe(firstSerialization);
   });
@@ -2287,7 +2293,7 @@ describe('TaskDispatcher — recordReview: the review path seam (S7·6b)', () =>
       }),
       taskSessionAttached({ taskId: TASK_ID, stage: 'review', appSessionId: REVIEWER_SESSION_ID }),
     ]);
-    const readTasks = (): TasksState => replayFromEmpty(tasksProjection, readAllStreamsGrouped(store));
+    const readTasks = (): TasksState => legacyTasksViewOf(replayFromEmpty(instancesProjection, readAllStreamsGrouped(store)));
 
     const dispatcher = new TaskDispatcher({
       sessionHost: new RecordingSessionHost(),
@@ -2308,9 +2314,9 @@ describe('TaskDispatcher — recordReview: the review path seam (S7·6b)', () =>
     expect(folded.stage).toBe('review');
 
     // Double-fold identical (I6): the same log serializes to the same bytes.
-    const firstSerialization = tasksProjection.serialize(readTasks());
-    const secondSerialization = tasksProjection.serialize(
-      replayFromEmpty(tasksProjection, readAllStreamsGrouped(store)),
+    const firstSerialization = canonicalJson(readTasks());
+    const secondSerialization = canonicalJson(
+      legacyTasksViewOf(replayFromEmpty(instancesProjection, readAllStreamsGrouped(store))),
     );
     expect(secondSerialization).toBe(firstSerialization);
   });
@@ -2501,7 +2507,7 @@ describe('TaskDispatcher — recordCompletion: the completion path seam (S7·7b)
         appSessionId: IMPLEMENTER_SESSION_ID,
       }),
     ]);
-    const readTasks = (): TasksState => replayFromEmpty(tasksProjection, readAllStreamsGrouped(store));
+    const readTasks = (): TasksState => legacyTasksViewOf(replayFromEmpty(instancesProjection, readAllStreamsGrouped(store)));
 
     const dispatcher = new TaskDispatcher({
       sessionHost: new RecordingSessionHost(),
@@ -2530,9 +2536,9 @@ describe('TaskDispatcher — recordCompletion: the completion path seam (S7·7b)
     });
 
     // Double-fold identical (I6): the same log serializes to the same bytes.
-    const firstSerialization = tasksProjection.serialize(readTasks());
-    const secondSerialization = tasksProjection.serialize(
-      replayFromEmpty(tasksProjection, readAllStreamsGrouped(store)),
+    const firstSerialization = canonicalJson(readTasks());
+    const secondSerialization = canonicalJson(
+      legacyTasksViewOf(replayFromEmpty(instancesProjection, readAllStreamsGrouped(store))),
     );
     expect(secondSerialization).toBe(firstSerialization);
   });

@@ -13,7 +13,13 @@ import {
   readAllStreamsGrouped,
   replayFromEmpty,
   taskStageEdgesRecord,
-  tasksProjection,
+  // S11·U1 (D72 Move 2): the fold is the INSTANCE store now; every task-shaped
+  // read below goes through `legacyTasksViewOf`, which is where the shape these
+  // assertions speak lives. The subjects under test (writer/dispatcher/api/tool)
+  // are untouched by the rename — that is what these unchanged assertions prove.
+  canonicalJson,
+  instancesProjection,
+  legacyTasksViewOf,
   type EventRecord,
   type IdSource,
   type MeterRecord,
@@ -195,7 +201,7 @@ function buildApiHarness(
   let dispatchCallCount = 0;
   const dispatchedTaskIds: string[] = [];
 
-  const readTasks = () => replayFromEmpty(tasksProjection, readAllStreamsGrouped(store));
+  const readTasks = () => legacyTasksViewOf(replayFromEmpty(instancesProjection, readAllStreamsGrouped(store)));
   const emit = (events: Parameters<MemoryEventStore['append']>[0]): void => {
     store.append(events);
   };

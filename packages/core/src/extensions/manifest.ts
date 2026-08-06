@@ -26,7 +26,7 @@
 
 import { parse as parseToml, TomlError } from 'smol-toml';
 import { z } from 'zod';
-import { EVENT_TYPES } from '../events.js';
+import { EVENT_TYPES, RETIRED_EVENT_KINDS } from '../events.js';
 
 // ── the host's own versions and vocabularies ─────────────────────────────────
 
@@ -141,8 +141,19 @@ export const ENGINE_EVENT_KINDS: readonly string[] = Object.values(EVENT_TYPES);
 // DEPRECATION state, "or the versioning story ships the silent failure it
 // exists to prevent". `meter_threshold_crossed` is retained-for-validation with
 // zero producers (events.ts:66-78) — subscribing to it waits forever.
+//
+// ⚠ **THE S11 ROWS ARE DERIVED FROM `RETIRED_EVENT_KINDS` (events.ts), NEVER
+// RESTATED.** The alias table is the one source of record for "this kind was
+// retired and this is its sibling" (principle 9); a hand-copied list here would
+// be a second one, and the day they disagreed the parser would either warn about
+// a live kind or stay silent about a dead one. Retiring a kind is therefore ONE
+// edit — add the alias row — and this map, the reducer's fold path and the
+// manifest warning all move together.
 export const DEPRECATED_EVENT_KINDS: Readonly<Record<string, string>> = {
   [EVENT_TYPES.meterThresholdCrossed]: EVENT_TYPES.meterAlert,
+  ...Object.fromEntries(
+    Object.entries(RETIRED_EVENT_KINDS).map(([retiredKind, row]) => [retiredKind, row.canonical]),
+  ),
 };
 
 // §2.3's per-field gating: `{ field path → the api_version that introduced it }`.

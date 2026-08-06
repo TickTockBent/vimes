@@ -6,7 +6,7 @@ import type { EventRecord } from '../schemas.js';
 import { MemorySnapshotStore, type SnapshotStore } from '../projections/projection.js';
 import { sessionsProjection, type SessionsState } from '../projections/sessions.js';
 import { metersProjection, type MetersState } from '../projections/meters.js';
-import { tasksProjection, type TasksState } from '../projections/tasks.js';
+import { instancesProjection, type InstancesState } from '../projections/instances.js';
 import { RunRegistry } from './registry.js';
 import { FakeSdk } from './fakeSdk.js';
 import { FakePty } from './fakePty.js';
@@ -37,7 +37,10 @@ export class ProjectionHost {
   private readonly unsubscribes: Array<() => void> = [];
   private sessions: SessionsState = sessionsProjection.init();
   private meters: MetersState = metersProjection.init();
-  private tasks: TasksState = tasksProjection.init();
+  // S11·U1: the INSTANCE store. The subscribed stream is still 'tasks'
+  // (STATIC_STREAMS above) — the stream name is persisted state and did not move
+  // with the vocabulary; only the fold and its projection id did.
+  private instances: InstancesState = instancesProjection.init();
 
   constructor(router: EventRouter, store: EventStore) {
     this.router = router;
@@ -64,7 +67,7 @@ export class ProjectionHost {
   private foldLive(event: EventRecord): void {
     this.sessions = sessionsProjection.apply(this.sessions, event);
     this.meters = metersProjection.apply(this.meters, event);
-    this.tasks = tasksProjection.apply(this.tasks, event);
+    this.instances = instancesProjection.apply(this.instances, event);
   }
 
   sessionsState(): SessionsState {
@@ -79,7 +82,7 @@ export class ProjectionHost {
     return {
       [sessionsProjection.id]: sessionsProjection.serialize(this.sessions),
       [metersProjection.id]: metersProjection.serialize(this.meters),
-      [tasksProjection.id]: tasksProjection.serialize(this.tasks),
+      [instancesProjection.id]: instancesProjection.serialize(this.instances),
     };
   }
 }

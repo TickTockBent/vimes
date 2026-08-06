@@ -29,7 +29,7 @@ export interface ProjectsState {
 
 // Immutably replace one project; a no-op when the project is unknown (log is
 // truth, nothing throws — updates for projects we never saw created are ignored
-// and never fabricate a record). Mirrors `withTask` in projections/tasks.ts.
+// and never fabricate a record). Mirrors `withInstance` in projections/instances.ts.
 function withProject(
   state: ProjectsState,
   projectId: string,

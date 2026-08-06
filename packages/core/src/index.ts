@@ -91,7 +91,20 @@ export {
   type HeadroomGateReason,
   type HeadroomGateResult,
 } from './meterDerivations.js';
-export { tasksProjection, type TasksState } from './projections/tasks.js';
+// S11·U1 (D72 Move 2): the INSTANCE store replaced the task store, and
+// `projections/tasks.ts` was deleted in the same unit (D72: a unit that leaves
+// both paths live is not finished). `legacyTasksViewOf` + `TasksState` are the
+// narrowing that keeps today's consumers — the `/api/projections/tasks` alias
+// route and the frozen-fixture exit gate — reading the shape they already know;
+// both die with the aliases, one deploy after the UI migrates (q24).
+export {
+  instancesProjection,
+  type InstanceRecord,
+  type InstancesState,
+  type NodeHistoryEntry,
+  type FiledReport,
+} from './projections/instances.js';
+export { legacyTasksViewOf, type TasksState } from './projections/legacyTasksView.js';
 // S8·1 D42 — the project registry: the fold, and `projectForCwd`, which is THE
 // ONLY ATTRIBUTION AUTHORITY (see its note). A consumer that needs "which project
 // owns this cwd?" imports it from here and never re-derives prefix matching.

@@ -13,7 +13,7 @@ import {
 } from '../projections/projection.js';
 import { sessionsProjection } from '../projections/sessions.js';
 import { metersProjection } from '../projections/meters.js';
-import { tasksProjection } from '../projections/tasks.js';
+import { instancesProjection } from '../projections/instances.js';
 import { orphanScan } from './registry.js';
 import { createWorld, type World, type WorldSeed } from './world.js';
 
@@ -21,7 +21,7 @@ import { createWorld, type World, type WorldSeed } from './world.js';
 const PROJECTIONS: ReadonlyArray<Projection<unknown>> = [
   sessionsProjection as Projection<unknown>,
   metersProjection as Projection<unknown>,
-  tasksProjection as Projection<unknown>,
+  instancesProjection as Projection<unknown>,
 ];
 
 // A scenario is a deterministic script over a World. run() may restart the world;
