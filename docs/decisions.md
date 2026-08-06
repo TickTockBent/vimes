@@ -2350,3 +2350,187 @@ and per-project declaration schemas reserved (0.5); the task-machine
 migration map and drive-verb drop-in spec produced; migration sequencing
 (seam-first vs migrate-last) an explicit pass question. Docs-first; nothing
 builds until the pass is signed.
+
+## D62 — Keep the private seam on both faces; ACP is vocabulary now, an adapter on trigger, a face as a future extension — DECIDED 2026-08-06
+
+*(Moved from open-questions.md on the slice-9 pass signature. Research basis:
+the S9·0a ACP read, 2026-08-05, primary docs — scratchpad/s9-0a-acp-read.md;
+recommendation carried into migration-map.md §3.3 and signed with the pass.)*
+
+**The decision, three commitments:**
+
+1. **Provider side — private seam now, `AcpAgentAdapter` on the provider-#2
+   trigger.** The `SessionAdapter`/`AdapterCapabilities` seam (D18) stays
+   ours: provider #1's value depends on sub-ACP access (D48 deny-and-harvest,
+   D50 clamps, hook custody, JSONL observation) that ACP cannot express. When
+   provider #2 actually fires, implement it as ONE generic ACP-client adapter
+   behind the existing seam — 40+ registry agents become spawnable without
+   ACP ever becoming *the* seam. Full rule-0.6 fragile-adapter treatment.
+2. **Client side — vocabulary yes, protocol no.** Four steals adopted into
+   the client contract (migration-map §3.3), each vocabulary never protocol:
+   gate OPTION FAMILIES (`allow_always`-class kinds reserved, no rule
+   storage), elicitation's restricted question schemas (D68's shape
+   discipline), tool-call `kind`/`status`/`locations` (derived from the
+   structured stream, 0.8), capability negotiation with omitted=unsupported.
+   An ACP *face* — an external Tier-2 extension consuming the public API and
+   speaking ACP outward to editors, engine-ignorant — is banked with an
+   explicit trigger: ACP v2 + remote transports stabilize, or real external-
+   editor demand arrives.
+3. **The sub-question answered:** ACP's plan primitive is a progress/todo
+   surface, not an artifact; its plan boundary is an exit-mode tool call that
+   can only be approved or rejected. D48's deny-and-harvest has NO ACP
+   expression — the plan boundary stays a VIMES-private seam under every
+   posture, permanently.
+
+**Why not full adoption:** the topology inverts (ACP clients spawn agents;
+the VIMES daemon owns processes and outlives every client), remote transports
+are an unstabilized RFD, and v1→v2 is reshaping exactly the surfaces that fit
+best (permissions, message chunking). VIMES is ahead of the standard on the
+axis that defines it — remote, multi-client, persistent, custodial.
+
+## D66 — The extension boundary: two tiers, one vocabulary — DECIDED 2026-08-06
+
+*(Moved from open-questions.md on the slice-9 pass signature. Full proposal:
+extension-model.md §1, now the standing reference.)*
+
+**Tier 1** — in-process TypeScript modules in the daemon build: first-party
+only, spine-speed, may register write-path projections, zero failure
+isolation (a Tier-1 crash is a daemon incident, accepted because Tier 1 is
+in-build and reviewed under the gate discipline). **Tier 2** — external
+processes (argv commands or one supervised worker) over the public HTTP/WS/
+MCP surface: language freedom, real crash isolation, capability-gated (D67).
+
+**Both tiers declare the SAME TOML manifest** (`vimes-extension.toml`); the
+tier is one `[runtime].kind` field whose privileged value only builtin trust
+may hold. The **Tier-2-completeness rule** guards #15: any manifest surface
+must be servable over the public API — Tier 1 is a placement optimization,
+never a privileged vocabulary, and a Tier-1-only capability is a finding.
+Two Tier-1 bounds are structural: modules import the declared extension-host
+interface (never core internals — enforced by the `packages/ext-tasks/`
+package boundary, migration-map q29) and modules still PROPOSE (spine writes,
+projection mutation, transition decisions stay engine-owned).
+
+Placement: tasks → Tier 1; Book Genesis → Tier 2 (the deliberate proof Tier 2
+is real); drive verbs → content of their owning extension; future ACP face →
+Tier 2. Reopening trigger: the day a Tier-1 slot is offered to code we did
+not review, D66 reopens rather than stretches.
+
+## D67 — Extension trust: v1 is first-party-only; the grant machinery is built anyway — DECIDED 2026-08-06
+
+*(Moved from open-questions.md on the slice-9 pass signature. Full proposal:
+extension-model.md §5, now the standing reference.)*
+
+**Trust by authorship in v1** — no install path exists at all (a property,
+not a policy): the installed set is the daemon build plus local directories
+the operator names. **But the grant machinery ships day one**, because Tier 2
+is real day one (Book Genesis), #15 makes the API surface the trust surface,
+and the declared `capabilities` array is the review artifact for our own
+PRs: grants pinned to the manifest hash; **unknown capability → reject,
+never grant**; widened grant → re-approval pinned to exact content (declining
+keeps the current version); `extensions.lock` recording source + manifest
+hash + granted set.
+
+**The threat class, named:** this daemon holds Access-authenticated reach
+into every project under `VIMES_PROJECT_ROOTS`, owns session custody and the
+usage window, and is tunnel-published — agenc's class, not herdr's laptop.
+**The honest ceiling, in the doc verbatim:** capabilities without OS
+enforcement are informed consent, not containment — coherent exactly while
+author == consenter. **That equivalence is D67's load-bearing conditional and
+its reopening trigger:** before any extension VIMES did not author is
+installed (realistically: before the authoring method is published), D67
+reopens as a new dated entry.
+
+The capability taxonomy grades by EFFECT (session.read HIGH — the
+exfiltration grant; session.unattended HIGH, never implied; terminal.create
+HIGH — RCE by design; no cross-extension capability exists at all).
+`confinement = { mode, paths }` is reserved on the dispatch spec — **off by
+default** per E3's third meaning of directory (Wes's conscious signature,
+diverging from agenc's default-on; agenc's fail-closed broker named as the
+eventual enforcement shape, with VIMES's five execution surfaces enumerated
+now while it is free).
+
+## D71 — The slice-9 extension-engine design pass is SIGNED; the E1–E3 settlements are records; the kill criterion held — DECIDED 2026-08-06
+
+*(Wes reviewed the assembled pass — extension-model.md, node-kit.md,
+migration-map.md, architecture.md, the tree-spine reservation `74dfe4b`, and
+the signing packet — and signed 2026-08-06. The DRAFT banners drop with this
+entry. The 29 open questions accumulated across the pass docs, each carrying
+a DEFAULT TAKEN, are confirmed as recorded.)*
+
+**The E-settlements, now records** (walked with Wes 2026-08-05,
+architecture.md is the full text):
+
+- **E1-a** — the cost ledger is ENGINE; budget policy is the scheduler
+  extension's.
+- **E1-b** — the artifact store is an ENGINE blob service, namespaced per
+  extension by the engine from the caller's identity.
+- **E1-c** — mounting declared tools into sessions is ENGINE; the verbs are
+  extension content (D65's split, generalized).
+- **E1-d** — the engine owns `dispatch(sessionSpec) → completion events`;
+  extensions own everything deciding WHAT and WHEN (function-level cut:
+  migration-map §1.5).
+- **E1-e** — the persistent-chat primitive is ENGINE (ensure/attach, turn
+  delivery, standing notes); the orchestrator persona, doctrine and grants
+  are extension content (cut: migration-map §1.6; test: a project with no
+  extensions still has a chat).
+- **E2-a** — ONE node kind; provenance is a nullable property,
+  WRITE-ONCE-AT-CREATION; null stays null forever; converting = a new child
+  node; no `node_moved` in v1.
+- **E2-b** — subtree aggregation is an ENGINE projection: an explicit,
+  VERSIONED total order over attention severities (v1 shipped in
+  `nodeRollup.ts`), and rollups count PROCESSES, not open nodes.
+- **E2-c** — both humans and extensions propose checkouts through one API;
+  the engine does git (principle 13 applied to the filesystem); create ≠
+  open, fails loud; removal gated on resumable sessions (SP8·2).
+- **E3-a** — groups are directory-OPTIONAL; the three meanings of directory
+  stay separate (organization / spawn default / opt-in containment reserved).
+
+**The kill-criterion verdict, signed:** both tenants — the task machine (30
+mapped rows) and Book Genesis (31 rows) — are hosted by the node kit with
+zero engine carve-outs. Standing assertable rule (node-kit §1.10): **the
+engine's source may not contain a tenant's word.** The ten named bends are
+accepted as recorded.
+
+**The three walk-first calls, decided as defaulted:**
+- The engine gains the **workflow-instance store** (q6/q13): engine-owned
+  core fields + opaque manifest-declared payload — E4's NINTH item. Its
+  sibling growth is the generic rubric acceptance evaluator
+  (ex-`deriveReviewOutcome`).
+- **`offered_when` is retired** (q14): exposure = node-declared `tools` +
+  entity grants. No predicate grammar, ever.
+- **Event-kind renames** (q21): generic instance siblings are new kinds; a
+  permanent versioned alias table replays retired kinds; history is never
+  rewritten; deprecated kinds warn like unknown ones (q8 decided with it:
+  the event-kind allowlist is versioned public API).
+
+**Also signed with the pass:** the client contract entire (migration-map
+§3 — shared IA/per-client grammar, the nine API items, blocks-degrade-to-
+text, meters as engine chrome no extension may re-source); scope 7 covered
+by the tasks manifest's two-faced verb declarations (no separate doc);
+principle #16 ratified (design-principles.md); `nodeConfig` as
+required-null; the confirm-batch defaults 1–5, 9–12, 15–20, 22–29 as
+recorded in their documents.
+
+## D72 — Migration sequencing: SEAM-FIRST — DECIDED 2026-08-06
+
+*(Signed with the pass; full argument migration-map.md §2.)*
+
+The recorded behaviour (the trial's event log, seq 101–111, plus the
+3132-test suite at slice-8 close) is the migration FIXTURE — refactors are
+free, behaviour is the test — and seam-first is the only order in which that
+fixture stays a test rather than becoming a post-mortem. The differential
+test node-kit demands (declared edges vs `TASK_STAGE_EDGES`) mechanically
+requires the parser to exist before the migration.
+
+**The moves:** 0 — freeze the fixture into a repo file; 1 — manifest parser +
+registry with ZERO consumers (exit: the differential test; kill: the
+vimes-tasks manifest cannot be written without amending the kit more than
+once); 2 — the instance store as `projections/tasks.ts` + `taskWriter` +
+`taskApi` generalized (riskiest early, while the old code stands as
+reference; alias table; `/api/tasks/*` aliases live exactly one deploy); 3 —
+adjudication reads the pinned declaration, then `TASK_STAGE_EDGES` dies.
+**The coexistence rule: the seam moves, the state does not** — never
+dual-write the spine; every step deletes what it replaces in the same unit.
+Untouched until their own units: routes/WS vocabulary, the whole UI (the
+ci-gate partial-deploy hazard makes this a hard line), MCP names, the
+orchestrator founding, Book Genesis.

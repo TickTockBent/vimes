@@ -1,5 +1,12 @@
 # Slice 9 — the extension-engine design pass (D70)
 
+> **✅ CLOSED — SIGNED 2026-08-06 (D71/D72; D62/D66/D67 decided; #16
+> ratified).** Exit gate met in full: Wes signed the assembled pass. The
+> kill criterion was tested and NOT tripped (node-kit.md §4). Deliverables:
+> extension-model.md, node-kit.md, migration-map.md, architecture.md
+> (banners dropped), the tree-spine reservation (`74dfe4b`), and
+> slice-9-signing-packet.md. The build era opens at migration Move 0.
+
 Opened 2026-08-05 on Wes's sign-off of D70. **A design pass, not a build
 slice**: its outputs are decisions, reserved schemas, and signed specs.
 Nothing builds until Wes signs the assembled pass. Absorbs the former D51

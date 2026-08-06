@@ -1,6 +1,6 @@
 # The extension model — tiers + manifest (S9·2)
 
-**DRAFT — proposed, awaiting pass sign-off (S9·6).**
+**SIGNED 2026-08-06 (D71) — the standing reference.**
 
 Written 2026-08-05 as the S9·2 deliverable of the slice-9 extension-engine
 design pass (D70). It answers pass scope questions 1 (the engine/extension

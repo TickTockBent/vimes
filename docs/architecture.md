@@ -1,4 +1,4 @@
-# Architecture — the engine core + session trees (S9·1, DRAFT)
+# Architecture — the engine core + session trees (S9·1)
 
 Spun up 2026-08-05 for the slice-9 extension-engine design pass (D70). This
 document is the S9·1 skeleton: each numbered element carries its proposal
@@ -6,7 +6,9 @@ and its open **DECISION** points, walked with Wes element by element. When
 the pass is signed, the DECISION markers become D-records or die, and this
 file becomes the standing architecture reference.
 
-Status: **DRAFT — walking with Wes.** Nothing here builds anything.
+Status: **SIGNED 2026-08-06 (D71).** The E1–E3 settlements are
+D-records; this file is the standing architecture reference for the engine
+core and the session tree.
 
 ---
 
@@ -34,29 +36,29 @@ This element makes that a module-by-module claim over what exists today.
   domain objects "readable by anything that schedules work." Extensions
   schedule work ⇒ the LEDGER is engine; budget *policy* (decline/defer
   rules) is the scheduler-extension's.
-  **DECISION E1-a** *(walked 2026-08-05: accepted as proposed, pending pass sign-off)*: confirm ledger = engine, policy = extension.
+  **DECISION E1-a** *(walked 2026-08-05: accepted as proposed; SIGNED 2026-08-06 → D71)*: confirm ledger = engine, policy = extension.
 - **The artifact store** (content-addressed blobs, today holding plans and
   review reports for the task machine) — generalizes cleanly to an engine
   blob service any extension can use (Book Genesis: manuscripts, scores).
-  **DECISION E1-b** *(walked 2026-08-05: accepted as proposed, pending pass sign-off)*: artifact store = engine service with per-extension
+  **DECISION E1-b** *(walked 2026-08-05: accepted as proposed; SIGNED 2026-08-06 → D71)*: artifact store = engine service with per-extension
   namespacing, or migrates out with the task machine?
 - **MCP verb-family servers** (D65 `vimes_report`, `vimes_board`) — the
   HOSTING mechanism (mount a tool server into a session) is engine; the
   VERBS are extension content.
-  **DECISION E1-c** *(walked 2026-08-05: accepted as proposed, pending pass sign-off)*: confirm the split — engine provides "mount declared
+  **DECISION E1-c** *(walked 2026-08-05: accepted as proposed; SIGNED 2026-08-06 → D71)*: confirm the split — engine provides "mount declared
   tools into sessions," extensions declare the tools.
 
 **Leaves the engine (becomes the tasks extension / others):**
 - Task state machine, stages, transitions, `deriveReviewOutcome`.
 - The board UI, work-order schema, promotion gates.
 - The dispatcher's *policy* half (what to run when a task enters a stage).
-- **DECISION E1-d** *(walked 2026-08-05: accepted as proposed, pending pass sign-off)* **— the dispatcher split**: the generic half ("spawn a
+- **DECISION E1-d** *(walked 2026-08-05: accepted as proposed; SIGNED 2026-08-06 → D71)* **— the dispatcher split**: the generic half ("spawn a
   session with this briefing/clamps/isolation, report its completion") is
   an engine capability every workflow needs; the task-machine half (stage
   routing) is extension. Where exactly is the cut — proposal: engine owns
   `dispatch(sessionSpec) → completion events`; extension owns everything
   that decides WHAT and WHEN.
-- **DECISION E1-e** *(walked 2026-08-05: accepted as proposed, pending pass sign-off)* **— the standing orchestrator**: the mockups list
+- **DECISION E1-e** *(walked 2026-08-05: accepted as proposed; SIGNED 2026-08-06 → D71)* **— the standing orchestrator**: the mockups list
   "Orchestration" as an extension. The founding/briefing/notes MACHINERY
   (persistent per-project chat with doctrine) smells engine-adjacent
   ("project-scoped chats with the orchestrator" is in the 2026-07-20

@@ -141,6 +141,16 @@ principle before recommending. Seeded at kickoff from the spec's ground rules
     a capability the public API must carry — "internal-only" API surface is
     a smell, and the D66 two-tier boundary decides which tier gets what, not
     whether a second interface exists.
+16. **The engine makes zero assumptions about how people work.**
+    *(D70's mandate, ratified with the slice-9 pass, 2026-08-06.)* Custody,
+    the spine, the session tree, gates and questions, blobs, dispatch, and
+    the instance store are the whole engine; every workflow noun — task,
+    stage, review, chapter, phase — reaches the engine as a declaration it
+    validates, an id it stores, or a payload it fans out unread. The
+    assertable form (node-kit §1.10): **the engine's source may not contain
+    a tenant's word** — a grep of `packages/core` post-migration is the
+    test. Proven at signature on two tenants (the task machine and Book
+    Genesis, zero carve-outs); one tenant proves nothing about generality.
 
 ## Standing consequences worth restating
 

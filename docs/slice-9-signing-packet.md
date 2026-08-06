@@ -1,8 +1,9 @@
 # Slice 9 — the signing packet (S9·6)
 
-**Assembled overnight 2026-08-05→06 (the night shift). For Wes, over coffee.**
-Everything below is proposed; nothing builds until you sign. Contest anything —
-a rejection with rationale is an exit gate too (slice-9.md).
+**Assembled overnight 2026-08-05→06 (the night shift). SIGNED by Wes
+2026-08-06 — recorded as D71/D72 + D62/D66/D67 + principle #16. This
+document is now the historical record of what was signed; the standing
+references are the pass documents themselves.**
 
 The night ran under the four rules you set: local commits only (nothing
 pushed), stop-on-finding, nothing user-visible (no deploy, no ci-gate, no
