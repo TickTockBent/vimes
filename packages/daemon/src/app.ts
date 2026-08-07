@@ -54,7 +54,7 @@ import {
 import { WsHub, type WsHubDeps } from './wsHub.js';
 import { registerFileApi } from './fileApi.js';
 import { registerGitApi } from './gitApi.js';
-import { registerTaskApi } from './taskApi.js';
+import { registerInstanceApi } from './instanceApi.js';
 import { registerProjectApi } from './projectApi.js';
 import { registerOrchestratorApi, standingNotesPathFor } from './orchestratorApi.js';
 import { buildCreateTaskSpec } from './createTaskTool.js';
@@ -585,16 +585,28 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     instanceWriter,
   });
 
-  registerTaskApi(app, {
+  // S11·U3 (D72 Move 2): the generic instance routes ARE the contract now, and
+  // every `/api/tasks/*` path they replaced is registered beside them as a
+  // deprecated alias for exactly one deploy (q24 — the inventory is in
+  // instanceApi.ts's header, together with the `/api/projections/tasks` row
+  // above). The deployed UI reads the aliases and is deliberately untouched.
+  registerInstanceApi(app, {
     instanceWriter,
     // ONE explicit attempt per request. No loop, no timer, no scheduling — step
     // 4a's boundary, unchanged. The promise is step 8's async ripple and nothing
     // more; the envelope the route returns is byte-identical.
     dispatchTask: (taskId) => taskDispatcher.dispatchTask(taskId),
     // The SAME allowlist union the file/git APIs use, verbatim, read fresh per
-    // request. A task's projectRoot is a durable instruction to spawn a process
-    // in a directory, so it is walled by exactly the same allowlist a file read is.
+    // request. An instance's project root is a durable instruction to spawn a
+    // process in a directory, so it is walled by exactly the same allowlist a
+    // file read is.
     getAllowedRoots: () => [...config.projectRoots, ...sessionHost.liveSessionCwds()],
+    // The INSTANCE fold, read fresh per response — the generic routes' envelopes
+    // carry the record as the projection folded it (I12). Deliberately NOT
+    // `readTasksAsLegacyView` above: that narrowing exists for the writers and
+    // the alias, and handing it to the generic surface would make the new
+    // contract a view of the old one.
+    readInstances: () => bootFromSnapshot(instancesProjection, snapshotStore, store),
   });
 
   // ─── the project registry (S8·1, D42) ──────────────────────────────────────

@@ -3,6 +3,8 @@ import { z } from 'zod';
 import {
   shouldDispatchOnTransition,
   taskStageEdgesRecord,
+  type InstanceRecord,
+  type InstancesState,
   type TaskRecord,
   type TaskStage,
   type TransitionProposal,
@@ -11,7 +13,11 @@ import {
   type WorkOrderAmendedPayload,
 } from '@vimes/core';
 import { resolveWithinRoots, realpathProbe, type RealpathProbe } from './filePaths.js';
-import { InstanceProjectionDisagreementError, type InstanceWriter } from './instanceWriter.js';
+import {
+  InstanceProjectionDisagreementError,
+  type CreateInstanceInput,
+  type InstanceWriter,
+} from './instanceWriter.js';
 import type { DispatchAttemptResult } from './taskDispatcher.js';
 
 // ─── slice 6 step 4b — the task API (REST, behind the auth wall) ─────────────
@@ -36,8 +42,50 @@ import type { DispatchAttemptResult } from './taskDispatcher.js';
 //
 // ⚠ NO TIMER, NO INTERVAL, NO SUBSCRIPTION, NO `Date.now()` anywhere in this
 // file. Every route runs to completion inside the request that invoked it.
+//
+// ─── S11·U3 (D72 Move 2) — this file is `taskApi.ts` RE-HOMED ────────────────
+//
+// Not a rewrite: every behaviour above and below is the one that shipped. What
+// changed is which SPELLING is the contract. The generic `/api/instances/*`
+// routes are now the surface the system is built on; the `/api/tasks/*` paths
+// survive as DEPRECATED ALIASES for exactly one deploy (see the inventory
+// below). `taskApi.ts` is deleted in this same unit — D72's governing rule is
+// that a unit which leaves both paths live is not finished.
+//
+// ⚠ ONE HANDLER CORE PER OPERATION, TWO SURFACE REGISTRATIONS. The alias and
+// its generic twin are the SAME code path: they differ only in how the request
+// body spells the location fields (`projectRoot`/`stage` vs `project`/`node`),
+// which path param carries the id, and which key the success envelope hangs the
+// record on (`task` vs `instance`). Everything that could drift BEHAVIOURALLY —
+// validation, the allowlist wall, the writer call, the status codes, the error
+// bodies, the dispatch rider — is shared, so the two surfaces cannot answer
+// differently while both exist (S11-A4).
+//
+// ─── THE ALIAS INVENTORY (q24 — ONE DEPLOY OF OVERLAP, then these die) ───────
+//
+// This deploy serves the generic routes AND every alias below; the deployed UI
+// keeps working untouched (a UI that learned the new vocabulary would ship
+// itself ahead of the daemon via ci-gate — the D37 failure class). A LATER UI
+// unit switches the client to the generic routes; the daemon deploy AFTER that
+// deletes this list. Exactly one deploy of overlap, as decided.
+//
+//   • POST /api/tasks                        → POST /api/instances
+//   • POST /api/tasks/:taskId/transitions    → POST /api/instances/:instanceId/moves
+//   • POST /api/tasks/:taskId/amendments     → POST /api/instances/:instanceId/payload-revisions
+//   • POST /api/tasks/:taskId/dispatch       → POST /api/instances/:instanceId/dispatch
+//   • GET  /api/projections/tasks            → (app.ts, S11·U1: `legacyTasksViewOf`
+//                                              of the instances fold — same window,
+//                                              listed here so the inventory is in
+//                                              ONE place)
+//
+// ⚠ TWO ROUTES ARE NOT ON THAT LIST AND HAVE NO GENERIC TWIN THIS SLICE:
+// `GET /api/tasks/stage-edges` and `GET /api/tasks/work-order-schema` move
+// VERBATIM, old paths only. Their generalisation is DECLARATION INTROSPECTION
+// (q25) and needs pinned workflow/node declarations to introspect — Move 3+,
+// not here. Inventing a `/api/instances/edges` that served the compiled task
+// table would be declared truth over observed (rule 0.7).
 
-export interface TaskApiDeps {
+export interface InstanceApiDeps {
   // The SOLE instance writer (step 4b, re-homed S11·U2). Not an emit function:
   // routing every write through the one class is what keeps step 5's in-process
   // watchdog and this HTTP surface from becoming two writers.
@@ -54,12 +102,25 @@ export interface TaskApiDeps {
   // fresh per request — the SAME union and the SAME shape the file/git/search
   // APIs use.
   getAllowedRoots: () => readonly string[];
+  // S11·U3: the INSTANCE fold, read fresh per response for the generic routes'
+  // envelopes. Deliberately a second read rather than a widened writer return:
+  // the writer's return is the LEGACY narrowing (`TaskRecord`, a Move-3 leftover
+  // — see InstanceWriterDeps.readTasks), and widening it here would put the
+  // instance shape on the write path before Move 3 asks for it. Reading the fold
+  // back is also the same I12 posture the writer itself takes: the record a
+  // client receives is the record the log produced, never an echo.
+  readInstances: () => InstancesState;
   // Injected realpath probe (fs boundary). Defaults to the real one; mirrors
   // FileApiDeps / GitApiDeps.
   realpath?: RealpathProbe;
 }
 
 // ── the wire contract ────────────────────────────────────────────────────────
+//
+// ⚠ THE LEGACY HALF OF THIS SECTION IS THE ALIAS CONTRACT, FROZEN. Every type
+// below whose success key is `task` is what an `/api/tasks/*` alias serves, and
+// it is byte-identical to what shipped — the deployed UI parses these exact
+// shapes. They die with the aliases (q24), not before.
 
 export interface CreateTaskResponse {
   task: TaskRecord;
@@ -91,6 +152,32 @@ export interface DispatchResponse {
 export interface AmendWorkOrderResponse {
   task: TaskRecord;
 }
+
+// ── the generic half — THE CONTRACT FROM THIS SLICE ON ───────────────────────
+//
+// Same envelopes, same status codes, same optional-key discipline; the record is
+// the INSTANCE record as `readInstances()` folded it, under `instance`.
+// `DispatchResponse` above is shared by both surfaces unchanged — the dispatch
+// result vocabulary is already engine-shaped and workflow-blind, so there is
+// nothing in it to re-spell.
+
+export interface CreateInstanceResponse {
+  instance: InstanceRecord;
+}
+export type ProposeMoveResponse =
+  | {
+      accepted: true;
+      instance: InstanceRecord;
+      // The S7·7c rider, unchanged and still ABSENT rather than `undefined` on a
+      // non-promoting move — see `ProposeTransitionResponse` above for the whole
+      // reasoning; the two surfaces make ONE dispatch decision in ONE place.
+      dispatch?: DispatchAttemptResult;
+    }
+  | { accepted: false; reason: TransitionRejectionReason };
+export interface RevisePayloadResponse {
+  instance: InstanceRecord;
+}
+
 // S8: the legal-edge table, served so the move sheet can filter to legal next
 // stages without the UI copying `TASK_STAGE_EDGES` (the drift `taskBoard.ts`'s
 // comment used to warn against). Static and read-only — `taskStageEdgesRecord()`
@@ -105,7 +192,7 @@ export interface StageEdgesResponse {
 // `createTaskBodySchema` lives here). So the daemon owns the field shape once (in
 // `createTaskBodySchema`, S7·2a) and serves a descriptor derived from the SAME
 // cap constants; the UI reflects it without a second hand-mirrored field list.
-// The descriptor↔schema drift test in taskApi.test.ts is what keeps the two
+// The descriptor↔schema drift test in instanceApi.test.ts is what keeps the two
 // halves honest, exactly as `exhaustiveVocabulary` guards the re-declared enums.
 export interface WorkOrderSchemaResponse {
   fields: readonly WorkOrderFieldDescriptor[];
@@ -145,6 +232,13 @@ const ISOLATION_VALUES = exhaustiveVocabulary<TaskRecord['isolation']>()([
 // it to core's union at the type level, so a missing value fails typecheck (which
 // is exactly how `cancelled` was caught, S11 2026-07-24) — the guard works, but
 // it is a manual sync until the zod versions converge.
+//
+// ⚠ THE GENERIC CREATE ROUTE VALIDATES `node` AGAINST THIS SAME TUPLE, and that
+// is honest rather than lazy: adjudication is explicitly OUT of slice 11, so the
+// only node vocabulary that exists today is the compiled task machine's. A
+// generic route that accepted any string would be claiming a freedom nothing
+// downstream can honour. Widening it belongs with the pinned declarations (q25,
+// Move 3+) that will define what a node IS.
 const TASK_STAGE_VALUES = exhaustiveVocabulary<TaskRecord['stage']>()([
   'backlog',
   'planning',
@@ -184,7 +278,7 @@ const _recordGatesMatchTheSchema = {} as TaskRecord['gates'] satisfies z.infer<
   typeof taskGatesSchema
 >;
 
-// POST /api/tasks body. Validated at the boundary — a daemon route never trusts a
+// The create body. Validated at the boundary — a daemon route never trusts a
 // request shape (I8: hostile input must not crash anything, and must not reach a
 // decision function as something it is not).
 //
@@ -194,8 +288,9 @@ const _recordGatesMatchTheSchema = {} as TaskRecord['gates'] satisfies z.infer<
 // becomes real; slice-6 step 8 makes it actually isolate. Per-task override
 // retained, which is why the field is still accepted.
 //
-// `stage` defaults to `backlog` — `INITIAL_TASK_STAGE`, stated in the birth record
-// rather than assumed downstream so the projection folds a named stage.
+// The starting node defaults to `backlog` — `INITIAL_TASK_STAGE`, stated in the
+// birth record rather than assumed downstream so the projection folds a named
+// node.
 //
 // ⚠ THE TITLE CAP (step 9, I8). A title is FREE TEXT FROM AN UNTRUSTED CALLER
 // that lands in a durable append-only record and on a rendered card, so it is
@@ -238,11 +333,20 @@ const MAX_WORK_ORDER_TEXT = 8000;
 const MAX_WORK_ORDER_LINE = 2000;
 const MAX_LIST_ITEMS = 100;
 
-// Exported for the S7·3 drift guard ONLY (taskApi.test.ts), which binds
-// `WORK_ORDER_FIELD_DESCRIPTORS` to this schema's shape, optionality, and caps so
-// the served descriptor can never drift from what the route actually validates.
-export const createTaskBodySchema = z.object({
-  projectRoot: z.string(),
+// ── the create body, MINUS the two renamed location fields ───────────────────
+//
+// ⚠ ONE SET OF FIELD SCHEMAS, SHARED BY BOTH SURFACES BY REFERENCE — not two
+// copies that happen to agree today. The alias body and the generic body differ
+// in EXACTLY two keys (`projectRoot`→`project`, `stage`→`node`); everything else
+// is literally the same schema object, so a cap change, an added field or a
+// tightened enum lands on both doors at once and cannot drift (principle 9).
+//
+// The five authored fields stay TOP-LEVEL in the wire body on the generic route
+// too, even though the record and the event nest them under `payload`: the wire
+// body is an AUTHORING surface, not the event. The writer is the one place the
+// authoring shape becomes the payload shape (S11·U2), and moving that mapping
+// out here would make two places responsible for it.
+const createBodyCommonShape = {
   // Over the cap → the whole body fails to parse → 400 with **NO EVENT**, the
   // same idiom every other malformed proposal follows (a proposal that was never
   // a proposal writes nothing). Optional: creation without a title still
@@ -250,7 +354,6 @@ export const createTaskBodySchema = z.object({
   title: z.string().max(MAX_TASK_TITLE_LENGTH).optional(),
   createdBy: z.enum(CREATED_BY_VALUES),
   isolation: z.enum(ISOLATION_VALUES).default('worktree'),
-  stage: z.enum(TASK_STAGE_VALUES).default('backlog'),
   gates: taskGatesSchema.optional(),
   // ── S7·2a: the four AUTHORED work-order fields, bounded (see caps above) ─────
   //
@@ -267,7 +370,36 @@ export const createTaskBodySchema = z.object({
     .max(MAX_LIST_ITEMS)
     .optional(),
   killCriterion: z.string().min(1).max(MAX_WORK_ORDER_TEXT).optional(),
+};
+
+// POST /api/tasks body — THE ALIAS SPELLING (q24), byte-identical to what
+// shipped: `projectRoot` and `stage`, with the same defaults and the same caps.
+//
+// Exported for the S7·3 drift guard ONLY (instanceApi.test.ts), which binds
+// `WORK_ORDER_FIELD_DESCRIPTORS` to this schema's shape, optionality, and caps so
+// the served descriptor can never drift from what the route actually validates.
+// It stays bound to THIS schema (rather than the generic twin) because the
+// descriptor is served on the alias path `/api/tasks/work-order-schema`, which
+// the deployed UI reads.
+export const createTaskBodySchema = z.object({
+  projectRoot: z.string(),
+  stage: z.enum(TASK_STAGE_VALUES).default('backlog'),
+  ...createBodyCommonShape,
 });
+
+// POST /api/instances body — THE CONTRACT. Same fields, same caps, same
+// defaults; `projectRoot`→`project` and `stage`→`node`, which are exactly the
+// two renames q13's core field list makes.
+export const createInstanceBodySchema = z.object({
+  project: z.string(),
+  node: z.enum(TASK_STAGE_VALUES).default('backlog'),
+  ...createBodyCommonShape,
+});
+
+// What both create bodies carry once the two renamed location fields are set
+// aside. Derived from the alias schema rather than hand-written, so it cannot
+// drift from what is actually validated.
+type CreateBodyCommonFields = Omit<z.infer<typeof createTaskBodySchema>, 'projectRoot' | 'stage'>;
 
 // ── S7·3: the work-order authoring descriptor (SINGLE SOURCE, served) ─────────
 //
@@ -277,8 +409,8 @@ export const createTaskBodySchema = z.object({
 // point of the exercise is ONE definition: every cap here is the SAME const
 // `createTaskBodySchema` validates against (MAX_WORK_ORDER_TEXT / _LINE /
 // MAX_LIST_ITEMS), so a future cap change touches one place, and the drift test
-// in taskApi.test.ts binds this array to the schema (same keys, same optionality,
-// same caps) so the two cannot diverge unnoticed.
+// in instanceApi.test.ts binds this array to the schema (same keys, same
+// optionality, same caps) so the two cannot diverge unnoticed.
 //
 // The `kind` tells the form HOW to render:
 //   • longtext      → a <textarea> (the prose fields, scope / killCriterion).
@@ -332,24 +464,42 @@ export const WORK_ORDER_FIELD_DESCRIPTORS: readonly WorkOrderFieldDescriptor[] =
   },
 ];
 
-// POST /api/tasks/:taskId/transitions body.
-//
-// ⚠ `toStage` IS VALIDATED AS A PLAIN STRING, NOT THE STAGE ENUM, AND THAT IS
-// DELIBERATE. Step 1 typed `task_transition_rejected`'s stage fields as
-// `z.string()` precisely so an `unknown-stage` rejection stays RECORDABLE. If zod
-// refused an unknown stage here, that rejection reason would become structurally
-// unreachable through the API, I7 would lose a branch, and the one case where the
-// record matters most (slice 7's hostile input) would produce a 400 with nothing
-// written down. So an unknown stage is let through to `proposeTransition`, and the
-// MACHINE refuses it — on the record.
-const proposeTransitionBodySchema = z.object({
-  toStage: z.string(),
+// The move body, minus the renamed destination field. Shared by reference
+// between the two surfaces for the same reason `createBodyCommonShape` is.
+const moveBodyCommonShape = {
   manualReviewRequired: z.boolean().optional(),
   proposedBy: z.enum(PROPOSED_BY_VALUES),
   note: z.string().optional(),
+};
+
+// POST /api/tasks/:taskId/transitions body — THE ALIAS SPELLING (q24).
+//
+// ⚠ THE DESTINATION IS VALIDATED AS A PLAIN STRING, NOT THE STAGE ENUM, AND THAT
+// IS DELIBERATE — on BOTH surfaces. Step 1 typed `task_transition_rejected`'s
+// stage fields as `z.string()` precisely so an `unknown-stage` rejection stays
+// RECORDABLE. If zod refused an unknown stage here, that rejection reason would
+// become structurally unreachable through the API, I7 would lose a branch, and
+// the one case where the record matters most (slice 7's hostile input) would
+// produce a 400 with nothing written down. So an unknown stage is let through to
+// `proposeTransition`, and the MACHINE refuses it — on the record.
+const proposeTransitionBodySchema = z.object({
+  toStage: z.string(),
+  ...moveBodyCommonShape,
 });
 
-// POST /api/tasks/:taskId/amendments body (S7·2b).
+// POST /api/instances/:instanceId/moves body — THE CONTRACT. `toStage`→`toNode`,
+// still a plain string, for the reason stated above.
+const proposeMoveBodySchema = z.object({
+  toNode: z.string(),
+  ...moveBodyCommonShape,
+});
+
+type MoveBodyCommonFields = Omit<z.infer<typeof proposeTransitionBodySchema>, 'toStage'>;
+
+// The payload-revision body (S7·2b), SHARED VERBATIM BY BOTH SURFACES — the four
+// patchable fields and the author, spelled identically on the alias and on
+// `/api/instances/:instanceId/payload-revisions`. Nothing in it names a node or a
+// project, so the rename had nothing to touch.
 //
 // The PATCH half of `createTaskBodySchema`, bounded by the SAME caps — one policy
 // for work-order text, whichever door it arrives through, so an amendment cannot
@@ -365,6 +515,11 @@ const proposeTransitionBodySchema = z.object({
 // record already carries, and the writer mints only for entries without one. That
 // is what lets a reworded work order preserve the per-criterion identity
 // `report_review` keys its verdicts to (see `RevisePayloadInput`).
+//
+// ⚠ THE AUTHOR FIELD IS STILL SPELLED `amendedBy` ON BOTH DOORS. The writer maps
+// it to the payload's `revisedBy` (S11·U2); re-spelling the WIRE field is a
+// change to a request contract, which belongs with the alias removal rather than
+// with a unit whose whole point is that nothing observable changed.
 const amendWorkOrderBodySchema = z.object({
   amendedBy: z.enum(AMENDED_BY_VALUES),
   scope: z.string().min(1).max(MAX_WORK_ORDER_TEXT).optional(),
@@ -381,32 +536,134 @@ const amendWorkOrderBodySchema = z.object({
   killCriterion: z.string().min(1).max(MAX_WORK_ORDER_TEXT).optional(),
 });
 
-export function registerTaskApi(app: Hono, deps: TaskApiDeps): void {
+// ── the surface descriptors ──────────────────────────────────────────────────
+//
+// A SURFACE is everything about a route that is NOT behaviour: how its body
+// spells the location fields, where its id lives, and how its success envelope
+// is shaped. Two surfaces per operation, one core. Anything you find yourself
+// wanting to put in here that could answer a request DIFFERENTLY belongs in the
+// core instead — that is the whole point of the split.
+
+interface CreateSurface<BodyType extends CreateBodyCommonFields> {
+  readonly schema: z.ZodType<BodyType, unknown>;
+  readonly projectOf: (body: BodyType) => string;
+  readonly nodeOf: (body: BodyType) => TaskStage;
+  readonly created: (context: Context, record: TaskRecord) => Response;
+}
+
+interface MoveSurface<BodyType extends MoveBodyCommonFields> {
+  readonly schema: z.ZodType<BodyType, unknown>;
+  readonly toNodeOf: (body: BodyType) => string;
+  readonly accepted: (
+    context: Context,
+    record: TaskRecord,
+    dispatch: DispatchAttemptResult | undefined,
+  ) => Response;
+}
+
+// The writer's still-task-shaped input, built ONCE from whichever body arrived.
+// `projectRoot` is the RESOLVED path and the node is the surface's, so the two
+// doors hand the writer literally the same object for equivalent requests.
+//
+// Absent stays absent, field by field, all the way down to the birth record —
+// never `''`, never an `undefined`-valued key. The writer's payload assembly
+// depends on that discipline (I6), so it is preserved here rather than
+// re-derived.
+function createInstanceInputFrom(
+  body: CreateBodyCommonFields,
+  resolvedProjectRoot: string,
+  node: TaskStage,
+): CreateInstanceInput {
+  return {
+    // The RESOLVED path, never the raw input — so the record cannot carry a
+    // `..` segment or a symlink that resolves somewhere else later. The
+    // allowlist is checked once, at the boundary; what gets persisted is what
+    // was checked.
+    projectRoot: resolvedProjectRoot,
+    ...(body.title === undefined ? {} : { title: body.title }),
+    createdBy: body.createdBy,
+    isolation: body.isolation,
+    // ⚠ STILL SPELLED `stage` ON THE WRITER'S INPUT (S11·U2's note): the writer
+    // takes the task-shaped input and maps it to the generic payload at its own
+    // emit. This route names the node; the writer names the event.
+    stage: node,
+    ...(body.gates === undefined ? {} : { gates: body.gates }),
+    // The four AUTHORED work-order fields (S7·2a), passed straight through.
+    // `acceptanceCriteria` is the `{ text }[]` INPUT shape here; the writer mints
+    // each `{ id, text }` before it reaches the event.
+    ...(body.scope === undefined ? {} : { scope: body.scope }),
+    ...(body.explicitlyOut === undefined ? {} : { explicitlyOut: body.explicitlyOut }),
+    ...(body.acceptanceCriteria === undefined
+      ? {}
+      : { acceptanceCriteria: body.acceptanceCriteria }),
+    ...(body.killCriterion === undefined ? {} : { killCriterion: body.killCriterion }),
+  };
+}
+
+// The proposal, built ONCE from whichever body arrived.
+function transitionProposalFrom(body: MoveBodyCommonFields, toNode: string): TransitionProposal {
+  return {
+    // ⚠ CAST ON PURPOSE, and the ONLY cast in this file. `TransitionProposal`
+    // types `toStage` to the enum, but step 1 widened the machine's own check to
+    // `string` precisely because a value outside the enum physically reaches it
+    // across this boundary — TypeScript's guarantee stops at the wire. Refusing
+    // it here instead would make `unknown-stage` unreachable (see the schema).
+    toStage: toNode as TransitionProposal['toStage'],
+    proposedBy: body.proposedBy,
+    ...(body.manualReviewRequired === undefined
+      ? {}
+      : { manualReviewRequired: body.manualReviewRequired }),
+    ...(body.note === undefined ? {} : { note: body.note }),
+  };
+}
+
+export function registerInstanceApi(app: Hono, deps: InstanceApiDeps): void {
   const realpath = deps.realpath ?? realpathProbe;
 
-  // ── POST /api/tasks — create ────────────────────────────────────────────────
+  // The instance record as the fold produced it, for the generic envelopes.
   //
-  // ⚠ THE SECURITY BOUNDARY IS `projectRoot`, AND IT IS LOAD-BEARING.
+  // ⚠ THE READ-BACK IS THE POINT, NOT A FORMALITY — the same I12 reasoning
+  // `InstanceWriter.createInstance` states for its own: an envelope built by
+  // hand would agree with itself by construction. A missing record here means
+  // the log and the projection disagree, which is a rule-0.1 FINDING, so it
+  // raises the writer's own error class and surfaces as the 500 below rather
+  // than as a plausible-looking 200.
+  const instanceRecordOf = (instanceId: string): InstanceRecord => {
+    const instance = deps.readInstances().instances[instanceId];
+    if (instance === undefined) {
+      throw new InstanceProjectionDisagreementError(
+        `the instances projection does not hold ${instanceId} immediately after a write that returned it`,
+      );
+    }
+    return instance;
+  };
+
+  // ── the CREATE core ────────────────────────────────────────────────────────
+  //
+  // ⚠ THE SECURITY BOUNDARY IS THE PROJECT ROOT, AND IT IS LOAD-BEARING.
   // `sessionHost.spawnSession()` does NOT validate `cwd` — the only guard in the
-  // daemon today is inside `wsHub.handleSpawn`, on the WS spawn path. A TASK is a
-  // DURABLE INSTRUCTION to spawn a Claude process in a directory, so an
-  // unvalidated `projectRoot` here would be an allowlist bypass WITH A PERSISTENCE
+  // daemon today is inside `wsHub.handleSpawn`, on the WS spawn path. An INSTANCE
+  // is a DURABLE INSTRUCTION to spawn a Claude process in a directory, so an
+  // unvalidated project root here would be an allowlist bypass WITH A PERSISTENCE
   // LAYER: written once, honoured by the dispatcher on every later attempt.
   //
   // The guard is `resolveWithinRoots` — the same symlink-aware helper the
   // file/git/search APIs share, against the same allowlist union — and a refusal
-  // is a 403 with **NO EVENT EMITTED**. A refused creation must not leave a
-  // task-shaped record in the log.
-  app.post('/api/tasks', async (context) => {
-    const parsedBody = await parseJsonBody(context.req.raw, createTaskBodySchema);
+  // is a 403 with **NO EVENT EMITTED**. A refused creation must not leave an
+  // instance-shaped record in the log.
+  const handleCreate = async <BodyType extends CreateBodyCommonFields>(
+    context: Context,
+    surface: CreateSurface<BodyType>,
+  ): Promise<Response> => {
+    const parsedBody = await parseJsonBody(context.req.raw, surface.schema);
     if (!parsedBody.ok) {
       // 400: this was never a proposal. Nothing reached the writer, so there is
-      // nothing to record — see the status-code note on the transitions route.
+      // nothing to record — see the status-code note on the move core.
       return context.json({ error: 'bad request', detail: parsedBody.reason }, 400);
     }
 
     const resolvedProjectRoot = resolveWithinRoots(
-      parsedBody.value.projectRoot,
+      surface.projectOf(parsedBody.value),
       deps.getAllowedRoots(),
       realpath,
     );
@@ -417,40 +674,20 @@ export function registerTaskApi(app: Hono, deps: TaskApiDeps): void {
     }
 
     try {
-      const task = deps.instanceWriter.createInstance({
-        // The RESOLVED path, never the raw input — so the record cannot carry a
-        // `..` segment or a symlink that resolves somewhere else later. The
-        // allowlist is checked once, here; what gets persisted is what was checked.
-        projectRoot: resolvedProjectRoot.absolute,
-        // Absent stays absent all the way down to the birth record — never `''`.
-        ...(parsedBody.value.title === undefined ? {} : { title: parsedBody.value.title }),
-        createdBy: parsedBody.value.createdBy,
-        isolation: parsedBody.value.isolation,
-        stage: parsedBody.value.stage,
-        ...(parsedBody.value.gates === undefined ? {} : { gates: parsedBody.value.gates }),
-        // The four AUTHORED work-order fields (S7·2a), passed straight through —
-        // absent stays absent all the way down to the birth record, the same idiom
-        // as `title`/`gates`. `acceptanceCriteria` is the `{ text }[]` INPUT shape
-        // here; the writer mints each `{ id, text }` before it reaches the event.
-        ...(parsedBody.value.scope === undefined ? {} : { scope: parsedBody.value.scope }),
-        ...(parsedBody.value.explicitlyOut === undefined
-          ? {}
-          : { explicitlyOut: parsedBody.value.explicitlyOut }),
-        ...(parsedBody.value.acceptanceCriteria === undefined
-          ? {}
-          : { acceptanceCriteria: parsedBody.value.acceptanceCriteria }),
-        ...(parsedBody.value.killCriterion === undefined
-          ? {}
-          : { killCriterion: parsedBody.value.killCriterion }),
-      });
-      const response: CreateTaskResponse = { task };
-      return context.json(response, 201);
+      const created = deps.instanceWriter.createInstance(
+        createInstanceInputFrom(
+          parsedBody.value,
+          resolvedProjectRoot.absolute,
+          surface.nodeOf(parsedBody.value),
+        ),
+      );
+      return surface.created(context, created);
     } catch (error) {
       return findingResponse(context, error);
     }
-  });
+  };
 
-  // ── POST /api/tasks/:taskId/transitions — propose (I7's route) ──────────────
+  // ── the MOVE core (I7's route) ─────────────────────────────────────────────
   //
   // STATUS-CODE RATIONALE, WRITTEN DOWN BECAUSE SLICE 7 INHERITS IT:
   //
@@ -462,8 +699,8 @@ export function registerTaskApi(app: Hono, deps: TaskApiDeps): void {
   //   • **400 = "this was not a proposal"**, and NOTHING is in the log. The body
   //     never reached the state machine, so there is no proposal to record. A 400
   //     that evented would put proposals in the log that were never made.
-  //   • **404 = "no such task"**, nothing in the log — fabricating a rejection for
-  //     a taskId no `task_created` introduced would put a phantom task there.
+  //   • **404 = "no such instance"**, nothing in the log — fabricating a rejection
+  //     for an id no birth record introduced would put a phantom instance there.
   //
   // ── S7·7c: THIS ROUTE NOW PERFORMS AT MOST ONE DISPATCH ATTEMPT (D53) ────────
   //
@@ -483,123 +720,121 @@ export function registerTaskApi(app: Hono, deps: TaskApiDeps): void {
   //     attempts nothing, and an accepted one attempts exactly once. The dispatch
   //     route's own "one request, one attempt" contract below is UNCHANGED; this
   //     is a second caller of the same narrow function, not a second policy.
-  //   • **CREATION NEVER AUTO-DISPATCHES.** `POST /api/tasks` with
-  //     `stage: 'planning'` writes a birth record and stops. A birth record is not
-  //     a promotion — nobody decided anything by writing one — and transitions are
-  //     the only movement D53 gave to mechanics.
+  //   • **CREATION NEVER AUTO-DISPATCHES.** A create with `node: 'planning'`
+  //     writes a birth record and stops. A birth record is not a promotion —
+  //     nobody decided anything by writing one — and moves are the only movement
+  //     D53 gave to mechanics.
   //   • **REVIEW IS A HOLDING PEN**, so entering it starts nothing, and an OUTCOME
   //     edge (`proposedBy: 'dispatcher'` — a reported plan, completion or verdict)
   //     starts nothing either. The verdict bounce `review → implementing` therefore
   //     lands UN-dispatched; starting the fixer is the orchestrator's explicit
-  //     `POST /api/tasks/:taskId/dispatch`. No chaining, anywhere.
-  app.post('/api/tasks/:taskId/transitions', async (context) => {
-    const parsedBody = await parseJsonBody(context.req.raw, proposeTransitionBodySchema);
+  //     dispatch call. No chaining, anywhere.
+  const handleMove = async <BodyType extends MoveBodyCommonFields>(
+    context: Context,
+    // The id comes from the REGISTRATION, where the route pattern types it — the
+    // one thing a surface descriptor cannot carry, because a `Context` that has
+    // forgotten its path pattern has also forgotten that `:taskId` is always
+    // present. The two path params are the only difference.
+    instanceId: string,
+    surface: MoveSurface<BodyType>,
+  ): Promise<Response> => {
+    const parsedBody = await parseJsonBody(context.req.raw, surface.schema);
     if (!parsedBody.ok) {
       return context.json({ error: 'bad request', detail: parsedBody.reason }, 400);
     }
 
-    const proposal: TransitionProposal = {
-      // ⚠ CAST ON PURPOSE, and the ONLY cast in this file. `TransitionProposal`
-      // types `toStage` to the enum, but step 1 widened the machine's own check to
-      // `string` precisely because a value outside the enum physically reaches it
-      // across this boundary — TypeScript's guarantee stops at the wire. Refusing
-      // it here instead would make `unknown-stage` unreachable (see the schema).
-      toStage: parsedBody.value.toStage as TransitionProposal['toStage'],
-      proposedBy: parsedBody.value.proposedBy,
-      ...(parsedBody.value.manualReviewRequired === undefined
-        ? {}
-        : { manualReviewRequired: parsedBody.value.manualReviewRequired }),
-      ...(parsedBody.value.note === undefined ? {} : { note: parsedBody.value.note }),
-    };
+    const proposal = transitionProposalFrom(parsedBody.value, surface.toNodeOf(parsedBody.value));
 
     try {
-      const result = deps.instanceWriter.proposeMove(context.req.param('taskId'), proposal);
+      const result = deps.instanceWriter.proposeMove(instanceId, proposal);
       switch (result.outcome) {
         case 'unknown-task':
           return context.json({ error: 'not found' }, 404);
         case 'rejected': {
           // The writer ALREADY emitted the `instance_move_rejected`. This branch
           // only reports it — I7 is satisfied by the record, not by this response.
+          // The envelope carries no record, so BOTH surfaces answer with the same
+          // bytes here; the rejection is a fact about the proposal, not about a
+          // spelling.
           const response: ProposeTransitionResponse = { accepted: false, reason: result.reason };
           return context.json(response, 409);
         }
         case 'accepted': {
-          // ⚠ READ `result.task.stage`, NOT `proposal.toStage`. The recorded edge is
-          // the edge THE MACHINE ACCEPTED; the proposal is only what was asked for,
-          // and it crossed the wire as an unvalidated string (see the cast above).
-          // Asking the predicate about the proposal would be asking about a stage
-          // the task may not be in.
+          // ⚠ READ THE MACHINE'S RESULTING NODE, NOT THE PROPOSAL'S. The recorded
+          // edge is the edge THE MACHINE ACCEPTED; the proposal is only what was
+          // asked for, and it crossed the wire as an unvalidated string (see the
+          // cast above). Asking the predicate about the proposal would be asking
+          // about a node the instance may not be on.
           const dispatch = shouldDispatchOnTransition({
             toStage: result.task.stage,
             proposedBy: proposal.proposedBy,
           })
-            ? await deps.dispatchTask(context.req.param('taskId'))
+            ? await deps.dispatchTask(instanceId)
             : undefined;
           // ⚠ **EVERY DISPATCH OUTCOME RIDES THE 200 VERBATIM** — `refused`,
           // `deferred`, `spawn-failed`, `worktree-failed`, `in-flight`, and even
-          // `unknown-task` (unreachable here, since the task just transitioned, but
+          // `unknown-task` (unreachable here, since the instance just moved, but
           // carried honestly rather than translated if it ever appears). Two facts
-          // happened and both are reported: **the transition was ACCEPTED and is in
-          // the log**, and the dispatch attempt did whatever it did. Turning a
-          // refused dispatch into a 4xx would retroactively deny an accepted, evented
-          // transition, and would push clients toward retry machinery for what is
-          // really "here is what happened" — the same rationale the dispatch route
-          // below states for its own 200-with-the-envelope convention.
-          const response: ProposeTransitionResponse = {
-            accepted: true,
-            task: result.task,
-            // Spread rather than set: ABSENT stays absent on a non-promoting
-            // transition, so its envelope is byte-identical to the pre-S7·7c one.
-            ...(dispatch === undefined ? {} : { dispatch }),
-          };
-          return context.json(response, 200);
+          // happened and both are reported: **the move was ACCEPTED and is in the
+          // log**, and the dispatch attempt did whatever it did. Turning a refused
+          // dispatch into a 4xx would retroactively deny an accepted, evented move,
+          // and would push clients toward retry machinery for what is really "here
+          // is what happened" — the same rationale the dispatch core below states
+          // for its own 200-with-the-envelope convention.
+          return surface.accepted(context, result.task, dispatch);
         }
       }
     } catch (error) {
       return findingResponse(context, error);
     }
-  });
+  };
 
-  // ── POST /api/tasks/:taskId/amendments — amend the work order (S7·2b, D43) ──
+  // ── the PAYLOAD-REVISION core (S7·2b, D43) ─────────────────────────────────
   //
-  // Plural noun, a sibling of `/transitions`: the collection this POST appends to
-  // is the task's amendment history, and D43's whole discipline is that a work
-  // order is corrected by APPENDING a revision rather than editing the record —
-  // which is also why this is not a PATCH on `/api/tasks/:taskId`.
+  // Plural noun on both doors: the collection this POST appends to is the
+  // instance's revision history, and D43's whole discipline is that a work order
+  // is corrected by APPENDING a revision rather than editing the record — which
+  // is also why this is not a PATCH on the instance.
   //
-  // The status codes, in the same vocabulary the transitions route established:
-  //   • **200 + `{ task }`** — amended, and the record is the FOLD (see
-  //     `AmendWorkOrderResponse`). Not a 201: the thing a client cares about is the
-  //     task's new state, and there is no per-amendment resource to point a
+  // The status codes, in the same vocabulary the move core established:
+  //   • **200 + the record** — revised, and the record is the FOLD (see
+  //     `AmendWorkOrderResponse`). Not a 201: the thing a client cares about is
+  //     the instance's new state, and there is no per-revision resource to point a
   //     `Location` at — the event lives in the log, which is not addressable here.
-  //   • **404** — no such task, nothing written.
+  //   • **404** — no such instance, nothing written.
   //   • **400 + the offending id** — a criterion id that is not on the record's
   //     current list. The id IS echoed, unlike the 403's path suppression on the
-  //     create route: it came from the caller's own body and names nothing outside
-  //     the task, so returning it is how a form tells the human WHICH row is stale.
-  //   • **400** — an amendment that names no work-order field at all. A rev bump
-  //     that changes nothing is log noise; the writer refuses it and writes nothing.
+  //     create core: it came from the caller's own body and names nothing outside
+  //     the instance, so returning it is how a form tells the human WHICH row is
+  //     stale.
+  //   • **400** — a revision that names no work-order field at all. A rev bump
+  //     that changes nothing is log noise; the writer refuses it and writes
+  //     nothing.
   //
-  // ⚠ **NO DISPATCH CALL ANYWHERE IN THIS ROUTE, AND THAT IS THE POINT** (D53).
+  // ⚠ **NO DISPATCH CALL ANYWHERE IN THIS CORE, AND THAT IS THE POINT** (D53).
   // Its sibling above calls `shouldDispatchOnTransition` because a promotion IS a
-  // decision to start work; an amendment is not — it changes what the work order
+  // decision to start work; a revision is not — it changes what the work order
   // SAYS, and whether the running (or next) attempt should be re-run against the
-  // new revision is a separate decision, taken with an explicit
-  // `POST /api/tasks/:taskId/dispatch`. No chaining, here or anywhere.
-  app.post('/api/tasks/:taskId/amendments', async (context) => {
+  // new revision is a separate decision, taken with an explicit dispatch call.
+  // No chaining, here or anywhere.
+  const handlePayloadRevision = async (
+    context: Context,
+    instanceId: string,
+    revised: (context: Context, record: TaskRecord) => Response,
+  ): Promise<Response> => {
     const parsedBody = await parseJsonBody(context.req.raw, amendWorkOrderBodySchema);
     if (!parsedBody.ok) {
-      // 400: this was never an amendment. Nothing reached the writer, so there is
-      // nothing to record — the same idiom as the create/transitions routes.
+      // 400: this was never a revision. Nothing reached the writer, so there is
+      // nothing to record — the same idiom as the create/move cores.
       return context.json({ error: 'bad request', detail: parsedBody.reason }, 400);
     }
 
     try {
-      const result = deps.instanceWriter.revisePayload(context.req.param('taskId'), {
+      const result = deps.instanceWriter.revisePayload(instanceId, {
         amendedBy: parsedBody.value.amendedBy,
         // Absent stays absent all the way down to the event — and here the fold
         // READS that absence to decide what to leave alone, so an `undefined`-valued
-        // key would not merely be untidy, it would change the amendment's meaning.
+        // key would not merely be untidy, it would change the revision's meaning.
         ...(parsedBody.value.scope === undefined ? {} : { scope: parsedBody.value.scope }),
         ...(parsedBody.value.explicitlyOut === undefined
           ? {}
@@ -621,19 +856,17 @@ export function registerTaskApi(app: Hono, deps: TaskApiDeps): void {
           );
         case 'empty-amendment':
           return context.json({ error: 'bad request', detail: 'empty-amendment' }, 400);
-        case 'amended': {
-          const response: AmendWorkOrderResponse = { task: result.task };
-          return context.json(response, 200);
-        }
+        case 'amended':
+          return revised(context, result.task);
       }
     } catch (error) {
       return findingResponse(context, error);
     }
-  });
+  };
 
-  // ── POST /api/tasks/:taskId/dispatch — ONE explicit attempt ─────────────────
+  // ── the DISPATCH core — ONE explicit attempt ───────────────────────────────
   //
-  // Calls `TaskDispatcher.dispatchTask(taskId)` EXACTLY ONCE. **No loop, no
+  // Calls `TaskDispatcher.dispatchTask(instanceId)` EXACTLY ONCE. **No loop, no
   // timer, no scheduling** — step 4a's boundary holds unchanged: scheduling policy,
   // and the event-spam question that arrives with a polling loop, is deliberately
   // out of this slice step. One request, one attempt.
@@ -643,21 +876,124 @@ export function registerTaskApi(app: Hono, deps: TaskApiDeps): void {
   // mirrors `/api/usage/refresh` (documented in app.ts): a refusal is a complete,
   // honest answer rather than an HTTP error, and 4xx-ing it would push clients
   // toward retry/backoff machinery for what is really "here is what happened."
-  // The one exception is an unknown task — there was nothing to attempt.
+  // The one exception is an unknown instance — there was nothing to attempt.
   //
   // ⚠ The handler is ASYNC as of step 8 (worktree creation is a subprocess). Hono
   // handlers may be async, and the ENVELOPE IS UNCHANGED: same 200, same
-  // `{ result }` body, same 404 for an unknown task. Step 8's new `worktree-failed`
-  // outcome rides the SAME 200 envelope as its sibling `spawn-failed`, for the same
-  // reason — it is a complete, honest answer about what happened, not an HTTP error.
-  app.post('/api/tasks/:taskId/dispatch', async (context) => {
-    const result = await deps.dispatchTask(context.req.param('taskId'));
+  // `{ result }` body, same 404 for an unknown instance. Step 8's new
+  // `worktree-failed` outcome rides the SAME 200 envelope as its sibling
+  // `spawn-failed`, for the same reason — it is a complete, honest answer about
+  // what happened, not an HTTP error.
+  //
+  // ⚠ NOT PARAMETERISED BY SURFACE, AND THAT IS THE FINDING RATHER THAN AN
+  // OVERSIGHT: the dispatch result vocabulary is already engine-shaped and
+  // workflow-blind, so the alias and the generic twin return literally the same
+  // bytes. There is nothing here to re-spell.
+  const handleDispatch = async (context: Context, instanceId: string): Promise<Response> => {
+    const result = await deps.dispatchTask(instanceId);
     if (result.outcome === 'unknown-task') {
       return context.json({ error: 'not found' }, 404);
     }
     const response: DispatchResponse = { result };
     return context.json(response, 200);
-  });
+  };
+
+  // ── the generic routes — THE CONTRACT ──────────────────────────────────────
+
+  app.post('/api/instances', async (context) =>
+    handleCreate(context, {
+      schema: createInstanceBodySchema,
+      projectOf: (body) => body.project,
+      nodeOf: (body) => body.node,
+      created: (responseContext, record) => {
+        const response: CreateInstanceResponse = { instance: instanceRecordOf(record.taskId) };
+        return responseContext.json(response, 201);
+      },
+    }),
+  );
+
+  app.post('/api/instances/:instanceId/moves', async (context) =>
+    handleMove(context, context.req.param('instanceId'), {
+      schema: proposeMoveBodySchema,
+      toNodeOf: (body) => body.toNode,
+      accepted: (responseContext, record, dispatch) => {
+        const response: ProposeMoveResponse = {
+          accepted: true,
+          instance: instanceRecordOf(record.taskId),
+          // Spread rather than set: ABSENT stays absent on a non-promoting move,
+          // exactly as on the alias.
+          ...(dispatch === undefined ? {} : { dispatch }),
+        };
+        return responseContext.json(response, 200);
+      },
+    }),
+  );
+
+  app.post('/api/instances/:instanceId/payload-revisions', async (context) =>
+    handlePayloadRevision(context, context.req.param('instanceId'), (responseContext, record) => {
+      const response: RevisePayloadResponse = { instance: instanceRecordOf(record.taskId) };
+      return responseContext.json(response, 200);
+    }),
+  );
+
+  app.post('/api/instances/:instanceId/dispatch', async (context) =>
+    handleDispatch(context, context.req.param('instanceId')),
+  );
+
+  // ── the ALIAS routes — deprecated, ONE DEPLOY (q24) ────────────────────────
+  //
+  // Each of the four below is the SAME core as its generic twin above, wearing
+  // the legacy body spelling and the legacy response key. They exist so the
+  // DEPLOYED UI keeps working, unrestarted and untouched, through this slice's
+  // daemon deploy; they are deleted in the daemon deploy after the UI unit
+  // switches to the generic paths. See the full alias inventory in the file
+  // header.
+
+  // ALIAS (q24) — twin of POST /api/instances.
+  app.post('/api/tasks', async (context) =>
+    handleCreate(context, {
+      schema: createTaskBodySchema,
+      projectOf: (body) => body.projectRoot,
+      nodeOf: (body) => body.stage,
+      created: (responseContext, record) => {
+        const response: CreateTaskResponse = { task: record };
+        return responseContext.json(response, 201);
+      },
+    }),
+  );
+
+  // ALIAS (q24) — twin of POST /api/instances/:instanceId/moves.
+  app.post('/api/tasks/:taskId/transitions', async (context) =>
+    handleMove(context, context.req.param('taskId'), {
+      schema: proposeTransitionBodySchema,
+      toNodeOf: (body) => body.toStage,
+      accepted: (responseContext, record, dispatch) => {
+        const response: ProposeTransitionResponse = {
+          accepted: true,
+          task: record,
+          // Spread rather than set: ABSENT stays absent on a non-promoting
+          // transition, so its envelope is byte-identical to the pre-S7·7c one.
+          ...(dispatch === undefined ? {} : { dispatch }),
+        };
+        return responseContext.json(response, 200);
+      },
+    }),
+  );
+
+  // ALIAS (q24) — twin of POST /api/instances/:instanceId/payload-revisions.
+  app.post('/api/tasks/:taskId/amendments', async (context) =>
+    handlePayloadRevision(context, context.req.param('taskId'), (responseContext, record) => {
+      const response: AmendWorkOrderResponse = { task: record };
+      return responseContext.json(response, 200);
+    }),
+  );
+
+  // ALIAS (q24) — twin of POST /api/instances/:instanceId/dispatch. The response
+  // is identical on both paths (see the dispatch core), so this alias differs
+  // from its twin in the URL and nothing else.
+  app.post('/api/tasks/:taskId/dispatch', async (context) =>
+    handleDispatch(context, context.req.param('taskId')),
+  );
 
   // ── GET /api/tasks/stage-edges — the legal-edge table (S8) ──────────────────
   //
@@ -671,6 +1007,13 @@ export function registerTaskApi(app: Hono, deps: TaskApiDeps): void {
   // This does NOT reopen the "no `GET /api/tasks`" decision below: that route
   // would be a second reader of TASK STATE (the projection already serves it).
   // This route serves the TRANSITION RULES, a fact nothing else exposes.
+  //
+  // ⚠ MOVED VERBATIM, OLD PATH ONLY, AND NO GENERIC TWIN THIS SLICE (q25).
+  // Generalising this route means serving DECLARATION INTROSPECTION — the edges a
+  // pinned workflow definition declares — and no such declaration governs
+  // adjudication until Move 3. A `/api/instances/...` route that served the
+  // compiled task table would be declared truth over observed (rule 0.7), so the
+  // generic spelling waits for the thing it would describe.
   app.get('/api/tasks/stage-edges', (context) => {
     const response: StageEdgesResponse = { edges: taskStageEdgesRecord() };
     return context.json(response);
@@ -683,18 +1026,27 @@ export function registerTaskApi(app: Hono, deps: TaskApiDeps): void {
   // four authored work-order fields from it, so the UI reflects the field shape
   // without a second copy of it (principle 9). The descriptor is derived from the
   // SAME caps `createTaskBodySchema` validates against; the drift test in
-  // taskApi.test.ts is the guard that they never fall out of step.
+  // instanceApi.test.ts is the guard that they never fall out of step.
+  //
+  // ⚠ MOVED VERBATIM, OLD PATH ONLY, AND NO GENERIC TWIN THIS SLICE (q25) — the
+  // same fence as `stage-edges` above, and for the same reason: the generic form
+  // of "what may be authored here" is a NODE-KIND declaration's payload schema,
+  // which Move 3+ pins. Until then this descriptor describes the tasks
+  // extension's work order, and the tasks extension does not exist yet either
+  // (q29).
   app.get('/api/tasks/work-order-schema', (context) => {
     const response: WorkOrderSchemaResponse = { fields: WORK_ORDER_FIELD_DESCRIPTORS };
     return context.json(response);
   });
 
-  // ── NO `GET /api/tasks` — deliberately ─────────────────────────────────────
+  // ── NO `GET /api/instances` (and no `GET /api/tasks`) — deliberately ───────
   //
-  // `GET /api/projections/tasks` already serves task state, behind the same auth
-  // wall, and the kanban UI (step 9) reads it. A second reader of the same fact is
-  // exactly the drift principle 9 forbids, and rule 0.5 says machinery waits for
-  // its consumer. Nothing in this step needed one.
+  // `GET /api/projections/tasks` already serves instance state (as the legacy
+  // view, S11·U1), behind the same auth wall, and the kanban UI (step 9) reads
+  // it. A second reader of the same fact is exactly the drift principle 9
+  // forbids, and rule 0.5 says machinery waits for its consumer. Nothing in this
+  // unit needed one — and inventing one HERE, in the unit whose contract is "the
+  // aliases answer exactly as they did", is how an alias window grows a feature.
 }
 
 // ── boundary helpers ─────────────────────────────────────────────────────────
@@ -731,6 +1083,12 @@ async function parseJsonBody<OutputType>(
 // is the same posture `GET /api/cost/ledger` already takes for a tree that fails
 // to reconcile. Any other throw is re-raised: swallowing an unknown failure here
 // would turn a bug into a quiet wrong answer.
+//
+// ⚠ THE BODY IS SHARED BY BOTH SURFACES, WORD FOR WORD — including the string
+// `'task store finding'`. The alias contract is byte-identity with what shipped,
+// and giving the generic twin a differently-worded 500 would be the one place the
+// two surfaces answered differently. Re-spelling it belongs with the alias
+// removal, which is the last moment both spellings exist.
 function findingResponse(context: Context, error: unknown): Response {
   if (error instanceof InstanceProjectionDisagreementError) {
     return context.json({ error: 'task store finding', detail: error.message }, 500);

@@ -22,6 +22,8 @@ import {
   legacyTasksViewOf,
   type EventRecord,
   type IdSource,
+  type InstanceRecord,
+  type InstancesState,
   type MeterRecord,
   type MetersState,
   type TaskRecord,
@@ -31,16 +33,19 @@ import { createDaemon, NO_OBSERVATION_IS_FRESH_STALE_BAND_MS, type Daemon, type 
 import type { DaemonConfig } from './config.js';
 import {
   createTaskBodySchema,
-  registerTaskApi,
+  registerInstanceApi,
   WORK_ORDER_FIELD_DESCRIPTORS,
   type AmendWorkOrderResponse,
+  type CreateInstanceResponse,
   type CreateTaskResponse,
   type DispatchResponse,
+  type ProposeMoveResponse,
   type ProposeTransitionResponse,
+  type RevisePayloadResponse,
   type StageEdgesResponse,
   type WorkOrderFieldDescriptor,
   type WorkOrderSchemaResponse,
-} from './taskApi.js';
+} from './instanceApi.js';
 import { InstanceWriter } from './instanceWriter.js';
 import { TaskDispatcher, type DispatchAttemptResult } from './taskDispatcher.js';
 import type {
@@ -68,6 +73,23 @@ import type {
 //   • the 403 wall — a refused creation leaves NO task-shaped record behind.
 // So every such case asserts the log head did not move, or that the spawn
 // recorder is empty, in addition to whatever came back over the wire.
+//
+// ─── S11·U3 (D72 Move 2) — WHAT THIS FILE IS NOW ─────────────────────────────
+//
+// `taskApi.test.ts` re-homed alongside its subject. **EVERY PRE-EXISTING
+// ASSERTION IN THIS FILE IS THE ALIAS CONTRACT** and still drives the
+// `/api/tasks/*` paths on purpose: those routes must answer BYTE-IDENTICALLY to
+// what shipped, because the deployed UI keeps calling them, unrestarted and
+// untouched, through this slice's daemon deploy (q24, one deploy of overlap).
+// An assertion below that changed would be an alias that changed, which is the
+// one thing this unit may not do — so the only edits to the existing bodies are
+// the import site and two new harness accessors.
+//
+// The NEW half is the parity block at the end of the file (S11-A4): each
+// generic route and its alias, driven with equivalent requests, must append
+// IDENTICAL events and answer with the same record under their own envelope
+// keys. That is what makes "one handler core, two surfaces" a fact rather than
+// an intention.
 
 const temporaryDirectory = mkdtempSync(join(tmpdir(), 'vimes-taskapi-'));
 afterAll(() => rmSync(temporaryDirectory, { recursive: true, force: true }));
@@ -94,7 +116,7 @@ function authHeaders(token: string | null = ANY_TOKEN): Record<string, string> {
 // ── the composed-app harness ─────────────────────────────────────────────────
 //
 // Composed the SAME WAY app.ts composes it: the real auth middleware on `*`,
-// then registerTaskApi, over a real InstanceWriter and a real TaskDispatcher. The
+// then registerInstanceApi, over a real InstanceWriter and a real TaskDispatcher. The
 // only fakes are the session host and the meters.
 
 interface RecordedSpawn {
@@ -170,6 +192,11 @@ interface ApiHarness {
   dispatchedTaskIds: () => string[];
   allowedRoot: string;
   outsideRoot: string;
+  // S11·U3, used ONLY by the parity block: the instance fold the generic
+  // envelopes are read back from, and the raw payloads the two surfaces are
+  // compared on. Nothing in the pre-existing (alias) cases touches either.
+  readInstances: () => InstancesState;
+  taskEventPayloads: () => unknown[];
 }
 
 function buildApiHarness(
@@ -201,7 +228,8 @@ function buildApiHarness(
   let dispatchCallCount = 0;
   const dispatchedTaskIds: string[] = [];
 
-  const readTasks = () => legacyTasksViewOf(replayFromEmpty(instancesProjection, readAllStreamsGrouped(store)));
+  const readInstances = () => replayFromEmpty(instancesProjection, readAllStreamsGrouped(store));
+  const readTasks = () => legacyTasksViewOf(readInstances());
   const emit = (events: Parameters<MemoryEventStore['append']>[0]): void => {
     store.append(events);
   };
@@ -234,9 +262,13 @@ function buildApiHarness(
       emitAuthRejected: () => {},
     }),
   );
-  registerTaskApi(app, {
+  registerInstanceApi(app, {
     instanceWriter,
-    dispatchTask: (taskId) => {
+    // S11·U3: the generic routes' read-back. Composed exactly as app.ts does it
+    // (the instances fold, no legacy narrowing), so the parity block compares
+    // what production would answer.
+    readInstances,
+    dispatchTask: (taskId: string) => {
       dispatchCallCount += 1;
       dispatchedTaskIds.push(taskId);
       return options.dispatchResult === undefined
@@ -256,6 +288,8 @@ function buildApiHarness(
     dispatchedTaskIds: () => dispatchedTaskIds,
     allowedRoot,
     outsideRoot,
+    readInstances,
+    taskEventPayloads: () => store.read('tasks', 1).map((record) => record.payload),
   };
 }
 
@@ -2187,5 +2221,522 @@ describe('the production wiring in app.ts', () => {
     } finally {
       await daemon.stop();
     }
+  });
+});
+
+// ─── S11-A4: the alias set and its generic twins are ONE handler ──────────────
+//
+// The load-bearing property of S11·U3: for equivalent requests, an
+// `/api/tasks/*` alias and its `/api/instances/*` twin append IDENTICAL events
+// and answer with the SAME record, each under its own envelope key. Everything
+// above this line pins the alias contract byte-for-byte (that is the alias half
+// of A4); everything below pins that the generic contract cannot drift away
+// from it while both exist.
+//
+// ⚠ THE INSTRUMENT IS THE LOG, FIRST. Two routes can agree on a response body
+// and disagree about what they wrote — the response is derived, the log is the
+// fact — so every case below compares the recorded events before it looks at a
+// status code, and the comparison includes MINTED IDS (each harness owns a
+// CountingIdSource seeded identically, so an id that differed would be a route
+// minting differently rather than entropy).
+
+interface SurfacePair {
+  readonly alias: ApiHarness;
+  readonly generic: ApiHarness;
+}
+
+// Two harnesses, identically composed: same fixed clock, same counting id
+// source, same fake session host. One drives the alias, the other the generic
+// twin, so neither script can contaminate the other's log.
+function surfacePair(options: Parameters<typeof buildApiHarness>[0] = {}): SurfacePair {
+  return { alias: buildApiHarness(options), generic: buildApiHarness(options) };
+}
+
+// Every recorded event as `{ type, payload }`, with the harness's own temp
+// project root substituted out. The root is the ONE thing that legitimately
+// differs between two identical scripts (each harness mkdtemps its own), so
+// substituting it is what turns "these payloads differ by a mkdtemp suffix"
+// into the byte comparison the parity claim actually means. Nothing else is
+// normalised — a difference in any other field is a real divergence.
+function normalisedEvents(harness: ApiHarness): unknown {
+  const asJson = JSON.stringify(
+    harness.taskEvents().map((record) => ({ type: record.type, payload: record.payload })),
+  );
+  return JSON.parse(asJson.split(harness.allowedRoot).join('<ALLOWED-ROOT>')) as unknown;
+}
+
+// The generic create door, mirroring `createTaskThrough` above field for field —
+// `project`/`node` in place of `projectRoot`/`stage`, and nothing else.
+async function createInstanceThrough(
+  harness: ApiHarness,
+  overrides: Record<string, unknown> = {},
+): Promise<InstanceRecord> {
+  const response = await harness.request(
+    '/api/instances',
+    postJson({ project: harness.allowedRoot, createdBy: 'human', ...overrides }),
+  );
+  expect(response.status).toBe(201);
+  return ((await response.json()) as CreateInstanceResponse).instance;
+}
+
+describe('S11-A4 — POST /api/instances and its POST /api/tasks alias', () => {
+  it('write the SAME birth record, and each answers from its own fold', async () => {
+    const pair = surfacePair();
+    // Everything except the two renamed location fields is spelled identically
+    // on both doors — that is the design (`createBodyCommonShape` is ONE object,
+    // shared by reference), so the bodies below differ in exactly two keys.
+    const authoredHalf = {
+      createdBy: 'orchestrator',
+      isolation: 'shared-dir',
+      title: 'the same instance, twice',
+      gates: { requireHeadroom: { meterId: 'window-5h', pct: 40 } },
+      scope: 'prove the two doors are one handler',
+      explicitlyOut: ['the UI', 'adjudication'],
+      acceptanceCriteria: [{ text: 'the events are identical' }],
+      killCriterion: 'the two surfaces answer differently',
+    };
+
+    const aliasResponse = await pair.alias.request(
+      '/api/tasks',
+      postJson({ projectRoot: pair.alias.allowedRoot, stage: 'planning', ...authoredHalf }),
+    );
+    const genericResponse = await pair.generic.request(
+      '/api/instances',
+      postJson({ project: pair.generic.allowedRoot, node: 'planning', ...authoredHalf }),
+    );
+
+    expect(aliasResponse.status).toBe(201);
+    expect(genericResponse.status).toBe(201);
+
+    // (a) THE LOG — identical in type and payload, minted criterion ids included.
+    expect(pair.generic.taskEventTypes()).toEqual([EVENT_TYPES.instanceCreated]);
+    expect(normalisedEvents(pair.generic)).toEqual(normalisedEvents(pair.alias));
+
+    // (b) THE ENVELOPES — each carries its own fold, under its own key, and
+    // neither grew the other's.
+    const genericBody = (await genericResponse.json()) as Record<string, unknown>;
+    expect(Object.keys(genericBody)).toEqual(['instance']);
+    const created = genericBody.instance as InstanceRecord;
+    expect(created).toEqual(pair.generic.readInstances().instances[created.instanceId]);
+    expect(created.currentNode).toBe('planning');
+    expect(created.project).toBe(pair.generic.allowedRoot);
+    expect(created.payload.title).toBe('the same instance, twice');
+
+    const aliasBody = (await aliasResponse.json()) as Record<string, unknown>;
+    expect(Object.keys(aliasBody)).toEqual(['task']);
+    const task = aliasBody.task as TaskRecord;
+    expect(task).toEqual(legacyTasksViewOf(pair.alias.readInstances()).tasks[created.instanceId]);
+    // The SAME id came out of both doors: one counting source, one mint order.
+    expect(task.taskId).toBe(created.instanceId);
+  });
+
+  it('apply the SAME defaults — worktree isolation and the backlog start node', async () => {
+    // D32's default and the initial node, asserted on the NEW contract rather
+    // than inherited by assumption: a generic door that quietly defaulted
+    // differently would be a second policy.
+    const pair = surfacePair();
+    await createTaskThrough(pair.alias);
+    const created = await createInstanceThrough(pair.generic);
+
+    expect(created.isolation).toBe('worktree');
+    expect(created.currentNode).toBe('backlog');
+    expect(normalisedEvents(pair.generic)).toEqual(normalisedEvents(pair.alias));
+  });
+
+  it('refuse a project outside the allowlist identically — 403, same body, NO EVENT', async () => {
+    // The security wall is the core's, not the surface's. Both doors answer with
+    // the same classified refusal and neither leaves an instance-shaped record.
+    const pair = surfacePair();
+
+    const aliasResponse = await pair.alias.request(
+      '/api/tasks',
+      postJson({ projectRoot: pair.alias.outsideRoot, createdBy: 'human' }),
+    );
+    const genericResponse = await pair.generic.request(
+      '/api/instances',
+      postJson({ project: pair.generic.outsideRoot, createdBy: 'human' }),
+    );
+
+    expect(genericResponse.status).toBe(403);
+    expect(aliasResponse.status).toBe(403);
+    expect(await genericResponse.json()).toEqual(await aliasResponse.json());
+    expect(pair.generic.tasksHead()).toBe(0);
+    expect(pair.alias.tasksHead()).toBe(0);
+  });
+
+  it('enforce the SAME caps, and each door refuses the OTHER door’s spelling', async () => {
+    // Two halves. First: one character over the title cap is a 400 with the same
+    // body on both doors — the caps are one set of schema objects, shared by
+    // reference. Second, and the point of the rename: the generic door does NOT
+    // quietly accept `projectRoot`/`stage`, and the alias does not accept
+    // `project`/`node`. A door that took both spellings would make the migration
+    // unobservable.
+    const pair = surfacePair();
+
+    const aliasOverCap = await pair.alias.request(
+      '/api/tasks',
+      postJson({ projectRoot: pair.alias.allowedRoot, createdBy: 'human', title: 'x'.repeat(201) }),
+    );
+    const genericOverCap = await pair.generic.request(
+      '/api/instances',
+      postJson({ project: pair.generic.allowedRoot, createdBy: 'human', title: 'x'.repeat(201) }),
+    );
+    expect(genericOverCap.status).toBe(400);
+    expect(aliasOverCap.status).toBe(400);
+    expect(await genericOverCap.json()).toEqual(await aliasOverCap.json());
+
+    const genericWithLegacySpelling = await pair.generic.request(
+      '/api/instances',
+      postJson({ projectRoot: pair.generic.allowedRoot, createdBy: 'human' }),
+    );
+    expect(genericWithLegacySpelling.status).toBe(400);
+
+    const aliasWithGenericSpelling = await pair.alias.request(
+      '/api/tasks',
+      postJson({ project: pair.alias.allowedRoot, createdBy: 'human' }),
+    );
+    expect(aliasWithGenericSpelling.status).toBe(400);
+
+    expect(pair.generic.tasksHead()).toBe(0);
+    expect(pair.alias.tasksHead()).toBe(0);
+  });
+});
+
+describe('S11-A4 — POST /api/instances/:instanceId/moves and its transitions alias', () => {
+  it('accept the same edge identically, dispatch rider and all', async () => {
+    // The promotion path (D53's S7·7c rider) is the busiest thing either surface
+    // does: parse → propose → ONE dispatch attempt → relay. Both doors run the
+    // same core, so the events, the attempt count and the relayed result all
+    // match; only the envelope key differs.
+    const pair = surfacePair({ dispatchResult: RELAYED_DISPATCH_RESULT });
+    const task = await createTaskThrough(pair.alias);
+    const created = await createInstanceThrough(pair.generic);
+
+    const aliasResponse = await pair.alias.request(
+      `/api/tasks/${task.taskId}/transitions`,
+      postJson({ toStage: 'planning', proposedBy: 'human' }),
+    );
+    const genericResponse = await pair.generic.request(
+      `/api/instances/${created.instanceId}/moves`,
+      postJson({ toNode: 'planning', proposedBy: 'human' }),
+    );
+
+    expect(genericResponse.status).toBe(200);
+    expect(aliasResponse.status).toBe(200);
+    expect(pair.generic.taskEventTypes()).toEqual([
+      EVENT_TYPES.instanceCreated,
+      EVENT_TYPES.instanceMoved,
+    ]);
+    expect(normalisedEvents(pair.generic)).toEqual(normalisedEvents(pair.alias));
+    // ONE attempt each, on the instance that moved — no surface dispatches twice.
+    expect(pair.generic.dispatchedTaskIds()).toEqual([created.instanceId]);
+    expect(pair.alias.dispatchedTaskIds()).toEqual([task.taskId]);
+
+    const genericBody = (await genericResponse.json()) as ProposeMoveResponse;
+    expect(genericBody).toEqual({
+      accepted: true,
+      instance: pair.generic.readInstances().instances[created.instanceId],
+      // Relayed VERBATIM on the generic door too, including the taskId the fake
+      // made up: the route reports, it does not reconstruct.
+      dispatch: RELAYED_DISPATCH_RESULT,
+    });
+    const aliasBody = (await aliasResponse.json()) as ProposeTransitionResponse;
+    expect(aliasBody).toEqual({
+      accepted: true,
+      task: { ...task, stage: 'planning' },
+      dispatch: RELAYED_DISPATCH_RESULT,
+    });
+  });
+
+  it('omit the dispatch key identically when the move is not a promotion', async () => {
+    // ABSENT, not `undefined`, on both doors — the spread is in the surface, but
+    // the DECISION is in the core, so neither envelope can grow a key the other
+    // lacks.
+    const pair = surfacePair({ dispatchResult: RELAYED_DISPATCH_RESULT });
+    const task = await createTaskThrough(pair.alias, { stage: 'implementing' });
+    const created = await createInstanceThrough(pair.generic, { node: 'implementing' });
+
+    const genericResponse = await pair.generic.request(
+      `/api/instances/${created.instanceId}/moves`,
+      postJson({ toNode: 'review', proposedBy: 'human' }),
+    );
+    const aliasResponse = await pair.alias.request(
+      `/api/tasks/${task.taskId}/transitions`,
+      postJson({ toStage: 'review', proposedBy: 'human' }),
+    );
+
+    expect(Object.keys((await genericResponse.json()) as object).sort()).toEqual([
+      'accepted',
+      'instance',
+    ]);
+    expect(Object.keys((await aliasResponse.json()) as object).sort()).toEqual([
+      'accepted',
+      'task',
+    ]);
+    expect(pair.generic.dispatchedTaskIds()).toEqual([]);
+    expect(pair.alias.dispatchedTaskIds()).toEqual([]);
+    expect(normalisedEvents(pair.generic)).toEqual(normalisedEvents(pair.alias));
+  });
+
+  it('record the same rejection, with the same 409 body, on both doors (I7)', async () => {
+    // The rejection envelope carries no record, so the two surfaces answer with
+    // literally the same bytes — and BOTH wrote the rejection down, which is the
+    // half that matters.
+    const pair = surfacePair();
+    const task = await createTaskThrough(pair.alias);
+    const created = await createInstanceThrough(pair.generic);
+
+    const genericResponse = await pair.generic.request(
+      `/api/instances/${created.instanceId}/moves`,
+      postJson({ toNode: 'review', proposedBy: 'orchestrator' }),
+    );
+    const aliasResponse = await pair.alias.request(
+      `/api/tasks/${task.taskId}/transitions`,
+      postJson({ toStage: 'review', proposedBy: 'orchestrator' }),
+    );
+
+    expect(genericResponse.status).toBe(409);
+    expect(aliasResponse.status).toBe(409);
+    expect(await genericResponse.json()).toEqual(await aliasResponse.json());
+    expect(pair.generic.taskEventTypes()).toEqual([
+      EVENT_TYPES.instanceCreated,
+      EVENT_TYPES.instanceMoveRejected,
+    ]);
+    expect(normalisedEvents(pair.generic)).toEqual(normalisedEvents(pair.alias));
+  });
+
+  it('let an UNKNOWN NODE through to the machine on both doors, and record it', async () => {
+    // `toNode` is a plain string on the generic door for the SAME reason `toStage`
+    // is on the alias: refusing it in zod would make `unknown-stage` structurally
+    // unreachable and leave the hostile-input case with nothing in the log.
+    const pair = surfacePair();
+    const created = await createInstanceThrough(pair.generic);
+
+    const response = await pair.generic.request(
+      `/api/instances/${created.instanceId}/moves`,
+      postJson({ toNode: 'shipped-it-lol', proposedBy: 'orchestrator' }),
+    );
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ accepted: false, reason: 'unknown-stage' });
+    expect(pair.generic.taskEvents()[1]!.payload).toMatchObject({
+      attemptedToNode: 'shipped-it-lol',
+      reason: 'unknown-stage',
+    });
+  });
+
+  it('404 an unknown instance on both doors, and write nothing', async () => {
+    const pair = surfacePair();
+
+    const genericResponse = await pair.generic.request(
+      '/api/instances/instance-that-never-existed/moves',
+      postJson({ toNode: 'planning', proposedBy: 'human' }),
+    );
+    const aliasResponse = await pair.alias.request(
+      '/api/tasks/instance-that-never-existed/transitions',
+      postJson({ toStage: 'planning', proposedBy: 'human' }),
+    );
+
+    expect(genericResponse.status).toBe(404);
+    expect(aliasResponse.status).toBe(404);
+    expect(await genericResponse.json()).toEqual(await aliasResponse.json());
+    expect(pair.generic.tasksHead()).toBe(0);
+    expect(pair.alias.tasksHead()).toBe(0);
+  });
+});
+
+describe('S11-A4 — POST /api/instances/:instanceId/payload-revisions and its amendments alias', () => {
+  const REVISION_BODY = {
+    amendedBy: 'human',
+    scope: 'the revised scope',
+    explicitlyOut: ['the thing we dropped'],
+    acceptanceCriteria: [{ text: 'a freshly minted criterion' }],
+    killCriterion: 'the revision folded differently on the two doors',
+  };
+
+  it('write the same revision and each answers with its own folded record', async () => {
+    const pair = surfacePair();
+    const task = await createTaskThrough(pair.alias);
+    const created = await createInstanceThrough(pair.generic);
+
+    const genericResponse = await pair.generic.request(
+      `/api/instances/${created.instanceId}/payload-revisions`,
+      postJson(REVISION_BODY),
+    );
+    const aliasResponse = await pair.alias.request(
+      `/api/tasks/${task.taskId}/amendments`,
+      postJson(REVISION_BODY),
+    );
+
+    expect(genericResponse.status).toBe(200);
+    expect(aliasResponse.status).toBe(200);
+    expect(pair.generic.taskEventTypes()).toEqual([
+      EVENT_TYPES.instanceCreated,
+      EVENT_TYPES.instancePayloadRevised,
+    ]);
+    expect(normalisedEvents(pair.generic)).toEqual(normalisedEvents(pair.alias));
+
+    const genericBody = (await genericResponse.json()) as RevisePayloadResponse;
+    expect(genericBody.instance).toEqual(
+      pair.generic.readInstances().instances[created.instanceId],
+    );
+    // The rev the fold recorded, read back rather than echoed.
+    expect(genericBody.instance.payloadRev).toBe(1);
+    expect(genericBody.instance.payload.scope).toBe('the revised scope');
+
+    const aliasBody = (await aliasResponse.json()) as AmendWorkOrderResponse;
+    expect(aliasBody.task.workOrderRev).toBe(1);
+    expect(aliasBody.task.scope).toBe('the revised scope');
+  });
+
+  it('refuse an empty revision and an unknown instance identically, writing nothing', async () => {
+    const pair = surfacePair();
+    const task = await createTaskThrough(pair.alias);
+    const created = await createInstanceThrough(pair.generic);
+    const genericHeadBefore = pair.generic.tasksHead();
+    const aliasHeadBefore = pair.alias.tasksHead();
+
+    const genericEmpty = await pair.generic.request(
+      `/api/instances/${created.instanceId}/payload-revisions`,
+      postJson({ amendedBy: 'human' }),
+    );
+    const aliasEmpty = await pair.alias.request(
+      `/api/tasks/${task.taskId}/amendments`,
+      postJson({ amendedBy: 'human' }),
+    );
+    expect(genericEmpty.status).toBe(400);
+    expect(aliasEmpty.status).toBe(400);
+    expect(await genericEmpty.json()).toEqual(await aliasEmpty.json());
+
+    const genericUnknown = await pair.generic.request(
+      '/api/instances/nope/payload-revisions',
+      postJson(REVISION_BODY),
+    );
+    const aliasUnknown = await pair.alias.request('/api/tasks/nope/amendments', postJson(REVISION_BODY));
+    expect(genericUnknown.status).toBe(404);
+    expect(aliasUnknown.status).toBe(404);
+    expect(await genericUnknown.json()).toEqual(await aliasUnknown.json());
+
+    expect(pair.generic.tasksHead()).toBe(genericHeadBefore);
+    expect(pair.alias.tasksHead()).toBe(aliasHeadBefore);
+  });
+
+  it('refuse an unknown criterion id identically, echoing the SAME offending id', async () => {
+    const pair = surfacePair();
+    const created = await createInstanceThrough(pair.generic);
+    const task = await createTaskThrough(pair.alias);
+    const staleRevision = {
+      amendedBy: 'human',
+      acceptanceCriteria: [{ id: 'a-criterion-from-another-life', text: 'restated' }],
+    };
+
+    const genericResponse = await pair.generic.request(
+      `/api/instances/${created.instanceId}/payload-revisions`,
+      postJson(staleRevision),
+    );
+    const aliasResponse = await pair.alias.request(
+      `/api/tasks/${task.taskId}/amendments`,
+      postJson(staleRevision),
+    );
+
+    expect(genericResponse.status).toBe(400);
+    expect(aliasResponse.status).toBe(400);
+    expect(await genericResponse.json()).toEqual(await aliasResponse.json());
+    expect(pair.generic.taskEventTypes()).toEqual([EVENT_TYPES.instanceCreated]);
+  });
+});
+
+describe('S11-A4 — POST /api/instances/:instanceId/dispatch and its alias', () => {
+  it('return literally the same envelope — the dispatch vocabulary needed no rename', async () => {
+    // The one operation with no surface difference at all: the result vocabulary
+    // is already engine-shaped and workflow-blind, so both routes share the core
+    // AND the response type.
+    const pair = surfacePair({ dispatchResult: RELAYED_DISPATCH_RESULT });
+    const created = await createInstanceThrough(pair.generic, { node: 'planning' });
+    const task = await createTaskThrough(pair.alias, { stage: 'planning' });
+
+    const genericResponse = await pair.generic.request(
+      `/api/instances/${created.instanceId}/dispatch`,
+      postJson({}),
+    );
+    const aliasResponse = await pair.alias.request(`/api/tasks/${task.taskId}/dispatch`, postJson({}));
+
+    expect(genericResponse.status).toBe(200);
+    expect(aliasResponse.status).toBe(200);
+    expect(await genericResponse.json()).toEqual(await aliasResponse.json());
+    // ONE attempt per request on either door — no surface loops or retries.
+    expect(pair.generic.dispatchCallCount()).toBe(1);
+    expect(pair.alias.dispatchCallCount()).toBe(1);
+    expect(normalisedEvents(pair.generic)).toEqual(normalisedEvents(pair.alias));
+  });
+
+  it('404 an unknown instance identically, having attempted exactly once', async () => {
+    const pair = surfacePair();
+
+    const genericResponse = await pair.generic.request('/api/instances/nope/dispatch', postJson({}));
+    const aliasResponse = await pair.alias.request('/api/tasks/nope/dispatch', postJson({}));
+
+    expect(genericResponse.status).toBe(404);
+    expect(aliasResponse.status).toBe(404);
+    expect(await genericResponse.json()).toEqual(await aliasResponse.json());
+    expect(pair.generic.dispatchCallCount()).toBe(1);
+    expect(pair.alias.dispatchCallCount()).toBe(1);
+  });
+});
+
+describe('S11-A4 — the alias window, stated as tests', () => {
+  // ⚠ THE INVENTORY IS THE CONTRACT (q24). These cases pin WHICH paths exist
+  // during the one deploy of overlap, so the alias-removal unit can delete a
+  // named list and watch exactly these reddens — and so nothing quietly grows a
+  // generic twin the slice deliberately did not build.
+
+  it('every generic route is behind the SAME auth wall (I14), with no side effect', async () => {
+    const genericRoutes: Array<{ routeName: string; path: string; body: unknown }> = [
+      { routeName: 'create', path: '/api/instances', body: { project: '/tmp', createdBy: 'human' } },
+      {
+        routeName: 'moves',
+        path: '/api/instances/any-instance/moves',
+        body: { toNode: 'planning', proposedBy: 'human' },
+      },
+      {
+        routeName: 'payload-revisions',
+        path: '/api/instances/any-instance/payload-revisions',
+        body: { amendedBy: 'human', scope: 'a scope nobody authenticated to write' },
+      },
+      { routeName: 'dispatch', path: '/api/instances/any-instance/dispatch', body: {} },
+    ];
+
+    for (const genericRoute of genericRoutes) {
+      const harness = buildApiHarness();
+      for (const token of [null, ''] as const) {
+        const response = await harness.request(genericRoute.path, postJson(genericRoute.body, token));
+        expect(response.status, `${genericRoute.routeName}/${String(token)}`).toBe(401);
+      }
+      expect(harness.tasksHead()).toBe(0);
+      expect(harness.sessionHost.spawnCalls).toEqual([]);
+      expect(harness.dispatchCallCount()).toBe(0);
+    }
+  });
+
+  it('stage-edges and work-order-schema have NO generic twin this slice (q25)', async () => {
+    // Their generalisation is DECLARATION INTROSPECTION and needs pinned
+    // declarations to introspect (Move 3+). Serving the compiled task table under
+    // an `/api/instances/...` name would be declared truth over observed (0.7),
+    // so the old paths keep answering and the new ones do not exist yet. Asserted
+    // rather than assumed, because "we deliberately did not build it" and "we
+    // forgot" look identical in a diff.
+    const harness = buildApiHarness();
+
+    for (const absentPath of ['/api/instances/node-edges', '/api/instances/payload-schema']) {
+      const response = await harness.request(absentPath, { headers: authHeaders() });
+      expect(response.status, absentPath).toBe(404);
+    }
+
+    for (const servedPath of ['/api/tasks/stage-edges', '/api/tasks/work-order-schema']) {
+      const response = await harness.request(servedPath, { headers: authHeaders() });
+      expect(response.status, servedPath).toBe(200);
+    }
+    // Read-only on either path: fetching the tables wrote nothing.
+    expect(harness.tasksHead()).toBe(0);
   });
 });
