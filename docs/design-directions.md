@@ -1468,3 +1468,103 @@ from raw.)*
   switching). Surfaced in the mockups as the prompt's agent name ("Message
   vmx…"). Candidate: the TUI binary name / the resident agent's short
   name. Unassigned; naming decision parked.
+
+## The companion panel — a chat-only observer with the main transcript in its head
+
+*(Wes, 2026-08-06, right after slice 11 closed: "a pull-out side panel for
+agent chat which has full access to the ongoing 'main' transcript and can
+chat even while busy. It does no work at all but it can make notes in the
+scratchpad or inject notes into the main context." Filed as a candidate
+killer feature; at minimum an awesome side feature. Precedent: Claude Code's
+own ask-an-agent-while-busy slash command — VIMES can do it better because
+the daemon owns the transcript as structured data.)*
+
+**The shape.** A second, deliberately impotent session riding shotgun on a
+live one: full READ access to the main session's ongoing transcript, a chat
+surface of its own in a pull-out pane, and exactly two effect channels —
+(1) write a note to the project scratchpad, (2) inject a note into the main
+session's context. No tools otherwise, no file writes, no dispatch. You talk
+to it ABOUT the work while the worker works; it never becomes a second
+worker.
+
+**Why VIMES is uniquely positioned to build this.** Every ingredient is an
+existing engine primitive or a signed declaration slot:
+
+- *The transcript feed* is rule 0.8's whole point — the daemon already
+  streams structured JSONL per session; the companion consumes the same
+  stream any client does. No screen-scraping, no second parser.
+- *The panel* is a `[[panes]]` contribution (extension-model §2) or engine
+  chrome — the pull-out shell already exists in the panel system.
+- *The chat surface* is the persistent-chat primitive (E1-e territory) —
+  a session with `tools = []`, which the kit already expresses (and D55/q16
+  polices the inverse case: a chat-only companion is the legal end of that
+  axis).
+- *Note → scratchpad* is an ordinary artifact/file write on a granted path
+  — narrow, auditable, D67's grant machinery fits it exactly.
+- *Note → main context* is the interesting one: it is a PROPOSAL through
+  the engine choke, channel-stamped (principle 13) — the injected note
+  arrives in the main transcript attributed to the companion, visible
+  forever in the log, never silently. The `send` op exists; what's new is
+  the provenance stamp and the etiquette (inject at turn boundaries? queue
+  until the current tool round drains? — the same delivery question
+  StageInstructionDelivery already answers honestly for briefings).
+
+**Why it might be the killer version of the slash-command precedent.** The
+CC feature answers one question and evaporates. This companion has
+CONTINUITY (it watched the whole session, and its own chat persists beside
+the main one), a real UI (a pane, not a modal), and a paper trail (its
+injections are events in the spine — you can see, later, exactly when the
+observer nudged the worker and what came of it). It is also the natural
+home for "explain what the agent is doing right now" — the question every
+attended-session user asks and currently answers by reading raw transcript.
+
+**Tensions to resolve before a slice (each is a q-shaped decision, none
+blocking the bank):**
+
+- *Cost — REVISED same day (Wes's cache-bust question, checked against the
+  API reference)*: the original lean assumed no cache sharing across
+  sessions. WRONG PREMISE: the prompt cache has NO session key at all — the
+  cache key is model + the byte-identical rendered prefix (render order
+  tools -> system -> messages), org-scoped, and the caching guidance
+  explicitly blesses fork operations that "reuse the parent's exact prefix"
+  (copy system/tools/model verbatim, append fork content after). So there is
+  nothing to mock: **fork the session on purpose** (Claude Code has
+  --fork-session; the SDK exposes the same) and the companion's first
+  request reads the main session's entire cached transcript at ~0.1x input
+  cost, warm within TTL (5 min default / 1h option — CC runs 1h here).
+  TWO design consequences, both good:
+  (1) **The companion must present byte-identical tools and system prompt**
+  — tools render at position zero, so a `tools = []` companion shares
+  nothing. "Does no work" therefore moves from capability-absence to
+  ENGINE-GATE: the companion carries the worker's tool schema and the
+  engine auto-denies its tool calls — which is D48 deny-and-harvest's
+  pattern, evented and channel-stamped, and more honest than a stripped
+  manifest anyway (the denial is in the log; an absent tool is silence).
+  (2) **Append-only after the fork**: the companion's own chat rides after
+  the fork point; new main-session activity arrives as appended delta
+  messages, never re-interleaved before the companion's chat (that would
+  bust its own suffix cache). Re-syncing deeply = re-forking at a newer
+  point, which is again a cheap cache read while the main session keeps
+  the prefix warm by working.
+  Residual spike (rule 0.6/0.7 — provider surface, verify by observation):
+  whether a CC --fork-session's requests are byte-identical in practice
+  (system-reminder injections, per-session variance) — measured by
+  `usage.cache_read_input_tokens` on the fork's first request, the
+  reference's own verification method. Also: cache entries become readable
+  only after the writing request begins streaming, and thinking blocks
+  replay cleanly only on the SAME model — fork on the main session's model.
+- *Injection consent*: does the main session's operator pre-authorize
+  companion injections, or does each ride an attention gate? Lean:
+  operator-owned toggle per session, injections always evented either way.
+- *Engine vs extension*: the pane + observer wiring smells like engine
+  (it generalizes over every workflow), but #15 says whatever it uses must
+  be public API — building it AS the first Tier-1 consumer of the public
+  transcript stream would be the honest proof that the API is sufficient.
+- *Identity*: the companion's proposer class — `extension`? A sixth class?
+  q17's vocabulary was matched positively everywhere precisely so a new
+  class is an addition, not a hole.
+
+**Status: BANKED, unscheduled.** Natural earliest slot: after D72 Move 3
+(the migration must not grow a new consumer of the legacy surfaces), and it
+pairs well with the E1-e persistent-chat split since it IS a persistent
+chat with an unusual briefing.
