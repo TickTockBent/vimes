@@ -1,5 +1,53 @@
 # Slice 11 — the instance store, as the task store's own re-home (D72 Move 2)
 
+> **✅ CLOSED 2026-08-06 — exit gate PASSED (machine).** Commits `2cdda2a`
+> (U1: reducer + alias table + legacy view + slice open), `547a68e` (U2:
+> writer flip), U3 (routes + aliases) + this close. Suite 3276 → **3327**,
+> green twice at every unit gate, exit codes captured un-piped. S11-A1..A6
+> all landed and verified. **Neither kill criterion tripped**: the legacy
+> view derives byte-identically (S11-A1 green on FIRST contact — q13's
+> core-field list carried the tenant without loss), and no step needed a
+> dual-write (the mid-slice window was one writer emitting the legacy
+> spelling into a reducer that reads both via the alias table — one
+> spelling on the write path at every moment).
+>
+> **Live oracle (U1 gate):** the production tasks stream turned out to be
+> EXACTLY the frozen fixture's 111 events; a READONLY replay of the
+> production DB through the new reducer + legacy view is byte-identical
+> (72,419 bytes) to the Move 0 export. The HTTP half was blocked by daemon
+> auth (localhost curl → unauthorized); the DB-level comparison is the same
+> fold over the same rows and was accepted as the stronger equivalent.
+>
+> **Gate findings, all resolved in-slice:** (1) the orchestrator destroyed
+> U1's uncommitted events.ts with a `git checkout` sabotage-revert — its own
+> banked rule, violated; recovered by replaying the agent's edit sequence
+> from its transcript (including three Bash-heredoc edits and one
+> partially-applied batch) and PROVEN byte-identical via the compiled
+> `dist/events.js` oracle; memory updated (7th instance). (2) Sabotage
+> passes ran on every load-bearing guard: the alias-adapter path (fixture
+> test reddens), the A6 emission guard (writer + dispatcher), and BOTH route
+> surfaces (generic and alias nodeOf).
+>
+> **Loose ends carried out of the slice:** prose references to
+> `TaskWriter`/`taskApi.ts` linger in sessionHost/projectWriter/projectApi/
+> createTaskTool/workOrder comments (cheap sweep, rides the alias-removal
+> deploy); wire bodies keep legacy field spellings (`projectRoot`, `stage`,
+> `amendedBy`) on BOTH surfaces' shared internals — re-spelling belongs with
+> alias removal; `POST /api/instances` still validates `node` against the
+> compiled stage enum (correct until Move 3 pins declarations); stale
+> comment at taskDispatcher.test.ts:2284 (pre-existing).
+>
+> **⚠ DEPLOY NOTE — rule 0 applies.** This slice's deploy is a DAEMON
+> deploy (core + daemon changed; dist carries stale deleted-module output,
+> imported by nothing). On restart the daemon STARTS EMITTING generic kinds
+> to the spine — a behavior-shaping change that waits for Wes's sign-off.
+> The deployed UI keeps working against the aliases before AND after that
+> restart. Alias-death ordering (q24): this deploy → a later UI unit
+> switches to generic routes (self-ships via ci-gate, safe only because the
+> daemon already serves them) → the daemon deploy after THAT drops the
+> aliases and `legacyTasksViewOf`, and the fixture test re-pins the
+> instances serialization.
+
 Opened 2026-08-06 on slice 10's close. The riskiest step in the migration map
 (§2.3), taken now deliberately: it is the only step that is *cheaper* while
 the old implementation still stands beside it as the living reference — and
