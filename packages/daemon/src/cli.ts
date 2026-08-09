@@ -118,7 +118,7 @@ function scenariosReport(): number {
     Math.max(column.header.length, ...rows.map((row) => column.value(row).length)),
   );
 
-  process.stdout.write('PREVIEW — nothing pinned; see docs/calibration.md\n\n');
+  process.stdout.write('PREVIEW — nothing pinned; see private-docs/calibration.md\n\n');
   const headerLine = columns.map((column, index) => column.header.padEnd(widths[index]!)).join('  ');
   process.stdout.write(`${headerLine}\n`);
   process.stdout.write(`${widths.map((width) => '-'.repeat(width)).join('  ')}\n`);

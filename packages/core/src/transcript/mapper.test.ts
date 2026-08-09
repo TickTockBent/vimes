@@ -10,7 +10,7 @@ import type { TailOutput } from './tail.js';
 // `~/.claude`, opens a file, or copies prose out of a real transcript. What is
 // borrowed from the live store is the SHAPE and the POPULATIONS, measured
 // 2026-07-22 over 30 transcripts / 134 `queued_command` attachments
-// (docs/risk-register.md) — the prompt strings, uuids and timestamps are invented.
+// (private-docs/risk-register.md) — the prompt strings, uuids and timestamps are invented.
 //
 // The measurement that these cases exist to defend:
 //

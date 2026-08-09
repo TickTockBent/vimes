@@ -8,7 +8,7 @@ import type { StageRunnerPlan } from './stageRunner.js';
 // ─── the dispatcher's instruction seam — the WORDS (pure, packages/core) ──────
 //
 // Pure, deterministic, no clock/IO (rule 0.3). The minimal stage-instruction
-// seam-fill Wes signed off 2026-07-24 — see docs/open-questions.md D43/D44 for the
+// seam-fill Wes signed off 2026-07-24 — see private-docs/open-questions.md D43/D44 for the
 // richer per-stage/spec version deliberately deferred to slice 7. This says only
 // what a worker needs to start ONE piece of real work and be steerable mid-run;
 // it is intentionally stage-GENERIC (does not specialise planning vs implementing

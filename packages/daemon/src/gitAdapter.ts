@@ -18,7 +18,7 @@ import { execFile } from 'node:child_process';
 //
 // The parsers are PURE and TOLERATE drift (rule 0.6): an unrecognized line is
 // skipped or bucketed, never thrown on. They are unit-tested over REAL captured
-// output (docs/calibration.md "Spike G", git 2.43.0).
+// output (private-docs/calibration.md "Spike G", git 2.43.0).
 
 // ── the injectable runner seam (mirrors search.ts's RipgrepSpawner) ──
 export interface GitRunResult {

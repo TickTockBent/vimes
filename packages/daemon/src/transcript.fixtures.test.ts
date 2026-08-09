@@ -113,7 +113,7 @@ describe('TranscriptTail against golden fixtures (I8)', () => {
 //
 // ⚠ `corrections.jsonl` IS SYNTHETIC. Its SHAPE and its value populations were
 // measured 2026-07-22 over 30 real transcripts / 134 `queued_command`
-// attachments in the live store (docs/risk-register.md), but every prompt
+// attachments in the live store (private-docs/risk-register.md), but every prompt
 // string, uuid, path and timestamp in the file is invented. **No test in this
 // repo reads `~/.claude`** — real transcripts contain the operator's actual
 // work, and a fixture's job is to pin a shape, not to carry someone's prose into

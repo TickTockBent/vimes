@@ -5,7 +5,7 @@
 //
 // Why the threshold is high rather than zero: the tree carries accepted moderate
 // advisories whose reachability has been analysed and recorded (see
-// docs/risk-register.md — e.g. a nested @hono/node-server reachable only if an MCP
+// private-docs/risk-register.md — e.g. a nested @hono/node-server reachable only if an MCP
 // transport is started, which nothing does until slice 7). A gate that is red by
 // default is a gate people learn to step over, and that is worse than a gate with a
 // documented threshold.
@@ -16,7 +16,7 @@
 //
 // A high/critical advisory may be excused ONLY by its specific npm audit `source`
 // id (stable numeric id; the GHSA is recorded beside it for humans), and ONLY with
-// a written reason pointing at a docs/risk-register.md analysis. The excusal
+// a written reason pointing at a private-docs/risk-register.md analysis. The excusal
 // CASCADES down the `via`-chain: a package flagged solely because it depends on an
 // excused package is itself excused, but a package carrying ANY non-allowlisted
 // advisory still fails the gate. Two guardrails keep this honest:
@@ -29,7 +29,7 @@
 // tripwire exception, and it is meant to shrink, not grow.
 // Currently EMPTY (GHSA-mh99-v99m-4gvg pruned 2026-08-05 — the advisory left
 // the audit after a dependency refresh, and the gate's own staleness NOTE
-// called for the prune; the WHY stays in docs/risk-register.md, 2026-07-24
+// called for the prune; the WHY stays in private-docs/risk-register.md, 2026-07-24
 // entry). The Map and its rules remain — this is the shape a future excusal
 // must take.
 const ALLOWLISTED_ADVISORY_SOURCES = new Map([]);
@@ -142,7 +142,7 @@ if (blockingCount > 0) {
     `check-advisories: FAIL — ${blockingCount} non-allowlisted high/critical advisor${blockingCount === 1 ? 'y' : 'ies'} in the dependency tree.`,
   );
   console.error(
-    'check-advisories: fix it, or — if it is genuinely unreachable — record the analysis in docs/risk-register.md and add its advisory source id to ALLOWLISTED_ADVISORY_SOURCES deliberately.',
+    'check-advisories: fix it, or — if it is genuinely unreachable — record the analysis in private-docs/risk-register.md and add its advisory source id to ALLOWLISTED_ADVISORY_SOURCES deliberately.',
   );
   console.error(
     'check-advisories: ⚠ do NOT run `npm audit fix --force` here — npm proposes downgrading @anthropic-ai/claude-agent-sdk across a major, which would tear out the SDK the session host depends on.',
@@ -152,6 +152,6 @@ if (blockingCount > 0) {
 
 if (moderateCount > 0) {
   console.log(
-    `check-advisories: ${moderateCount} moderate advisor${moderateCount === 1 ? 'y' : 'ies'} present and NOT failing the build — reachability is tracked in docs/risk-register.md.`,
+    `check-advisories: ${moderateCount} moderate advisor${moderateCount === 1 ? 'y' : 'ies'} present and NOT failing the build — reachability is tracked in private-docs/risk-register.md.`,
   );
 }

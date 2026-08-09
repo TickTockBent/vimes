@@ -7,7 +7,7 @@
 // WHY THIS EXISTS AT ALL. Routing was inline in a `.vue`, and `.vue` files are
 // not tested here — so the app's navigation, the thing every screen depends on,
 // was its only untested logic. Extracting it changes no behaviour; it makes the
-// behaviour assertable. (docs/design-directions.md, "The retrofit, scoped".)
+// behaviour assertable. (private-docs/design-directions.md, "The retrofit, scoped".)
 //
 // TWO THINGS THAT LOOK LIKE DETAILS AND ARE NOT:
 //

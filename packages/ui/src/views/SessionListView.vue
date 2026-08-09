@@ -76,7 +76,7 @@ const killConfirm = ref<KillConfirmState>(initialKillConfirmState);
 const renamingId = ref<string | null>(null);
 const renameDraft = ref('');
 
-// Q2 (docs/QUEUE.md) — the "Show N older sessions" reveal. Plain component
+// Q2 (private-docs/QUEUE.md) — the "Show N older sessions" reveal. Plain component
 // state (a `ref<boolean>`), same pattern as `spawnFormExpanded`/`metersExpanded`
 // above: there is no branching worth a lib/ module here, the toggle IS the
 // logic. The TESTED logic is the partition itself (lib/sessionListPartition.ts)
@@ -261,7 +261,7 @@ const METER_CLOCK_TICK_MS = 1_000;
 const localNowMs = ref(Date.now());
 let meterClockHandle: ReturnType<typeof setInterval> | null = null;
 
-// ── Session list age-out (Q2, docs/QUEUE.md) — DISPLAY ONLY ─────────────────
+// ── Session list age-out (Q2, private-docs/QUEUE.md) — DISPLAY ONLY ─────────────────
 // The tested split lives in lib/sessionListPartition.ts; this block only picks
 // the presentation constants and feeds the partition a STABLE clock.
 //
@@ -691,7 +691,7 @@ onUnmounted(() => {
       </ul>
     </section>
 
-    <!-- Q2 (docs/QUEUE.md) — the session list gets its OWN scrollable frame
+    <!-- Q2 (private-docs/QUEUE.md) — the session list gets its OWN scrollable frame
          instead of growing the page: `max-h-[55vh]` + `overflow-y-auto` on this
          wrapper means the list scrolls WITHIN itself, and the header, the Q1
          "+ New session" affordance, and the meters strip above stay reachable

@@ -1,4 +1,4 @@
-// A minimal, in-house markdown parser for the message stream (docs/design-
+// A minimal, in-house markdown parser for the message stream (private-docs/design-
 // directions.md "Markdown rendering in the message stream"). Pure logic, no
 // DOM, no HTML strings anywhere — StreamView.vue renders the returned
 // structure with plain Vue elements, so every text node is escaped by Vue by

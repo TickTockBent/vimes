@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Build-manifest lazy-chunk gate (docs/slice-3.md §Editor + §Raw terminal;
-// docs/vimes-design-spec.md §8).
+// Build-manifest lazy-chunk gate (private-docs/slice-3.md §Editor + §Raw terminal;
+// private-docs/vimes-design-spec.md §8).
 //
 // Deterministic, no calibration: parse the Vite build manifest and FAIL if, for
 // EITHER heavy dependency (CodeMirror 6 and xterm.js):

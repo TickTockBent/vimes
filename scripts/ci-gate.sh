@@ -55,7 +55,7 @@ fi
 
 # --- dependency advisory gate ------------------------------------------------
 # Fails on HIGH/CRITICAL; reports moderate and below. See scripts/check-advisories.mjs
-# for why the threshold is not zero, and docs/risk-register.md for the accepted
+# for why the threshold is not zero, and private-docs/risk-register.md for the accepted
 # moderates and their reachability analysis.
 #
 # NETWORK-TOLERANT BY DESIGN. `npm audit` needs the registry, and a gate that goes

@@ -94,14 +94,14 @@ freezing (the two serializations were byte-identical).
 `tasks-stream.jsonl`, folds it through **today's** `tasksProjection`, and
 asserts the result is **byte-identical** to `tasks-state.json` — plus a
 determinism check (two independent fold runs of the fixture events must
-themselves be byte-identical). This is S10-A1 (`docs/slice-10.md`).
+themselves be byte-identical). This is S10-A1 (`private-docs/slice-10.md`).
 
 ## This fixture is FROZEN
 
 It is **never regenerated to make a test pass.** If
 `tasksFixtureReplay.test.ts` ever reddens because the fold no longer
 reproduces these exact bytes, that is a **rule-0.1 finding** (an
-undocumented behaviour change slipped into the fold) — `docs/slice-10.md`'s
+undocumented behaviour change slipped into the fold) — `private-docs/slice-10.md`'s
 Move-0 kill criterion: "the frozen fixture does NOT replay byte-identical
 through today's fold → the fold is nondeterministic → rule-0.1 finding, slice
 halts." A legitimate, reviewed, *intentional* change to the projection's

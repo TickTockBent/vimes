@@ -2,7 +2,7 @@
 
 `exitplanmode.jsonl` — two verbatim `ExitPlanMode` tool-use records captured from a
 LIVE spawned SDK session during spike S7·0 (2026-07-25). Provenance and full
-analysis: `docs/evidence-spike-s7-0-planmode.md`.
+analysis: `private-docs/evidence-spike-s7-0-planmode.md`.
 
 - **Line 1** — the on-disk *transcript* form (what the daemon reads via
   `transcriptPaths.ts`): carries `version`, `cwd`, `slug`, `sessionId`, …

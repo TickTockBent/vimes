@@ -10,7 +10,7 @@
 // boundary is an INFERENCE, and Wes may work without a repo or with another VCS.
 // So every directory node is a real directory some session actually ran in, or an
 // ancestor of one, and the operator picks granularity by EXPANDING rather than by
-// trusting a boundary someone guessed (docs/decisions.md D37).
+// trusting a boundary someone guessed (private-docs/decisions.md D37).
 //
 // Rule 0.3: pure arithmetic over data. No clock, no randomness, no I/O. This
 // module NEVER re-prices — it consumes the `PricedRow` Step 2 produced.

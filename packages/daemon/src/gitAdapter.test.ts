@@ -17,7 +17,7 @@ import {
 // ─── Git adapter: pure parsers over REAL Spike-G output + one hermetic run ─────
 //
 // The parser fixtures are the ACTUAL captured strings from git 2.43.0 on this box
-// (docs/calibration.md "Spike G"). The status fixture is NUL-delimited: the NUL
+// (private-docs/calibration.md "Spike G"). The status fixture is NUL-delimited: the NUL
 // is built at runtime from a constant so NO raw NUL byte lives in this source
 // file (rule: NULs are invisible in editors and have bitten this project).
 

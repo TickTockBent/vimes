@@ -377,7 +377,7 @@ function usageSummary(event: EventRecord): string {
   return 'usage updated';
 }
 
-// D17 (docs/open-questions.md): a turn emits one usage_block per SDK
+// D17 (private-docs/open-questions.md): a turn emits one usage_block per SDK
 // assistant message, so identical snapshots repeat within a turn. Every
 // event still lands in the store untouched (rule 0.7) — this is a
 // presentation-only filter deciding which usage_block events get a

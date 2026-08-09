@@ -1,4 +1,4 @@
-// Q2 (docs/QUEUE.md) — the pure, tested split behind the session list's
+// Q2 (private-docs/QUEUE.md) — the pure, tested split behind the session list's
 // "age out" disclosure. DISPLAY ONLY: this never removes a row from anywhere,
 // it only decides which of the caller's already-loaded rows render by default
 // (`visible`) versus behind a "Show N older sessions" tap (`older`). No store,

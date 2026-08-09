@@ -44,7 +44,8 @@ The discipline matters more than the feature list, and it is machine-enforced:
   classified by measurement, never by documentation.
 
 The reasoning behind every non-obvious choice is recorded rather than lost —
-see [`docs/`](docs/).
+kept in a private design-doc suite per this project's publication-boundary
+convention, not published in this repo.
 
 ## Requirements
 
@@ -81,23 +82,15 @@ tunnel in front of it. Configuration is by environment — `VIMES_PORT` (4600),
 | `packages/core` | Pure deterministic logic: events, projections, pricing, task state machine, scenario harness. No I/O. |
 | `packages/daemon` | Every I/O boundary: session host, PTY, SQLite, HTTP/WS, auth, git, search, cost ingest. |
 | `packages/ui` | Vue 3 + Pinia PWA, mobile-first. |
-| `docs/` | The design record — see below. |
 | `scripts/ci-gate.sh` | The gate. |
 
 ## The design record
 
-This project keeps its reasoning, which is the main reason an outside reader can
-follow it at all:
-
-- [`docs/README.md`](docs/README.md) — index of the suite and its working rules.
-- [`docs/decisions.md`](docs/decisions.md) — append-only decision log. A reversal
-  is a new dated entry, never an edit.
-- [`docs/architecture.md`](docs/architecture.md) — standing constraints. Read
-  before writing a projection.
-- [`docs/calibration.md`](docs/calibration.md) — measurements, with the
-  assumptions each band was pinned under.
-- [`docs/risk-register.md`](docs/risk-register.md) — external surfaces presumed
-  to drift, and the isolation plan for each.
+This project keeps its reasoning — decisions, calibration data, architecture
+notes, risk register, per-slice plans — in a private design-doc suite that
+is not published in this repo. Code comments cite it by filename (e.g. "see
+`private-docs/decisions.md` D37") for anyone with local access to the suite;
+those references are not resolvable from the public repo alone.
 
 ## Caveats
 
