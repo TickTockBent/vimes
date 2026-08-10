@@ -394,3 +394,9 @@ export {
   type ManifestError,
   type ManifestWarning,
 } from './extensions/manifest.js';
+
+// S12·U1 (D72 Move 3) — the declaration-reading move adjudicator. Named, not
+// wildcarded, for the same reason the parser's list above is named. The old
+// compiled-table machine is still the runtime path this slice; U2 flips the
+// writer onto this one.
+export { proposeMove, type MoveProposal, type MoveDecision } from './extensions/proposeMove.js';
