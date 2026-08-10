@@ -154,24 +154,19 @@ export {
   type CompactionGateInput,
   type CompactionGateDecision,
 } from './orchestrator/compactionSteward.js';
+// The transitional vocabulary module (D72 Move 3, S12·U3): the task tenant's
+// stages, proposer classes and refusal reasons, plus the rule for what an
+// accepted move RECORDS. Legality itself moved to the extension's declaration
+// and is adjudicated by `extensions/proposeMove.ts` — see the module banner.
 export {
   TASK_STAGES,
-  TASK_STAGE_EDGES,
-  INITIAL_TASK_STAGE,
   taskStageSchema,
   transitionProposedBySchema,
   transitionRejectionReasonSchema,
-  isLegalTaskEdge,
-  proposeTransition,
-  // S12·U2 (D72 Move 3): the accepted-move RECORD rule, extracted so the daemon
-  // writer computes it the same way `proposeTransition` does now that the
-  // declaration-reading adjudicator returns a decision only (F5).
   nextTaskForAcceptedTransition,
-  taskStageEdgesRecord,
   type TaskStage,
   type TransitionProposal,
   type TransitionProposedBy,
-  type TransitionOutcome,
   type TransitionRejectionReason,
 } from './tasks/taskStateMachine.js';
 export {

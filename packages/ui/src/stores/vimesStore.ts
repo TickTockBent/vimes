@@ -199,7 +199,7 @@ export const useVimesStore = defineStore('vimes', () => {
   // S8: the legal-edge table, fetched from GET /api/tasks/stage-edges. Null
   // until the first fetch lands — `moveOptionsFor` treats null as "not loaded
   // yet" and offers nothing (a safe empty, never all-stages). This is the SERVED
-  // form of core's TASK_STAGE_EDGES; the value is never re-derived here.
+  // form of the workflow declaration's legality table; it is never re-derived here.
   const stageEdges = ref<Record<string, string[]> | null>(null);
   // S7·3: the work-order authoring descriptor, fetched from
   // GET /api/tasks/work-order-schema. Null until the first fetch lands — the

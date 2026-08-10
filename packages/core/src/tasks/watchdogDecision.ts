@@ -37,7 +37,8 @@
 // Rule 0.3: pure. `nowIso` is a PARAMETER — this module never reads a clock,
 // never randomizes, never mutates its input. Same inputs, same verdict, forever.
 //
-// Rule: **NEVER THROW.** Like `proposeTransition` (step 1) and `decideDispatch`
+// Rule: **NEVER THROW.** Like the move adjudicator
+// (`extensions/proposeMove.ts`) and `decideDispatch`
 // (step 3), `assessStageRun` is TOTAL: every input, including values outside the
 // schema enums and unparseable timestamps, maps to a verdict. A watchdog that
 // throws is a watchdog that has silently stopped watching.
@@ -46,8 +47,9 @@ import { EVENT_TYPES } from '../events.js';
 import { sessionRecordSchema, type SessionRecord } from '../schemas.js';
 
 // ── which liveness values the watchdog governs ───────────────────────────────
-// Exported as DATA (the same discipline as `TASK_STAGE_EDGES` and
-// `DISPATCHABLE_TASK_STAGES`), with its COMPLEMENT derived rather than
+// Exported as DATA (the same discipline as `DISPATCHABLE_TASK_STAGES`, and as
+// the legality table followed before D72 Move 3 moved it into the extension's
+// declaration), with its COMPLEMENT derived rather than
 // transcribed, so the partition cannot drift when a liveness value is added.
 //
 // **Only a run that could be appending can be silent.** Each membership is a

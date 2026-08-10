@@ -12,7 +12,6 @@ import {
   SteppingClock,
   readAllStreamsGrouped,
   replayFromEmpty,
-  taskStageEdgesRecord,
   // S11·U1 (D72 Move 2): the fold is the INSTANCE store now; every task-shaped
   // read below goes through `legacyTasksViewOf`, which is where the shape these
   // assertions speak lives. The subjects under test (writer/dispatcher/api/tool)
@@ -44,7 +43,6 @@ import {
   type ProposeMoveResponse,
   type ProposeTransitionResponse,
   type RevisePayloadResponse,
-  type StageEdgesResponse,
   type WorkOrderFieldDescriptor,
   type WorkOrderSchemaResponse,
 } from './instanceApi.js';
@@ -1491,13 +1489,12 @@ describe('I14 — every task route is behind the auth wall', () => {
 // ── S8: the served legal-edge table ──────────────────────────────────────────
 
 // ⚠ **THE FROZEN WIRE BYTES (S12-A4, clause b).** Captured 2026-08-10, from the
-// route as it answered BEFORE D72 Move 3 flipped it — i.e. the exact
-// `JSON.stringify({ edges: taskStageEdgesRecord() })` the deployed UI has been
-// reading since S8, key order and target order included. It is written out as a
-// LITERAL on purpose: clause (a) below compares the route to the old function
-// while that function still stands, and U3 DELETES the function — this literal is
-// what survives it, so the byte promise outlives its reference (the same trick
-// S12-A3 plays with the edge set).
+// route as it answered BEFORE D72 Move 3 flipped it — i.e. the exact bytes the
+// compiled record helper produced and the deployed UI has been reading since S8,
+// key order and target order included. It was written out as a LITERAL on
+// purpose: clause (a) compared the route to that helper while the helper still
+// stood, and S12·U3 deleted it — this literal is what survives it, so the byte
+// promise outlives its reference (the same trick S12-A3 plays with the edge set).
 const FROZEN_STAGE_EDGES_WIRE_BYTES =
   '{"edges":{"backlog":["planning","blocked-external","cancelled"],' +
   '"planning":["plan-ready","blocked-external","quarantined","backlog","cancelled"],' +
@@ -1510,23 +1507,11 @@ const FROZEN_STAGE_EDGES_WIRE_BYTES =
   '"cancelled":["backlog"]}}';
 
 describe('GET /api/tasks/stage-edges — the legal-edge table the move sheet filters against', () => {
-  // ── S12-A4, clause (a) — REMOVED BY U3 WITH ITS REFERENCE ──────────────────
+  // ── S12-A4, clause (a) — RETIRED BY U3 WITH ITS REFERENCE (D72 Move 3) ─────
   //
-  // While both machines stand: the route, now DERIVED FROM THE DECLARATION,
-  // answers with the same bytes the compiled table produced. Byte-identity, not
-  // deep equality — the response is a wire contract the deployed UI parses, and
-  // key/target ORDER is part of it (F4).
-  it('serves BYTE-IDENTICAL bytes to the compiled taskStageEdgesRecord() (S12-A4)', async () => {
-    const harness = buildApiHarness();
-    const response = await harness.request('/api/tasks/stage-edges', {
-      headers: authHeaders(),
-    });
-
-    expect(response.status).toBe(200);
-    const body = (await response.json()) as StageEdgesResponse;
-    expect(body).toEqual({ edges: taskStageEdgesRecord() });
-    expect(JSON.stringify(body)).toBe(JSON.stringify({ edges: taskStageEdgesRecord() }));
-  });
+  // It compared the route against the compiled record helper while that helper
+  // still stood. U3 deleted it; clause (b) below is what carries the byte
+  // promise now, which is why it was frozen as a literal in the first place.
 
   // ── S12-A4, clause (b) — SURVIVES U3 ───────────────────────────────────────
   it('serves the FROZEN wire bytes, literally (S12-A4)', async () => {

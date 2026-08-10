@@ -995,11 +995,11 @@ function livenessClass(liveness: string): string {
         </div>
 
         <!-- ⚠ EVERY STAGE BUT THE CURRENT ONE IS OFFERED, and the list is NOT
-             filtered by transition legality. The UI proposes; the machine
+             filtered by transition legality. The UI proposes; the daemon
              decides; the refusal is enumerated, evented (I7) and shown above.
-             Mirroring TASK_STAGE_EDGES here would make this a second authority
-             on legality — which 0.3 and principle 10 forbid — and would hide the
-             very invariant this board exists to demonstrate. -->
+             Mirroring the declared legality table here would make this a second
+             authority on legality — which 0.3 and principle 10 forbid — and
+             would hide the very invariant this board exists to demonstrate. -->
         <h3 class="mt-4 text-sm font-semibold font-mono uppercase tracking-[0.08em]">Move to…</h3>
         <p class="mb-2 text-[11px] text-ink-dim">
           Every stage is offered. VIMES decides which moves are legal, and says why when it refuses.

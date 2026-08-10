@@ -1,14 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
-  INITIAL_TASK_STAGE,
   TASK_STAGES,
-  TASK_STAGE_EDGES,
-  isLegalTaskEdge,
-  proposeTransition,
-  taskStageEdgesRecord,
+  nextTaskForAcceptedTransition,
+  taskStageSchema,
+  transitionProposedBySchema,
+  transitionRejectionReasonSchema,
   type TaskStage,
   type TransitionProposal,
-  type TransitionRejectionReason,
 } from './taskStateMachine.js';
 import {
   EVENT_PAYLOAD_SCHEMAS,
@@ -21,42 +19,19 @@ import {
   taskTransitionRejectedPayloadSchema,
 } from '../events.js';
 import { taskRecordSchema, type TaskRecord } from '../schemas.js';
-import { DISPATCHABLE_TASK_STAGES, NON_DISPATCHABLE_TASK_STAGES } from './dispatchDecision.js';
 
-// ─── the enumeration harness ─────────────────────────────────────────────────
+// ─── the transitional vocabulary module's own tests (D72 Move 3, S12·U3) ─────
 //
-// Everything below is driven off the EXPORTED table (`TASK_STAGE_EDGES`) and the
-// EXPORTED stage list (`TASK_STAGES`, itself derived from `taskRecordSchema`).
-// There is deliberately NO hand-copied edge list in this file: a table plus a
-// transcribed test list is two sources of one truth, and they drift. Add a stage
-// to the schema or an edge to the table and these tests re-derive their own
-// coverage — the legal set, the illegal set, and the expected refusal for each.
-
-// Every (from, to) pair the table permits.
-const LEGAL_EDGES: Array<[TaskStage, TaskStage]> = [...TASK_STAGE_EDGES.entries()].flatMap(
-  ([fromStage, allowedToStages]) =>
-    [...allowedToStages].map((toStage): [TaskStage, TaskStage] => [fromStage, toStage]),
-);
-
-// The FULL stage × stage cross product.
-const ALL_EDGES: Array<[TaskStage, TaskStage]> = TASK_STAGES.flatMap((fromStage) =>
-  TASK_STAGES.map((toStage): [TaskStage, TaskStage] => [fromStage, toStage]),
-);
-
-// The cross product minus the legal set — every edge that must be REJECTED.
-const ILLEGAL_EDGES: Array<[TaskStage, TaskStage]> = ALL_EDGES.filter(
-  ([fromStage, toStage]) => !isLegalTaskEdge(fromStage, toStage),
-);
-
-// The refusal each illegal edge must produce, derived from the documented
-// precedence rather than transcribed per-case (see `proposeTransition`'s doc
-// comment). This mirrors the ORDER of the checks, not their implementation.
-function expectedRejectionFor(fromStage: TaskStage, toStage: TaskStage): TransitionRejectionReason {
-  if (fromStage === toStage) return 'same-stage';
-  if (fromStage === 'done') return 'terminal-stage';
-  if (fromStage === 'quarantined' && toStage === 'done') return 'quarantined-cannot-complete';
-  return 'illegal-edge';
-}
+// This file used to enumerate a compiled legality table and drive a compiled
+// machine over the full stage cross product. Both are GONE: legality is declared
+// in the `vimes-tasks` extension manifest, adjudicated by
+// `extensions/proposeMove.ts`, and proved there — the declared-vs-frozen
+// differential lives in `extensions/manifest.test.ts` (S12-A3) and the
+// behavioural pins in `extensions/proposeMove.test.ts`.
+//
+// What remains here is what remains in the module: the tenant's VOCABULARIES
+// (stages, proposer classes, refusal reasons) and the ONE rule about what an
+// accepted move RECORDS. Nothing below decides legality, and nothing may start.
 
 function taskAtStage(stage: TaskStage, overrides: Partial<TaskRecord> = {}): TaskRecord {
   return {
@@ -82,215 +57,226 @@ function proposal(
   return { toStage, proposedBy: 'dispatcher', ...overrides };
 }
 
-describe('the transition table itself', () => {
-  it('covers every schema stage and nothing else (no stage silently escapes)', () => {
-    expect([...TASK_STAGE_EDGES.keys()].sort()).toEqual([...TASK_STAGES].sort());
-    for (const allowedToStages of TASK_STAGE_EDGES.values()) {
-      for (const toStage of allowedToStages) {
-        expect(TASK_STAGES).toContain(toStage);
-      }
-    }
+// ── the stage vocabulary ─────────────────────────────────────────────────────
+
+describe("TASK_STAGES — the record vocabulary, in the schema's own order", () => {
+  it('is the nine shipped stages and nothing else', () => {
+    expect(TASK_STAGES).toHaveLength(9);
+    expect([...TASK_STAGES].sort()).toEqual([
+      'backlog',
+      'blocked-external',
+      'cancelled',
+      'done',
+      'implementing',
+      'plan-ready',
+      'planning',
+      'quarantined',
+      'review',
+    ]);
   });
 
-  it('starts tasks in backlog', () => {
-    expect(INITIAL_TASK_STAGE).toBe('backlog');
-    expect(taskRecordSchema.shape.stage.options).toContain(INITIAL_TASK_STAGE);
+  // ⚠ THE ORDER IS WIRE-LOAD-BEARING, not cosmetic. S12·U2 derives the key order
+  // of `GET /api/tasks/stage-edges` from this vocabulary, and that response is a
+  // contract the deployed UI parses (slice-12 F4, and the frozen wire literal in
+  // the daemon's `instanceApi.test.ts` is its byte-level pin). Re-ordering the
+  // enum in `schemas.ts` is a wire change; this test is where it announces itself.
+  it('rides the enum declaration order, which the served stage-edges keys inherit', () => {
+    expect([...TASK_STAGES]).toEqual([
+      'backlog',
+      'planning',
+      'plan-ready',
+      'implementing',
+      'review',
+      'done',
+      'blocked-external',
+      'quarantined',
+      'cancelled',
+    ]);
+    // Derived, never transcribed: the list IS the schema's options.
+    expect([...TASK_STAGES]).toEqual([...taskStageSchema.options]);
   });
 
-  it('partitions the cross product into legal + illegal with no overlap or gap', () => {
-    expect(LEGAL_EDGES.length + ILLEGAL_EDGES.length).toBe(ALL_EDGES.length);
-    expect(ALL_EDGES.length).toBe(TASK_STAGES.length * TASK_STAGES.length);
-  });
-});
-
-// ── taskStageEdgesRecord — the wire form the daemon serves (S8) ─────────────
-describe('taskStageEdgesRecord — TASK_STAGE_EDGES as a plain, JSON-able record', () => {
-  it('has every stage present as a key', () => {
-    const record = taskStageEdgesRecord();
-    expect(Object.keys(record).sort()).toEqual([...TASK_STAGES].sort());
-  });
-
-  it("each stage's target set matches TASK_STAGE_EDGES exactly", () => {
-    const record = taskStageEdgesRecord();
+  it('is the same vocabulary `taskRecordSchema` accepts for `stage`', () => {
     for (const stage of TASK_STAGES) {
-      expect(new Set(record[stage])).toEqual(new Set(TASK_STAGE_EDGES.get(stage) ?? []));
+      expect(taskRecordSchema.safeParse(taskAtStage(stage)).success).toBe(true);
+    }
+    expect(taskRecordSchema.shape.stage.options).toEqual(taskStageSchema.options);
+  });
+});
+
+// ── the proposer vocabulary ──────────────────────────────────────────────────
+
+describe('transitionProposedBySchema — who may propose', () => {
+  it('is exactly the three proposer classes, in their declared order', () => {
+    expect(transitionProposedBySchema.options).toEqual(['human', 'orchestrator', 'dispatcher']);
+  });
+
+  it('is deliberately WIDER than `createdBy` — the dispatcher moves what it never created', () => {
+    expect(transitionProposedBySchema.safeParse('dispatcher').success).toBe(true);
+    expect(taskRecordSchema.shape.createdBy.options).toEqual(['human', 'orchestrator']);
+  });
+
+  it('refuses a class outside the set (the `watchdog` class is declared, not shipped)', () => {
+    expect(transitionProposedBySchema.safeParse('watchdog').success).toBe(false);
+    expect(transitionProposedBySchema.safeParse('').success).toBe(false);
+  });
+});
+
+// ── the refusal vocabulary ───────────────────────────────────────────────────
+
+describe('transitionRejectionReasonSchema — the enumerated refusals', () => {
+  it('is exactly the five reasons the adjudicator can return', () => {
+    expect([...transitionRejectionReasonSchema.options].sort()).toEqual([
+      'illegal-edge',
+      'quarantined-cannot-complete',
+      'same-stage',
+      'terminal-stage',
+      'unknown-stage',
+    ]);
+  });
+
+  it('refuses a reason outside the enumerated set', () => {
+    expect(transitionRejectionReasonSchema.safeParse('because-i-said-so').success).toBe(false);
+  });
+
+  // I7's record: EVERY refusal the adjudicator can produce must be EVENTABLE. An
+  // unrecordable rejection is, as far as I7 is concerned, one that never
+  // happened — so this walks the vocabulary itself rather than a sample.
+  it('every reason validates inside a `task_transition_rejected` payload', () => {
+    for (const reason of transitionRejectionReasonSchema.options) {
+      const input = taskTransitionRejected({
+        taskId: 'task-1',
+        fromStage: 'review',
+        attemptedToStage: 'done',
+        reason,
+        proposedBy: 'orchestrator',
+      });
+      expect(input.stream).toBe('tasks');
+      expect(input.type).toBe(EVENT_TYPES.taskTransitionRejected);
+      expect(taskTransitionRejectedPayloadSchema.safeParse(input.payload).success).toBe(true);
+      expect(
+        EVENT_PAYLOAD_SCHEMAS[EVENT_TYPES.taskTransitionRejected].safeParse(input.payload).success,
+      ).toBe(true);
     }
   });
 
-  it("done's targets are the empty array (the terminal stage has no outgoing edges)", () => {
-    expect(taskStageEdgesRecord().done).toEqual([]);
+  // `unknown-stage` exists FOR hostile/malformed input, and the whole point of
+  // the event is to RECORD what was refused — so the rejected event's stage
+  // fields must accept a value outside the enum. If this ever tightens to the
+  // enum, an unknown-stage rejection becomes unrecordable and I7 fails silently
+  // exactly where it matters most.
+  it('records an unknown-stage refusal verbatim, outside the enum', () => {
+    const input = taskTransitionRejected({
+      taskId: 'task-1',
+      fromStage: 'review',
+      attemptedToStage: 'shipped-it',
+      reason: 'unknown-stage',
+      proposedBy: 'orchestrator',
+    });
+    expect(taskTransitionRejectedPayloadSchema.safeParse(input.payload).success).toBe(true);
+    expect(input.payload).toMatchObject({ attemptedToStage: 'shipped-it', reason: 'unknown-stage' });
+  });
+
+  it('rejects a payload carrying a reason outside the enumerated set', () => {
+    const parsed = taskTransitionRejectedPayloadSchema.safeParse({
+      taskId: 'task-1',
+      fromStage: 'review',
+      attemptedToStage: 'done',
+      reason: 'because-i-said-so',
+      proposedBy: 'orchestrator',
+    });
+    expect(parsed.success).toBe(false);
   });
 });
 
-// ── assertion 1 ──────────────────────────────────────────────────────────────
-describe('assertion 1 — every legal edge in the table is ACCEPTED', () => {
-  it.each(LEGAL_EDGES)('%s -> %s is accepted', (fromStage, toStage) => {
-    const outcome = proposeTransition(taskAtStage(fromStage), proposal(toStage));
-    expect(outcome.accepted).toBe(true);
-    if (outcome.accepted) {
-      expect(outcome.nextTask.stage).toBe(toStage);
-    }
-  });
-});
+// ── the convergence flag rule (F1: retires with the bounded-loop move) ───────
+//
+// All four quadrants pinned DIRECTLY on `nextTaskForAcceptedTransition`. They
+// were previously proven through the deleted machine's accept branch; the rule
+// outlives it, so the pins move onto the rule itself rather than vanishing with
+// their old caller.
 
-// ── assertion 2 ──────────────────────────────────────────────────────────────
-describe('assertion 2 — every edge NOT in the table is REJECTED', () => {
-  it.each(ILLEGAL_EDGES)('%s -> %s is rejected with the derived reason', (fromStage, toStage) => {
-    const outcome = proposeTransition(taskAtStage(fromStage), proposal(toStage));
-    expect(outcome.accepted).toBe(false);
-    if (!outcome.accepted) {
-      expect(outcome.reason).toBe(expectedRejectionFor(fromStage, toStage));
-    }
-  });
-
-  it('never throws for any edge in the cross product (rejection is not an exception)', () => {
-    for (const [fromStage, toStage] of ALL_EDGES) {
-      expect(() => proposeTransition(taskAtStage(fromStage), proposal(toStage))).not.toThrow();
-    }
-  });
-});
-
-// ── assertion 3 ──────────────────────────────────────────────────────────────
-describe('assertion 3 — done is terminal', () => {
-  const targetsOtherThanDone = TASK_STAGES.filter((stage) => stage !== 'done');
-
-  it.each([...targetsOtherThanDone])('done -> %s rejects terminal-stage', (toStage) => {
-    const outcome = proposeTransition(taskAtStage('done'), proposal(toStage));
-    expect(outcome).toEqual({ accepted: false, reason: 'terminal-stage' });
-  });
-
-  it('done has no outgoing edges at all in the table', () => {
-    expect([...(TASK_STAGE_EDGES.get('done') ?? [])]).toEqual([]);
-  });
-
-  // The one tie-break the table cannot express: done -> done is BOTH a no-op and
-  // a proposal touching a terminal stage. Documented precedence resolves it as
-  // same-stage (nothing was proposed to LEAVE done). Asserted directly so the
-  // choice is visible rather than incidental.
-  it('done -> done is the documented same-stage tie-break, not terminal-stage', () => {
-    const outcome = proposeTransition(taskAtStage('done'), proposal('done'));
-    expect(outcome).toEqual({ accepted: false, reason: 'same-stage' });
-  });
-});
-
-// ── assertion 4 ──────────────────────────────────────────────────────────────
-describe('assertion 4 — quarantined can never complete', () => {
-  it('quarantined -> done rejects quarantined-cannot-complete, NOT illegal-edge', () => {
-    const outcome = proposeTransition(taskAtStage('quarantined'), proposal('done'));
-    expect(outcome).toEqual({ accepted: false, reason: 'quarantined-cannot-complete' });
-  });
-
-  it('the named refusal wins over the generic edge check for that exact edge', () => {
-    // Both are absent from the table; only this one gets the specific reason.
-    expect(isLegalTaskEdge('quarantined', 'done')).toBe(false);
-    expect(isLegalTaskEdge('quarantined', 'plan-ready')).toBe(false);
-
-    const completing = proposeTransition(taskAtStage('quarantined'), proposal('done'));
-    const other = proposeTransition(taskAtStage('quarantined'), proposal('plan-ready'));
-    expect(completing).toEqual({ accepted: false, reason: 'quarantined-cannot-complete' });
-    expect(other).toEqual({ accepted: false, reason: 'illegal-edge' });
-  });
-
-  it('a quarantined run can still go back through work or be parked', () => {
-    for (const toStage of ['backlog', 'planning', 'implementing', 'blocked-external'] as const) {
-      expect(proposeTransition(taskAtStage('quarantined'), proposal(toStage)).accepted).toBe(true);
-    }
-  });
-
-  it('setting manualReviewRequired does not buy a quarantined run a completion', () => {
-    const outcome = proposeTransition(
-      taskAtStage('quarantined'),
-      proposal('done', { manualReviewRequired: true }),
-    );
-    expect(outcome).toEqual({ accepted: false, reason: 'quarantined-cannot-complete' });
-  });
-});
-
-// ── assertion 5 ──────────────────────────────────────────────────────────────
-describe('assertion 5 — a same-stage proposal is a no-op rejection', () => {
-  it.each([...TASK_STAGES])('%s -> %s rejects same-stage', (stage) => {
-    const outcome = proposeTransition(taskAtStage(stage), proposal(stage));
-    expect(outcome).toEqual({ accepted: false, reason: 'same-stage' });
-  });
-});
-
-// ── assertion 6 ──────────────────────────────────────────────────────────────
-describe('assertion 6 — the convergence exit (manualReviewRequired)', () => {
-  it('review -> done WITH the flag accepts and sets it', () => {
-    const outcome = proposeTransition(
+describe('the convergence flag — the rule for what an accepted move RECORDS', () => {
+  it('into `done` WITH the flag: sets it', () => {
+    const next = nextTaskForAcceptedTransition(
       taskAtStage('review'),
       proposal('done', { manualReviewRequired: true, note: 'rework stopped converging' }),
     );
-    expect(outcome.accepted).toBe(true);
-    if (outcome.accepted) {
-      expect(outcome.nextTask.stage).toBe('done');
-      expect(outcome.nextTask.manualReviewRequired).toBe(true);
-    }
+    expect(next.stage).toBe('done');
+    expect(next.manualReviewRequired).toBe(true);
   });
 
-  it('review -> done WITHOUT the flag leaves it false', () => {
-    const outcome = proposeTransition(taskAtStage('review'), proposal('done'));
-    expect(outcome.accepted).toBe(true);
-    if (outcome.accepted) {
-      expect(outcome.nextTask.manualReviewRequired).toBe(false);
-    }
-  });
-
-  it('review -> done with the flag explicitly false leaves it false', () => {
-    const outcome = proposeTransition(
+  it('into `done` with the flag explicitly FALSE: leaves it false', () => {
+    const next = nextTaskForAcceptedTransition(
       taskAtStage('review'),
       proposal('done', { manualReviewRequired: false }),
     );
-    expect(outcome.accepted).toBe(true);
-    if (outcome.accepted) {
-      expect(outcome.nextTask.manualReviewRequired).toBe(false);
+    expect(next.manualReviewRequired).toBe(false);
+  });
+
+  it("into `done` with the flag ABSENT: false, never the record's old value", () => {
+    // The distinction that matters: absent is not "inherit". A task that arrives
+    // at the completion edge carrying `true` and completes WITHOUT the flag
+    // completes clean.
+    expect(
+      nextTaskForAcceptedTransition(taskAtStage('review'), proposal('done')).manualReviewRequired,
+    ).toBe(false);
+    expect(
+      nextTaskForAcceptedTransition(
+        taskAtStage('review', { manualReviewRequired: true }),
+        proposal('done'),
+      ).manualReviewRequired,
+    ).toBe(false);
+  });
+
+  it("any OTHER target ignores the proposal flag and rides the RECORD's value through", () => {
+    const otherTargets = TASK_STAGES.filter((stage) => stage !== 'done');
+    expect(otherTargets).toHaveLength(8);
+
+    for (const toStage of otherTargets) {
+      for (const recordFlag of [true, false]) {
+        for (const proposalFlag of [true, false, undefined]) {
+          const next = nextTaskForAcceptedTransition(
+            taskAtStage('implementing', { manualReviewRequired: recordFlag }),
+            proposal(toStage, { manualReviewRequired: proposalFlag }),
+          );
+          expect({ toStage, flag: next.manualReviewRequired }).toEqual({
+            toStage,
+            flag: recordFlag,
+          });
+        }
+      }
     }
   });
 
-  it('the flag is IGNORED on every accepted transition whose target is not done', () => {
-    const nonDoneLegalEdges = LEGAL_EDGES.filter(([, toStage]) => toStage !== 'done');
-    expect(nonDoneLegalEdges.length).toBeGreaterThan(0);
-
-    for (const [fromStage, toStage] of nonDoneLegalEdges) {
-      const outcome = proposeTransition(
-        taskAtStage(fromStage),
-        proposal(toStage, { manualReviewRequired: true }),
+  it('writes the proposed node and nothing else about the stage', () => {
+    for (const toStage of TASK_STAGES) {
+      expect(nextTaskForAcceptedTransition(taskAtStage('implementing'), proposal(toStage)).stage).toBe(
+        toStage,
       );
-      expect(outcome.accepted).toBe(true);
-      if (outcome.accepted) {
-        expect(outcome.nextTask.manualReviewRequired).toBe(false);
-      }
     }
   });
 });
 
-// ── assertion 7 ──────────────────────────────────────────────────────────────
-describe('assertion 7 — purity and immutability (rule 0.3)', () => {
-  it('never mutates the input TaskRecord on an accepted transition', () => {
+// ── purity (rule 0.3) ────────────────────────────────────────────────────────
+
+describe('the record rule is pure — a NEW object, the input untouched', () => {
+  it('never mutates the input record', () => {
     const task = Object.freeze(taskAtStage('implementing'));
     const before = JSON.parse(JSON.stringify(task));
 
-    const outcome = proposeTransition(task, proposal('review'));
+    const next = nextTaskForAcceptedTransition(task, proposal('review'));
 
-    expect(outcome.accepted).toBe(true);
     expect(JSON.parse(JSON.stringify(task))).toEqual(before);
     expect(task.stage).toBe('implementing');
-    if (outcome.accepted) {
-      // A NEW object, not the input with a field swapped.
-      expect(outcome.nextTask).not.toBe(task);
-      expect(outcome.nextTask.stage).toBe('review');
-    }
+    expect(next).not.toBe(task);
+    expect(next.stage).toBe('review');
   });
 
-  it('never mutates the input TaskRecord on a rejected proposal', () => {
-    const task = Object.freeze(taskAtStage('backlog'));
-    const before = JSON.parse(JSON.stringify(task));
-
-    expect(proposeTransition(task, proposal('done')).accepted).toBe(false);
-    expect(JSON.parse(JSON.stringify(task))).toEqual(before);
-  });
-
-  it('carries every non-stage field through unchanged', () => {
+  it('carries every non-stage field through unchanged, work-order fields included', () => {
+    // The widest record the rule can be handed (S7·1 work-order fields + S7·5a's
+    // `planArtifactHash`). If any of them perturbed the spread, this is where it
+    // would show — and the result is still a VALID record.
     const task = taskAtStage('plan-ready', {
       taskId: 'task-carry',
       isolation: 'shared-dir',
@@ -299,133 +285,39 @@ describe('assertion 7 — purity and immutability (rule 0.3)', () => {
       createdBy: 'orchestrator',
       lastHeartbeatAt: '2026-07-22T00:00:00.000Z',
       staleRetries: 2,
+      scope: 'add the S7·1 reserved schemas',
+      explicitlyOut: ['wiring any consumer'],
+      acceptanceCriteria: [
+        { id: 'crit-1', text: 'typecheck is green' },
+        { id: 'crit-2', text: 'the core test suite is green' },
+      ],
+      killCriterion: 'a reserved shape forces a projection default',
+      workOrderRev: 3,
+      planArtifactHash: 'sha256:aaaa',
     });
-    const outcome = proposeTransition(task, proposal('implementing'));
 
-    expect(outcome.accepted).toBe(true);
-    if (outcome.accepted) {
-      expect(outcome.nextTask).toEqual({ ...task, stage: 'implementing' });
-      expect(taskRecordSchema.safeParse(outcome.nextTask).success).toBe(true);
-    }
+    const next = nextTaskForAcceptedTransition(task, proposal('implementing'));
+
+    expect(next).toEqual({ ...task, stage: 'implementing' });
+    expect(taskRecordSchema.safeParse(next).success).toBe(true);
   });
 
-  it('is deterministic — identical inputs give identical outputs, every edge', () => {
-    for (const [fromStage, toStage] of ALL_EDGES) {
-      const firstRun = proposeTransition(taskAtStage(fromStage), proposal(toStage));
-      const secondRun = proposeTransition(taskAtStage(fromStage), proposal(toStage));
-      expect(firstRun).toEqual(secondRun);
+  it('is deterministic — identical inputs, identical records', () => {
+    for (const toStage of TASK_STAGES) {
+      const first = nextTaskForAcceptedTransition(taskAtStage('backlog'), proposal(toStage));
+      const second = nextTaskForAcceptedTransition(taskAtStage('backlog'), proposal(toStage));
+      expect(first).toEqual(second);
     }
   });
 });
 
-// ── assertion 8 ──────────────────────────────────────────────────────────────
-describe('assertion 8 — review -> implementing is the fix loop', () => {
-  it('is accepted: a rejected review sends work BACK, it does not fail the task', () => {
-    const outcome = proposeTransition(taskAtStage('review'), proposal('implementing'));
-    expect(outcome.accepted).toBe(true);
-    if (outcome.accepted) {
-      expect(outcome.nextTask.stage).toBe('implementing');
-      expect(outcome.nextTask.manualReviewRequired).toBe(false);
-    }
-  });
+// ── the task event constructors ──────────────────────────────────────────────
+//
+// Kept: their subject (the constructors and their payload schemas) is untouched
+// by the deletion. Only the way each test SOURCES a stage or a reason changed —
+// off literals and the record rule instead of off a compiled machine.
 
-  it('the loop can run repeatedly (implementing -> review -> implementing)', () => {
-    let task = taskAtStage('implementing');
-    for (let loopIndex = 0; loopIndex < 3; loopIndex += 1) {
-      const toReview = proposeTransition(task, proposal('review'));
-      expect(toReview.accepted).toBe(true);
-      if (!toReview.accepted) return;
-      const backToImplementing = proposeTransition(toReview.nextTask, proposal('implementing'));
-      expect(backToImplementing.accepted).toBe(true);
-      if (!backToImplementing.accepted) return;
-      task = backToImplementing.nextTask;
-    }
-    expect(task.stage).toBe('implementing');
-  });
-});
-
-// ── assertion 10 ─────────────────────────────────────────────────────────────
-describe('assertion 10 — cancelled (S11): reachable from everywhere but done, recovers only to backlog', () => {
-  const nonDoneNonCancelledStages = TASK_STAGES.filter(
-    (stage) => stage !== 'done' && stage !== 'cancelled',
-  );
-
-  it.each([...nonDoneNonCancelledStages])('%s -> cancelled is accepted', (fromStage) => {
-    const outcome = proposeTransition(taskAtStage(fromStage), proposal('cancelled'));
-    expect(outcome.accepted).toBe(true);
-    if (outcome.accepted) {
-      expect(outcome.nextTask.stage).toBe('cancelled');
-    }
-  });
-
-  it('done -> cancelled is refused terminal-stage, NOT illegal-edge (done stays terminal)', () => {
-    const outcome = proposeTransition(taskAtStage('done'), proposal('cancelled'));
-    expect(outcome).toEqual({ accepted: false, reason: 'terminal-stage' });
-  });
-
-  it("done's edge set stays empty — cancelled is not among its targets", () => {
-    expect([...(TASK_STAGE_EDGES.get('done') ?? [])]).toEqual([]);
-    expect(isLegalTaskEdge('done', 'cancelled')).toBe(false);
-  });
-
-  it('cancelled -> backlog is accepted (the recovery edge)', () => {
-    const outcome = proposeTransition(taskAtStage('cancelled'), proposal('backlog'));
-    expect(outcome.accepted).toBe(true);
-    if (outcome.accepted) {
-      expect(outcome.nextTask.stage).toBe('backlog');
-    }
-  });
-
-  it('cancelled has exactly one out-edge: backlog', () => {
-    expect([...(TASK_STAGE_EDGES.get('cancelled') ?? [])]).toEqual(['backlog']);
-  });
-
-  it('cancelled -> done is refused illegal-edge (recovery only re-enters the queue)', () => {
-    const outcome = proposeTransition(taskAtStage('cancelled'), proposal('done'));
-    expect(outcome).toEqual({ accepted: false, reason: 'illegal-edge' });
-  });
-
-  it('cancelled -> cancelled is a same-stage no-op', () => {
-    const outcome = proposeTransition(taskAtStage('cancelled'), proposal('cancelled'));
-    expect(outcome).toEqual({ accepted: false, reason: 'same-stage' });
-  });
-
-  it('a cancelled task is non-dispatchable (it never spawns a worker)', () => {
-    expect(DISPATCHABLE_TASK_STAGES.has('cancelled')).toBe(false);
-    expect(NON_DISPATCHABLE_TASK_STAGES).toContain('cancelled');
-  });
-
-  it('cancel-then-recover round-trips a task back to backlog', () => {
-    const task = taskAtStage('implementing');
-    const cancelled = proposeTransition(task, proposal('cancelled'));
-    expect(cancelled.accepted).toBe(true);
-    if (!cancelled.accepted) return;
-    expect(cancelled.nextTask.stage).toBe('cancelled');
-
-    const recovered = proposeTransition(cancelled.nextTask, proposal('backlog'));
-    expect(recovered.accepted).toBe(true);
-    if (!recovered.accepted) return;
-    expect(recovered.nextTask.stage).toBe('backlog');
-  });
-});
-
-// ── the defensive refusal ────────────────────────────────────────────────────
-describe('unknown-stage — the defensive refusal (slice 7 hardens this)', () => {
-  it('rejects a proposed stage outside the enum without throwing', () => {
-    const hostileProposal = { toStage: 'shipped-it' as TaskStage, proposedBy: 'orchestrator' as const };
-    const outcome = proposeTransition(taskAtStage('review'), hostileProposal);
-    expect(outcome).toEqual({ accepted: false, reason: 'unknown-stage' });
-  });
-
-  it('rejects a task whose own stage is outside the enum without throwing', () => {
-    const corruptTask = { ...taskAtStage('review'), stage: 'limbo' as TaskStage };
-    const outcome = proposeTransition(corruptTask, proposal('done'));
-    expect(outcome).toEqual({ accepted: false, reason: 'unknown-stage' });
-  });
-});
-
-// ── assertion 9 ──────────────────────────────────────────────────────────────
-describe('assertion 9 — the task event constructors validate against their schemas', () => {
+describe('the task event constructors validate against their schemas', () => {
   it('task_created carries the birth record on the tasks stream', () => {
     const input = taskCreated({
       taskId: 'task-1',
@@ -433,7 +325,10 @@ describe('assertion 9 — the task event constructors validate against their sch
       createdBy: 'human',
       // D32: worktree is the pinned default isolation.
       isolation: 'worktree',
-      stage: INITIAL_TASK_STAGE,
+      // Where a task starts life is the DECLARATION's `initial`, resolved at
+      // boot (see `createTaskTool.ts`'s D53 note); this constructor just needs a
+      // valid stage.
+      stage: 'backlog',
     });
     expect(input.stream).toBe('tasks');
     expect(input.type).toBe(EVENT_TYPES.taskCreated);
@@ -443,20 +338,18 @@ describe('assertion 9 — the task event constructors validate against their sch
     );
   });
 
-  it('task_transitioned records a real ACCEPTED transition end to end', () => {
+  it('task_transitioned records a real ACCEPTED move end to end', () => {
     const task = taskAtStage('review');
-    const outcome = proposeTransition(
+    const next = nextTaskForAcceptedTransition(
       task,
       proposal('done', { manualReviewRequired: true, proposedBy: 'human', note: 'handing off' }),
     );
-    expect(outcome.accepted).toBe(true);
-    if (!outcome.accepted) return;
 
     const input = taskTransitioned({
       taskId: task.taskId,
       fromStage: task.stage,
-      toStage: outcome.nextTask.stage,
-      manualReviewRequired: outcome.nextTask.manualReviewRequired,
+      toStage: next.stage,
+      manualReviewRequired: next.manualReviewRequired,
       proposedBy: 'human',
       note: 'handing off',
     });
@@ -480,80 +373,6 @@ describe('assertion 9 — the task event constructors validate against their sch
     });
     expect(taskTransitionedPayloadSchema.safeParse(input.payload).success).toBe(true);
   });
-
-  // I7's record: every rejection the machine can produce must be EVENTABLE.
-  it('task_transition_rejected carries a REAL rejection reason, for every reason', () => {
-    const realRejections: Array<[TaskStage, TaskStage]> = [
-      ['backlog', 'done'], // illegal-edge
-      ['done', 'planning'], // terminal-stage
-      ['backlog', 'backlog'], // same-stage
-      ['quarantined', 'done'], // quarantined-cannot-complete
-    ];
-    const observedReasons = new Set<string>();
-
-    for (const [fromStage, toStage] of realRejections) {
-      const outcome = proposeTransition(taskAtStage(fromStage), proposal(toStage));
-      expect(outcome.accepted).toBe(false);
-      if (outcome.accepted) continue;
-      observedReasons.add(outcome.reason);
-
-      const input = taskTransitionRejected({
-        taskId: 'task-1',
-        fromStage,
-        attemptedToStage: toStage,
-        reason: outcome.reason,
-        proposedBy: 'orchestrator',
-      });
-      expect(input.stream).toBe('tasks');
-      expect(input.type).toBe(EVENT_TYPES.taskTransitionRejected);
-      expect(taskTransitionRejectedPayloadSchema.safeParse(input.payload).success).toBe(true);
-      expect(
-        EVENT_PAYLOAD_SCHEMAS[EVENT_TYPES.taskTransitionRejected].safeParse(input.payload).success,
-      ).toBe(true);
-    }
-
-    expect([...observedReasons].sort()).toEqual([
-      'illegal-edge',
-      'quarantined-cannot-complete',
-      'same-stage',
-      'terminal-stage',
-    ]);
-  });
-
-  // The reason `unknown-stage` exists is hostile/malformed input, and the whole
-  // point of the event is to RECORD what was refused — so the rejected event's
-  // stage fields must accept a value outside the enum. If this ever tightens to
-  // the enum, an unknown-stage rejection becomes unrecordable and I7 fails
-  // silently exactly where it matters most.
-  it('task_transition_rejected can record an unknown-stage refusal verbatim', () => {
-    const outcome = proposeTransition(taskAtStage('review'), {
-      toStage: 'shipped-it' as TaskStage,
-      proposedBy: 'orchestrator',
-    });
-    expect(outcome).toEqual({ accepted: false, reason: 'unknown-stage' });
-    if (outcome.accepted) return;
-
-    const input = taskTransitionRejected({
-      taskId: 'task-1',
-      fromStage: 'review',
-      attemptedToStage: 'shipped-it',
-      reason: outcome.reason,
-      proposedBy: 'orchestrator',
-    });
-    expect(taskTransitionRejectedPayloadSchema.safeParse(input.payload).success).toBe(true);
-    expect(input.payload).toMatchObject({ attemptedToStage: 'shipped-it', reason: 'unknown-stage' });
-  });
-
-  it('rejects a payload carrying a reason outside the enumerated set', () => {
-    const parsed = taskTransitionRejectedPayloadSchema.safeParse({
-      taskId: 'task-1',
-      fromStage: 'review',
-      attemptedToStage: 'done',
-      reason: 'because-i-said-so',
-      proposedBy: 'orchestrator',
-    });
-    expect(parsed.success).toBe(false);
-  });
 });
 
 // ── the two reserved events must be untouched ────────────────────────────────
@@ -573,73 +392,5 @@ describe('the slice-0 reserved task events are unchanged', () => {
         reason: 'headroom',
       }).success,
     ).toBe(true);
-  });
-});
-
-// ── I8 — the S7·1 widening must not perturb the machine ──────────────────────
-describe('I8 — proposeTransition stays TOTAL over the S7·1-widened record', () => {
-  // Every new work-order field populated at once — the widest possible record
-  // the machine can now be handed. If any of scope/explicitlyOut/
-  // acceptanceCriteria/killCriterion/workOrderRev perturbed the decision logic,
-  // this is where it would show: `proposeTransition` reads only `task.stage`
-  // and the proposal, so a legal edge accepting AND every one of these fields
-  // riding through the spread unchanged is the proof it does not.
-  const widenedTask = taskAtStage('implementing', {
-    scope: 'add the S7·1 reserved schemas',
-    explicitlyOut: ['wiring any consumer'],
-    acceptanceCriteria: [
-      { id: 'crit-1', text: 'typecheck is green' },
-      { id: 'crit-2', text: 'the core test suite is green' },
-    ],
-    killCriterion: 'a reserved shape forces a projection default',
-    workOrderRev: 3,
-  });
-
-  it('a legal edge still ACCEPTS, carrying every work-order field through UNCHANGED', () => {
-    const outcome = proposeTransition(widenedTask, proposal('review'));
-
-    expect(outcome.accepted).toBe(true);
-    if (outcome.accepted) {
-      expect(outcome.nextTask).toEqual({ ...widenedTask, stage: 'review' });
-      expect(outcome.nextTask.scope).toBe(widenedTask.scope);
-      expect(outcome.nextTask.explicitlyOut).toEqual(widenedTask.explicitlyOut);
-      expect(outcome.nextTask.acceptanceCriteria).toEqual(widenedTask.acceptanceCriteria);
-      expect(outcome.nextTask.killCriterion).toBe(widenedTask.killCriterion);
-      expect(outcome.nextTask.workOrderRev).toBe(widenedTask.workOrderRev);
-      expect(taskRecordSchema.safeParse(outcome.nextTask).success).toBe(true);
-    }
-  });
-
-  it('an illegal edge still REJECTS over the widened record', () => {
-    // implementing -> backlog is not in the table (only via blocked-external /
-    // quarantined / cancelled) — an ordinary illegal-edge refusal.
-    const outcome = proposeTransition(widenedTask, proposal('backlog'));
-    expect(outcome.accepted).toBe(false);
-    if (!outcome.accepted) {
-      expect(outcome.reason).toBe('illegal-edge');
-    }
-  });
-});
-
-// ── I8 — the S7·5a plan-reference field must not perturb the machine either ──
-describe('I8 — proposeTransition stays TOTAL over a record carrying planArtifactHash', () => {
-  // `planArtifactHash` (S7·5a) is folded by `plan_submitted`, never by
-  // `proposeTransition` — the machine reads only `task.stage` and the
-  // proposal, so a legal edge accepting AND the field riding through the
-  // spread unchanged is the same proof `widenedTask` above establishes for the
-  // S7·1 work-order fields.
-  const taskWithPlan = taskAtStage('planning', {
-    planArtifactHash: 'sha256:aaaa',
-  });
-
-  it('a legal edge still ACCEPTS, carrying planArtifactHash through UNCHANGED', () => {
-    const outcome = proposeTransition(taskWithPlan, proposal('plan-ready'));
-
-    expect(outcome.accepted).toBe(true);
-    if (outcome.accepted) {
-      expect(outcome.nextTask).toEqual({ ...taskWithPlan, stage: 'plan-ready' });
-      expect(outcome.nextTask.planArtifactHash).toBe(taskWithPlan.planArtifactHash);
-      expect(taskRecordSchema.safeParse(outcome.nextTask).success).toBe(true);
-    }
   });
 });

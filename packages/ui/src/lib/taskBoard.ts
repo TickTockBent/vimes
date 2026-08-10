@@ -26,11 +26,12 @@
 // Words ARE allowed: a human label for a stage is vocabulary, not layout.
 // ════════════════════════════════════════════════════════════════════════════
 //
-// ⚠ RULE TWO: **THE UI PROPOSES, THE MACHINE DECIDES.** `TASK_STAGE_EDGES` is
+// ⚠ RULE TWO: **THE UI PROPOSES, THE DAEMON DECIDES.** The legality table is
 // NOT copied into this source and must never be — but `moveOptionsFor` DOES now
 // filter to the legal targets, read from the edge table the daemon SERVES at
-// runtime (`GET /api/tasks/stage-edges`, core's one table) and the store fetches.
-// So the UI reflects the machine's legality without owning it, and `POST
+// runtime (`GET /api/tasks/stage-edges`, derived from the workflow declaration
+// that is the one source) and the store fetches.
+// So the UI reflects that legality without owning it, and `POST
 // /api/tasks/:taskId/transitions` STILL enforces on submit. See that function's
 // note for the 2026-07-24 reversal (show only valid moves) and why daemon-
 // sourcing answers the drift objection this comment used to rest on.
@@ -527,9 +528,9 @@ export interface MoveOption {
  * sheet shows only legal targets. The original three objections are ANSWERED,
  * not ignored:
  *   1. The edge table is NOT copied into the UI (the drift hazard) — it is
- *      FETCHED from the daemon (core's TASK_STAGE_EDGES, the one source) and
- *      passed in here. A stage added to the machine flows through the served
- *      table; nothing here re-declares the vocabulary.
+ *      FETCHED from the daemon, which derives it from the workflow declaration
+ *      (the one source), and passed in here. A stage added to the declaration
+ *      flows through the served table; nothing here re-declares the vocabulary.
  *   2. This is not a second AUTHORITY: the UI reflects the machine's own rules
  *      and the server STILL enforces on submit — a forced illegal edge is still
  *      409 + an evented task_transition_rejected, so I7 stays assertable and is

@@ -29,8 +29,8 @@ import {
 //   • the move sheet IS filtered by the SERVED edge table, never a copy of it
 //     (assertion 8, reversed 2026-07-24 — see moveOptionsFor's own note).
 
-// A fixture mirroring the WIRE SHAPE `GET /api/tasks/stage-edges` serves
-// (packages/core's TASK_STAGE_EDGES, rendered by taskStageEdgesRecord()) —
+// A fixture mirroring the WIRE SHAPE `GET /api/tasks/stage-edges` serves (the
+// daemon's rendering of the declared legality table) —
 // transcribed here as test data ONLY, exactly like every other mirrored wire
 // shape in this file. This is not a second copy of the legality DECISION: it
 // stands in for what the daemon would hand `moveOptionsFor` at runtime.
@@ -590,7 +590,7 @@ describe('describeCreateResponse — creation, without mirroring the daemon’s 
   it('400 names the likely cause WITHOUT asserting a cap number', () => {
     // The cap is the daemon's policy and may change without this client
     // changing — a copy here would eventually be a confident lie. Same reasoning
-    // that keeps TASK_STAGE_EDGES out of the UI.
+    // that keeps the legality table out of the UI.
     const outcome = describeCreateResponse(400, { error: 'bad request' });
     expect(outcome.kind).toBe('error');
     expect(outcome.sentence.toLowerCase()).toContain('title');

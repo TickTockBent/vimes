@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { RETIRED_EVENT_KINDS } from '../events.js';
-import { TASK_STAGE_EDGES } from '../tasks/taskStateMachine.js';
+import { TASK_STAGES } from '../tasks/taskStateMachine.js';
 import {
   API_VERSION,
   DEPRECATED_EVENT_KINDS,
@@ -93,30 +93,74 @@ function buildManifest(
 // refusal cannot be an accident of the scaffolding.
 const MINIMAL = buildManifest();
 
-// ── S10-A2 — THE DIFFERENTIAL ────────────────────────────────────────────────
+// ── S10-A2 / S12-A3 — THE DIFFERENTIAL ───────────────────────────────────────
 //
 // slice-10.md: "the parsed vimes-tasks manifest's expanded edge table equals
-// TASK_STAGE_EDGES edge-for-edge (the declared `manual-review` edges the only
+// the compiled table edge-for-edge (the declared `manual-review` edges the only
 // additions)."
 //
 // node-kit §1.9 wrote this check into the document itself — "the block below
 // was parsed as TOML, its wildcard rows expanded, its forbidden row subtracted,
-// and the result diffed against TASK_STAGE_EDGES" — and recorded that the same
+// and the result diffed against the compiled table" — and recorded that the same
 // check found FOUR errors in its own first draft (two edges silently lost, two
 // silently invented). "Whatever ships as the migration must carry that diff as
 // a test." This is that test.
+//
+// ⚠ **THE REFERENCE IS NOW FROZEN DATA, NOT A LIVE IMPORT (S12-A3).** D72 Move 3
+// deleted the compiled table it used to read; the set below is that table's
+// image, frozen at its deletion (D72 Move 3, S12·U3, 2026-08-10), so the guard
+// SURVIVES its reference's death. The sanctioned difference remains the tenth
+// node's rows. Nothing here may be "updated to match" a declaration change: a
+// red is a finding about the declaration, which is the whole point of freezing.
+//
+// The shipped-vs-fixture divergence tripwire is NOT duplicated here — it lives
+// in the daemon's `shippedManifest.test.ts` (S12·U2).
 
 const MANUAL_REVIEW_NODE = 'manual-review';
 
+const FROZEN_COMPILED_EDGE_SET: ReadonlySet<string> = new Set([
+  'backlog -> planning',
+  'backlog -> blocked-external',
+  'backlog -> cancelled',
+  'planning -> plan-ready',
+  'planning -> blocked-external',
+  'planning -> quarantined',
+  'planning -> backlog',
+  'planning -> cancelled',
+  'plan-ready -> implementing',
+  'plan-ready -> planning',
+  'plan-ready -> blocked-external',
+  'plan-ready -> backlog',
+  'plan-ready -> cancelled',
+  'implementing -> review',
+  'implementing -> blocked-external',
+  'implementing -> quarantined',
+  'implementing -> cancelled',
+  'review -> done',
+  'review -> implementing',
+  'review -> blocked-external',
+  'review -> quarantined',
+  'review -> cancelled',
+  'blocked-external -> backlog',
+  'blocked-external -> planning',
+  'blocked-external -> plan-ready',
+  'blocked-external -> implementing',
+  'blocked-external -> review',
+  'blocked-external -> cancelled',
+  'quarantined -> backlog',
+  'quarantined -> planning',
+  'quarantined -> implementing',
+  'quarantined -> blocked-external',
+  'quarantined -> cancelled',
+  // `done` contributes nothing: the terminal node declared no way out.
+  'cancelled -> backlog',
+]);
+
 function shippedEdgeSet(): Set<string> {
-  const edges = new Set<string>();
-  for (const [from, targets] of TASK_STAGE_EDGES) {
-    for (const to of targets) edges.add(`${from} -> ${to}`);
-  }
-  return edges;
+  return new Set(FROZEN_COMPILED_EDGE_SET);
 }
 
-describe('S10-A2 the differential — the declared edge table IS TASK_STAGE_EDGES', () => {
+describe('S10-A2 / S12-A3 the differential — the declared edge table IS the frozen compiled one', () => {
   const manifest = expectManifest(readFixture());
   const workflow = manifest.workflows.find((candidate) => candidate.id === 'software');
 
@@ -125,11 +169,11 @@ describe('S10-A2 the differential — the declared edge table IS TASK_STAGE_EDGE
     expect(workflow).toBeDefined();
     expect(workflow?.initial).toBe('backlog');
     expect(new Set(workflow?.nodes.map((node) => node.id))).toEqual(
-      new Set([...TASK_STAGE_EDGES.keys(), MANUAL_REVIEW_NODE]),
+      new Set([...TASK_STAGES, MANUAL_REVIEW_NODE]),
     );
   });
 
-  it('expands, subtracts nothing, and equals TASK_STAGE_EDGES in BOTH directions', () => {
+  it('expands, subtracts nothing, and equals the frozen edge set in BOTH directions', () => {
     const declared = new Set(
       (workflow?.edges ?? []).map((edge) => `${edge.from} -> ${edge.to}`),
     );
@@ -172,6 +216,9 @@ describe('S10-A2 the differential — the declared edge table IS TASK_STAGE_EDGE
     });
     expect(declaredWithoutManualReview).toEqual(shipped);
     expect(declaredWithoutManualReview.size).toBe(shipped.size);
+    // …and the frozen reference is the whole image, not a truncated copy of it.
+    // Asserted LAST so a real mismatch still prints its diff first.
+    expect(shipped.size).toBe(34);
   });
 
   it('quarantines exactly `quarantined -> done`, with its own named refusal reason', () => {

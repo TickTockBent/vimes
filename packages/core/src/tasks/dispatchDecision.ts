@@ -16,7 +16,8 @@
 // reads a clock, never randomizes, and never mutates its input. Same inputs,
 // same decision, forever.
 //
-// Rule: **NEVER THROW.** Like `proposeTransition` (step 1), `decideDispatch` is
+// Rule: **NEVER THROW.** Like the move adjudicator (`extensions/proposeMove.ts`),
+// `decideDispatch` is
 // TOTAL — every input, including a stage outside the schema enum, maps to a
 // decision. A dispatcher that throws is a dispatcher that has silently stopped.
 //
@@ -31,7 +32,8 @@ import type { TaskRecord } from '../schemas.js';
 import { TASK_STAGES, type TaskStage, type TransitionProposedBy } from './taskStateMachine.js';
 
 // ── which stages actually run a worker ───────────────────────────────────────
-// Exported as DATA (the same discipline as `TASK_STAGE_EDGES`): it is the
+// Exported as DATA (the same discipline the legality table followed before it
+// moved into the extension's declaration in D72 Move 3): it is the
 // artifact a reviewer reads and the artifact the tests enumerate, and its
 // COMPLEMENT against `TASK_STAGES` is derived rather than transcribed, so the
 // partition cannot drift when a stage is added.

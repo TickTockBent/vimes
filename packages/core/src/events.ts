@@ -138,7 +138,9 @@ export const EVENT_TYPES = {
   // `task_transition_rejected` is **I7's RECORD**. The invariant is not "the
   // machine returns a rejection", it is "the rejection is *evented*" — a
   // rejection nobody wrote down is, for I7's purposes, a rejection that never
-  // happened. Every REJECT outcome from `proposeTransition` gets one of these.
+  // happened. Every REJECT decision the adjudicator returns
+  // (`extensions/proposeMove.ts`, reading the workflow declaration) gets one of
+  // these.
   //
   // ⚠ **THE WHOLE TASK FAMILY BELOW IS RETIRED AS OF S11 (D72 Move 2).** Each
   // kind keeps its type, schema and constructor FOREVER — the precedent

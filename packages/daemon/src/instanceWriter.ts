@@ -42,18 +42,18 @@ import {
 // It NEVER computes a next node, NEVER consults a legality table, NEVER calls the
 // adjudicator's internals and NEVER re-derives an edge. It asks the adjudicator
 // and RECORDS WHAT CAME BACK. If you find yourself adding an `if` here that
-// changes WHETHER a move is legal, it belongs in the DECLARATION (or, while it
-// still stands, in `taskStateMachine.ts`) — a second adjudicator is a second
+// changes WHETHER a move is legal, it belongs in the DECLARATION — the only
+// place legality lives since D72 Move 3. A second adjudicator is a second
 // authority, and I7 stops being assertable headlessly the moment one exists.
 //
 // ─── S12·U2 (D72 Move 3) — THE ADJUDICATOR NOW READS THE DECLARATION ─────────
 //
 // What changed: the move path calls core's `proposeMove` against the BOOT-RESOLVED
 // `ParsedWorkflow` (`shippedManifest.ts`, injected below) instead of the compiled
-// `proposeTransition`/`TASK_STAGE_EDGES`. What did NOT change: where the call
+// machine and its compiled legality table. What did NOT change: where the call
 // lives, what it decides, or that this class only RECORDS what came back. S12-A1
-// proves the two machines agree across the full cross product while both stand;
-// the compiled one is deleted in U3.
+// proved the two agree across the full cross product; U3 then deleted the
+// compiled one, and S12-A1 now runs against its behavior frozen as data.
 //
 // The declaration is INJECTED, never read here (rule 0.3): this class does no
 // I/O, so a test hands it a workflow and the daemon hands it the shipped one.
@@ -370,8 +370,8 @@ export class InstanceWriter {
     //
     // Delegated, never re-derived — and what it READS moved, while where it lives
     // did not: core's declaration-reading `proposeMove` against the boot-resolved
-    // workflow, in place of the compiled `proposeTransition`. Same decisions, by
-    // construction and by proof (S12-A1's full cross product).
+    // workflow, in place of the compiled machine deleted in S12·U3. Same
+    // decisions, by construction and by proof (S12-A1's full cross product).
     //
     // ⚠ F2, THE MINIMAL HONEST VERSION: adjudication consults the BOOT
     // declaration, full stop — never a per-instance re-resolution. A defensive
@@ -470,10 +470,10 @@ export class InstanceWriter {
    *
    * ⚠ **NO NODE ADJUDICATION, DELIBERATELY — THIS IS NOT A MISSING CHECK.** An
    * instance on ANY node may be revised, including `done`, `cancelled` and
-   * `quarantined`. Revisions are RECORD FACTS, not moves: the state machine
-   * is never consulted, no edge is traversed, and `TASK_STAGE_EDGES` has nothing to
-   * say about them (adding a guard here would be exactly the second adjudicator the
-   * file header forbids). Correcting the written scope of finished work is a
+   * `quarantined`. Revisions are RECORD FACTS, not moves: the adjudicator
+   * is never consulted, no edge is traversed, and the declared legality table has
+   * nothing to say about them (adding a guard here would be exactly the second
+   * adjudicator the file header forbids). Correcting the written scope of finished work is a
    * legitimate act — the log keeps every revision — and nothing dangerous follows
    * from it, because dispatch is a separate decision and `decideDispatch` already
    * refuses a task whose stage does not run a worker.

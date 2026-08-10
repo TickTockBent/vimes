@@ -504,7 +504,7 @@ const moveBodyCommonShape = {
 // become structurally unreachable through the API, I7 would lose a branch, and
 // the one case where the record matters most (slice 7's hostile input) would
 // produce a 400 with nothing written down. So an unknown stage is let through to
-// `proposeTransition`, and the MACHINE refuses it — on the record.
+// the writer, and the DECLARATION-READING ADJUDICATOR refuses it — on the record.
 const proposeTransitionBodySchema = z.object({
   toStage: z.string(),
   ...moveBodyCommonShape,
@@ -650,8 +650,9 @@ function transitionProposalFrom(body: MoveBodyCommonFields, toNode: string): Tra
 // in instanceApi.test.ts asserts the two agree as SETS, per stage, both
 // directions.
 //
-// PROVENANCE: a literal copy of what `taskStageEdgesRecord()` returned at
-// 2026-08-10, i.e. `TASK_STAGE_EDGES`'s own insertion order, captured at Move 3
+// PROVENANCE: a literal copy of what the compiled record helper returned at
+// 2026-08-10 — the compiled legality table's own insertion order, captured at
+// Move 3 (that table and its helper were deleted later the same day, in S12·U3)
 // so the response stays BYTE-IDENTICAL across the flip while the deployed UI
 // still reads it mid-alias-window (F4). The declaration groups its rows by
 // intent and would order several stages differently.
@@ -698,9 +699,10 @@ export function declaredStageEdgeMembership(
 
 /**
  * The stage-edges response: DECLARED membership, WIRE order (F4). Keys are
- * emitted in the record vocabulary's own order, which is the order
- * `taskStageEdgesRecord()` emitted them in — `JSON.stringify` preserves
- * insertion order, so key order is part of the bytes this route promises.
+ * emitted in the record vocabulary's own order, which is the order the compiled
+ * record helper emitted them in before D72 Move 3 deleted it — `JSON.stringify`
+ * preserves insertion order, so key order is part of the bytes this route
+ * promises.
  */
 export function stageEdgesFromDeclaration(
   workflow: ParsedWorkflow,
@@ -1120,11 +1122,11 @@ export function registerInstanceApi(app: Hono, deps: InstanceApiDeps): void {
   // ── GET /api/tasks/stage-edges — the legal-edge table (S8) ──────────────────
   //
   // Wes ruled 2026-07-24: the move sheet must offer only LEGAL next stages, not
-  // every stage — but the UI must not gain a second copy of `TASK_STAGE_EDGES` to
+  // every stage — but the UI must not gain a second copy of the legality table to
   // do it (principle 9: one source of record per fact). So the table is SERVED
   // from here, behind the same auth wall as every other route on this app, and
   // the board fetches it instead of re-declaring it. Static, read-only, events
-  // nothing — `taskStageEdgesRecord()` is a pure derivation of core's own table.
+  // nothing — the response is a pure derivation of the declaration.
   //
   // This does NOT reopen the "no `GET /api/tasks`" decision below: that route
   // would be a second reader of TASK STATE (the projection already serves it).
@@ -1140,7 +1142,8 @@ export function registerInstanceApi(app: Hono, deps: InstanceApiDeps): void {
   // ─── S12·U2 (D72 Move 3): DERIVED FROM THE DECLARATION, WIRE-STABLE (F4) ────
   //
   // The response is now computed from `deps.workflow` — the same declaration the
-  // adjudicator reads — instead of from the compiled `taskStageEdgesRecord()`.
+  // adjudicator reads — instead of from the compiled record helper (deleted in
+  // S12·U3).
   // Two rules, and the split between them is the whole of F4:
   //
   //   • LEGALITY (membership) comes from the DECLARATION, restricted to the nine

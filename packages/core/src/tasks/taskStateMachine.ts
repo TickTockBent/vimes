@@ -1,20 +1,36 @@
-// ─── slice 6 step 1 — the task state machine (PURE, packages/core) ───────────
+// ─── THE TRANSITIONAL VOCABULARY MODULE (PURE, packages/core) ────────────────
 //
-// The deterministic heart of the dispatcher: given a task and a PROPOSED
-// transition, decide ACCEPT or REJECT. Agents propose; this decides. That
-// separation is what makes **I7** assertable headlessly (no Claude, no network,
-// no clock) and what stops slice 7's orchestrator layer from becoming a second
-// writer to task state (principle 10).
+// What lives here is the TASK TENANT'S OWN WORDS and nothing else: its stages,
+// the classes of thing that may propose a move, the enumerated refusal reasons
+// its rejection event carries, and the one rule that says what an accepted move
+// RECORDS (the node write plus the convergence flag).
 //
-// Rule 0.3: pure. No clock, no randomness, no I/O — the caller supplies
-// everything and receives a decision. This module does NOT dispatch, spawn,
-// project or persist; it never emits an event either. Its callers do, and a
-// rejection MUST be evented (`task_transition_rejected`) — an unrecorded
-// rejection is, as far as I7 is concerned, a rejection that never happened.
+// ⚠ **THE LEGALITY TABLE IS NO LONGER HERE.** D72 Move 3 (S12, 2026-08-10)
+// moved it OUT of compiled engine data and INTO the `vimes-tasks` extension's
+// declaration, where it is TOML a reviewer reads. Authority now runs:
 //
-// Rule: **NEVER THROW on a bad proposal.** Rejection is a normal, evented
-// outcome, not an exception. `proposeTransition` is TOTAL — every (task,
-// proposal) pair, including stages outside the enum, maps to an outcome.
+//   the declaration (`extensions/vimes-tasks/vimes-extension.toml`)
+//     → parsed by `extensions/manifest.ts` into a `ParsedWorkflow`
+//     → adjudicated by `extensions/proposeMove.ts` (tenant-blind, decision-only)
+//     → written by the daemon's instance writer, which resolves the workflow
+//       once at boot and serves it to the UI over `GET /api/tasks/stage-edges`.
+//
+// Nothing in this file decides legality any more, and nothing may re-acquire
+// that job: a second table would be a second authority, which is the exact
+// drift D72 exists to end.
+//
+// ⚠ **THIS MODULE IS TRANSITIONAL, AND ITS TWO RETIREMENTS ARE ALREADY NAMED.**
+//
+//   • The convergence-flag rule (`nextTaskForAcceptedTransition` and its
+//     private helper) retires with the **BOUNDED-LOOP ACTIVATION** move, when
+//     declared `max_traversals`/`on_exhausted` routing to the `manual-review`
+//     node replaces the flag. That is behaviour-shaping and earns its own
+//     D-record (slice-12 F1); it did NOT retire with Move 3.
+//   • The module's re-home — these tenant words out of `packages/core` entirely
+//     — rides the **DE-TENANTING** move (slice-12 F5).
+//
+// Rule 0.3: pure. No clock, no randomness, no I/O. This module does not
+// dispatch, spawn, project or persist, and it never emits an event.
 
 import { z } from 'zod';
 import { taskStageSchema, type TaskRecord, type TaskStage } from '../schemas.js';
@@ -30,114 +46,18 @@ import { taskStageSchema, type TaskRecord, type TaskStage } from '../schemas.js'
 // ⚠ RE-EXPORTED FROM HERE ON PURPOSE. Every pre-S7·7b consumer imports
 // `taskStageSchema`/`TaskStage` from this module (events.ts, tasks/workOrder.ts,
 // the package index, the tests), and the hoist is deliberately invisible to them.
-// The machine and the record still cannot drift apart: neither one declares the
-// vocabulary any more.
 export { taskStageSchema };
 export type { TaskStage };
 
-// Every stage, in the schema's own order. Tests enumerate THIS (× itself) to
-// build the full cross product, so an added stage automatically enters the
-// coverage rather than silently escaping it.
+// Every stage, in the schema's own order.
+//
+// ⚠ THE ORDER IS WIRE-LOAD-BEARING. S12·U2 derives the `stage-edges` route's
+// key order from this vocabulary, and that response is a contract the deployed
+// UI parses. Re-ordering the enum in `schemas.ts` is a wire change, not a
+// cosmetic one.
 export const TASK_STAGES: readonly TaskStage[] = taskStageSchema.options;
 
-// Where a task starts life. Named here so the projection (step 2) and the
-// dispatcher (step 3) agree without re-deciding it.
-export const INITIAL_TASK_STAGE: TaskStage = 'backlog';
-
-// ── the transition table — THE DESIGN, encoded as DATA ───────────────────────
-// A map from stage → the stages a proposal may move it to. Anything not listed
-// is an illegal edge. Deliberately a table and not nested `if`s: it is the
-// artifact a reviewer reads and the artifact the tests enumerate, so the rule
-// and its coverage cannot drift apart.
-//
-// Each of these edges encodes a decision:
-//
-//   • `review → implementing` is THE REVIEW/FIX LOOP (design-directions
-//     2026-07-20). A rejected review sends the work BACK to implementing; it
-//     does not fail the task. This is why `review` is not a dead end.
-//
-//   • `done` is TERMINAL — its allowed set is empty, and that is intentional.
-//     Reopening finished work MINTS A NEW TASK rather than resurrecting a
-//     completed one, so the audit trail stays honest (the same spirit as
-//     append-only corrections). A proposal out of `done` rejects `terminal-stage`.
-//
-//   • `quarantined → done` is DELIBERATELY ABSENT. A run the watchdog
-//     quarantined must never silently pass; it goes back through work
-//     (`planning` / `implementing`), back to the `backlog`, or is explicitly
-//     parked (`blocked-external`). That edge gets its OWN refusal reason
-//     (`quarantined-cannot-complete`) rather than a generic one — see the
-//     precedence note on `proposeTransition`.
-//
-//   • `blocked-external` is a PARK, and unblocking names the stage to resume
-//     into. It is permissive by design because the blocking cause lives outside
-//     our model, so we cannot know which stage the task should re-enter. It does
-//     NOT reach `done`: leaving a park still goes through the work stages.
-//
-//   • `cancelled` (S11, 2026-07-24, Wes's Option A) is reachable from every
-//     non-`done` stage — `backlog`, `planning`, `plan-ready`, `implementing`,
-//     `review`, `blocked-external`, `quarantined` — and recovers ONLY to
-//     `backlog`. Non-terminal (it has an out-edge, unlike `done`) and
-//     non-dispatchable (`DISPATCHABLE_TASK_STAGES` in dispatchDecision.ts is
-//     `{planning, implementing, review}`, and the complement is derived, so
-//     `cancelled` never spawns a worker by construction — no dispatcher logic
-//     changed). `done` deliberately does NOT gain `cancelled` as a target:
-//     completed work is not "cancelled", and `done` stays terminal. A give-up
-//     that can be undone, unlike `done`.
-export const TASK_STAGE_EDGES: ReadonlyMap<TaskStage, ReadonlySet<TaskStage>> = new Map<
-  TaskStage,
-  ReadonlySet<TaskStage>
->([
-  ['backlog', new Set<TaskStage>(['planning', 'blocked-external', 'cancelled'])],
-  [
-    'planning',
-    new Set<TaskStage>(['plan-ready', 'blocked-external', 'quarantined', 'backlog', 'cancelled']),
-  ],
-  [
-    'plan-ready',
-    new Set<TaskStage>(['implementing', 'planning', 'blocked-external', 'backlog', 'cancelled']),
-  ],
-  ['implementing', new Set<TaskStage>(['review', 'blocked-external', 'quarantined', 'cancelled'])],
-  [
-    'review',
-    new Set<TaskStage>(['done', 'implementing', 'blocked-external', 'quarantined', 'cancelled']),
-  ],
-  [
-    'blocked-external',
-    new Set<TaskStage>([
-      'backlog',
-      'planning',
-      'plan-ready',
-      'implementing',
-      'review',
-      'cancelled',
-    ]),
-  ],
-  [
-    'quarantined',
-    new Set<TaskStage>(['backlog', 'planning', 'implementing', 'blocked-external', 'cancelled']),
-  ],
-  ['done', new Set<TaskStage>()],
-  ['cancelled', new Set<TaskStage>(['backlog'])],
-]);
-
-// Is `toStage` a listed edge out of `fromStage`? Pure table lookup — this is the
-// GENERIC check, and the named refusals deliberately run BEFORE it.
-export function isLegalTaskEdge(fromStage: TaskStage, toStage: TaskStage): boolean {
-  return TASK_STAGE_EDGES.get(fromStage)?.has(toStage) ?? false;
-}
-
-// The legal-edge table as a plain record — the wire form the daemon serves so
-// the UI can reflect legality without COPYING the vocabulary (the drift hazard
-// moveOptionsFor's comment named). Derived from TASK_STAGE_EDGES, never re-typed.
-export function taskStageEdgesRecord(): Record<TaskStage, TaskStage[]> {
-  const record = {} as Record<TaskStage, TaskStage[]>;
-  for (const stage of TASK_STAGES) {
-    record[stage] = [...(TASK_STAGE_EDGES.get(stage) ?? [])];
-  }
-  return record;
-}
-
-// ── the proposal, the refusals, the outcome ──────────────────────────────────
+// ── the proposal, the refusals ───────────────────────────────────────────────
 
 // Who is proposing. `dispatcher` is the deterministic mover; `orchestrator` is
 // the agent-facing surface slice 7 exposes; `human` is Wes at the board. All
@@ -148,20 +68,23 @@ export const transitionProposedBySchema = z.enum(['human', 'orchestrator', 'disp
 export type TransitionProposedBy = z.infer<typeof transitionProposedBySchema>;
 
 // The enumerated refusals. Defined as a zod enum so the `task_transition_rejected`
-// event payload validates against the SAME vocabulary the machine returns — one
-// source of record per fact (principle 9).
+// event payload validates against the SAME vocabulary the adjudicator returns —
+// one source of record per fact (principle 9). The adjudicator lives in
+// `extensions/proposeMove.ts` and returns these same strings; the
+// `quarantined-cannot-complete` one now arrives as DECLARED DATA off the
+// workflow's `forbidden` row rather than out of an engine branch.
 export const transitionRejectionReasonSchema = z.enum([
-  // The proposed edge is simply not in the table.
+  // The proposed edge is simply not declared.
   'illegal-edge',
-  // Proposing OUT of `done`. Reopening mints a new task instead.
+  // Proposing OUT of a terminal node. Reopening mints a new task instead.
   'terminal-stage',
   // A no-op: the task is already in the proposed stage.
   'same-stage',
   // The named refusal: a quarantined run may not complete.
   'quarantined-cannot-complete',
-  // Defensive: a stage value outside the schema enum reached us (a malformed
-  // proposal, or a task record from somewhere it should not have come from).
-  // Slice 7 hardens I7 against hostile input; this reason is the landing pad.
+  // Defensive: a stage value outside the declared vocabulary reached us (a
+  // malformed proposal, or a task record from somewhere it should not have come
+  // from). Slice 7 hardens I7 against hostile input; this reason is the landing pad.
   'unknown-stage',
 ]);
 export type TransitionRejectionReason = z.infer<typeof transitionRejectionReasonSchema>;
@@ -178,14 +101,10 @@ export interface TransitionProposal {
   readonly note?: string;
 }
 
-export type TransitionOutcome =
-  | { readonly accepted: true; readonly nextTask: TaskRecord }
-  | { readonly accepted: false; readonly reason: TransitionRejectionReason };
-
-// The flag rule, in ONE place so the machine and its event payload agree: only
-// an accepted transition INTO `done` may set it. Everywhere else the proposal's
-// flag is IGNORED and the task's existing value rides through unchanged — the
-// machine never *sets* the flag off the completion edge.
+// The flag rule, in ONE place so the recorded move and its event payload agree:
+// only an accepted transition INTO `done` may set it. Everywhere else the
+// proposal's flag is IGNORED and the task's existing value rides through
+// unchanged — nothing ever *sets* the flag off the completion edge.
 function nextManualReviewRequired(task: TaskRecord, proposal: TransitionProposal): boolean {
   if (proposal.toStage !== 'done') {
     return task.manualReviewRequired;
@@ -195,24 +114,20 @@ function nextManualReviewRequired(task: TaskRecord, proposal: TransitionProposal
 
 /**
  * The RECORD an accepted move produces: the new node written, and the
- * convergence flag decided by the rule above. Extracted S12·U2 (D72 Move 3) so
- * that ONE source states it — `proposeTransition`'s accept branch below calls
- * this, and so does the daemon writer now that adjudication reads the
- * declaration (`extensions/proposeMove.ts` returns a DECISION ONLY, F5). Two
- * places computing a next record would be two authorities over what an accepted
- * move means.
+ * convergence flag decided by the rule above. ONE source states it — the daemon
+ * writer calls this, because the declaration-reading adjudicator returns a
+ * DECISION ONLY (slice-12 F5). Two places computing a next record would be two
+ * authorities over what an accepted move means.
  *
  * ⚠ **F5/F1 FENCE — THIS BELONGS BESIDE THE TENANT VOCABULARY, NOT IN THE
  * ADJUDICATOR.** `nextManualReviewRequired` hardcodes `done`, a tenant's word
  * the declaration-reading adjudicator must not contain (principle #16, and the
  * grep that asserts it). So the node write and the convergence-flag rule stay
- * HERE, in the transitional vocabulary module, until the BOUNDED-LOOP ACTIVATION
- * move retires the flag into declared `max_traversals`/`on_exhausted` routing —
- * which is behaviour-shaping and earns its own D-record (slice-12 F1; the S11
- * fence entry that pointed the flag at Move 3 is amended, not silently edited).
+ * HERE until the BOUNDED-LOOP ACTIVATION move retires the flag into declared
+ * `max_traversals`/`on_exhausted` routing (slice-12 F1; the S11 fence entry
+ * that pointed the flag at Move 3 is amended, not silently edited).
  *
- * PURE and behaviour-identical to the accept branch it was lifted from: a NEW
- * object, the input never mutated.
+ * PURE: a NEW object, the input never mutated.
  */
 export function nextTaskForAcceptedTransition(
   task: TaskRecord,
@@ -223,71 +138,4 @@ export function nextTaskForAcceptedTransition(
     stage: proposal.toStage,
     manualReviewRequired: nextManualReviewRequired(task, proposal),
   };
-}
-
-function isKnownStage(candidateStage: string): candidateStage is TaskStage {
-  return TASK_STAGE_EDGES.has(candidateStage as TaskStage);
-}
-
-/**
- * Decide a single proposed task transition. TOTAL and PURE: every input maps to
- * an outcome, nothing throws, nothing is mutated, and the same inputs always
- * produce the same output.
- *
- * REFUSAL PRECEDENCE (the order matters, and each step is load-bearing):
- *
- *   1. `unknown-stage` — a stage outside the schema enum, on either end. Checked
- *      first because every rule below assumes a known vocabulary.
- *   2. `same-stage` — a no-op proposal; nothing is being asked for.
- *      TIE-BREAK: `done → done` is BOTH a no-op and a proposal touching a
- *      terminal stage. It resolves as `same-stage`, because nothing was proposed
- *      to *leave* `done`. `done → any OTHER stage` is `terminal-stage`.
- *   3. `terminal-stage` — proposing out of `done`.
- *   4. `quarantined-cannot-complete` — the named refusal for `quarantined → done`.
- *      MUST run BEFORE the generic table lookup: otherwise the safety rule that
- *      keeps a quarantined run from silently passing would report as a bland
- *      `illegal-edge`, indistinguishable from a typo.
- *   5. `illegal-edge` — the generic table lookup.
- *
- * On ACCEPT the returned `nextTask` is a NEW object; the input is never mutated.
- */
-export function proposeTransition(
-  task: TaskRecord,
-  proposal: TransitionProposal,
-): TransitionOutcome {
-  // Widened to `string` on purpose: the defensive check below is only meaningful
-  // if a value outside the enum can physically reach it (callers cross an API
-  // boundary; TypeScript's guarantee stops there).
-  const fromStage: string = task.stage;
-  const toStage: string = proposal.toStage;
-
-  // 1. defensive — a stage outside the enum on either end.
-  if (!isKnownStage(fromStage) || !isKnownStage(toStage)) {
-    return { accepted: false, reason: 'unknown-stage' };
-  }
-
-  // 2. no-op (and the documented `done → done` tie-break).
-  if (fromStage === toStage) {
-    return { accepted: false, reason: 'same-stage' };
-  }
-
-  // 3. `done` is terminal — reopening mints a new task.
-  if (fromStage === 'done') {
-    return { accepted: false, reason: 'terminal-stage' };
-  }
-
-  // 4. the named safety refusal, BEFORE the generic edge check.
-  if (fromStage === 'quarantined' && toStage === 'done') {
-    return { accepted: false, reason: 'quarantined-cannot-complete' };
-  }
-
-  // 5. the table.
-  if (!isLegalTaskEdge(fromStage, toStage)) {
-    return { accepted: false, reason: 'illegal-edge' };
-  }
-
-  // ONE source for what an accepted move records (see the helper's fence note):
-  // `toStage` above is this same value, narrowed from `string` by `isKnownStage`.
-  const nextTask: TaskRecord = nextTaskForAcceptedTransition(task, proposal);
-  return { accepted: true, nextTask };
 }

@@ -29,7 +29,8 @@ import {
 // place it is READ back into a shape a UI or a dispatcher can look at.
 //
 // ⚠ THE PROJECTION APPLIES WHAT WAS RECORDED — IT NEVER RE-DECIDES.
-// `proposeTransition` is deliberately NOT called here, and must not be added.
+// The adjudicator (`extensions/proposeMove.ts`) is deliberately NOT called here,
+// and must not be added.
 // The dispatcher already decided each move, and `instance_moved` is the record
 // of that decision. Re-validating a recorded move on replay would make the
 // projection a SECOND authority over an instance's node (principle 10), and the
@@ -88,10 +89,14 @@ export interface InstanceRecord {
   // ── core ──────────────────────────────────────────────────────────────────
   instanceId: string;
   project: string;
-  // The workflow this is an instance OF. **`null` for every instance this slice
-  // creates**, deliberately: no pinned workflow definition governs adjudication
-  // until Move 3, and stamping an identity nothing pinned would be declared
-  // truth over observed (rule 0.7). See instanceCreatedPayloadSchema.
+  // The workflow this is an instance OF. **Stamped with the resolved pinned ref
+  // for every instance created from D72 Move 3 onward** (`{extension, workflow,
+  // rev}`, off the declaration the daemon resolves at boot). `null` is RECORDED
+  // PRE-MOVE-3 TRUTH and stays legible forever: before Move 3 no pinned
+  // definition governed adjudication, and stamping an identity nothing pinned
+  // would have been declared truth over observed (rule 0.7). A null-workflow
+  // instance adjudicates against the boot-resolved declaration like any other
+  // (slice-12 F2). See instanceCreatedPayloadSchema.
   workflow: WorkflowRef | null;
   currentNode: string;
   // NEW in S11, fold-derived, and **CONSUMED BY NOTHING UNTIL MOVE 3** — the

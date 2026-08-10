@@ -197,7 +197,7 @@ class RecordingInstanceWriter {
     this.proposeMoveCalls.push({ taskId, proposal, emittedCountBefore: this.emittedCount() });
     // recordPlan ignores the return value — the move's OWN outcome is the
     // writer's business and is asserted in instanceWriter.test.ts, not here. A fixed
-    // stub keeps this fake from re-implementing the state machine.
+    // stub keeps this fake from re-implementing the adjudicator.
     return { outcome: 'unknown-task', taskId };
   }
 }
@@ -1848,7 +1848,7 @@ describe('TaskDispatcher — planning spawns in plan mode (D48) + every spawn na
 // The instruments: `harness.artifactStore` (was the blob stored, and under the
 // returned hash?), `harness.emitted` (exactly one `capture_recorded`, and — the I10
 // point — NO hand-rolled `instance_moved`), and `harness.instanceWriter`
-// (`proposeTransitionCalls` proves the transition went through the writer, and
+// (`proposeMoveCalls` proves the move went through the writer, and
 // `emittedCountBefore` proves it went AFTER the emit).
 
 const PLANNER_SESSION_ID = 'cccccccc-0000-4000-8000-000000000005';
