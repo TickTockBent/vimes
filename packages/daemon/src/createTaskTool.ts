@@ -46,6 +46,23 @@ export interface CreateTaskToolDeps {
   // to where the project actually is now. `undefined` = the registry no longer
   // knows this project, which REFUSES the call (see the handler).
   readonly resolveProjectRoot: () => string | undefined;
+  // ── S12·U2 (D72 Move 3): the STARTING NODE, injected, not compiled in ───────
+  //
+  // The node an authored work-order lands on, resolved by `app.ts` from the boot
+  // declaration's `workflow.initial` — the SAME value the two HTTP create doors
+  // default to, so all three doors produce the same KIND of record (the reason
+  // `AUTHORED_TASK_ISOLATION` cites for reading its own default off the human
+  // door). It replaces the compiled `backlog` constant this file used to state
+  // for itself.
+  //
+  // ⚠ THE DOCTRINE THIS EXPRESSES IS UNCHANGED, AND IT IS PROSE-COUPLED. The tool
+  // description and the acknowledgement below both say the work lands in BACKLOG
+  // and that promotion is a human's call (D53) — an author grant that could land
+  // work in `planning` would be a dispatch grant wearing a different name. The
+  // shipped declaration's `initial` IS `backlog`; if a declaration ever named
+  // something else, that prose is what has to be revisited, deliberately, rather
+  // than silently outvoted by a manifest edit.
+  readonly initialNode: CreateInstanceInput['stage'];
 }
 
 // ── the forced fields (principle 13) ─────────────────────────────────────────
@@ -54,10 +71,12 @@ export interface CreateTaskToolDeps {
 // (`createTaskToolPayloadSchema`, core) makes naming any of them a validation
 // error; these constants are the values that go in their place.
 //
-// `backlog` because promotion is a human's decision made from the board (D53) —
-// an author grant that could land work in `planning` would be a dispatch grant
-// wearing a different name.
-const AUTHORED_TASK_STAGE = 'backlog' as const;
+// ⚠ THE STARTING NODE IS NO LONGER A CONSTANT HERE (S12·U2) — it arrives as
+// `deps.initialNode`, read off the boot declaration's `workflow.initial`. The
+// decision it encodes is untouched: authoring ends where promotion begins,
+// because promotion is a human's decision made from the board (D53). See the
+// dep's own note for the prose coupling.
+//
 // `orchestrator` because provenance is an observation, not a claim. It is also
 // the pivot criterion's only handle: Gate 2 measures how often ORCHESTRATOR-
 // authored work-orders need a human rewrite, and a caller that could name its own
@@ -181,9 +200,9 @@ export const CREATE_TASK_UNKNOWN_PROJECT_REFUSAL =
  */
 export function buildCreateTaskSpec(deps: CreateTaskToolDeps): SdkReportToolSpec {
   // ⚠ DESTRUCTURED AT THE BOUNDARY — the closure below captures these two
-  // functions and nothing else, so it cannot reach a wider object even by
-  // accident. See the I7 note in this file's header.
-  const { createTask, resolveProjectRoot } = deps;
+  // functions and one resolved value, and nothing else, so it cannot reach a
+  // wider object even by accident. See the I7 note in this file's header.
+  const { createTask, resolveProjectRoot, initialNode } = deps;
   return {
     name: 'create_task',
     // D65: the board family. `vimes_report` is the stage-run family and this tool
@@ -205,7 +224,7 @@ export function buildCreateTaskSpec(deps: CreateTaskToolDeps): SdkReportToolSpec
         // ── forced, every one of them (principle 13) ──────────────────────────
         projectRoot,
         createdBy: AUTHORED_TASK_CREATED_BY,
-        stage: AUTHORED_TASK_STAGE,
+        stage: initialNode,
         isolation: AUTHORED_TASK_ISOLATION,
         // `gates` is ABSENT, not `{}`: PROMOTION is the gate on authored work
         // (D53 — a human moves it out of backlog), and an authored task's birth

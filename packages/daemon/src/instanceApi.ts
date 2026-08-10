@@ -2,9 +2,9 @@ import type { Context, Hono } from 'hono';
 import { z } from 'zod';
 import {
   shouldDispatchOnTransition,
-  taskStageEdgesRecord,
   type InstanceRecord,
   type InstancesState,
+  type ParsedWorkflow,
   type TaskRecord,
   type TaskStage,
   type TransitionProposal,
@@ -110,6 +110,19 @@ export interface InstanceApiDeps {
   // back is also the same I12 posture the writer itself takes: the record a
   // client receives is the record the log produced, never an echo.
   readInstances: () => InstancesState;
+  // ── S12·U2 (D72 Move 3): the boot-resolved declaration ─────────────────────
+  //
+  // INJECTED (rule 0.3) — `app.ts` resolves the shipped manifest once at
+  // construction and hands the SAME `ParsedWorkflow` object to this surface and
+  // to the writer, so the door that defaults a starting node, the route that
+  // publishes the legality table and the adjudicator that enforces it all read
+  // ONE declaration. Two routes reading two parses would be two authorities.
+  //
+  // Read for exactly two things here, both of them derivations and neither a
+  // decision: `workflow.initial` (the create doors' starting node, in place of
+  // the compiled `INITIAL_TASK_STAGE`) and `workflow.edges` (the stage-edges
+  // route's membership). This file still decides nothing.
+  workflow: ParsedWorkflow;
   // Injected realpath probe (fs boundary). Defaults to the real one; mirrors
   // FileApiDeps / GitApiDeps.
   realpath?: RealpathProbe;
@@ -179,9 +192,10 @@ export interface RevisePayloadResponse {
 }
 
 // S8: the legal-edge table, served so the move sheet can filter to legal next
-// stages without the UI copying `TASK_STAGE_EDGES` (the drift `taskBoard.ts`'s
-// comment used to warn against). Static and read-only — `taskStageEdgesRecord()`
-// is pure, so this route touches neither the writer nor the log.
+// stages without the UI copying the table (the drift `taskBoard.ts`'s comment
+// used to warn against). Static and read-only — as of S12·U2 it is a pure
+// derivation of the BOOT-RESOLVED DECLARATION (see the route), so it still
+// touches neither the writer nor the log.
 export interface StageEdgesResponse {
   edges: Record<TaskStage, TaskStage[]>;
 }
@@ -288,9 +302,13 @@ const _recordGatesMatchTheSchema = {} as TaskRecord['gates'] satisfies z.infer<
 // becomes real; slice-6 step 8 makes it actually isolate. Per-task override
 // retained, which is why the field is still accepted.
 //
-// The starting node defaults to `backlog` — `INITIAL_TASK_STAGE`, stated in the
-// birth record rather than assumed downstream so the projection folds a named
-// node.
+// The starting node defaults to **whatever the boot-resolved declaration calls
+// `initial`** (S12·U2, D72 Move 3) — no longer the compiled `INITIAL_TASK_STAGE`.
+// It is still stated in the birth record rather than assumed downstream, so the
+// projection folds a named node; what changed is who names it. The default moved
+// OFF the body schemas (which are module-level constants and cannot see a
+// runtime declaration) and onto the surfaces below, where the resolved workflow
+// is in scope — so the field is `.optional()` here and defaulted there.
 //
 // ⚠ THE TITLE CAP (step 9, I8). A title is FREE TEXT FROM AN UNTRUSTED CALLER
 // that lands in a durable append-only record and on a rendered card, so it is
@@ -383,7 +401,12 @@ const createBodyCommonShape = {
 // the deployed UI reads.
 export const createTaskBodySchema = z.object({
   projectRoot: z.string(),
-  stage: z.enum(TASK_STAGE_VALUES).default('backlog'),
+  // OPTIONAL, not `.default('backlog')` — S12·U2. The wire contract is UNCHANGED
+  // (a body that omits it still creates on the starting node, a body that names
+  // one is still validated against the record vocabulary); what moved is WHERE
+  // the absent case is filled in, from this constant to the surface that can see
+  // the boot-resolved `workflow.initial`.
+  stage: z.enum(TASK_STAGE_VALUES).optional(),
   ...createBodyCommonShape,
 });
 
@@ -392,7 +415,7 @@ export const createTaskBodySchema = z.object({
 // two renames q13's core field list makes.
 export const createInstanceBodySchema = z.object({
   project: z.string(),
-  node: z.enum(TASK_STAGE_VALUES).default('backlog'),
+  node: z.enum(TASK_STAGE_VALUES).optional(),
   ...createBodyCommonShape,
 });
 
@@ -617,8 +640,105 @@ function transitionProposalFrom(body: MoveBodyCommonFields, toNode: string): Tra
   };
 }
 
+// ── S12·U2 (F4): the stage-edges wire ORDER, frozen ──────────────────────────
+//
+// ⚠ **PRESENTATION ORDER ONLY. THIS CONSTANT DECIDES NOTHING.** It says in what
+// sequence a stage's legal targets appear in `GET /api/tasks/stage-edges`, and
+// that is all: an entry here that the DECLARATION does not declare is filtered
+// out and never served, so this table can neither grant an edge nor keep a
+// removed one alive. Legality lives in the declaration; a completeness tripwire
+// in instanceApi.test.ts asserts the two agree as SETS, per stage, both
+// directions.
+//
+// PROVENANCE: a literal copy of what `taskStageEdgesRecord()` returned at
+// 2026-08-10, i.e. `TASK_STAGE_EDGES`'s own insertion order, captured at Move 3
+// so the response stays BYTE-IDENTICAL across the flip while the deployed UI
+// still reads it mid-alias-window (F4). The declaration groups its rows by
+// intent and would order several stages differently.
+//
+// LIFESPAN: this dies with the route's generic twin (q25), where declaration
+// introspection serves the full declared table and the order question is
+// answered by the declaration itself. It is not a second source of legality and
+// must never become one.
+export const WIRE_STAGE_EDGE_ORDER: Record<TaskStage, readonly TaskStage[]> = {
+  backlog: ['planning', 'blocked-external', 'cancelled'],
+  planning: ['plan-ready', 'blocked-external', 'quarantined', 'backlog', 'cancelled'],
+  'plan-ready': ['implementing', 'planning', 'blocked-external', 'backlog', 'cancelled'],
+  implementing: ['review', 'blocked-external', 'quarantined', 'cancelled'],
+  review: ['done', 'implementing', 'blocked-external', 'quarantined', 'cancelled'],
+  done: [],
+  'blocked-external': ['backlog', 'planning', 'plan-ready', 'implementing', 'review', 'cancelled'],
+  quarantined: ['backlog', 'planning', 'implementing', 'blocked-external', 'cancelled'],
+  cancelled: ['backlog'],
+};
+
+/**
+ * The declared edge table, restricted to the record vocabulary — the MEMBERSHIP
+ * half of the stage-edges response (S12-A4). Exported for the completeness
+ * tripwire, which asserts this and `WIRE_STAGE_EDGE_ORDER` agree as sets.
+ *
+ * A row whose `from` or `to` is outside the nine stages is dropped: that is
+ * exactly the tenth node (`manual-review`), which the record schema cannot hold
+ * and no reachable path can put an instance on this slice.
+ */
+export function declaredStageEdgeMembership(
+  workflow: ParsedWorkflow,
+): Record<TaskStage, Set<TaskStage>> {
+  const membership = {} as Record<TaskStage, Set<TaskStage>>;
+  for (const stage of TASK_STAGE_VALUES) membership[stage] = new Set<TaskStage>();
+  const recordVocabulary = z.enum(TASK_STAGE_VALUES);
+  for (const edge of workflow.edges) {
+    const from = recordVocabulary.safeParse(edge.from);
+    const to = recordVocabulary.safeParse(edge.to);
+    if (!from.success || !to.success) continue;
+    membership[from.data].add(to.data);
+  }
+  return membership;
+}
+
+/**
+ * The stage-edges response: DECLARED membership, WIRE order (F4). Keys are
+ * emitted in the record vocabulary's own order, which is the order
+ * `taskStageEdgesRecord()` emitted them in — `JSON.stringify` preserves
+ * insertion order, so key order is part of the bytes this route promises.
+ */
+export function stageEdgesFromDeclaration(
+  workflow: ParsedWorkflow,
+): Record<TaskStage, TaskStage[]> {
+  const membership = declaredStageEdgeMembership(workflow);
+  const edges = {} as Record<TaskStage, TaskStage[]>;
+  for (const stage of TASK_STAGE_VALUES) {
+    edges[stage] = WIRE_STAGE_EDGE_ORDER[stage].filter((target) => membership[stage].has(target));
+  }
+  return edges;
+}
+
+// ── S12·U2: the declaration's starting node, narrowed to the record vocabulary ─
+//
+// `ParsedWorkflow.initial` is a plain declared string; `CreateInstanceInput.stage`
+// is the nine-value record enum. This is the one place the two meet, and it
+// THROWS rather than falling back — it runs at route registration (i.e. during
+// `createDaemon`, before any listener binds), and a declaration whose starting
+// node the record schema cannot hold is the same class of misbuild as a manifest
+// that will not parse: every instance created under it would be unrecordable.
+// Node-vocabulary relaxation is explicitly out of this slice (the record keeps
+// its 9-stage enum), so the narrowing is honest rather than restrictive.
+export function resolveInitialNode(workflow: ParsedWorkflow): TaskStage {
+  const narrowed = z.enum(TASK_STAGE_VALUES).safeParse(workflow.initial);
+  if (!narrowed.success) {
+    throw new Error(
+      `the resolved workflow "${workflow.id}" declares initial = "${workflow.initial}", which is not one of the record vocabulary's nodes (${TASK_STAGE_VALUES.join(', ')})`,
+    );
+  }
+  return narrowed.data;
+}
+
 export function registerInstanceApi(app: Hono, deps: InstanceApiDeps): void {
   const realpath = deps.realpath ?? realpathProbe;
+  // Resolved ONCE per registration, from the ONE injected declaration — the two
+  // create doors below share it, so they cannot start instances on different
+  // nodes (they are the same fact wearing two body spellings).
+  const declaredInitialNode = resolveInitialNode(deps.workflow);
 
   // The instance record as the fold produced it, for the generic envelopes.
   //
@@ -904,7 +1024,9 @@ export function registerInstanceApi(app: Hono, deps: InstanceApiDeps): void {
     handleCreate(context, {
       schema: createInstanceBodySchema,
       projectOf: (body) => body.project,
-      nodeOf: (body) => body.node,
+      // The declaration's `initial` fills the absent case (S12·U2) — the SAME
+      // resolved value the alias door below uses.
+      nodeOf: (body) => body.node ?? declaredInitialNode,
       created: (responseContext, record) => {
         const response: CreateInstanceResponse = { instance: instanceRecordOf(record.taskId) };
         return responseContext.json(response, 201);
@@ -954,7 +1076,7 @@ export function registerInstanceApi(app: Hono, deps: InstanceApiDeps): void {
     handleCreate(context, {
       schema: createTaskBodySchema,
       projectOf: (body) => body.projectRoot,
-      nodeOf: (body) => body.stage,
+      nodeOf: (body) => body.stage ?? declaredInitialNode,
       created: (responseContext, record) => {
         const response: CreateTaskResponse = { task: record };
         return responseContext.json(response, 201);
@@ -1009,13 +1131,31 @@ export function registerInstanceApi(app: Hono, deps: InstanceApiDeps): void {
   // This route serves the TRANSITION RULES, a fact nothing else exposes.
   //
   // ⚠ MOVED VERBATIM, OLD PATH ONLY, AND NO GENERIC TWIN THIS SLICE (q25).
-  // Generalising this route means serving DECLARATION INTROSPECTION — the edges a
-  // pinned workflow definition declares — and no such declaration governs
-  // adjudication until Move 3. A `/api/instances/...` route that served the
-  // compiled task table would be declared truth over observed (rule 0.7), so the
-  // generic spelling waits for the thing it would describe.
+  // Generalising this route means serving DECLARATION INTROSPECTION over the
+  // FULL declared table (the tenth node's out-edges included) and giving the
+  // route its generic twin — deferred to q25, whose trigger is now half-armed:
+  // a pinned declaration exists as of this unit; the route shape question does
+  // not.
+  //
+  // ─── S12·U2 (D72 Move 3): DERIVED FROM THE DECLARATION, WIRE-STABLE (F4) ────
+  //
+  // The response is now computed from `deps.workflow` — the same declaration the
+  // adjudicator reads — instead of from the compiled `taskStageEdgesRecord()`.
+  // Two rules, and the split between them is the whole of F4:
+  //
+  //   • LEGALITY (membership) comes from the DECLARATION, restricted to the nine
+  //     stages the record vocabulary holds. That restriction drops exactly the
+  //     tenth node's rows (`manual-review`, unreachable upstream by schema
+  //     fencing this slice) and nothing else.
+  //   • PRESENTATION (order) comes from the frozen constant below. The
+  //     declaration groups its edges by INTENT — the spine, then the review/fix
+  //     loop, then quarantine, then the park — which does not reproduce the
+  //     hand-ordered arrays this route has served since S8 (`review` declares
+  //     `quarantined` before `blocked-external`; the wire has them the other way
+  //     round). Deriving order from the declaration would change the bytes the
+  //     DEPLOYED UI reads, mid-alias-window, for no behavioural reason.
   app.get('/api/tasks/stage-edges', (context) => {
-    const response: StageEdgesResponse = { edges: taskStageEdgesRecord() };
+    const response: StageEdgesResponse = { edges: stageEdgesFromDeclaration(deps.workflow) };
     return context.json(response);
   });
 

@@ -54,12 +54,13 @@ import {
 import { WsHub, type WsHubDeps } from './wsHub.js';
 import { registerFileApi } from './fileApi.js';
 import { registerGitApi } from './gitApi.js';
-import { registerInstanceApi } from './instanceApi.js';
+import { registerInstanceApi, resolveInitialNode } from './instanceApi.js';
 import { registerProjectApi } from './projectApi.js';
 import { registerOrchestratorApi, standingNotesPathFor } from './orchestratorApi.js';
 import { buildCreateTaskSpec } from './createTaskTool.js';
 import { CompactionSteward } from './compactionSteward.js';
 import { InstanceWriter } from './instanceWriter.js';
+import { loadShippedWorkflow } from './shippedManifest.js';
 import { ProjectWriter } from './projectWriter.js';
 import { TaskDispatcher } from './taskDispatcher.js';
 import { TaskWatchdog } from './taskWatchdog.js';
@@ -237,6 +238,14 @@ export interface DaemonDeps {
   // Test seam: inject a store that fails its writes, so the daemon's non-fatal
   // ingest guard can be exercised — absent in prod.
   costLedgerStore?: SqliteCostStore;
+  // ── S12·U2 (D72 Move 3): where the SHIPPED declaration is read from ─────────
+  //
+  // **TEST INJECTION ONLY.** Absent → `loadShippedWorkflow`'s own default, which
+  // resolves the in-build asset relative to its own module (never the cwd — see
+  // shippedManifest.ts). Production passes nothing; the parameter exists so the
+  // boot-refusal path (S12-A5) is assertable without moving files inside a live
+  // package.
+  shippedManifestPath?: string;
 }
 
 export interface Daemon {
@@ -408,6 +417,22 @@ async function readStaticFile(staticRoot: string, requestPath: string): Promise<
 
 export function createDaemon(deps: DaemonDeps): Daemon {
   const { config, clock, ids } = deps;
+  // ─── S12·U2 (D72 Move 3): the shipped declaration, resolved FIRST ───────────
+  //
+  // Before the store opens, before a route registers and long before anything
+  // binds a port: a daemon that cannot read its own in-build declaration is
+  // MISBUILT, not degraded, so this THROWS and `main.ts`'s top-level catch prints
+  // it and exits non-zero (S12-A5). Resolved exactly once, here, and injected
+  // everywhere it is needed — the writer adjudicates against it, the instance API
+  // defaults its create doors' starting node from it and serves its edge table,
+  // and the `create_task` tool lands authored work on its `initial`.
+  const shippedWorkflow = loadShippedWorkflow(deps.shippedManifestPath);
+  // The declaration's starting node, narrowed ONCE to the record vocabulary by
+  // the same helper the HTTP create doors use — imported rather than re-derived,
+  // so the `create_task` grant and the two HTTP doors cannot disagree about where
+  // an instance begins (principle 9). Throws here, at boot, if a declaration ever
+  // names a node the record schema cannot hold.
+  const authoredInstanceInitialNode = resolveInitialNode(shippedWorkflow.workflow);
   const store = new SqliteEventStore({ path: config.dbPath, clock, ids });
   const snapshotStore = new SqliteSnapshotStore({ path: config.dbPath });
   // S7·5b-i: the artifact store the dispatcher writes captured plans into (D48).
@@ -518,6 +543,13 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     emit: (events) => router.emit(events),
     readTasks: () => readTasksAsLegacyView(),
     ids,
+    // S12·U2 (D72 Move 3): the boot-resolved declaration and its pinned ref,
+    // handed to the writer rather than read by it (rule 0.3 — the writer does no
+    // I/O). `shippedWorkflow` is resolved ONCE above and shared with the API
+    // surface below, so adjudication, the create doors' starting node and the
+    // served legality table are three readings of ONE declaration.
+    workflow: shippedWorkflow.workflow,
+    workflowRef: shippedWorkflow.ref,
   });
 
   // ─── worker isolation (slice 6 step 8) — BUILT, WIRED, AND OFF ─────────────
@@ -607,6 +639,11 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     // the alias, and handing it to the generic surface would make the new
     // contract a view of the old one.
     readInstances: () => bootFromSnapshot(instancesProjection, snapshotStore, store),
+    // S12·U2 (D72 Move 3): the SAME boot-resolved declaration object the writer
+    // adjudicates against. The create doors default their starting node from
+    // its `initial`, and `GET /api/tasks/stage-edges` derives its membership
+    // from its edges — one declaration, three readings.
+    workflow: shippedWorkflow.workflow,
   });
 
   // ─── the project registry (S8·1, D42) ──────────────────────────────────────
@@ -894,6 +931,10 @@ export function createDaemon(deps: DaemonDeps): Daemon {
         // actually is now and a project that has left the registry refuses.
         resolveProjectRoot: () =>
           bootFromSnapshot(projectsProjection, snapshotStore, store).projects[projectId]?.root,
+        // S12·U2: the boot declaration's starting node, the SAME value the HTTP
+        // create doors default to — the author grant lands work where the
+        // declaration says instances begin, not where this module once said.
+        initialNode: authoredInstanceInitialNode,
       }),
     ],
   });

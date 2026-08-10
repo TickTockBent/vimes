@@ -163,6 +163,10 @@ export {
   transitionRejectionReasonSchema,
   isLegalTaskEdge,
   proposeTransition,
+  // S12·U2 (D72 Move 3): the accepted-move RECORD rule, extracted so the daemon
+  // writer computes it the same way `proposeTransition` does now that the
+  // declaration-reading adjudicator returns a decision only (F5).
+  nextTaskForAcceptedTransition,
   taskStageEdgesRecord,
   type TaskStage,
   type TransitionProposal,

@@ -21,6 +21,7 @@ import {
   type CreateTaskToolDeps,
 } from './createTaskTool.js';
 import { InstanceWriter, type CreateInstanceInput } from './instanceWriter.js';
+import { loadShippedWorkflow } from './shippedManifest.js';
 
 // ─── S8·6 — the author grant's handler (D56's first verb) ────────────────────
 //
@@ -33,6 +34,12 @@ import { InstanceWriter, type CreateInstanceInput } from './instanceWriter.js';
 // "ZERO EVENTS" is asserted throughout as "the writer was never called" —
 // `InstanceWriter.createInstance` is the only thing that can emit here, so a call count of
 // zero IS an event count of zero.
+
+// S12·U2 (D72 Move 3): the starting node an authored work-order lands on is the
+// SHIPPED declaration's `initial` now, injected rather than compiled into
+// createTaskTool.ts. Resolved here the way `app.ts` resolves it, so these cases
+// pin the value production actually uses.
+const SHIPPED_WORKFLOW = loadShippedWorkflow();
 
 const PROJECT_ROOT = '/home/wes/projects/vimes';
 
@@ -61,6 +68,7 @@ function makeSpec(overrides: { projectRoot?: string | undefined } = {}) {
       return { taskId: `task-${mintCounter}` };
     },
     resolveProjectRoot: () => currentRoot,
+    initialNode: SHIPPED_WORKFLOW.workflow.initial as CreateInstanceInput['stage'],
   };
   return {
     spec: buildCreateTaskSpec(deps),
@@ -304,10 +312,13 @@ describe('buildCreateTaskSpec — against the REAL InstanceWriter (I6)', () => {
       // Counting, injected (rule 0.3): the instanceId AND the criterion ids are
       // byte-identical run to run.
       ids: new CountingIdSource(),
+      workflow: SHIPPED_WORKFLOW.workflow,
+      workflowRef: SHIPPED_WORKFLOW.ref,
     });
     const spec = buildCreateTaskSpec({
       createTask: (input) => writer.createInstance(input),
       resolveProjectRoot: () => PROJECT_ROOT,
+      initialNode: SHIPPED_WORKFLOW.workflow.initial as CreateInstanceInput['stage'],
     });
     return {
       spec,
@@ -328,8 +339,15 @@ describe('buildCreateTaskSpec — against the REAL InstanceWriter (I6)', () => {
     expect(payload.createdBy).toBe('orchestrator');
     expect(payload.node).toBe('backlog');
     expect(payload.isolation).toBe('worktree');
-    // Nothing pinned a workflow this slice (rule 0.7) — the stated fact is `null`.
-    expect(payload.workflow).toBeNull();
+    // S12·U2 (S12-A6): the PINNED REF, not `null`. A boot-resolved declaration
+    // governs adjudication as of D72 Move 3, so the authored birth record carries
+    // the identity it was created under — the same stamp the HTTP doors write,
+    // because both go through the one writer.
+    expect(payload.workflow).toEqual({
+      extension: 'vimes-tasks',
+      workflow: 'software',
+      rev: '1.0.0',
+    });
     // Ungated, and ABSENT rather than `{}` — the byte-identity rule the writer
     // follows for every unauthored key.
     expect('gates' in payload).toBe(false);
@@ -397,7 +415,15 @@ describe('buildCreateTaskSpec — against the REAL InstanceWriter (I6)', () => {
 // are not merely unused here: they are UNREACHABLE, and the compiler is what says
 // so. This block is the pin: adding a drive verb to `CreateTaskToolDeps` stops the
 // build here rather than quietly widening what an orchestrator can do.
-type UnexpectedCapability = Exclude<keyof CreateTaskToolDeps, 'createTask' | 'resolveProjectRoot'>;
+// ⚠ `initialNode` JOINS THE ALLOWED LIST (S12·U2) AND IS NOT A CAPABILITY: it is
+// a RESOLVED VALUE (the declaration's starting node), not a function the handler
+// could call to change anything. The pin below still does its job — a DRIVE VERB
+// added here would be a new key and would stop the build — and this widening was
+// the deliberate, reviewed kind the guard exists to force into the open.
+type UnexpectedCapability = Exclude<
+  keyof CreateTaskToolDeps,
+  'createTask' | 'resolveProjectRoot' | 'initialNode'
+>;
 const _noDriveVerbsOnTheAuthorGrant: UnexpectedCapability extends never ? true : false = true;
 
 describe('buildCreateTaskSpec — I7 (the capability is create-only)', () => {

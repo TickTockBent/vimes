@@ -193,6 +193,38 @@ function nextManualReviewRequired(task: TaskRecord, proposal: TransitionProposal
   return proposal.manualReviewRequired === true;
 }
 
+/**
+ * The RECORD an accepted move produces: the new node written, and the
+ * convergence flag decided by the rule above. Extracted S12·U2 (D72 Move 3) so
+ * that ONE source states it — `proposeTransition`'s accept branch below calls
+ * this, and so does the daemon writer now that adjudication reads the
+ * declaration (`extensions/proposeMove.ts` returns a DECISION ONLY, F5). Two
+ * places computing a next record would be two authorities over what an accepted
+ * move means.
+ *
+ * ⚠ **F5/F1 FENCE — THIS BELONGS BESIDE THE TENANT VOCABULARY, NOT IN THE
+ * ADJUDICATOR.** `nextManualReviewRequired` hardcodes `done`, a tenant's word
+ * the declaration-reading adjudicator must not contain (principle #16, and the
+ * grep that asserts it). So the node write and the convergence-flag rule stay
+ * HERE, in the transitional vocabulary module, until the BOUNDED-LOOP ACTIVATION
+ * move retires the flag into declared `max_traversals`/`on_exhausted` routing —
+ * which is behaviour-shaping and earns its own D-record (slice-12 F1; the S11
+ * fence entry that pointed the flag at Move 3 is amended, not silently edited).
+ *
+ * PURE and behaviour-identical to the accept branch it was lifted from: a NEW
+ * object, the input never mutated.
+ */
+export function nextTaskForAcceptedTransition(
+  task: TaskRecord,
+  proposal: TransitionProposal,
+): TaskRecord {
+  return {
+    ...task,
+    stage: proposal.toStage,
+    manualReviewRequired: nextManualReviewRequired(task, proposal),
+  };
+}
+
 function isKnownStage(candidateStage: string): candidateStage is TaskStage {
   return TASK_STAGE_EDGES.has(candidateStage as TaskStage);
 }
@@ -254,10 +286,8 @@ export function proposeTransition(
     return { accepted: false, reason: 'illegal-edge' };
   }
 
-  const nextTask: TaskRecord = {
-    ...task,
-    stage: toStage,
-    manualReviewRequired: nextManualReviewRequired(task, proposal),
-  };
+  // ONE source for what an accepted move records (see the helper's fence note):
+  // `toStage` above is this same value, narrowed from `string` by `isKnownStage`.
+  const nextTask: TaskRecord = nextTaskForAcceptedTransition(task, proposal);
   return { accepted: true, nextTask };
 }

@@ -3,13 +3,21 @@ import {
   instanceMoveRejected,
   instanceMoved,
   instancePayloadRevised,
-  proposeTransition,
+  nextTaskForAcceptedTransition,
+  transitionRejectionReasonSchema,
+  // ⚠ ALIASED ON IMPORT, AND THE COLLISION IS REAL: this class's own move method
+  // has been called `proposeMove` since S11·U2, and core's declaration-reading
+  // adjudicator (S12·U1) carries the same name. The alias says which one the
+  // call site means without renaming either.
+  proposeMove as adjudicateAgainstDeclaration,
   type EventInput,
   type IdSource,
+  type ParsedWorkflow,
   type TaskRecord,
   type TasksState,
   type TransitionProposal,
   type TransitionRejectionReason,
+  type WorkflowRef,
 } from '@vimes/core';
 
 // ─── S11·U2 (D72 Move 2) — the SOLE WRITER of instance state (daemon I/O) ─────
@@ -31,19 +39,24 @@ import {
 // halting finding) or have to re-plumb it. One writer, many callers.
 //
 // ⚠ THIS CLASS IS A PROPOSER, NEVER A DECIDER (principle 10, I7).
-// It NEVER computes a next node, NEVER consults `TASK_STAGE_EDGES`, NEVER calls
-// the state machine's internals and NEVER re-derives an edge. It calls
-// `proposeTransition` and RECORDS WHAT CAME BACK. If you find yourself adding an
-// `if` here that changes WHETHER a move is legal, it belongs in
-// `taskStateMachine.ts` — a second adjudicator is a second authority, and I7 stops
-// being assertable headlessly the moment one exists.
+// It NEVER computes a next node, NEVER consults a legality table, NEVER calls the
+// adjudicator's internals and NEVER re-derives an edge. It asks the adjudicator
+// and RECORDS WHAT CAME BACK. If you find yourself adding an `if` here that
+// changes WHETHER a move is legal, it belongs in the DECLARATION (or, while it
+// still stands, in `taskStateMachine.ts`) — a second adjudicator is a second
+// authority, and I7 stops being assertable headlessly the moment one exists.
 //
-// ⚠ THE ADJUDICATOR IS STILL THE COMPILED TASK MACHINE, DELIBERATELY (Move 3's
-// job, not this unit's). `proposeTransition` in `tasks/taskStateMachine.ts` reads
-// `TASK_STAGE_EDGES` and adjudicates a `TaskRecord`; slice-11 puts adjudication
-// EXPLICITLY out of scope, so nothing about legality changes here. Move 3 changes
-// what that call READS (a pinned workflow definition instead of the compiled
-// table); it does not move the call out of this file.
+// ─── S12·U2 (D72 Move 3) — THE ADJUDICATOR NOW READS THE DECLARATION ─────────
+//
+// What changed: the move path calls core's `proposeMove` against the BOOT-RESOLVED
+// `ParsedWorkflow` (`shippedManifest.ts`, injected below) instead of the compiled
+// `proposeTransition`/`TASK_STAGE_EDGES`. What did NOT change: where the call
+// lives, what it decides, or that this class only RECORDS what came back. S12-A1
+// proves the two machines agree across the full cross product while both stand;
+// the compiled one is deleted in U3.
+//
+// The declaration is INJECTED, never read here (rule 0.3): this class does no
+// I/O, so a test hands it a workflow and the daemon hands it the shipped one.
 //
 // ⚠ NO TIMER, NO INTERVAL, NO SUBSCRIPTION, NO `Date.now()`. Every method runs to
 // completion inside the call that invoked it. The only clock this step reads is
@@ -57,16 +70,34 @@ export interface InstanceWriterDeps {
   // A writer proposing against a stale board is a writer adjudicating an edge out
   // of a node the instance has already left (mirrors `TaskDispatcher.readTasks`).
   //
-  // ⚠ THE LEGACY `TasksState` VIEW, ON PURPOSE — A MOVE-3 LEFTOVER. The fold is
-  // the instances projection as of S11·U1; this dep takes the narrowing
-  // `legacyTasksViewOf` produces because the compiled machine above adjudicates
-  // `TaskRecord`s. When Move 3 replaces the adjudicator, this dep changes with it.
-  // The surface is NOT widened in the meantime: an extra read here would be a
-  // second thing to keep in sync across that move.
+  // ⚠ STILL THE LEGACY `TasksState` VIEW AFTER MOVE 3, AND THAT IS NOW A NARROWER
+  // LEFTOVER THAN IT WAS. The fold is the instances projection (S11·U1); this dep
+  // takes the narrowing `legacyTasksViewOf` produces. The ADJUDICATION no longer
+  // needs it — core's `proposeMove` takes a node id and a declaration, not a
+  // `TaskRecord` — but the RECORD half still does: `nextTaskForAcceptedTransition`
+  // computes the convergence flag off the task, and the writer's return type is
+  // the `TaskRecord` its callers parse. Widening this is the de-tenanting move's,
+  // not Move 3's; U3 settles what remains.
   readTasks: () => TasksState;
   // INJECTED (rule 0.3). The only source of new instanceIds; nothing here calls
   // randomUUID, so a test with a CountingIdSource gets byte-identical ids.
   ids: IdSource;
+  // ── S12·U2 (D72 Move 3): the boot-resolved declaration and its identity ─────
+  //
+  // INJECTED, both of them (rule 0.3). This class never opens a file: `app.ts`
+  // resolves the shipped manifest ONCE at construction (`loadShippedWorkflow`)
+  // and hands the pair in, so a test supplies any declaration it likes and the
+  // writer stays deterministic and headless.
+  //
+  // ⚠ ONE DECLARATION GOVERNS EVERY MOVE (F2). This is the workflow the
+  // adjudicator reads for every instance — including instances born before Move 3
+  // whose recorded ref is `null`. Per-move re-resolution against multiple stored
+  // revisions waits until multiple revisions can exist.
+  workflow: ParsedWorkflow;
+  // Stamped onto every birth record (node-kit §1.7's identity), never re-derived
+  // here: `{ extension, workflow, rev: the manifest's own version }` as
+  // `loadShippedWorkflow` read it off the declaration.
+  workflowRef: WorkflowRef;
 }
 
 // What a creator NAMES. Deliberately NOT a `TaskRecord`: the rest of the record
@@ -241,14 +272,21 @@ export class InstanceWriter {
         // The node the instance starts on — carried, never re-derived.
         node: input.stage,
         createdBy: input.createdBy,
-        // ⚠ `null`, DELIBERATELY, AND NOT A PLACEHOLDER (slice-11.md's record
-        // split, rule 0.7). No pinned workflow definition governs adjudication
-        // until Move 3 — the adjudicator above is still the compiled task machine
-        // — so stamping an identity nothing pinned would be declared truth over
-        // observed. It is the same value the alias adapter writes for every
-        // recorded `task_created`, so a legacy and a generic birth record fold
-        // alike. Nullable, not omitted: `null` is the STATED fact.
-        workflow: null,
+        // ⚠ THE PINNED REF — S12·U2 (D72 Move 3), replacing the `null` stamp.
+        // Slice 11 wrote `null` because rule 0.7 forbade claiming an identity
+        // nothing pinned: no workflow definition governed adjudication then. That
+        // condition ENDED with this unit — the boot-resolved declaration above IS
+        // what decides every move now — so the honest stamp is the declaration's
+        // own `{ extension, workflow, rev }`, read off the manifest and carried,
+        // never re-derived.
+        //
+        // ⚠ `null` DID NOT DIE, IT STOPPED BEING WRITTEN HERE. It remains what the
+        // ALIAS ADAPTER writes when it folds a RECORDED legacy `task_created`
+        // (`RETIRED_EVENT_KINDS` in events.ts — recorded truth, and not this
+        // unit's to touch), and what every pre-Move-3 birth record already
+        // carries. So the field stays nullable, the fold still accepts both, and a
+        // mixed-era stream folds one way (S11-A2 / S12-A6).
+        workflow: this.deps.workflowRef,
         // TRANSITIONAL core, both of them (slice-11.md's fence): the engine still
         // reads these to decide, so neither may live under `payload`.
         isolation: input.isolation,
@@ -328,12 +366,41 @@ export class InstanceWriter {
       return { outcome: 'unknown-task', taskId };
     }
 
-    // The ONLY adjudication in this file — delegated, never re-derived, and still
-    // the COMPILED TASK MACHINE (see the header: Move 3 changes what this reads,
-    // not where the call lives).
-    const machineOutcome = proposeTransition(task, proposal);
+    // ── THE ONLY ADJUDICATION IN THIS FILE (S12·U2, D72 Move 3) ───────────────
+    //
+    // Delegated, never re-derived — and what it READS moved, while where it lives
+    // did not: core's declaration-reading `proposeMove` against the boot-resolved
+    // workflow, in place of the compiled `proposeTransition`. Same decisions, by
+    // construction and by proof (S12-A1's full cross product).
+    //
+    // ⚠ F2, THE MINIMAL HONEST VERSION: adjudication consults the BOOT
+    // declaration, full stop — never a per-instance re-resolution. A defensive
+    // ref-identity check (the instance's pinned `extension`/`workflow` against the
+    // boot ref's, a disagreement-error if they differ; a `rev` DIFFERENCE is not a
+    // mismatch, because one boot declaration governs) is deliberately NOT plumbed
+    // here: the record at this site is the LEGACY `TaskRecord` narrowing, which
+    // carries no ref field at all, and inventing a read to check it would be new
+    // plumbing for a case no reachable path produces (this daemon stamps every ref
+    // from this same declaration, and `null` means pre-Move-3). The check lands
+    // with the widened view, not before it.
+    const decision = adjudicateAgainstDeclaration(
+      task.stage,
+      { toNode: proposal.toStage, proposedBy: proposal.proposedBy },
+      this.deps.workflow,
+    );
 
-    if (!machineOutcome.accepted) {
+    if (!decision.accepted) {
+      // ⚠ THE DECISION'S `reason` IS A `string` (a declared forbidden row may name
+      // its own), while `instance_move_rejected` still records the CLOSED legacy
+      // ENUM this slice — respelling that vocabulary is wire-visible and rides the
+      // alias-death deploy. Membership is guaranteed by S12-A1 while the shipped
+      // fixture declares only reasons already in the enum. A NOVEL declared reason
+      // arriving here before the vocabulary generalises is a DISAGREEMENT (the F2
+      // family): it SHOULD throw loudly rather than record an event that violates
+      // its own payload schema, so the parse is the guard and not a formality.
+      const reason: TransitionRejectionReason = transitionRejectionReasonSchema.parse(
+        decision.reason,
+      );
       this.deps.emit([
         instanceMoveRejected({
           instanceId: task.taskId,
@@ -343,21 +410,30 @@ export class InstanceWriter {
           // rejection stays recordable. Writing the proposal's raw value is the
           // whole point.
           attemptedToNode: proposal.toStage,
-          reason: machineOutcome.reason,
+          reason,
           proposedBy: proposal.proposedBy,
         }),
       ]);
-      return { outcome: 'rejected', reason: machineOutcome.reason };
+      return { outcome: 'rejected', reason };
     }
+
+    // The RECORD an accepted move produces, from core's own helper (F5): the
+    // adjudicator returns a DECISION ONLY — no next record, no derived flag —
+    // because computing one needs this tenant's vocabulary (`done` is the
+    // convergence exit), which the declaration-reading adjudicator must not
+    // contain. So the node write and the flag rule stay in
+    // `nextTaskForAcceptedTransition`, beside that vocabulary, and this writer
+    // still RECORDS WHAT CAME BACK rather than deciding anything.
+    const acceptedNextTask: TaskRecord = nextTaskForAcceptedTransition(task, proposal);
 
     this.deps.emit([
       instanceMoved({
         instanceId: task.taskId,
         fromNode: task.stage,
-        // From the machine's OWN result, so the recorded edge is the edge the
-        // machine accepted rather than the edge the caller asked for.
-        toNode: machineOutcome.nextTask.stage,
-        manualReviewRequired: machineOutcome.nextTask.manualReviewRequired,
+        // From the ACCEPTED RECORD, so the recorded edge is the edge the
+        // adjudicator accepted rather than the edge the caller asked for.
+        toNode: acceptedNextTask.stage,
+        manualReviewRequired: acceptedNextTask.manualReviewRequired,
         proposedBy: proposal.proposedBy,
         ...(proposal.note === undefined ? {} : { note: proposal.note }),
       }),

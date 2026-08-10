@@ -14,8 +14,12 @@ import {
   // unchanged assertions prove.
   canonicalJson,
   instancesProjection,
+  // S12-A6: the LEGACY birth constructor, used to plant a recorded pre-Move-3
+  // instance (its ref folds to `null` through the alias adapter).
+  taskCreated,
   legacyTasksViewOf,
   type EventInput,
+  type InstancesState,
   type TaskRecord,
   type TasksState,
   type TransitionProposal,
@@ -26,6 +30,7 @@ import {
   type ProposeMoveResult,
   type RevisePayloadResult,
 } from './instanceWriter.js';
+import { loadShippedWorkflow } from './shippedManifest.js';
 
 // ─── S11·U2 — the SOLE instance writer (slice 6 step 4b, re-homed) ───────────
 //
@@ -52,6 +57,14 @@ import {
 
 const PROJECT_ROOT = '/home/ticktockbent/projects/infrastructure/vimes';
 
+// ── S12·U2 (D72 Move 3): the harness adjudicates against the REAL SHIPPED
+// DECLARATION, not a hand-built one. Two reasons. First, it is what production
+// reads — a writer test against a bespoke workflow would prove agreement with a
+// fiction. Second, every assertion below about a rejection reason or an accepted
+// edge is now, transitively, an assertion that the SHIPPED manifest still says
+// what the compiled table said (S12-A1's promise, exercised through the writer).
+const SHIPPED_WORKFLOW = loadShippedWorkflow();
+
 interface WriterHarness {
   writer: InstanceWriter;
   // Every event the writer emitted, in order.
@@ -60,6 +73,13 @@ interface WriterHarness {
   readTasksCallCount: () => number;
   // The projection as folded from the store RIGHT NOW.
   currentTasks: () => TasksState;
+  // S12·U2: append events the WRITER did not write — used only to plant a
+  // RECORDED PRE-MOVE-3 birth (a legacy `task_created`, whose ref folds to
+  // `null`), which is a history no current code path can produce.
+  seedRecordedEvents: (events: EventInput[]) => void;
+  // The INSTANCE fold (not the legacy narrowing) — the only view that carries the
+  // `workflow` ref, which is the fact the S12-A6 block below is about.
+  currentInstances: () => InstancesState;
 }
 
 function buildHarness(): WriterHarness {
@@ -85,6 +105,10 @@ function buildHarness(): WriterHarness {
     // A COUNTING id source, injected (rule 0.3): instanceIds are byte-identical
     // run to run, so nothing in this file depends on randomUUID.
     ids: new CountingIdSource(),
+    // The declaration the writer adjudicates against, and the ref it stamps —
+    // both the SHIPPED ones (see SHIPPED_WORKFLOW above).
+    workflow: SHIPPED_WORKFLOW.workflow,
+    workflowRef: SHIPPED_WORKFLOW.ref,
   });
 
   return {
@@ -92,6 +116,8 @@ function buildHarness(): WriterHarness {
     emitted,
     readTasksCallCount: () => readTasksCallCount,
     currentTasks,
+    seedRecordedEvents: (events) => store.append(events),
+    currentInstances: () => replayFromEmpty(instancesProjection, readAllStreamsGrouped(store)),
   };
 }
 
@@ -138,16 +164,19 @@ describe('InstanceWriter — createInstance', () => {
 
     expect(eventTypes(harness.emitted)).toEqual([EVENT_TYPES.instanceCreated]);
     expect(harness.emitted[0]!.stream).toBe('tasks');
-    // ⚠ THE PORTED EXPECTATION, AND THE POINT OF THE UNIT: the birth payload is
-    // the GENERIC one — `instanceId`/`project`/`node`, an explicit `workflow: null`
-    // (rule 0.7 — nothing is pinned until Move 3), and the five authored fields
-    // moved under `payload`, which is `{}` when nobody authored anything.
+    // ⚠ THE PORTED EXPECTATION, RE-POINTED BY S12·U2 (S12-A6): the birth payload
+    // is the GENERIC one — `instanceId`/`project`/`node`, the five authored fields
+    // under `payload` (`{}` when nobody authored anything) — and `workflow` is now
+    // the PINNED REF instead of `null`. That flip is the point of D72 Move 3: a
+    // declaration governs adjudication as of this unit, so stamping its identity
+    // is observed truth rather than the declared kind rule 0.7 forbade. The rev is
+    // the shipped manifest's own semver `version`.
     expect(harness.emitted[0]!.payload).toEqual({
       instanceId: created.taskId,
       project: PROJECT_ROOT,
       node: 'backlog',
       createdBy: 'human',
-      workflow: null,
+      workflow: { extension: 'vimes-tasks', workflow: 'software', rev: '1.0.0' },
       isolation: 'worktree',
       payload: {},
     });
@@ -896,5 +925,131 @@ describe('InstanceWriter — S11-A6: every emitted kind is the GENERIC one', () 
     for (const event of harness.emitted) {
       expect(retiredKinds, `${event.type} is a RETIRED kind`).not.toContain(event.type);
     }
+  });
+});
+
+// ─── S12-A6 (D72 Move 3) — the pinned ref, and the instances born before it ───
+//
+// Two facts, one block:
+//
+//   • a NEW instance's birth record carries the boot-resolved ref (pinned in the
+//     createInstance block above, and through the HTTP door in
+//     instanceApi.test.ts);
+//   • an instance born BEFORE Move 3 — whose recorded `workflow` is `null`,
+//     because that is what the writer wrote then and what the `task_created`
+//     alias adapter still writes for a recorded legacy birth — adjudicates
+//     against the SAME boot declaration and moves IDENTICALLY (F2: one boot
+//     declaration governs; the pinned ref is recorded truth for replay, not a
+//     per-move lookup).
+//
+// The legacy birth is planted with a REAL recorded `task_created`, appended
+// straight to the store rather than through the writer, because no current code
+// path can produce one — which is exactly the history this assertion is about.
+describe('InstanceWriter — S12-A6: the pinned ref, and pre-Move-3 (null-workflow) instances', () => {
+  const LEGACY_INSTANCE_ID = 'legacy-instance-1';
+
+  function harnessWithLegacyBirthAt(stage: TaskRecord['stage']): WriterHarness {
+    const harness = buildHarness();
+    harness.seedRecordedEvents([
+      taskCreated({
+        taskId: LEGACY_INSTANCE_ID,
+        projectRoot: PROJECT_ROOT,
+        createdBy: 'human',
+        isolation: 'worktree',
+        stage,
+      }),
+    ]);
+    harness.emitted.length = 0;
+    return harness;
+  }
+
+  it('folds a recorded legacy birth to `workflow: null`, and a new one to the pinned ref', () => {
+    // The premise, asserted rather than assumed: the two eras really do differ in
+    // the recorded field, so the agreement below is a fact about adjudication and
+    // not about two identical records.
+    const harness = harnessWithLegacyBirthAt('backlog');
+    const fresh = harness.writer.createInstance({
+      projectRoot: PROJECT_ROOT,
+      createdBy: 'human',
+      isolation: 'worktree',
+      stage: 'backlog',
+    });
+
+    const instances = harness.currentInstances().instances;
+    expect(instances[LEGACY_INSTANCE_ID]!.workflow).toBeNull();
+    expect(instances[fresh.taskId]!.workflow).toEqual(SHIPPED_WORKFLOW.ref);
+  });
+
+  it('ACCEPTS a legal move off a null-workflow instance, byte-for-byte as it does a stamped one', () => {
+    const legacyHarness = harnessWithLegacyBirthAt('backlog');
+    const legacyResult = legacyHarness.writer.proposeMove(
+      LEGACY_INSTANCE_ID,
+      proposal({ toStage: 'planning', proposedBy: 'human', note: 'same edge' }),
+    );
+
+    const { harness: stampedHarness, taskId: stampedId } = harnessWithTaskAt('backlog');
+    const stampedResult = stampedHarness.writer.proposeMove(
+      stampedId,
+      proposal({ toStage: 'planning', proposedBy: 'human', note: 'same edge' }),
+    );
+
+    expect(eventTypes(legacyHarness.emitted)).toEqual([EVENT_TYPES.instanceMoved]);
+    expect(eventTypes(stampedHarness.emitted)).toEqual([EVENT_TYPES.instanceMoved]);
+    // Identical but for the id — same edge, same flag, same proposer, same note.
+    expect({
+      ...(legacyHarness.emitted[0]!.payload as Record<string, unknown>),
+      instanceId: 'ID',
+    }).toEqual({ ...(stampedHarness.emitted[0]!.payload as Record<string, unknown>), instanceId: 'ID' });
+    expect(legacyResult.outcome).toBe('accepted');
+    expect(stampedResult.outcome).toBe('accepted');
+  });
+
+  it('REJECTS an illegal move off a null-workflow instance with the same reason and record', () => {
+    const legacyHarness = harnessWithLegacyBirthAt('backlog');
+    const legacyResult = legacyHarness.writer.proposeMove(
+      LEGACY_INSTANCE_ID,
+      proposal({ toStage: 'done', proposedBy: 'human' }),
+    );
+
+    const { harness: stampedHarness, taskId: stampedId } = harnessWithTaskAt('backlog');
+    const stampedResult = stampedHarness.writer.proposeMove(
+      stampedId,
+      proposal({ toStage: 'done', proposedBy: 'human' }),
+    );
+
+    expect(eventTypes(legacyHarness.emitted)).toEqual([EVENT_TYPES.instanceMoveRejected]);
+    expect({
+      ...(legacyHarness.emitted[0]!.payload as Record<string, unknown>),
+      instanceId: 'ID',
+    }).toEqual({ ...(stampedHarness.emitted[0]!.payload as Record<string, unknown>), instanceId: 'ID' });
+    expect(legacyResult).toEqual(stampedResult);
+    // The instance did not move on either side.
+    expect(legacyHarness.currentTasks().tasks[LEGACY_INSTANCE_ID]!.stage).toBe('backlog');
+    expect(stampedHarness.currentTasks().tasks[stampedId]!.stage).toBe('backlog');
+  });
+
+  it('refuses the DECLARED forbidden row identically on both eras (quarantined → done)', () => {
+    // The one refusal that arrives as DECLARED DATA rather than engine code — the
+    // forbidden row's own `reason`, echoed verbatim by the adjudicator and then
+    // parsed into the (still closed) recorded enum.
+    const legacyHarness = harnessWithLegacyBirthAt('quarantined');
+    const legacyResult = legacyHarness.writer.proposeMove(
+      LEGACY_INSTANCE_ID,
+      proposal({ toStage: 'done', proposedBy: 'human' }),
+    );
+    const { harness: stampedHarness, taskId: stampedId } = harnessWithTaskAt('quarantined');
+    const stampedResult = stampedHarness.writer.proposeMove(
+      stampedId,
+      proposal({ toStage: 'done', proposedBy: 'human' }),
+    );
+
+    expect(legacyResult).toEqual({
+      outcome: 'rejected',
+      reason: 'quarantined-cannot-complete',
+    } satisfies ProposeMoveResult);
+    expect(stampedResult).toEqual(legacyResult);
+    expect(legacyHarness.emitted[0]!.payload).toMatchObject({
+      reason: 'quarantined-cannot-complete',
+    });
   });
 });

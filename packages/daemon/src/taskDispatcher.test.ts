@@ -27,6 +27,9 @@ import {
 } from '@vimes/core';
 import type { ResumeResult, SendResult, SpawnResult } from './sessionHost.js';
 import { InstanceWriter, type ProposeMoveResult } from './instanceWriter.js';
+// S12·U2 (D72 Move 3): the writer is constructed with the boot-resolved
+// declaration now; this file builds one directly in the amend case below.
+import { loadShippedWorkflow } from './shippedManifest.js';
 import type { GitRunResult, GitRunner } from './gitAdapter.js';
 import { loadConfigFromEnv } from './config.js';
 import { WorktreeManager } from './worktreeManager.js';
@@ -36,6 +39,8 @@ import {
   type DispatchAttemptResult,
   type TaskDispatcherDeps,
 } from './taskDispatcher.js';
+
+const SHIPPED_WORKFLOW = loadShippedWorkflow();
 
 // ─── slice 6 step 4a — the dispatcher EXECUTOR ───────────────────────────────
 //
@@ -2024,7 +2029,17 @@ describe('TaskDispatcher — recordPlan: the native plan-capture seam (S7·5b-i)
       taskSessionAttached({ taskId: TASK_ID, stage: 'planning', appSessionId: PLANNER_SESSION_ID }),
     ]);
 
-    const amendResult = new InstanceWriter({ emit, readTasks, ids: new CountingIdSource() }).revisePayload(
+    // S12·U2: the writer takes the boot-resolved declaration + ref now. This case
+    // only revises a payload (no adjudication, no birth record), so the shipped
+    // pair is passed for constructor completeness rather than for anything it
+    // reads — same reason the artifact store below is inert here.
+    const amendResult = new InstanceWriter({
+      emit,
+      readTasks,
+      ids: new CountingIdSource(),
+      workflow: SHIPPED_WORKFLOW.workflow,
+      workflowRef: SHIPPED_WORKFLOW.ref,
+    }).revisePayload(
       TASK_ID,
       { amendedBy: 'human', scope: 'the scope as amended mid-planning' },
     );

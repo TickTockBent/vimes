@@ -33,7 +33,9 @@ import { createDaemon, NO_OBSERVATION_IS_FRESH_STALE_BAND_MS, type Daemon, type 
 import type { DaemonConfig } from './config.js';
 import {
   createTaskBodySchema,
+  declaredStageEdgeMembership,
   registerInstanceApi,
+  WIRE_STAGE_EDGE_ORDER,
   WORK_ORDER_FIELD_DESCRIPTORS,
   type AmendWorkOrderResponse,
   type CreateInstanceResponse,
@@ -47,6 +49,7 @@ import {
   type WorkOrderSchemaResponse,
 } from './instanceApi.js';
 import { InstanceWriter } from './instanceWriter.js';
+import { loadShippedWorkflow } from './shippedManifest.js';
 import { TaskDispatcher, type DispatchAttemptResult } from './taskDispatcher.js';
 import type {
   ResumeResult,
@@ -90,6 +93,14 @@ import type {
 // IDENTICAL events and answer with the same record under their own envelope
 // keys. That is what makes "one handler core, two surfaces" a fact rather than
 // an intention.
+
+// ── S12·U2 (D72 Move 3): the harness reads the SHIPPED declaration ───────────
+//
+// Resolved once, exactly as `createDaemon` resolves it, and handed to BOTH the
+// writer and the route registration below — one declaration, as in production.
+// Every alias-contract assertion in this file therefore now proves the flipped
+// code answers identically, which is the point of the unit.
+const SHIPPED_WORKFLOW = loadShippedWorkflow();
 
 const temporaryDirectory = mkdtempSync(join(tmpdir(), 'vimes-taskapi-'));
 afterAll(() => rmSync(temporaryDirectory, { recursive: true, force: true }));
@@ -234,7 +245,16 @@ function buildApiHarness(
     store.append(events);
   };
 
-  const instanceWriter = new InstanceWriter({ emit, readTasks, ids: new CountingIdSource() });
+  const instanceWriter = new InstanceWriter({
+    emit,
+    readTasks,
+    ids: new CountingIdSource(),
+    // S12·U2 (D72 Move 3): the REAL shipped declaration, exactly as `app.ts`
+    // resolves it — so every route assertion below is made against the table the
+    // deployed daemon actually adjudicates with, not a bespoke one.
+    workflow: SHIPPED_WORKFLOW.workflow,
+    workflowRef: SHIPPED_WORKFLOW.ref,
+  });
   const taskDispatcher = new TaskDispatcher({
     sessionHost,
     emit,
@@ -264,6 +284,8 @@ function buildApiHarness(
   );
   registerInstanceApi(app, {
     instanceWriter,
+    // The SAME declaration object the writer got (app.ts shares one).
+    workflow: SHIPPED_WORKFLOW.workflow,
     // S11·U3: the generic routes' read-back. Composed exactly as app.ts does it
     // (the instances fold, no legacy narrowing), so the parity block compares
     // what production would answer.
@@ -335,6 +357,45 @@ describe('POST /api/tasks — create', () => {
 
     // Exactly one event, and it is the birth record.
     expect(harness.taskEventTypes()).toEqual([EVENT_TYPES.instanceCreated]);
+  });
+
+  // ── S12-A6 (D72 Move 3): the pinned ref, through the HTTP door ──────────────
+  it('stamps the BOOT-RESOLVED workflow ref on the birth record (S12-A6)', async () => {
+    // The writer-level pin lives in instanceWriter.test.ts; this one proves the
+    // stamp survives the door the deployed UI actually uses — the ref is not a
+    // property of a hand-built writer harness but of every instance this daemon
+    // creates. `rev` is the shipped manifest's own semver `version`.
+    const harness = buildApiHarness();
+    await createTaskThrough(harness);
+
+    const birthPayload = harness.taskEvents()[0]!.payload as Record<string, unknown>;
+    expect(birthPayload.workflow).toEqual({
+      extension: 'vimes-tasks',
+      workflow: 'software',
+      rev: '1.0.0',
+    });
+    // And it is the SAME ref the boot resolution produced, not a coincidence of
+    // three matching literals.
+    expect(birthPayload.workflow).toEqual(SHIPPED_WORKFLOW.ref);
+  });
+
+  // The create doors default their starting node from the DECLARATION now
+  // (S12·U2), not from the compiled `INITIAL_TASK_STAGE`. Same value, different
+  // authority — asserted against the declaration itself so a manifest that moved
+  // `initial` would redden here rather than silently start instances elsewhere.
+  it('defaults the starting node to the DECLARATION\'s `initial`', async () => {
+    const harness = buildApiHarness();
+    const task = await createTaskThrough(harness);
+    expect(task.stage).toBe(SHIPPED_WORKFLOW.workflow.initial);
+
+    const genericResponse = await harness.request(
+      '/api/instances',
+      postJson({ project: harness.allowedRoot, createdBy: 'human' }),
+    );
+    expect(genericResponse.status).toBe(201);
+    const created = ((await genericResponse.json()) as CreateInstanceResponse).instance;
+    // Both doors, one declaration — the generic twin starts on the same node.
+    expect(created.currentNode).toBe(SHIPPED_WORKFLOW.workflow.initial);
   });
 
   it('honours an explicit isolation and stage over the defaults', async () => {
@@ -1429,8 +1490,33 @@ describe('I14 — every task route is behind the auth wall', () => {
 
 // ── S8: the served legal-edge table ──────────────────────────────────────────
 
+// ⚠ **THE FROZEN WIRE BYTES (S12-A4, clause b).** Captured 2026-08-10, from the
+// route as it answered BEFORE D72 Move 3 flipped it — i.e. the exact
+// `JSON.stringify({ edges: taskStageEdgesRecord() })` the deployed UI has been
+// reading since S8, key order and target order included. It is written out as a
+// LITERAL on purpose: clause (a) below compares the route to the old function
+// while that function still stands, and U3 DELETES the function — this literal is
+// what survives it, so the byte promise outlives its reference (the same trick
+// S12-A3 plays with the edge set).
+const FROZEN_STAGE_EDGES_WIRE_BYTES =
+  '{"edges":{"backlog":["planning","blocked-external","cancelled"],' +
+  '"planning":["plan-ready","blocked-external","quarantined","backlog","cancelled"],' +
+  '"plan-ready":["implementing","planning","blocked-external","backlog","cancelled"],' +
+  '"implementing":["review","blocked-external","quarantined","cancelled"],' +
+  '"review":["done","implementing","blocked-external","quarantined","cancelled"],' +
+  '"done":[],' +
+  '"blocked-external":["backlog","planning","plan-ready","implementing","review","cancelled"],' +
+  '"quarantined":["backlog","planning","implementing","blocked-external","cancelled"],' +
+  '"cancelled":["backlog"]}}';
+
 describe('GET /api/tasks/stage-edges — the legal-edge table the move sheet filters against', () => {
-  it('serves taskStageEdgesRecord() verbatim behind the same auth wall', async () => {
+  // ── S12-A4, clause (a) — REMOVED BY U3 WITH ITS REFERENCE ──────────────────
+  //
+  // While both machines stand: the route, now DERIVED FROM THE DECLARATION,
+  // answers with the same bytes the compiled table produced. Byte-identity, not
+  // deep equality — the response is a wire contract the deployed UI parses, and
+  // key/target ORDER is part of it (F4).
+  it('serves BYTE-IDENTICAL bytes to the compiled taskStageEdgesRecord() (S12-A4)', async () => {
     const harness = buildApiHarness();
     const response = await harness.request('/api/tasks/stage-edges', {
       headers: authHeaders(),
@@ -1439,6 +1525,43 @@ describe('GET /api/tasks/stage-edges — the legal-edge table the move sheet fil
     expect(response.status).toBe(200);
     const body = (await response.json()) as StageEdgesResponse;
     expect(body).toEqual({ edges: taskStageEdgesRecord() });
+    expect(JSON.stringify(body)).toBe(JSON.stringify({ edges: taskStageEdgesRecord() }));
+  });
+
+  // ── S12-A4, clause (b) — SURVIVES U3 ───────────────────────────────────────
+  it('serves the FROZEN wire bytes, literally (S12-A4)', async () => {
+    const harness = buildApiHarness();
+    const response = await harness.request('/api/tasks/stage-edges', {
+      headers: authHeaders(),
+    });
+
+    expect(response.status).toBe(200);
+    expect(JSON.stringify(await response.json())).toBe(FROZEN_STAGE_EDGES_WIRE_BYTES);
+  });
+
+  // ── the completeness tripwire (F4's honesty guard) ─────────────────────────
+  //
+  // The route's ORDER comes from a frozen constant and its MEMBERSHIP from the
+  // declaration. This asserts the two agree as SETS, per stage, in BOTH
+  // directions — so the constant can neither hide an edge the declaration
+  // declares (a target missing from the ordering array would be silently
+  // unservable) nor smuggle one the declaration dropped (that target is filtered,
+  // so the constant would be carrying a lie).
+  //
+  // ⚠ A RED HERE IS A FINDING, NOT A TUNING OPPORTUNITY: it means the shipped
+  // manifest and the frozen wire contract have diverged, and which of the two is
+  // wrong is a decision, not an edit.
+  it('the frozen ORDER and the declared MEMBERSHIP agree as sets, per stage, both ways', () => {
+    const membership = declaredStageEdgeMembership(SHIPPED_WORKFLOW.workflow);
+    const stages = Object.keys(WIRE_STAGE_EDGE_ORDER) as (keyof typeof WIRE_STAGE_EDGE_ORDER)[];
+    // Third witness: the constant covers the whole record vocabulary, so a stage
+    // dropped from it cannot pass by simply not being compared.
+    expect(stages.length).toBe(9);
+    for (const stage of stages) {
+      const ordered = [...WIRE_STAGE_EDGE_ORDER[stage]].sort();
+      const declared = [...membership[stage]].sort();
+      expect({ stage, targets: ordered }).toEqual({ stage, targets: declared });
+    }
   });
 
   it('NO token → 401 (I14), and a genuinely empty token is refused the same way', async () => {

@@ -1210,18 +1210,29 @@ export const sessionAttachedToNodePayloadSchema = z.object({
 
 // The workflow this instance is an instance OF (node-kit §1.7's identity).
 //
-// ⚠ **STAMPED `null` THIS SLICE, DELIBERATELY** (slice-11.md, the record split):
-// no pinned workflow definition governs adjudication until Move 3 — the writer
-// still calls the compiled task machine — so stamping an identity nothing pinned
-// would be DECLARED truth over observed (rule 0.7). The shape is reserved now
-// (rule 0.5) so Move 3 fills it rather than widening a written payload.
+// ⚠ **RESERVED S11 (rule 0.5), FILLED BY S12·U2 (D72 Move 3).** Slice 11 reserved
+// the shape while the writer still stamped `null` — no pinned workflow definition
+// governed adjudication, so an identity nothing pinned would have been DECLARED
+// truth over observed (rule 0.7). Move 3 ends that condition: the writer now
+// stamps the boot-resolved declaration's ref. `null` remains a RECORDED fact —
+// every pre-Move-3 birth record carries it, and the `task_created` alias adapter
+// still writes it — which is why the field stays nullable rather than required.
 export const workflowRefSchema = z.object({
   // The extension package that declares the workflow.
   extension: z.string(),
   // The workflow id within that package.
   workflow: z.string(),
   // The manifest revision the instance was created against.
-  rev: z.number().int().nonnegative(),
+  //
+  // ⚠ **A SEMVER STRING, CORRECTED S12·U2 (2026-08-10) BEFORE ITS FIRST
+  // PRODUCER.** Reserved S11 as `z.number().int().nonnegative()`; the signed
+  // skeleton says this ref stamps "rev: manifest version", and a manifest
+  // `version` is semver by parse rule (`extension-model` §2.2, enforced in
+  // `extensions/manifest.ts`) — `"1.0.0"`, not a counter. Rule 0.5's cheap
+  // moment, taken: verified ZERO producers and ZERO recorded non-null refs
+  // anywhere before this edit (the alias adapter and the pre-flip writer both
+  // stamp `null`), so no written byte changes meaning and no migration is owed.
+  rev: z.string(),
 });
 export type WorkflowRef = z.infer<typeof workflowRefSchema>;
 

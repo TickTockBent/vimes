@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, it } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import Database from 'better-sqlite3';
@@ -233,5 +233,43 @@ describe('daemon boot — snapshot+tail cold start over a real sqlite file', () 
     } finally {
       await daemon.stop();
     }
+  });
+});
+
+// ─── S12-A5 (D72 Move 3): a misbuilt daemon refuses to start ─────────────────
+//
+// The declaration is resolved inside `createDaemon`, BEFORE the store opens and
+// long before `start()` binds a port — so a daemon that cannot read its own
+// in-build manifest never becomes reachable. That ordering is the assertion:
+// nothing is listening, nothing was written, and `main.ts`'s existing top-level
+// catch turns the throw into a printed message and a non-zero exit.
+describe('daemon boot — S12-A5: an unreadable shipped manifest refuses the boot', () => {
+  it('createDaemon THROWS before anything binds, with the path in the message', () => {
+    const missingPath = join(temporaryDirectory, 'no-such-manifest', 'vimes-extension.toml');
+    expect(() =>
+      createDaemon({
+        config: buildConfig(nextDatabasePath()),
+        clock: new SteppingClock('2026-01-01T00:00:00.000Z', 1000),
+        ids: uniqueIdSource,
+        verifier: permissiveVerifier,
+        shippedManifestPath: missingPath,
+      }),
+    ).toThrow(missingPath);
+  });
+
+  it('createDaemon THROWS with the PARSE ISSUES when the manifest is unparsable', () => {
+    const brokenPath = join(temporaryDirectory, 'broken-manifest.toml');
+    writeFileSync(brokenPath, 'id = "vimes-tasks"\nnot toml [[[\n', 'utf8');
+    expect(() =>
+      createDaemon({
+        config: buildConfig(nextDatabasePath()),
+        clock: new SteppingClock('2026-01-01T00:00:00.000Z', 1000),
+        ids: uniqueIdSource,
+        verifier: permissiveVerifier,
+        shippedManifestPath: brokenPath,
+      }),
+      // The structured issue CODE, verbatim — "the parse errors in the boot
+      // output" is the assertion, not "it failed somehow".
+    ).toThrow('toml-parse-error');
   });
 });
