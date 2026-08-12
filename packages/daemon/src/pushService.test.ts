@@ -2,6 +2,7 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { SHORT_SESSION_ID_BASE_LENGTH } from '@vimes/core';
 import {
   DEFAULT_PUSH_TTL_SECONDS,
   buildPushPayload,
@@ -40,16 +41,69 @@ describe('loadOrCreateVapidKeys — generate once, load thereafter, mode 600', (
 
 describe('buildPushPayload / reasonBody (pure)', () => {
   it('uses the session name as the title and deep-links to the session', () => {
-    const payload = buildPushPayload({ appSessionId: 'app-1234abcd', name: 'Dongfu build', reason: 'gate' });
+    const payload = buildPushPayload({
+      appSessionId: 'app-1234abcd',
+      name: 'Dongfu build',
+      reason: 'gate',
+      estateSessionIds: ['app-1234abcd'],
+    });
     expect(payload.title).toBe('Dongfu build');
     expect(payload.url).toBe('/#/session/app-1234abcd');
     expect(payload.body).toBe(reasonBody('gate'));
   });
 
-  it('falls back to an id prefix when the session is unnamed', () => {
-    const payload = buildPushPayload({ appSessionId: 'abcdefgh-rest', name: null, reason: 'completed' });
-    expect(payload.title).toBe('abcdefgh');
+  // S14·U3 (D79): the fallback is the SHORT ID at the engine's base width, not
+  // the unowned `slice(0, 8)` this call site used to carry.
+  it('falls back to the D79 short id when the session is unnamed', () => {
+    const payload = buildPushPayload({
+      appSessionId: 'abcdefgh-rest',
+      name: null,
+      reason: 'completed',
+      estateSessionIds: ['abcdefgh-rest', 'zzzz-other'],
+    });
+    expect(payload.title).toBe('abcd');
+    expect(payload.title.length).toBe(SHORT_SESSION_ID_BASE_LENGTH);
     expect(payload.url).toBe('/#/session/abcdefgh-rest');
+  });
+
+  // ⚠ THE WHOLE REASON THE BARE SLICE HAD TO GO. Two sessions sharing a prefix
+  // used to produce two notifications with the SAME title; the estate-aware
+  // renderer extends the colliding group instead, so the human can tell which
+  // session is asking.
+  it('EXTENDS the handle when the estate holds a colliding prefix (the defect the slice had)', () => {
+    const estateSessionIds = ['abcd1111-one', 'abcd2222-two'];
+    const first = buildPushPayload({
+      appSessionId: 'abcd1111-one',
+      name: null,
+      reason: 'gate',
+      estateSessionIds,
+    });
+    const second = buildPushPayload({
+      appSessionId: 'abcd2222-two',
+      name: null,
+      reason: 'gate',
+      estateSessionIds,
+    });
+    expect(first.title).not.toBe(second.title);
+    expect(first.title.length).toBeGreaterThan(SHORT_SESSION_ID_BASE_LENGTH);
+    // A bare `slice(0, 8)` would have produced 'abcd1111' / 'abcd2222' here and
+    // an 8-wide handle for the uncolliding case above — the width is the
+    // engine's now, and it is a function of the estate.
+    expect(first.title).toBe('abcd1');
+    expect(second.title).toBe('abcd2');
+  });
+
+  // The estate is whole-estate by declaration (F4), but a trigger for a session
+  // the passed estate omits must still render a handle rather than a blank or a
+  // raw uuid — the union in `buildPushPayload` is what makes that true.
+  it('still renders a handle for a session the passed estate omits', () => {
+    const payload = buildPushPayload({
+      appSessionId: 'ffff9999-missing',
+      name: null,
+      reason: 'stale',
+      estateSessionIds: ['0000-other'],
+    });
+    expect(payload.title).toBe('ffff');
   });
 
   it('gives a distinct one-liner per attention reason', () => {
@@ -62,7 +116,12 @@ describe('buildPushPayload / reasonBody (pure)', () => {
   });
 
   it('builds a correct push payload for the reserved rate-limited reason (rule 0.5)', () => {
-    const payload = buildPushPayload({ appSessionId: 'app-rl-0001', name: 'rl session', reason: 'rate-limited' });
+    const payload = buildPushPayload({
+      appSessionId: 'app-rl-0001',
+      name: 'rl session',
+      reason: 'rate-limited',
+      estateSessionIds: ['app-rl-0001'],
+    });
     expect(payload).toEqual({
       title: 'rl session',
       body: reasonBody('rate-limited'),

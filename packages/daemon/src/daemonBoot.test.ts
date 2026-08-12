@@ -175,7 +175,8 @@ describe('daemon boot — snapshot+tail cold start over a real sqlite file', () 
       // constant on purpose: adding a projection to the daemon is a change that
       // should be visible in a diff somebody reads, not one that silently
       // satisfies its own assertion. `projects` arrived with S8·1 (D42's
-      // registry); the other four predate it.
+      // registry) and `nodes` with S14·U3 (E2's forest, registered the moment
+      // something finally wrote its stream); the other four predate them.
       //
       // ⚠ `instances` is where `tasks` used to be in this list (S11·U1, D72
       // Move 2). The projection id moved with the fold — the STREAM is still
@@ -189,6 +190,7 @@ describe('daemon boot — snapshot+tail cold start over a real sqlite file', () 
         'cache-observability',
         'instances',
         'meters',
+        'nodes',
         'projects',
         'sessions',
       ]);

@@ -7,6 +7,7 @@ import {
   CountingIdSource,
   SteppingClock,
   canonicalJson,
+  projectCreated,
   readAllStreamsGrouped,
   replayFromEmpty,
   runCompleted,
@@ -738,6 +739,54 @@ describe('WsHub — correction_queued is emitted only for a steer of an in-fligh
       // Give the emit path a chance to have fired, then prove it did not.
       await delay(50);
       expect(correctionQueuedEventsOn(daemon, 'app-unknown')).toEqual([]);
+    } finally {
+      client.close();
+      await daemon.stop();
+    }
+  });
+});
+
+// ─── S14·U3 — the 'nodes' stream fans out like every other stream ────────────
+//
+// ⚠ **THE POINT IS THAT NOTHING NEW WAS BUILT** (slice-14.md §0 item 8: "The WS
+// spine needs nothing new"). The router fans out per stream over per-stream
+// cursors, so the day something finally WRITES the `nodes` stream — this unit's
+// `NodeWriter` — a client subscribed to it starts receiving live frames with no
+// envelope work, no hub change and no registration beyond the projection's. This
+// case exists to prove that claim rather than to assume it: the skeleton's
+// prediction is only worth what an observation makes it worth.
+describe("WsHub — the 'nodes' stream fans out live after a POST /api/nodes (S14·U3)", () => {
+  it('delivers node_created to a subscribed client, byte-exact against the store', async () => {
+    const daemon = await startDaemon();
+    const client = new WsTestClient(daemon.port, ANY_TOKEN);
+    try {
+      // A live project for the node to hang under. Emitted directly: this case's
+      // subject is the FAN-OUT, and routing the fixture through the registry's
+      // own HTTP surface would make it fail when that unit changes.
+      daemon.router.emit([
+        projectCreated({ projectId: 'proj-ws', root: '/home/example/projects/ws' }),
+      ]);
+
+      await client.opened();
+      // Subscribed at head 0 — so every frame that follows is LIVE fan-out
+      // rather than replay of something that already existed.
+      client.send({ op: 'subscribe', stream: 'nodes', lastSeq: 0 });
+      await client.waitForMessageCount(1);
+      expect(client.messages[0]).toEqual({ op: 'subscribed', stream: 'nodes', head: 0 });
+
+      const response = await fetch(`http://127.0.0.1:${daemon.port}/api/nodes`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'cf-access-jwt-assertion': ANY_TOKEN },
+        body: JSON.stringify({ projectId: 'proj-ws', name: 'live group' }),
+      });
+      expect(response.status).toBe(201);
+
+      await client.waitForMessageCount(2);
+      const outbound = client.messages[1]!;
+      expect(outbound.op).toBe('event');
+      const [storedRecord] = daemon.store.read('nodes', 1);
+      expect(canonicalJson(outbound.event)).toBe(canonicalJson(storedRecord));
+      expect((outbound.event as EventRecord).type).toBe('node_created');
     } finally {
       client.close();
       await daemon.stop();

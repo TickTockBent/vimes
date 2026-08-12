@@ -20,6 +20,7 @@ import {
   meterAlert,
   meterSample,
   metersProjection,
+  nodesProjection,
   projectsProjection,
   sessionsProjection,
   instancesProjection,
@@ -55,12 +56,14 @@ import { DAEMON_API_VERSION, DAEMON_CAPABILITIES } from './apiVersion.js';
 import { registerFileApi } from './fileApi.js';
 import { registerGitApi } from './gitApi.js';
 import { registerInstanceApi, resolveInitialNode } from './instanceApi.js';
+import { registerNodeApi } from './nodeApi.js';
 import { registerProjectApi } from './projectApi.js';
 import { registerOrchestratorApi, standingNotesPathFor } from './orchestratorApi.js';
 import { buildCreateTaskSpec } from './createTaskTool.js';
 import { CompactionSteward } from './compactionSteward.js';
 import { InstanceWriter } from './instanceWriter.js';
 import { loadShippedWorkflow } from './shippedManifest.js';
+import { NodeWriter } from './nodeWriter.js';
 import { ProjectWriter } from './projectWriter.js';
 import { TaskDispatcher } from './taskDispatcher.js';
 import { TaskWatchdog } from './taskWatchdog.js';
@@ -162,6 +165,14 @@ const DAEMON_PROJECTIONS: ReadonlyArray<Projection<unknown>> = [
   // per request through `bootFromSnapshot`, and a projection with no snapshots
   // would replay the whole log on every one of those reads.
   projectsProjection as Projection<unknown>,
+  // S14·U3 (E2) — the session FOREST. Registered now that something finally
+  // writes its stream (`nodeWriter.ts` is the first emitter, slice-14.md §0
+  // item 1): it is snapshotted on the same cadence as its siblings, because the
+  // writer and `GET /api/tree` both read it FRESH per request through
+  // `bootFromSnapshot`, and a projection with no snapshots would replay the
+  // whole log on every one of those reads. Registration is also what makes
+  // `GET /api/projections/nodes` serve it like every sibling.
+  nodesProjection as Projection<unknown>,
 ];
 const PROJECTION_BY_ID = new Map<string, Projection<unknown>>(
   DAEMON_PROJECTIONS.map((projection) => [projection.id, projection]),
@@ -678,6 +689,36 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     // cwd is not a declarable boundary. This asymmetry is deliberate and is the
     // whole security content of the unit; see `ProjectApiDeps`.
     getConfiguredProjectRoots: () => config.projectRoots,
+  });
+
+  // ─── the session tree (S14·U3, E2) ─────────────────────────────────────────
+  //
+  // Behind the same auth wall and beside the registry whose boundaries its
+  // virtual roots are composed from (F1: a project root is NEVER an event —
+  // project identity has one source of record, and it is the registry above).
+  //
+  // ⚠ ONE WRITER, exactly as `ProjectWriter` and `InstanceWriter` are for their
+  // own state: this instance is the ONLY thing in the daemon that writes
+  // `node_created` / `node_closed` / `session_attached_to_node`, and any later
+  // caller (a spawn-into-a-node flow, a TUI command) takes THIS instance rather
+  // than growing a second path.
+  //
+  // Three projection reads because the writer's rules span three folds — see
+  // `NodeWriterDeps`. All of them are the SAME `bootFromSnapshot` thunks the
+  // other registrations use, so nothing here holds a cached copy of anything.
+  const nodeWriter = new NodeWriter({
+    emit: (events) => router.emit(events),
+    readProjects: () => bootFromSnapshot(projectsProjection, snapshotStore, store),
+    readNodes: () => bootFromSnapshot(nodesProjection, snapshotStore, store),
+    readSessions: () => bootFromSnapshot(sessionsProjection, snapshotStore, store),
+    ids,
+  });
+
+  registerNodeApi(app, {
+    nodeWriter,
+    readProjects: () => bootFromSnapshot(projectsProjection, snapshotStore, store),
+    readNodes: () => bootFromSnapshot(nodesProjection, snapshotStore, store),
+    readSessions: () => bootFromSnapshot(sessionsProjection, snapshotStore, store),
   });
 
   // ─── the standing orchestrator (S8·3, D56) ─────────────────────────────────

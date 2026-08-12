@@ -116,11 +116,21 @@ export class PushPipeline {
     const { appSessionId, reason } = parsed.data;
     // D9 suppression: fold the log (persist-before-broadcast I13 means the
     // attention setter batched with this trigger is already applied).
-    const session = this.currentSessions()[appSessionId];
+    const estateSessions = this.currentSessions();
+    const session = estateSessions[appSessionId];
     if (shouldSuppressPush(session)) {
       return;
     }
-    const payload = buildPushPayload({ appSessionId, name: session!.name, reason });
+    const payload = buildPushPayload({
+      appSessionId,
+      name: session!.name,
+      reason,
+      // S14·U3 (D79, slice-14 §3c): the WHOLE ESTATE, from the same fold this
+      // method already took for the suppression check above — so an unnamed
+      // session's notification title is the collision-extended short id the tree
+      // renders for it, not an unowned 8-character slice. One fold, two readings.
+      estateSessionIds: Object.keys(estateSessions),
+    });
     const payloadJson = JSON.stringify(payload);
     // Fire-and-forget per subscription: the send is async and its outcome event is
     // emitted from a later microtask, so the event path (this dispatch) is never

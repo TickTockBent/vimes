@@ -1,7 +1,7 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import webpush from 'web-push';
-import type { AttentionReason } from '@vimes/core';
+import { shortSessionIds, type AttentionReason } from '@vimes/core';
 
 // ─── Web push service (slice-2 step 3) ───────────────────────────────────────
 //
@@ -199,14 +199,46 @@ export function reasonBody(reason: AttentionReason): string {
   }
 }
 
-// Build the notification payload. Title prefers the session name; falls back to an
-// id prefix. The deep link is the client hash route for the exact session.
+// Build the notification payload. Title prefers the session name; falls back to
+// the D79 SHORT ID. The deep link is the client hash route for the exact session.
+//
+// ⚠ **THE FALLBACK IS AN ESTATE-AWARE D79 HANDLE, NOT A SLICE** (slice-14 §3c,
+// F4 ⟨signed⟩). This call site held one of the five scattered bare
+// `appSessionId.slice(0, 8)`s the D79 consolidation exists to remove: a width
+// nobody owned, with no collision handling at all — two sessions sharing a
+// prefix produced two notifications with the SAME title and nothing anywhere
+// would have noticed.
+//
+// The daemon HOLDS the estate (the sessions projection), so this is a genuine
+// consumer rather than a constant-swap: the caller passes the whole estate's ids
+// and `shortSessionIds` renders the collision-extended handle — the same handle
+// the tree leaf shows for that session, because both are rendered over the same
+// whole-estate scope (F4: scope is the estate, never a subset, or the same four
+// characters would name different sessions on the phone and in the tree).
 export function buildPushPayload(args: {
   appSessionId: string;
   name: string | null;
   reason: AttentionReason;
+  // ⚠ **REQUIRED, AND WHOLE-ESTATE.** There is no default: a handle rendered
+  // against an unknown scope is a handle that can silently collide, which is
+  // exactly the defect the bare slice had. The caller reads the sessions
+  // projection anyway (it needs the record for the D9 suppression check), so the
+  // estate costs it nothing.
+  estateSessionIds: readonly string[];
 }): PushPayload {
-  const title = args.name !== null && args.name.length > 0 ? args.name : args.appSessionId.slice(0, 8);
+  // The id is UNIONED in rather than assumed present. A trigger for a session
+  // the passed estate somehow omits still gets a handle — and, because the union
+  // goes through the same renderer, still gets one that extends if it collides
+  // with something in the estate.
+  const renderedEstateIds = args.estateSessionIds.includes(args.appSessionId)
+    ? args.estateSessionIds
+    : [...args.estateSessionIds, args.appSessionId];
+  const shortIdBySessionId = shortSessionIds(renderedEstateIds);
+  // `shortSessionIds` returns an entry for every id it was handed, so the `??`
+  // is unreachable — it keeps the title a string rather than an optional without
+  // reintroducing a width literal.
+  const shortId = shortIdBySessionId.get(args.appSessionId) ?? args.appSessionId;
+  const title = args.name !== null && args.name.length > 0 ? args.name : shortId;
   return {
     title,
     body: reasonBody(args.reason),
