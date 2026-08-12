@@ -31,6 +31,7 @@ import {
   shouldSearchRefusalError,
   type SpawnPendingState,
 } from '../lib/refusalRecovery.js';
+import { daemonApiVersionMismatch, daemonSupportsCapability } from '../lib/apiFloor.js';
 
 // The single shared WS connection (private-docs/slice-1.md step-3 scope): one socket
 // multiplexes every subscribed stream; per-stream lastSeq is tracked so a
@@ -115,6 +116,28 @@ export const useVimesStore = defineStore('vimes', () => {
   const connectionStatus = ref<ConnectionStatus>('connecting');
   const catchingUp = ref(false);
   const lastRefusal = ref<{ refusedOp: string; reason: string } | null>(null);
+
+  // ── D84 (S14 U1): the API-version handshake ───────────────────────────────
+  // Reset to the "unknown yet" state at the top of every connect() 'open'
+  // handler, so each connection is judged on its OWN hello (or lack of one) —
+  // never on a previous connection's daemon, which a restart may have replaced.
+  const daemonApiVersion = ref<number | null>(null);
+  const daemonCapabilities = ref<readonly string[]>([]);
+  // Proof-of-life for the CURRENT connection: at least one `subscribed` ack has
+  // been received on it. Absence of hello is ambiguous while this is false (the
+  // hello frame may simply not have arrived yet); once true, a still-null
+  // daemonApiVersion is conclusive — an anchor-frame daemon that predates the
+  // hello op entirely, exactly the stale-daemon condition D84 exists for.
+  const daemonRespondedThisConnection = ref(false);
+
+  const apiVersionMismatch = computed(() =>
+    daemonApiVersionMismatch(daemonApiVersion.value, daemonRespondedThisConnection.value),
+  );
+
+  function daemonSupports(capability: string): boolean {
+    return daemonSupportsCapability(daemonApiVersion.value, daemonCapabilities.value, capability);
+  }
+
   // requestIds the client has sent a gate_response for but not yet seen
   // cleared — lets the gate card disable its buttons immediately.
   const answeringRequestIds = reactive(new Set<string>());
@@ -983,7 +1006,13 @@ export const useVimesStore = defineStore('vimes', () => {
 
   function applyServerEnvelope(envelope: ServerEnvelope): void {
     switch (envelope.op) {
+      case 'hello': {
+        daemonApiVersion.value = envelope.apiVersion;
+        daemonCapabilities.value = envelope.capabilities;
+        return;
+      }
       case 'subscribed': {
+        daemonRespondedThisConnection.value = true;
         pendingResubscribeAcks.delete(envelope.stream);
         if (pendingResubscribeAcks.size === 0) {
           catchingUp.value = false;
@@ -1142,6 +1171,11 @@ export const useVimesStore = defineStore('vimes', () => {
       backoffMs = MIN_BACKOFF_MS;
       consecutiveWsFailures = 0;
       connectionStatus.value = 'open';
+      // A new connection may be talking to a different (e.g. just-restarted)
+      // daemon — judge IT on its own hello, not a stale verdict carried over.
+      daemonApiVersion.value = null;
+      daemonCapabilities.value = [];
+      daemonRespondedThisConnection.value = false;
       if (subscribedStreams.size > 0) {
         catchingUp.value = true;
         pendingResubscribeAcks.clear();
@@ -1575,6 +1609,10 @@ export const useVimesStore = defineStore('vimes', () => {
     connectionStatus,
     catchingUp,
     lastRefusal,
+    // D84 (S14 U1): the API-version handshake.
+    daemonApiVersion,
+    daemonApiVersionMismatch: apiVersionMismatch,
+    daemonSupports,
     answeringRequestIds,
     init,
     dispose,

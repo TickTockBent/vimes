@@ -51,6 +51,7 @@ import {
   type EmitAuthRejected,
 } from './auth.js';
 import { WsHub, type WsHubDeps } from './wsHub.js';
+import { DAEMON_API_VERSION, DAEMON_CAPABILITIES } from './apiVersion.js';
 import { registerFileApi } from './fileApi.js';
 import { registerGitApi } from './gitApi.js';
 import { registerInstanceApi, resolveInitialNode } from './instanceApi.js';
@@ -484,7 +485,13 @@ export function createDaemon(deps: DaemonDeps): Daemon {
   app.get('/api/health', (context) =>
     context.json({
       ok: true,
+      // schemaVersion is the EVENT-SCHEMA version (store.schemaVersion()) — a
+      // different fact from apiVersion (D84, apiVersion.ts) and never conflated
+      // with it: schemaVersion is what was persisted, apiVersion is what this
+      // daemon SERVES over REST/WS right now.
       schemaVersion: store.schemaVersion(),
+      apiVersion: DAEMON_API_VERSION,
+      capabilities: DAEMON_CAPABILITIES,
       uptime: startedAtMs === null ? 0 : Date.now() - startedAtMs,
     }),
   );

@@ -19,6 +19,7 @@ import type { AccessVerifier } from './auth.js';
 import { createDaemon, type Daemon } from './app.js';
 import type { DaemonConfig } from './config.js';
 import type { PtyLike, PtySpawnFactory } from './sessionHost.js';
+import { DAEMON_API_VERSION, DAEMON_CAPABILITIES } from './apiVersion.js';
 
 // A fake PTY that satisfies the seam without spawning anything real (no Claude in
 // CI). Its transcript would come only from the tailer, unused here.
@@ -113,7 +114,14 @@ interface OutboundMessage {
 
 class WsTestClient {
   readonly socket: WebSocket;
+  // `messages` excludes the hello frame (S14 U1/D84): every pre-existing test
+  // in this file indexes `messages[0]` etc. expecting the FIRST protocol reply
+  // to a request it sent, and hello now precedes that unconditionally on every
+  // connection. `rawMessages` is the unfiltered wire order, for the dedicated
+  // hello-ordering test below.
   readonly messages: OutboundMessage[] = [];
+  readonly rawMessages: OutboundMessage[] = [];
+  hello: OutboundMessage | null = null;
   closeCode: number | undefined;
 
   constructor(port: number, token: string) {
@@ -121,7 +129,13 @@ class WsTestClient {
       headers: { 'cf-access-jwt-assertion': token },
     });
     this.socket.on('message', (rawData: RawData) => {
-      this.messages.push(JSON.parse(rawData.toString()) as OutboundMessage);
+      const parsed = JSON.parse(rawData.toString()) as OutboundMessage;
+      this.rawMessages.push(parsed);
+      if (parsed.op === 'hello' && this.hello === null) {
+        this.hello = parsed;
+        return;
+      }
+      this.messages.push(parsed);
     });
     this.socket.on('close', (code: number) => {
       this.closeCode = code;
@@ -145,6 +159,10 @@ class WsTestClient {
 
   waitForMessageCount(count: number): Promise<void> {
     return waitUntil(() => this.messages.length >= count);
+  }
+
+  waitForRawMessageCount(count: number): Promise<void> {
+    return waitUntil(() => this.rawMessages.length >= count);
   }
 
   waitForClose(): Promise<number> {
@@ -184,6 +202,34 @@ function probeRawUpgrade(port: number, path: string, token: string): Promise<Raw
 
 afterAll(() => {
   rmSync(temporaryDirectory, { recursive: true, force: true });
+});
+
+describe('WsHub hello frame (D84, S14 U1) — the API-version handshake', () => {
+  it('hello is the FIRST frame on a new connection, ahead of subscribed and carrying apiVersion/capabilities', async () => {
+    const daemon = await startDaemon();
+    const client = new WsTestClient(daemon.port, ANY_TOKEN);
+    try {
+      await client.opened();
+      // Nothing sent yet — hello arrives unprompted, before any request.
+      await client.waitForRawMessageCount(1);
+      expect(client.rawMessages[0]).toEqual({
+        op: 'hello',
+        apiVersion: DAEMON_API_VERSION,
+        capabilities: DAEMON_CAPABILITIES,
+      });
+      expect(client.hello).toEqual(client.rawMessages[0]);
+
+      // Now subscribe — its reply must land AFTER hello, never interleaved
+      // ahead of it.
+      client.send({ op: 'subscribe', stream: 'empty', lastSeq: 0 });
+      await client.waitForRawMessageCount(2);
+      expect(client.rawMessages[0]!.op).toBe('hello');
+      expect(client.rawMessages[1]).toEqual({ op: 'subscribed', stream: 'empty', head: 0 });
+    } finally {
+      client.close();
+      await daemon.stop();
+    }
+  });
 });
 
 describe('WsHub protocol v0 over a live daemon', () => {

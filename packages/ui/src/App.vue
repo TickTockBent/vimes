@@ -15,6 +15,7 @@ import { useLayoutMode } from './lib/useLayoutMode.js';
 import ThemePicker from './components/ThemePicker.vue';
 import UsageGauge from './components/UsageGauge.vue';
 import ProjectPickerView from './views/ProjectPickerView.vue';
+import { UI_REQUIRED_API_VERSION } from './lib/apiFloor.js';
 import {
   declarePrefill,
   initialHashFor,
@@ -485,6 +486,26 @@ const bannerText = computed(() => {
   return null;
 });
 
+// D84 (S14 U1): the daemon is running older code than this bundle needs — the
+// window `scripts/ci-gate.sh` opens on every gate run (ships the UI, never
+// restarts the daemon). STICKY and NON-dismissible on purpose: a dismiss
+// button would let the honest signal be waved away while the mismatch persists.
+// A daemon NEWER than the floor is fine (additive philosophy) — no banner.
+const apiMismatchBannerText = computed(() => {
+  if (!store.daemonApiVersionMismatch) return null;
+  if (store.daemonApiVersion === null) {
+    return (
+      `This page was built for VIMES API v${UI_REQUIRED_API_VERSION}; the daemon predates ` +
+      `API-version reporting entirely — the daemon is running much older code. Restart the ` +
+      `daemon, then reload.`
+    );
+  }
+  return (
+    `This page was built for VIMES API v${UI_REQUIRED_API_VERSION}; the daemon is serving ` +
+    `v${store.daemonApiVersion} — the daemon is running older code. Restart the daemon, then reload.`
+  );
+});
+
 // ── sidebar collapse (unit 6b·3a) ────────────────────────────────────────────
 // Desktop-only presentation state (rule 0.3 boundary — layout, never a projection
 // input): whether the ambient session-list sidebar is hidden so the content frames
@@ -576,6 +597,16 @@ function toggleSidebarCollapsed(): void {
       <ThemePicker />
     </header>
 
+    <!-- D84 (S14 U1) API-version mismatch — sticky, NO dismiss button on
+         purpose (see apiMismatchBannerText). Ahead of bannerText: a stale
+         daemon is a fact about the whole page, more load-bearing than the
+         transient connecting/reconnecting status below it. -->
+    <div
+      v-if="apiMismatchBannerText"
+      class="sticky top-0 z-30 bg-warn px-4 py-2 text-center text-sm font-medium text-accent-fg"
+    >
+      {{ apiMismatchBannerText }}
+    </div>
     <!-- Persistent chrome above the panel row — unchanged from today. -->
     <div v-if="bannerText" class="sticky top-0 z-30 bg-warn px-4 py-2 text-center text-sm font-medium text-accent-fg">
       {{ bannerText }}

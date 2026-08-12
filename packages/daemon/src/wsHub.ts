@@ -9,6 +9,7 @@ import type { SessionHost } from './sessionHost.js';
 import { isValidPushSubscription, type PushSubscriptionRecord } from './pushService.js';
 import type { SearchService } from './search.js';
 import type { TerminalHost, TerminalSubscriber } from './terminalHost.js';
+import { DAEMON_API_VERSION, DAEMON_CAPABILITIES } from './apiVersion.js';
 
 // The narrow push-subscription sink the hub needs (PushSubscriptions implements
 // it). Keeps the hub decoupled from the sqlite cache class.
@@ -342,6 +343,12 @@ export class WsHub {
       closed: false,
     };
     this.connections.add(connection);
+
+    // The hello frame — FIRST thing sent on every new connection, before any
+    // subscribe ack or event (D84). A stale bundle that predates this op drops
+    // it silently (parseServerEnvelope's default case, envelope.ts) rather than
+    // breaking — verified S14 U1 pre-flight before this line was written.
+    this.sendControl(connection, { op: 'hello', apiVersion: DAEMON_API_VERSION, capabilities: DAEMON_CAPABILITIES });
 
     const tearDown = (): void => {
       this.tearDownSubscriptions(connection);

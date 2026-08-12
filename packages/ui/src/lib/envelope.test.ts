@@ -43,6 +43,19 @@ describe('serializeClientEnvelope', () => {
 });
 
 describe('parseServerEnvelope', () => {
+  it('parses a hello envelope (D84, S14 U1)', () => {
+    const envelope = parseServerEnvelope(JSON.stringify({ op: 'hello', apiVersion: 1, capabilities: [] }));
+    expect(envelope).toEqual({ op: 'hello', apiVersion: 1, capabilities: [] });
+    const withCaps = parseServerEnvelope(JSON.stringify({ op: 'hello', apiVersion: 3, capabilities: ['x', 'y'] }));
+    expect(withCaps).toEqual({ op: 'hello', apiVersion: 3, capabilities: ['x', 'y'] });
+  });
+
+  it('a malformed hello (missing/wrong-typed apiVersion or capabilities) falls through to null', () => {
+    expect(parseServerEnvelope(JSON.stringify({ op: 'hello', capabilities: [] }))).toBeNull();
+    expect(parseServerEnvelope(JSON.stringify({ op: 'hello', apiVersion: 1 }))).toBeNull();
+    expect(parseServerEnvelope(JSON.stringify({ op: 'hello', apiVersion: '1', capabilities: [] }))).toBeNull();
+  });
+
   it('parses a subscribed envelope', () => {
     const envelope = parseServerEnvelope(JSON.stringify({ op: 'subscribed', stream: 'app-1', head: 5 }));
     expect(envelope).toEqual({ op: 'subscribed', stream: 'app-1', head: 5 });

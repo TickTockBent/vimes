@@ -152,8 +152,13 @@ interface ControlMessage {
 
 class TermClient {
   readonly socket: WebSocket;
+  // `control` excludes the hello frame (S14 U1/D84): callers use
+  // waitForControl(n) + lastControl() to synchronize on the reply to a
+  // specific request, and hello now arrives unprompted ahead of any of them —
+  // folding it into `control` would shift every count/lastControl() read.
   readonly control: ControlMessage[] = [];
   readonly binary: Buffer[] = [];
+  hello: ControlMessage | null = null;
 
   constructor(port: number) {
     this.socket = new WebSocket(`ws://127.0.0.1:${port}/ws`, {
@@ -162,9 +167,14 @@ class TermClient {
     this.socket.on('message', (rawData: RawData, isBinary: boolean) => {
       if (isBinary) {
         this.binary.push(Buffer.isBuffer(rawData) ? rawData : Buffer.from(rawData as ArrayBuffer));
-      } else {
-        this.control.push(JSON.parse(rawData.toString()) as ControlMessage);
+        return;
       }
+      const parsed = JSON.parse(rawData.toString()) as ControlMessage;
+      if (parsed.op === 'hello' && this.hello === null) {
+        this.hello = parsed;
+        return;
+      }
+      this.control.push(parsed);
     });
   }
 

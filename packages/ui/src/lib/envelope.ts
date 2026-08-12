@@ -66,6 +66,11 @@ export interface SearchResultEnvelope {
 }
 
 export type ServerEnvelope =
+  // D84 (S14 U1): the API-version handshake — the FIRST frame the daemon sends
+  // on every new connection, before any subscribed ack or event. A bundle that
+  // predates this op never sees this case (default → null in parseServerEnvelope
+  // below); the daemon behaves identically either way.
+  | { op: 'hello'; apiVersion: number; capabilities: string[] }
   | { op: 'subscribed'; stream: string; head: number }
   | { op: 'event'; event: EventRecord }
   | { op: 'refused'; refusedOp: string; reason: string }
@@ -117,6 +122,10 @@ export function parseServerEnvelope(raw: string): ServerEnvelope | null {
     return null;
   }
   switch (parsed.op) {
+    case 'hello':
+      return typeof parsed.apiVersion === 'number' && Array.isArray(parsed.capabilities)
+        ? { op: 'hello', apiVersion: parsed.apiVersion, capabilities: parsed.capabilities as string[] }
+        : null;
     case 'subscribed':
       return typeof parsed.stream === 'string' && typeof parsed.head === 'number'
         ? { op: 'subscribed', stream: parsed.stream, head: parsed.head }

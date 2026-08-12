@@ -17,6 +17,7 @@ import {
 import type { AccessVerifier } from './auth.js';
 import { createDaemon, type Daemon } from './app.js';
 import type { DaemonConfig } from './config.js';
+import { DAEMON_API_VERSION, DAEMON_CAPABILITIES } from './apiVersion.js';
 
 const temporaryDirectory = mkdtempSync(join(tmpdir(), 'vimes-boot-'));
 let databaseFileCounter = 0;
@@ -233,6 +234,31 @@ describe('daemon boot — snapshot+tail cold start over a real sqlite file', () 
       expect(health.ok).toBe(true);
       expect(health.schemaVersion).toBe(1);
       expect(typeof health.uptime).toBe('number');
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  // S14 U1 (D84): apiVersion + capabilities sit BESIDE schemaVersion — a
+  // different fact (event-schema vs served-API version) that must not be
+  // conflated with it.
+  it('GET /api/health also carries apiVersion and capabilities, distinct from schemaVersion', async () => {
+    const daemon = await startDaemon(nextDatabasePath());
+    try {
+      const response = await fetch(`http://127.0.0.1:${daemon.port}/api/health`, {
+        headers: { 'cf-access-jwt-assertion': ANY_TOKEN },
+      });
+      expect(response.status).toBe(200);
+      const health = (await response.json()) as {
+        ok: boolean;
+        schemaVersion: number;
+        apiVersion: number;
+        capabilities: string[];
+        uptime: number;
+      };
+      expect(health.apiVersion).toBe(DAEMON_API_VERSION);
+      expect(health.capabilities).toEqual(DAEMON_CAPABILITIES);
+      expect(health.schemaVersion).toBe(1);
     } finally {
       await daemon.stop();
     }
