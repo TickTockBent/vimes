@@ -44,6 +44,7 @@ import {
   type ProposeTransitionResponse,
   type RevisePayloadResponse,
   type WorkflowDeclarationResponse,
+  type WorkflowIndexResponse,
   type WorkflowPayloadSchemaResponse,
   type WorkOrderFieldDescriptor,
   type WorkOrderSchemaResponse,
@@ -1801,6 +1802,52 @@ function wrongRefPaths(suffix: 'declaration' | 'payload-schema'): Array<{ label:
     },
   ];
 }
+
+describe('GET /api/workflows — the discovery half (S13·U2b, q25 addendum)', () => {
+  it('200 with exactly one entry, ref deep-equals SHIPPED_WORKFLOW.ref', async () => {
+    const harness = buildApiHarness();
+    const response = await harness.request('/api/workflows', { headers: authHeaders() });
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as WorkflowIndexResponse;
+    expect(body.workflows.length).toBe(1);
+    expect(body.workflows[0]!.ref).toEqual(SHIPPED_WORKFLOW.ref);
+  });
+
+  it('the contract: the ref the index lists is one the declaration route answers 200 for', async () => {
+    const harness = buildApiHarness();
+    const indexResponse = await harness.request('/api/workflows', { headers: authHeaders() });
+    const indexBody = (await indexResponse.json()) as WorkflowIndexResponse;
+
+    const listedRef = indexBody.workflows[0]!.ref;
+    const followedPath =
+      `/api/workflows/${listedRef.extension}/${listedRef.workflow}/${listedRef.rev}/declaration`;
+    const followedResponse = await harness.request(followedPath, { headers: authHeaders() });
+
+    expect(followedResponse.status).toBe(200);
+  });
+
+  it('carries NO Cache-Control header on the 200 (unlike the immutable per-ref routes)', async () => {
+    const harness = buildApiHarness();
+    const response = await harness.request('/api/workflows', { headers: authHeaders() });
+    expect(response.headers.get('cache-control')).toBeNull();
+  });
+
+  it('NO token → 401 (I14), and a genuinely empty token is refused the same way', async () => {
+    const harness = buildApiHarness();
+    const noToken = await harness.request('/api/workflows', { headers: authHeaders(null) });
+    expect(noToken.status).toBe(401);
+    const emptyToken = await harness.request('/api/workflows', { headers: authHeaders('') });
+    expect(emptyToken.status).toBe(401);
+  });
+
+  it('is read-only: fetching it writes nothing to the tasks stream', async () => {
+    const harness = buildApiHarness();
+    const headBefore = harness.tasksHead();
+    await harness.request('/api/workflows', { headers: authHeaders() });
+    expect(harness.tasksHead()).toBe(headBefore);
+  });
+});
 
 describe('GET /api/workflows/:extension/:workflow/:rev/declaration — q25 (S13·U2)', () => {
   it('S13-A3: edge rows equal deps.workflow.edges verbatim, including manual-review (the tenth node)', async () => {

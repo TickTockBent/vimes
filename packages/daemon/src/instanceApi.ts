@@ -273,6 +273,17 @@ export interface WorkflowPayloadSchemaResponse {
   fields: readonly WorkOrderFieldDescriptor[];
 }
 
+// ── S13·U2b (q25 addendum, added 2026-08-12 at U3 recon) — the DISCOVERY half ─
+//
+// The two ref-keyed routes above have no discovery half: at zero instances a
+// client holds no ref to key them with. `GET /api/workflows` is that half —
+// the index of declarations this daemon resolves. Today that is exactly one
+// entry (the boot-resolved declaration); the array is the rule-0.5
+// reservation for the multi-workflow future, not a claim that more exist yet.
+export interface WorkflowIndexResponse {
+  workflows: ReadonlyArray<{ ref: WorkflowRef }>;
+}
+
 // ── the boundary vocabularies ────────────────────────────────────────────────
 //
 // ⚠ RE-DECLARED HERE RATHER THAN IMPORTED FROM CORE, AND THE REASON IS BORING BUT
@@ -1271,6 +1282,28 @@ export function registerInstanceApi(app: Hono, deps: InstanceApiDeps): void {
   // declaration under this ref" is not a fact this daemon is the authority on
   // forever — a later deploy could pin a different rev.
   const IMMUTABLE_DECLARATION_CACHE_CONTROL = 'private, max-age=31536000, immutable';
+
+  // GET /api/workflows — the discovery half (S13·U2b, q25 addendum). Lists
+  // the declarations this daemon resolves, today exactly the one boot ref.
+  //
+  // ⚠ THE ENTRY LIST IS, BY CONSTRUCTION, THE SET OF REFS THE TWO ROUTES
+  // BELOW WILL ANSWER 200 FOR. That correspondence is this route's whole
+  // contract: every `ref` listed here must be one `isRequestedWorkflow`
+  // accepts, and nothing else. Today that is trivial (one boot-resolved
+  // declaration, one list entry, built from the SAME `deps.workflowRef`
+  // `isRequestedWorkflow` matches against) — the invariant is what a future
+  // multi-workflow daemon must keep true when this array grows past one.
+  //
+  // ⚠ NO CACHE-CONTROL HEADER, UNLIKE THE PER-REF ROUTES BELOW. Each
+  // declaration is immutable once served under its ref, but the SET of refs
+  // this daemon resolves is a fact about THIS deploy, not about any one ref —
+  // a later deploy can pin a different rev, growing or shrinking the list.
+  // Caching the index long-term would let a client miss a newly-resolvable
+  // workflow, or keep offering a create sheet for one this daemon dropped.
+  app.get('/api/workflows', (context) => {
+    const response: WorkflowIndexResponse = { workflows: [{ ref: deps.workflowRef }] };
+    return context.json(response);
+  });
 
   // GET /api/workflows/:extension/:workflow/:rev/declaration — the FULL
   // declared table (nodes/edges/forbidden), verbatim from `deps.workflow`.
