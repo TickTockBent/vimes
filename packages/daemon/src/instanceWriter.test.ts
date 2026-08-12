@@ -14,16 +14,20 @@ import {
   // unchanged assertions prove.
   canonicalJson,
   instancesProjection,
+  // S13-A2: the widened generic payload schema, and the frozen historical enum
+  // the alien reason must NOT be a member of.
+  instanceMoveRejectedPayloadSchema,
+  transitionRejectionReasonSchema,
   // S12-A6: the LEGACY birth constructor, used to plant a recorded pre-Move-3
   // instance (its ref folds to `null` through the alias adapter).
   taskCreated,
   legacyTasksViewOf,
   type EventInput,
   type InstancesState,
+  type ParsedWorkflow,
   type TaskRecord,
   type TasksState,
   type TransitionProposal,
-  type TransitionRejectionReason,
 } from '@vimes/core';
 import {
   InstanceWriter,
@@ -82,7 +86,13 @@ interface WriterHarness {
   currentInstances: () => InstancesState;
 }
 
-function buildHarness(): WriterHarness {
+// S13·U1: the workflow is INJECTABLE, defaulting to the shipped declaration.
+// Every pre-existing caller passes nothing and adjudicates against the real
+// manifest exactly as before; the S13-A2 block below passes a declaration
+// carrying a forbidden reason NO enum has ever contained, which is the whole
+// point of the assertion (a second tenant's vocabulary, simulated without
+// shipping a second tenant).
+function buildHarness(workflowUnderTest: ParsedWorkflow = SHIPPED_WORKFLOW.workflow): WriterHarness {
   const store = new MemoryEventStore({
     clock: new SteppingClock('2026-07-22T12:00:00.000Z', 1000),
     ids: new CountingIdSource(),
@@ -107,7 +117,7 @@ function buildHarness(): WriterHarness {
     ids: new CountingIdSource(),
     // The declaration the writer adjudicates against, and the ref it stamps —
     // both the SHIPPED ones (see SHIPPED_WORKFLOW above).
-    workflow: SHIPPED_WORKFLOW.workflow,
+    workflow: workflowUnderTest,
     workflowRef: SHIPPED_WORKFLOW.ref,
   });
 
@@ -133,11 +143,14 @@ function proposal(overrides: Partial<TransitionProposal> = {}): TransitionPropos
 // below start from a REAL recorded history rather than a fabricated record. The
 // returned harness has its `emitted` array cleared, so each test's assertions
 // count only the events its own proposal produced.
-function harnessWithTaskAt(stage: TaskRecord['stage']): {
+function harnessWithTaskAt(
+  stage: TaskRecord['stage'],
+  workflowUnderTest: ParsedWorkflow = SHIPPED_WORKFLOW.workflow,
+): {
   harness: WriterHarness;
   taskId: string;
 } {
-  const harness = buildHarness();
+  const harness = buildHarness(workflowUnderTest);
   const created = harness.writer.createInstance({
     projectRoot: PROJECT_ROOT,
     createdBy: 'human',
@@ -704,11 +717,20 @@ describe('InstanceWriter — I7: a REJECTED proposal is EVENTED, never merely re
   //   2. NO `instance_moved` rode along beside it — a writer that emitted both
   //      would move the board while claiming it refused;
   //   3. the returned reason matches, and the instance DID NOT MOVE.
+  //
+  // ⚠ S13·U1 RE-SPELLED THREE OF THESE FIVE, and the split is visible in the
+  // table: `expectedReason` is a `string` now because the rows below are drawn
+  // from BOTH channels (slice-13 F1). Four are ENGINE reasons, respelled
+  // node-generic; `quarantined-cannot-complete` is DECLARED content off the
+  // shipped manifest's forbidden row and is UNCHANGED (F2) — which is precisely
+  // the classification this table now demonstrates. These are NEW adjudications
+  // through the live writer, not historical payloads, so respelling them is the
+  // deliberate spec change and not a rewritten record.
   const rejectionCases: Array<{
     caseName: string;
     startingStage: TaskRecord['stage'];
     attemptedToStage: string;
-    expectedReason: TransitionRejectionReason;
+    expectedReason: string;
   }> = [
     {
       caseName: 'illegal-edge (backlog → review is not in the table)',
@@ -717,28 +739,28 @@ describe('InstanceWriter — I7: a REJECTED proposal is EVENTED, never merely re
       expectedReason: 'illegal-edge',
     },
     {
-      caseName: 'terminal-stage (nothing leaves done — reopening mints a new instance)',
+      caseName: 'terminal-node (nothing leaves done — reopening mints a new instance)',
       startingStage: 'done',
       attemptedToStage: 'implementing',
-      expectedReason: 'terminal-stage',
+      expectedReason: 'terminal-node',
     },
     {
-      caseName: 'same-stage (a no-op proposal is still recorded as refused)',
+      caseName: 'same-node (a no-op proposal is still recorded as refused)',
       startingStage: 'planning',
       attemptedToStage: 'planning',
-      expectedReason: 'same-stage',
+      expectedReason: 'same-node',
     },
     {
-      caseName: 'quarantined-cannot-complete (the named safety refusal)',
+      caseName: 'quarantined-cannot-complete (the DECLARED safety refusal, spelling unchanged)',
       startingStage: 'quarantined',
       attemptedToStage: 'done',
       expectedReason: 'quarantined-cannot-complete',
     },
     {
-      caseName: 'unknown-stage (a node outside the enum — slice 7 hostile input)',
+      caseName: 'unknown-node (a node outside the declaration — slice 7 hostile input)',
       startingStage: 'backlog',
       attemptedToStage: 'shipped-it-lol',
-      expectedReason: 'unknown-stage',
+      expectedReason: 'unknown-node',
     },
   ];
 
@@ -817,6 +839,116 @@ describe('InstanceWriter — I7: a REJECTED proposal is EVENTED, never merely re
       new Set([EVENT_TYPES.instanceMoveRejected]),
     );
     expect(harness.currentTasks().tasks[taskId]!.stage).toBe('backlog');
+  });
+});
+
+// ── S13-A2 — the DECLARED channel: a novel forbidden reason is RECORDED ──────
+//
+// slice-13 §4 S13-A2: "a novel declared forbidden reason (one not in any enum)
+// is recorded without throwing. This is the assertion that would have failed
+// before this slice."
+//
+// The reason string is deliberately ALIEN — `sealed-by-the-archivist` is not
+// task-flavoured, appears nowhere in engine source, and could not plausibly be
+// mistaken for a vocabulary anyone forgot to add. That is F2's classification
+// test made concrete: it is a string only a TENANT would write, so the engine
+// must carry it without knowing it.
+//
+// Before S13·U1 this reddened at `instanceWriter.ts`'s
+// `transitionRejectionReasonSchema.parse(decision.reason)` — the guard whose own
+// comment scheduled its retirement for this slice.
+const ARCHIVIST_REASON = 'sealed-by-the-archivist';
+
+// The shipped declaration, plus ONE forbidden row on an edge the shipped table
+// declares as LEGAL (`backlog → planning`, manifest line 215). Forbidding a legal
+// edge is what makes the assertion load-bearing: without the row the move is
+// accepted, so a refusal carrying this reason can only have come from the row.
+// The manifest asset itself is UNTOUCHED (F2: no fixture, no manifest, no
+// tripwire) — this declaration exists only in this test's memory.
+function workflowWithArchivistSeal(): ParsedWorkflow {
+  return {
+    ...SHIPPED_WORKFLOW.workflow,
+    forbidden: [
+      ...SHIPPED_WORKFLOW.workflow.forbidden,
+      { from: 'backlog', to: 'planning', reason: ARCHIVIST_REASON },
+    ],
+  };
+}
+
+describe('InstanceWriter — S13-A2: a NOVEL declared refusal reason is recorded verbatim', () => {
+  it('does not throw, and writes the declaration’s own string into the log', () => {
+    const { harness, taskId } = harnessWithTaskAt('backlog', workflowWithArchivistSeal());
+
+    let result: ProposeMoveResult | undefined;
+    expect(() => {
+      result = harness.writer.proposeMove(taskId, proposal({ toStage: 'planning' }));
+    }).not.toThrow();
+
+    // 1. THE INVARIANT (I7, unchanged by the vocabulary split): the refusal is in
+    //    the log, and the reason is the DECLARATION's string, byte for byte.
+    expect(eventTypes(harness.emitted)).toEqual([EVENT_TYPES.instanceMoveRejected]);
+    expect(harness.emitted[0]!.stream).toBe('tasks');
+    expect(harness.emitted[0]!.payload).toEqual({
+      instanceId: taskId,
+      fromNode: 'backlog',
+      attemptedToNode: 'planning',
+      reason: ARCHIVIST_REASON,
+      proposedBy: 'human',
+    });
+
+    // 2. The returned outcome carries the same string — this is what the 409 body
+    //    passes through.
+    expect(result).toEqual({
+      outcome: 'rejected',
+      reason: ARCHIVIST_REASON,
+    } satisfies ProposeMoveResult);
+
+    // 3. Nothing moved.
+    expect(harness.currentTasks().tasks[taskId]!.stage).toBe('backlog');
+  });
+
+  it('round-trips verbatim through a real fold of what was actually written', () => {
+    // The strongest read surface that exposes a refusal reason is the LOG itself:
+    // `packages/core/src/projections/instances.ts` documents `instance_move_rejected`
+    // as deliberately NOT folded (a rejection changed no state, so folding it
+    // would invent a change). So the round trip asserted here is
+    // append -> re-read -> schema-validated payload, which is the whole path a
+    // reader has. If a projection ever folds reason content, this is the test to
+    // extend.
+    const { harness, taskId } = harnessWithTaskAt('backlog', workflowWithArchivistSeal());
+    harness.writer.proposeMove(taskId, proposal({ toStage: 'planning' }));
+
+    // The generic event schema must ACCEPT the alien string. This is the widened
+    // `instanceMoveRejectedPayloadSchema.reason` (`z.string().min(1)`) under test,
+    // aimed at the exact payload the writer wrote.
+    const recordedPayload = instanceMoveRejectedPayloadSchema.parse(harness.emitted[0]!.payload);
+    expect(recordedPayload.reason).toBe(ARCHIVIST_REASON);
+
+    // And the same string appears NOWHERE in the frozen historical enum — that is
+    // what makes it novel rather than a vocabulary entry someone forgot. (The
+    // ENGINE enum's exact membership is S13-A1's job, asserted beside its author
+    // in `packages/core/src/extensions/proposeMove.test.ts`.)
+    expect(transitionRejectionReasonSchema.options).not.toContain(ARCHIVIST_REASON);
+  });
+
+  it('carries a reason no engine enum contains, for a SECOND novel string too', () => {
+    // One alien string could be a coincidence of schema laxity. A second, shaped
+    // differently, shows the channel is open rather than accidentally permissive
+    // of one value.
+    const secondAlienReason = 'the tide is out';
+    const workflow: ParsedWorkflow = {
+      ...SHIPPED_WORKFLOW.workflow,
+      forbidden: [
+        ...SHIPPED_WORKFLOW.workflow.forbidden,
+        { from: 'planning', to: 'plan-ready', reason: secondAlienReason },
+      ],
+    };
+    const { harness, taskId } = harnessWithTaskAt('planning', workflow);
+
+    expect(() => {
+      harness.writer.proposeMove(taskId, proposal({ toStage: 'plan-ready' }));
+    }).not.toThrow();
+    expect(harness.emitted[0]!.payload).toMatchObject({ reason: secondAlienReason });
   });
 });
 

@@ -7,7 +7,7 @@ import {
   type TransitionProposedBy,
 } from '../tasks/taskStateMachine.js';
 import { parseExtensionManifest, type ParsedWorkflow } from './manifest.js';
-import { proposeMove, type MoveDecision } from './proposeMove.js';
+import { engineRefusalReasonSchema, proposeMove, type MoveDecision } from './proposeMove.js';
 
 // ─── S12·U1 (D72 Move 3) — S12-A1, the parity proof ──────────────────────────
 //
@@ -172,6 +172,124 @@ describe('S12-A1 setup — the frozen reference is the whole image, not a fragme
   });
 });
 
+// ── S13·U1 — the ENGINE respelling, applied at the COMPARISON boundary ───────
+//
+// slice-13 F1 respells the engine's own refusals node-generic. The frozen
+// reference above still speaks the DELETED MACHINE'S words, and it must: it is a
+// record of what that machine said on the day it was deleted, and editing it
+// would delete the proof (see the file banner). So the rename is declared HERE,
+// as data, and applied to the REFERENCE side at comparison time. Parity is
+// therefore still proven across the whole cross product — same verdict, same
+// refusal, with exactly one deliberate, enumerated rename between the two
+// vocabularies and no room for a second one to sneak through.
+//
+// ⚠ ONLY THE ENGINE'S OWN REASONS APPEAR IN THIS MAP.
+// `quarantined-cannot-complete` is deliberately ABSENT: it is TENANT CONTENT off
+// the declaration's forbidden row, so it keeps its exact spelling (F2) and
+// compares unchanged. If someone ever "finishes the migration" by renaming it,
+// the parity test reddens — which is the point.
+const S13_ENGINE_RESPELLING: Readonly<Record<string, string>> = {
+  'unknown-stage': 'unknown-node',
+  'same-stage': 'same-node',
+  'terminal-stage': 'terminal-node',
+  // Already node-generic and UNCHANGED. Listed so the map is the WHOLE engine
+  // vocabulary rather than a diff of it — which is what lets the membership
+  // assertion below compare it against the enum.
+  'illegal-edge': 'illegal-edge',
+};
+
+function respelledReferenceReason(referenceReason: string | undefined): string | undefined {
+  if (referenceReason === undefined) return undefined;
+  return S13_ENGINE_RESPELLING[referenceReason] ?? referenceReason;
+}
+
+// ── S13-A1 — the engine enum's exact membership ──────────────────────────────
+
+describe('S13-A1 — the engine refusal enum is closed, node-spelled, and tenant-free', () => {
+  it('contains EXACTLY the four node-spelled engine reasons', () => {
+    // Exact membership, not a superset check: a fifth member would mean the
+    // engine had started authoring a refusal it has no business owning, and a
+    // missing one would mean a branch of the adjudicator lost its name.
+    expect([...engineRefusalReasonSchema.options].sort()).toEqual([
+      'illegal-edge',
+      'same-node',
+      'terminal-node',
+      'unknown-node',
+    ]);
+  });
+
+  it('contains no tenant string and no legacy spelling', () => {
+    const engineReasons: readonly string[] = engineRefusalReasonSchema.options;
+    // The tenant string that used to sit in the enum beside the engine's four.
+    // It kept its spelling and changed CHANNEL (F2) — so its absence from HERE is
+    // the whole S13·U1 split, stated as an assertion.
+    expect(engineReasons).not.toContain('quarantined-cannot-complete');
+    // No node name of any tenant, and no `-stage` spelling anywhere.
+    for (const reason of engineReasons) {
+      expect(reason).not.toContain('stage');
+      for (const taskStage of TASK_STAGES) {
+        expect(reason).not.toContain(taskStage);
+      }
+    }
+  });
+
+  it('is exactly the image of the S13 respelling map — no engine reason is unaccounted for', () => {
+    // Ties the enum to the parity translation above: every engine reason the
+    // deleted machine could produce maps to a member, and the map's image is the
+    // enum entire. A new engine reason added without a map row (or vice versa)
+    // reddens here rather than quietly weakening the parity proof.
+    expect(new Set(Object.values(S13_ENGINE_RESPELLING))).toEqual(
+      new Set(engineRefusalReasonSchema.options),
+    );
+    expect(Object.keys(S13_ENGINE_RESPELLING)).toHaveLength(
+      engineRefusalReasonSchema.options.length,
+    );
+  });
+
+  it('refuses a declared tenant string — the DECLARED channel is not this enum', () => {
+    // The open channel is open precisely because this enum does not describe it.
+    expect(engineRefusalReasonSchema.safeParse('quarantined-cannot-complete').success).toBe(false);
+    expect(engineRefusalReasonSchema.safeParse('sealed-by-the-archivist').success).toBe(false);
+  });
+});
+
+// ── S13-A1 — a DECLARED reason round-trips verbatim out of the adjudicator ───
+
+describe('S13-A1 — a declared refusal reason the engine has never heard of', () => {
+  // A string that appears nowhere in engine source, is not task-flavoured, and
+  // could not be mistaken for a vocabulary entry someone forgot to add.
+  const ALIEN_REASON = 'sealed-by-the-archivist';
+
+  it('comes back out of the adjudicator byte-for-byte', () => {
+    // The frozen fixture is READ-ONLY and is not touched: this declaration is
+    // derived from it in memory, with one extra forbidden row on an edge the
+    // fixture declares as LEGAL. Without the row the move is accepted, so the
+    // refusal can only have come from the row.
+    const workflowWithAlienForbiddenRow: ParsedWorkflow = {
+      ...softwareWorkflow,
+      forbidden: [
+        ...softwareWorkflow.forbidden,
+        { from: 'backlog', to: 'planning', reason: ALIEN_REASON },
+      ],
+    };
+
+    expect(
+      proposeMove('backlog', { toNode: 'planning', proposedBy: 'human' }, softwareWorkflow),
+    ).toEqual({ accepted: true });
+    expect(
+      proposeMove(
+        'backlog',
+        { toNode: 'planning', proposedBy: 'human' },
+        workflowWithAlienForbiddenRow,
+      ),
+    ).toEqual({ accepted: false, reason: ALIEN_REASON });
+  });
+
+  it('is not a member of the engine enum, and does not have to be', () => {
+    expect(engineRefusalReasonSchema.options).not.toContain(ALIEN_REASON);
+  });
+});
+
 // ── the cross product ────────────────────────────────────────────────────────
 
 const PROPOSER_CLASSES: readonly TransitionProposedBy[] = transitionProposedBySchema.options;
@@ -206,7 +324,9 @@ describe('S12-A1 the parity proof — proposeMove(declaration) === the frozen re
           const referenceVerdict: ComparableVerdict = {
             label,
             accepted: reference.accepted,
-            reason: reference.reason,
+            // S13·U1: the reference's ENGINE words, respelled node-generic by the
+            // enumerated map above. The declared reason passes through untouched.
+            reason: respelledReferenceReason(reference.reason),
           };
           const newVerdict: ComparableVerdict = {
             label,
@@ -275,25 +395,28 @@ describe('S12-A1 belt — the named refusals, pinned one by one', () => {
     ).toBe(false);
   });
 
-  it('resolves the terminal self-proposal as `same-stage` (the tie-break)', () => {
+  it('resolves the terminal self-proposal as `same-node` (the tie-break)', () => {
+    // The deleted machine called this `same-stage`; S13·U1 respells the ENGINE's
+    // half of the vocabulary node-generic. The tie-break itself is untouched —
+    // which is what the reference assertion below still proves.
     expect(frozenReferenceOutcome('done', 'done')).toEqual({
       accepted: false,
       reason: 'same-stage',
     });
     expect(proposeMove('done', { toNode: 'done', proposedBy: 'human' }, softwareWorkflow)).toEqual({
       accepted: false,
-      reason: 'same-stage',
+      reason: 'same-node',
     });
   });
 
-  it('refuses `done -> backlog` as `terminal-stage`, as the deleted machine did', () => {
+  it('refuses `done -> backlog` as `terminal-node`, the deleted machine reason respelled', () => {
     expect(frozenReferenceOutcome('done', 'backlog')).toEqual({
       accepted: false,
       reason: 'terminal-stage',
     });
     expect(
       proposeMove('done', { toNode: 'backlog', proposedBy: 'human' }, softwareWorkflow),
-    ).toEqual({ accepted: false, reason: 'terminal-stage' });
+    ).toEqual({ accepted: false, reason: 'terminal-node' });
     // The derivation that produces it: `done` declares no way out.
     expect(softwareWorkflow.edges.some((edge) => edge.from === 'done')).toBe(false);
   });
@@ -314,7 +437,7 @@ describe('S12-A1 belt — the named refusals, pinned one by one', () => {
 describe('S12-A1 belt — an id outside the vocabulary refuses identically', () => {
   const NONSENSE = 'no-such-node';
 
-  it('refuses `unknown-stage` from either end, as the deleted machine did', () => {
+  it('refuses `unknown-node` from either end, the deleted machine reason respelled', () => {
     const cases: readonly { from: string; to: string }[] = [
       { from: NONSENSE, to: 'backlog' },
       { from: 'backlog', to: NONSENSE },
@@ -330,7 +453,8 @@ describe('S12-A1 belt — an id outside the vocabulary refuses identically', () 
         accepted: false,
         reason: 'unknown-stage',
       });
-      expect(newDecision).toEqual({ accepted: false, reason: 'unknown-stage' });
+      // S13·U1: same refusal, engine-generic spelling.
+      expect(newDecision).toEqual({ accepted: false, reason: 'unknown-node' });
     }
   });
 });
@@ -460,7 +584,7 @@ describe('the adjudicator is pure, total, and decision-only', () => {
         expect(() => proposeMove(from, { toNode: to, proposedBy: '' }, emptyWorkflow)).not.toThrow();
         expect(proposeMove(from, { toNode: to, proposedBy: '' }, emptyWorkflow)).toEqual({
           accepted: false,
-          reason: 'unknown-stage',
+          reason: 'unknown-node',
         });
         expect(() =>
           proposeMove(from, { toNode: to, proposedBy: 'nobody' }, softwareWorkflow),

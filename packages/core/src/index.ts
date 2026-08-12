@@ -398,4 +398,14 @@ export {
 // wildcarded, for the same reason the parser's list above is named. The old
 // compiled-table machine is still the runtime path this slice; U2 flips the
 // writer onto this one.
-export { proposeMove, type MoveProposal, type MoveDecision } from './extensions/proposeMove.js';
+// S13·U1 adds `engineRefusalReasonSchema` — the CLOSED half of the two-channel
+// refusal vocabulary (slice-13 F1), exported so the engine's exact membership is
+// assertable from outside and so read-side code can tell an engine refusal from a
+// declared one WITHOUT the engine enumerating declared strings.
+export {
+  proposeMove,
+  engineRefusalReasonSchema,
+  type MoveProposal,
+  type MoveDecision,
+  type EngineRefusalReason,
+} from './extensions/proposeMove.js';

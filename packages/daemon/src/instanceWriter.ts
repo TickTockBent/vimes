@@ -4,7 +4,6 @@ import {
   instanceMoved,
   instancePayloadRevised,
   nextTaskForAcceptedTransition,
-  transitionRejectionReasonSchema,
   // ⚠ ALIASED ON IMPORT, AND THE COLLISION IS REAL: this class's own move method
   // has been called `proposeMove` since S11·U2, and core's declaration-reading
   // adjudicator (S12·U1) carries the same name. The alias says which one the
@@ -16,7 +15,6 @@ import {
   type TaskRecord,
   type TasksState,
   type TransitionProposal,
-  type TransitionRejectionReason,
   type WorkflowRef,
 } from '@vimes/core';
 
@@ -206,14 +204,21 @@ export type RevisePayloadResult =
 // three cases apart WITHOUT inspecting HTTP semantics — the MCP client has
 // no status codes to branch on.
 //
-// ⚠ `unknown-task` is deliberately its own outcome and NOT a
-// `TransitionRejectionReason`. The machine never saw this proposal — there was no
-// instance to propose against — so calling it a rejection would put a reason in the
-// enum that `instance_move_rejected` records, and the log would then claim the
-// state machine refused an edge it was never shown.
+// ⚠ `unknown-task` is deliberately its own outcome and NOT a refusal reason. The
+// machine never saw this proposal — there was no instance to propose against — so
+// calling it a rejection would put a reason in the record that
+// `instance_move_rejected` writes, and the log would then claim the state machine
+// refused an edge it was never shown.
+//
+// S13·U1: `reason` is a `string`, not a closed enum, and the widening is the
+// honest type rather than a loosening. Two channels feed it (slice-13 F1): the
+// engine's four node-spelled refusals, and whatever string the pinned
+// declaration's `forbidden` row names — a second tenant's vocabulary is not this
+// daemon's to enumerate. See `packages/core/src/events.ts`'s
+// `instanceMoveRejectedPayloadSchema` for the full reasoning.
 export type ProposeMoveResult =
   | { readonly outcome: 'accepted'; readonly task: TaskRecord }
-  | { readonly outcome: 'rejected'; readonly reason: TransitionRejectionReason }
+  | { readonly outcome: 'rejected'; readonly reason: string }
   | { readonly outcome: 'unknown-task'; readonly taskId: string };
 
 // Thrown ONLY when the log and the projection disagree: an event was written and
@@ -390,23 +395,18 @@ export class InstanceWriter {
     );
 
     if (!decision.accepted) {
-      // ⚠ THE DECISION'S `reason` IS A `string` (a declared forbidden row may name
-      // its own), while `instance_move_rejected` still records the CLOSED legacy
-      // ENUM this slice — respelling that vocabulary is wire-visible and rides the
-      // alias-death deploy. Membership is guaranteed by S12-A1 while the shipped
-      // fixture declares only reasons already in the enum. A NOVEL declared reason
-      // arriving here before the vocabulary generalises is a DISAGREEMENT (the F2
-      // family): it SHOULD throw loudly rather than record an event that violates
-      // its own payload schema, so the parse is the guard and not a formality.
-      const reason: TransitionRejectionReason = transitionRejectionReasonSchema.parse(
-        decision.reason,
-      );
+      // S13·U1: two-channel vocabulary per slice-13 F1 — the engine's refusals are
+      // a closed enum BY AUTHORSHIP (only `proposeMove.ts` writes them), declared
+      // refusals arrive BY PROVENANCE from the pinned declaration's forbidden row.
+      // Recorded verbatim, never enumerated here. The parse this replaced was the
+      // debt its own comment scheduled for the alias-death deploy; it is paid.
+      const reason: string = decision.reason;
       this.deps.emit([
         instanceMoveRejected({
           instanceId: task.taskId,
           fromNode: task.stage,
           // Both node fields on this payload are `z.string()` by design (step 1,
-          // carried into the generic schema), precisely so an `unknown-stage`
+          // carried into the generic schema), precisely so an unknown-node
           // rejection stays recordable. Writing the proposal's raw value is the
           // whole point.
           attemptedToNode: proposal.toStage,

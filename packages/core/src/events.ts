@@ -1290,13 +1290,41 @@ export const instanceMovedPayloadSchema = z.object({
 // because NO move happened: the instance is still on `fromNode`.
 //
 // ⚠ Both node fields stay LOOSE for the reason the legacy schema states in full:
-// one of the recordable refusals IS `unknown-stage`, so validating the attempted
-// end against any vocabulary would make exactly that rejection unrecordable.
+// one of the recordable refusals IS the unknown-node one, so validating the
+// attempted end against any vocabulary would make exactly that rejection
+// unrecordable.
+//
+// ⚠ `reason` IS LOOSE TOO, AS OF S13·U1 (slice-13 F1), AND FOR THE SAME FAMILY OF
+// REASON — one channel of the vocabulary is not the engine's to enumerate.
+//
+//   • the ENGINE's refusals are a closed enum (`engineRefusalReasonSchema`,
+//     `extensions/proposeMove.ts`) — but that enum lives beside its AUTHOR, not
+//     beside the record, because
+//   • a workflow's `forbidden` row declares its OWN reason string, and a second
+//     tenant may declare a refusal no enum in this repo has ever contained. A
+//     closed `reason` here would make that rejection unrecordable — the exact
+//     failure the loose node fields above exist to prevent, one field over.
+//
+// What guarantees the field is not a free-text dumping ground is PROVENANCE, not
+// this schema: `adjudicateAgainstDeclaration` is the only author of a refusal
+// reason, and it produces either engine vocabulary or the pinned declaration's
+// row. No caller-supplied string reaches here (F1 ⟨signed⟩). The static "was this
+// reason declared" check belongs to the validator work stream, not to the record.
+//
+// THREE SPELLING FAMILIES MUST PARSE, PERMANENTLY: the legacy engine spellings
+// already in the log (`terminal-stage` and friends — history is never rewritten,
+// q21), the node-generic engine spellings written from S13 on, and every declared
+// tenant string. The mixed log is the DESIGNED outcome (F2 ⟨signed⟩); do not
+// "tidy" it by narrowing this field.
+//
+// SIDE EFFECT WORTH KEEPING: this schema no longer imports the tenant vocabulary
+// from `tasks/taskStateMachine.ts`. The generic event family should not need a
+// tenant's module to describe itself (#16).
 export const instanceMoveRejectedPayloadSchema = z.object({
   instanceId: z.string(),
   fromNode: z.string(),
   attemptedToNode: z.string(),
-  reason: transitionRejectionReasonSchema,
+  reason: z.string().min(1),
   proposedBy: transitionProposedBySchema,
 });
 

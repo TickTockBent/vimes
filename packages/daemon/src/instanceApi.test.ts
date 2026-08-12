@@ -793,8 +793,12 @@ describe('POST /api/tasks/:taskId/transitions — I7 over HTTP', () => {
   it('an UNKNOWN STAGE is refused BY THE MACHINE (409 + evented), not by zod', async () => {
     // ⚠ THE BRANCH THAT WOULD VANISH IF `toStage` WERE VALIDATED AS THE ENUM.
     // Step 1 typed the rejection payload's stage fields as `z.string()` precisely
-    // so an `unknown-stage` rejection stays RECORDABLE. A 400 here would leave the
+    // so an unknown-node rejection stays RECORDABLE. A 400 here would leave the
     // one case slice 7's hostile input cares about most with nothing in the log.
+    //
+    // S13·U1 respelled the reason `unknown-stage` → `unknown-node` (slice-13 F1).
+    // This is a LIVE adjudication over HTTP, so the new spelling is what the
+    // machine authors today; the old one persists only in history.
     const harness = buildApiHarness();
     const task = await createTaskThrough(harness);
 
@@ -804,29 +808,35 @@ describe('POST /api/tasks/:taskId/transitions — I7 over HTTP', () => {
     );
 
     expect(response.status).toBe(409);
-    expect(await response.json()).toEqual({ accepted: false, reason: 'unknown-stage' });
+    expect(await response.json()).toEqual({ accepted: false, reason: 'unknown-node' });
     expect(harness.taskEvents()[1]!.type).toBe(EVENT_TYPES.instanceMoveRejected);
     expect(harness.taskEvents()[1]!.payload).toMatchObject({
       attemptedToNode: 'shipped-it-lol',
-      reason: 'unknown-stage',
+      reason: 'unknown-node',
     });
   });
 
-  it('EVERY enumerated rejection reason returns 409 and is evented', async () => {
+  it('EVERY rejection reason returns 409 and is evented', async () => {
     // The status-code rationale, asserted rather than only written down: ONE code
     // for "the machine refused", so clients (and slice 7's MCP client) read the
     // `reason` field instead of branching on HTTP semantics we would then have to
-    // keep stable forever.
+    // keep stable forever. S13·U1 makes that rationale load-bearing rather than
+    // stylistic: the reason is a STRING on this wire now (two channels, F1), so a
+    // client that branched on status could not distinguish a declared refusal at
+    // all.
+    //
+    // Four ENGINE reasons, respelled node-generic by S13·U1, plus the DECLARED
+    // `quarantined-cannot-complete` which keeps its exact spelling (F2).
     const rejectionCases: Array<{
       startingStage: TaskRecord['stage'];
       toStage: string;
       reason: string;
     }> = [
       { startingStage: 'backlog', toStage: 'review', reason: 'illegal-edge' },
-      { startingStage: 'done', toStage: 'implementing', reason: 'terminal-stage' },
-      { startingStage: 'planning', toStage: 'planning', reason: 'same-stage' },
+      { startingStage: 'done', toStage: 'implementing', reason: 'terminal-node' },
+      { startingStage: 'planning', toStage: 'planning', reason: 'same-node' },
       { startingStage: 'quarantined', toStage: 'done', reason: 'quarantined-cannot-complete' },
-      { startingStage: 'backlog', toStage: 'not-a-stage', reason: 'unknown-stage' },
+      { startingStage: 'backlog', toStage: 'not-a-stage', reason: 'unknown-node' },
     ];
 
     for (const rejectionCase of rejectionCases) {
@@ -2615,8 +2625,10 @@ describe('S11-A4 — POST /api/instances/:instanceId/moves and its transitions a
 
   it('let an UNKNOWN NODE through to the machine on both doors, and record it', async () => {
     // `toNode` is a plain string on the generic door for the SAME reason `toStage`
-    // is on the alias: refusing it in zod would make `unknown-stage` structurally
-    // unreachable and leave the hostile-input case with nothing in the log.
+    // is on the alias: refusing it in zod would make the unknown-node refusal
+    // structurally unreachable and leave the hostile-input case with nothing in
+    // the log. (S13·U1 respelled that reason `unknown-stage` → `unknown-node`;
+    // this is a live adjudication, so it speaks the new spelling.)
     const pair = surfacePair();
     const created = await createInstanceThrough(pair.generic);
 
@@ -2626,10 +2638,10 @@ describe('S11-A4 — POST /api/instances/:instanceId/moves and its transitions a
     );
 
     expect(response.status).toBe(409);
-    expect(await response.json()).toEqual({ accepted: false, reason: 'unknown-stage' });
+    expect(await response.json()).toEqual({ accepted: false, reason: 'unknown-node' });
     expect(pair.generic.taskEvents()[1]!.payload).toMatchObject({
       attemptedToNode: 'shipped-it-lol',
-      reason: 'unknown-stage',
+      reason: 'unknown-node',
     });
   });
 

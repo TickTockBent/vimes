@@ -31,26 +31,55 @@
 // payload. Computing the next record needs the tenant's own vocabulary, so it
 // stays beside that vocabulary and never leaks in here.
 
+import { z } from 'zod';
+
 import type { ParsedWorkflow } from './manifest.js';
 
-// ── the engine-vocabulary refusals ───────────────────────────────────────────
-// UNCHANGED this slice, by design: the respelling (`terminal-stage` →
-// `terminal-node` and friends) is wire-visible and rides the alias-death
-// deploy, so it is explicitly out of D72 Move 3.
+// ── the engine-vocabulary refusals — S13·U1 (slice-13 F1) ────────────────────
 //
-// ⚠ These four are the ENGINE's own refusals. A refusal the DECLARATION names —
-// a forbidden row's `reason` — is data, echoed verbatim (see step 4). That is
-// why `MoveDecision.reason` is a `string` and not a closed enum: a closed enum
-// could only ever hold the engine's half of the vocabulary.
+// THE VOCABULARY SPLITS INTO TWO CHANNELS, and this is the closed one.
+//
+//   • **The ENGINE channel** — these four, and only these four. Closed, spelled
+//     in the engine's own generic terms (`*-node`, never a tenant's word for a
+//     node), and authored NOWHERE but this file. `engineRefusalReasonSchema`
+//     exists to make that membership assertable (S13-A1); it is deliberately NOT
+//     the schema the RECORD validates against.
+//   • **The DECLARED channel** — any string a workflow's `forbidden` row names
+//     (step 4 below). OPEN, never enumerated here, echoed verbatim. A second
+//     tenant may declare a refusal this engine has never heard of, and it must
+//     reach the record intact; an engine that enumerated tenant refusals would
+//     have to learn every tenant's prose forever (#16, and F1's rationale).
+//
+// The guarantee on the open channel is PROVENANCE, not validation: a refusal
+// reason is produced HERE, from either the four below or the pinned
+// declaration's own row. No caller-supplied string ever reaches it. That is why
+// the writer records `MoveDecision.reason` verbatim and adds no membership check
+// (F1 ⟨signed⟩ — a record-time check would re-derive adjudication).
+//
+// The spellings below were `*-stage` until this slice. The respelling is
+// wire-visible, which is why it waited for the alias-death deploy. Old spellings
+// persist in the log FOREVER and the read side keeps rendering them (F2
+// ⟨signed⟩: the mixed log is the designed outcome, not an incomplete migration).
+export const engineRefusalReasonSchema = z.enum([
+  /** A node id on either end that the declaration does not declare. */
+  'unknown-node',
+  /** A no-op: the proposal names the node the instance already occupies. */
+  'same-node',
+  /** A proposal OUT of a node the declaration gives no way out of. */
+  'terminal-node',
+  /** The generic refusal: the proposed edge is simply not in the declared table. */
+  'illegal-edge',
+]);
+export type EngineRefusalReason = z.infer<typeof engineRefusalReasonSchema>;
 
 /** A node id on either end that the declaration does not declare. */
-const UNKNOWN_NODE_REASON = 'unknown-stage';
+const UNKNOWN_NODE_REASON: EngineRefusalReason = 'unknown-node';
 /** A no-op: the proposal names the node the instance already occupies. */
-const SAME_NODE_REASON = 'same-stage';
+const SAME_NODE_REASON: EngineRefusalReason = 'same-node';
 /** A proposal OUT of a node the declaration gives no way out of. */
-const TERMINAL_NODE_REASON = 'terminal-stage';
+const TERMINAL_NODE_REASON: EngineRefusalReason = 'terminal-node';
 /** The generic refusal: the proposed edge is simply not in the declared table. */
-const ILLEGAL_EDGE_REASON = 'illegal-edge';
+const ILLEGAL_EDGE_REASON: EngineRefusalReason = 'illegal-edge';
 
 export interface MoveProposal {
   /** The node the proposer wants the instance to occupy next. */
@@ -84,14 +113,14 @@ function isDeclaredNode(candidateNodeId: string, workflow: ParsedWorkflow): bool
  * place. Ported from the older machine's own comment block, restated in
  * declaration terms:
  *
- *   1. `unknown-stage` — a node id outside the DECLARED node list, on either
+ *   1. `unknown-node` — a node id outside the DECLARED node list, on either
  *      end. Checked first because every rule below assumes a known vocabulary.
- *   2. `same-stage` — a no-op proposal; nothing is being asked for.
+ *   2. `same-node` — a no-op proposal; nothing is being asked for.
  *      TIE-BREAK PRESERVED: a node with no way out, proposed to ITSELF, is both
  *      a no-op and a proposal touching such a node. It resolves here, because
  *      nothing was proposed to *leave* it. That same node → any OTHER node is
  *      step 3.
- *   3. `terminal-stage` — proposing out of a node whose DECLARED out-edge set
+ *   3. `terminal-node` — proposing out of a node whose DECLARED out-edge set
  *      (rows with `from` equal to the current node) is EMPTY. Terminal is
  *      DERIVED from the table rather than read off a node property, so the
  *      legality table stays the single source of record for legality.

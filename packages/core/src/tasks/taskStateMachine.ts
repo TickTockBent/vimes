@@ -67,12 +67,27 @@ export const TASK_STAGES: readonly TaskStage[] = taskStageSchema.options;
 export const transitionProposedBySchema = z.enum(['human', 'orchestrator', 'dispatcher']);
 export type TransitionProposedBy = z.infer<typeof transitionProposedBySchema>;
 
-// The enumerated refusals. Defined as a zod enum so the `task_transition_rejected`
-// event payload validates against the SAME vocabulary the adjudicator returns —
-// one source of record per fact (principle 9). The adjudicator lives in
-// `extensions/proposeMove.ts` and returns these same strings; the
-// `quarantined-cannot-complete` one now arrives as DECLARED DATA off the
-// workflow's `forbidden` row rather than out of an engine branch.
+// ⚠ FROZEN AS OF S13·U1 — THIS IS A DESCRIPTION OF CLOSED HISTORY, NOT A LIVE
+// VOCABULARY. Nothing authors these strings any more.
+//
+// It kept exactly one job, and it is a real one: the RETIRED
+// `task_transition_rejected` payload schema (`events.ts`, the legacy half) parses
+// against it, and `RETIRED_EVENT_KINDS`' adapter `safeParse`s every such event on
+// the REPLAY PATH before upcasting it to `instance_move_rejected`. So this is
+// live validation of dead history, and its membership is exactly what the log
+// contains for that kind — no more, no less. That is why it must not gain
+// members and must not lose them.
+//
+// The live vocabulary split in two (slice-13 F1):
+//   • engine refusals → `engineRefusalReasonSchema` in `extensions/proposeMove.ts`,
+//     closed, and respelled node-generic (`terminal-stage` → `terminal-node`, …).
+//   • declared refusals → an OPEN string channel; `quarantined-cannot-complete`
+//     moved there UNCHANGED IN SPELLING (F2), because it was always tenant
+//     content declared on the manifest's forbidden row, never engine vocabulary.
+//     Its presence in this enum was the mixing this slice ended.
+//
+// DO NOT add a new reason here. DO NOT respell one. Both spelling families live
+// in the log side by side forever (F2 ⟨signed⟩), and history is never rewritten.
 export const transitionRejectionReasonSchema = z.enum([
   // The proposed edge is simply not declared.
   'illegal-edge',

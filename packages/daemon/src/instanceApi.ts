@@ -9,7 +9,6 @@ import {
   type TaskStage,
   type TransitionProposal,
   type TransitionProposedBy,
-  type TransitionRejectionReason,
   type WorkOrderAmendedPayload,
 } from '@vimes/core';
 import { resolveWithinRoots, realpathProbe, type RealpathProbe } from './filePaths.js';
@@ -154,7 +153,12 @@ export type ProposeTransitionResponse =
       // route for why a `refused` / `spawn-failed` dispatch still rides a 200.
       dispatch?: DispatchAttemptResult;
     }
-  | { accepted: false; reason: TransitionRejectionReason };
+  // S13·U1: the 409 body PASSES THE STRING THROUGH. `reason` is whatever the
+  // adjudicator authored — one of the engine's four node-spelled refusals, or the
+  // pinned declaration's own forbidden-row string (slice-13 F1's two channels).
+  // Narrowing it here would put a closed vocabulary back on the wire one layer
+  // out from the record that deliberately dropped it.
+  | { accepted: false; reason: string };
 export interface DispatchResponse {
   result: DispatchAttemptResult;
 }
@@ -186,7 +190,8 @@ export type ProposeMoveResponse =
       // reasoning; the two surfaces make ONE dispatch decision in ONE place.
       dispatch?: DispatchAttemptResult;
     }
-  | { accepted: false; reason: TransitionRejectionReason };
+  // S13·U1: a `string`, for the reason `ProposeTransitionResponse` states above.
+  | { accepted: false; reason: string };
 export interface RevisePayloadResponse {
   instance: InstanceRecord;
 }
@@ -499,7 +504,7 @@ const moveBodyCommonShape = {
 //
 // ⚠ THE DESTINATION IS VALIDATED AS A PLAIN STRING, NOT THE STAGE ENUM, AND THAT
 // IS DELIBERATE — on BOTH surfaces. Step 1 typed `task_transition_rejected`'s
-// stage fields as `z.string()` precisely so an `unknown-stage` rejection stays
+// stage fields as `z.string()` precisely so an `unknown-node` rejection stays
 // RECORDABLE. If zod refused an unknown stage here, that rejection reason would
 // become structurally unreachable through the API, I7 would lose a branch, and
 // the one case where the record matters most (slice 7's hostile input) would
@@ -630,7 +635,7 @@ function transitionProposalFrom(body: MoveBodyCommonFields, toNode: string): Tra
     // types `toStage` to the enum, but step 1 widened the machine's own check to
     // `string` precisely because a value outside the enum physically reaches it
     // across this boundary — TypeScript's guarantee stops at the wire. Refusing
-    // it here instead would make `unknown-stage` unreachable (see the schema).
+    // it here instead would make `unknown-node` unreachable (see the schema).
     toStage: toNode as TransitionProposal['toStage'],
     proposedBy: body.proposedBy,
     ...(body.manualReviewRequired === undefined
@@ -814,10 +819,12 @@ export function registerInstanceApi(app: Hono, deps: InstanceApiDeps): void {
   // STATUS-CODE RATIONALE, WRITTEN DOWN BECAUSE SLICE 7 INHERITS IT:
   //
   //   • **409 = "the machine said no"**, and the rejection IS IN THE LOG. EVERY
-  //     enumerated `TransitionRejectionReason` returns 409 — including
-  //     `unknown-stage`. One code for "the machine refused" keeps clients (and
-  //     slice 7's MCP client) reading the `reason` FIELD rather than branching on
-  //     HTTP semantics we would then be obliged to keep stable forever.
+  //     refusal returns 409 — the engine's four, including the unknown-node one,
+  //     AND every reason a workflow's forbidden row declares (S13·U1: the reason
+  //     is a string on this wire, not an enum). One code for "the machine refused"
+  //     keeps clients (and slice 7's MCP client) reading the `reason` FIELD rather
+  //     than branching on HTTP semantics we would then be obliged to keep stable
+  //     forever — which is exactly what makes an open declared channel safe here.
   //   • **400 = "this was not a proposal"**, and NOTHING is in the log. The body
   //     never reached the state machine, so there is no proposal to record. A 400
   //     that evented would put proposals in the log that were never made.
