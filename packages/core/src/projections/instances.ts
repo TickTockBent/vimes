@@ -207,6 +207,12 @@ function resolveKind(event: EventRecord): { type: string; payload: unknown } | n
 
 export const instancesProjection: Projection<InstancesState> = {
   id: 'instances',
+  // D86: `InstanceRecord`'s shape as of this version. ⚠ The S11 move from
+  // 'tasks' to 'instances' needed no version because it RENAMED THE PROJECTION
+  // — `load('instances')` missed and replayed for free. That precedent is
+  // recorded dead in D86: renaming spends public API surface (`/api/projections/:id`)
+  // to do what this integer does.
+  version: 1,
 
   init(): InstancesState {
     return { instances: {} };

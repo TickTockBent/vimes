@@ -39,6 +39,13 @@ export interface NodeRecord {
   parentNodeId: string | null;
   projectId: string;
   name: string;
+  // ⚠ **THE DURABLE CREATION MARKER (S14-F2, 2026-08-12)** — the `ts` of this
+  // node's own `node_created` record, the `SessionRecord.createdAt` precedent.
+  // Sibling ordering in the tree read model sorts on it. Without it,
+  // node-creation order existed only as map INSERTION order, which is exact on
+  // a fresh fold and silently lexicographic-by-nodeId after a snapshot
+  // round-trip (`canonicalJson` sorts keys deeply).
+  createdAt: string;
   provenance: NodeProvenance | null; // write-once: fold NEVER updates it
   directory: string | null;
   closed: boolean;
@@ -68,6 +75,13 @@ function withNode(
 
 export const nodesProjection: Projection<NodesState> = {
   id: 'nodes',
+  // ⚠ **STAYS 1 EVEN THOUGH S14-F2 ADDED `createdAt` TO `NodeRecord`, and D86
+  // records why:** this record shape is NEW-BORN THIS SLICE — nothing has ever
+  // emitted a `nodes` event, so no snapshot of this projection exists anywhere,
+  // in any db, to be stale. A bump would be a version rise with no reader,
+  // which is exactly the mechanical bump D86's rule forbids. The next change to
+  // this shape, once nodes are written for real, takes 2.
+  version: 1,
 
   // TOTAL: unknown event types are no-ops; events for unknown nodes are no-ops;
   // a malformed payload is a no-op. Nothing throws (I8's spirit — hostile input
@@ -121,6 +135,10 @@ export const nodesProjection: Projection<NodesState> = {
           parentNodeId: payload.parentNodeId,
           projectId: payload.projectId,
           name: payload.name,
+          // S14-F2: the BIRTH EVENT's ts. Not a clock read (rule 0.3) and not
+          // payload data — the store assigns `ts` at append time, so a replay
+          // reproduces it exactly.
+          createdAt: event.ts,
           // Recorded verbatim from the birth record and never touched again by
           // any case below (invariant 2). `null` stays `null` forever: E2-a's
           // "converting" a group into a checkout means creating a worktree

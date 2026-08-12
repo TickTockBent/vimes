@@ -111,6 +111,11 @@ const LIVENESS_STATES_A_TURN_CAN_SURVIVE: ReadonlySet<Liveness> = new Set<Livene
 
 export const sessionsProjection: Projection<SessionsState> = {
   id: 'sessions',
+  // D86: `SessionRecord`'s shape as of this version. Bump only when the RECORD
+  // shape changes (a field added, removed or re-meant) — every widening this
+  // record has taken so far was OPTIONAL and back-compatible with stored
+  // snapshots, which is why it is still 1.
+  version: 1,
 
   init(): SessionsState {
     return { sessions: {} };

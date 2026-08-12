@@ -46,6 +46,14 @@ function withProject(
 
 export const projectsProjection: Projection<ProjectsState> = {
   id: 'projects',
+  // ⚠ **D86's FIRST CONSUMER: 2, because S14-F2 added `createdAt` to the
+  // record.** A version-1 snapshot holds records with no creation marker, and
+  // their birth events sit behind `lastAppliedSeq` where no future fold will
+  // ever reach them — so reading one through this shape would leave `undefined`
+  // in the tree's root comparator forever, self-healing never. Bumping instead
+  // discards those snapshots and replays the log (D86), which fills the field
+  // for every project that ever existed at no migration cost.
+  version: 2,
 
   init(): ProjectsState {
     return { projects: {} };
@@ -73,6 +81,13 @@ export const projectsProjection: Projection<ProjectsState> = {
         const bornProject: ProjectRecord = {
           projectId: payload.projectId,
           root: payload.root,
+          // S14-F2: the BIRTH EVENT's ts, folded straight onto the record — the
+          // `SessionRecord.createdAt` precedent. Not a clock read (rule 0.3
+          // forbids one here) and not the payload's business: the event's `ts`
+          // is assigned by the store at append time, so replaying the same log
+          // twice produces the same value and the ordering it feeds is a
+          // function of the log rather than of when the fold ran.
+          createdAt: event.ts,
           // ⚠ SPREAD RATHER THAN DEFAULTED, and the difference is the point.
           // `archived` below folds to a documented starting value because every
           // project HAS an archived-ness; `name`/`description` have no such
@@ -237,4 +252,33 @@ export function projectForCwd(state: ProjectsState, cwd: string): ProjectRecord 
 // than spelling a second `startsWith` (principle 9 — one containment rule, not two).
 export function isWithinProjectRoot(cwd: string, root: string): boolean {
   return cwd === root || cwd.startsWith(root + sep);
+}
+
+// ─── D42's NAME FALLBACK, at read time, in core (S14·U2) ─────────────────────
+//
+// "Absent a name, the directory basename is the name." The fold above is careful
+// never to STORE this — a birth record with no name folds to a record with no
+// name key — precisely so "unnamed" and "named after its folder" stay
+// distinguishable in the log while reading identically on a screen. This is the
+// read half of that arrangement.
+//
+// ⚠ **TWO OLDER SPELLINGS OF THIS EXIST AND THEY CONVERGE ON THIS ONE.**
+// `orchestratorDisplayName` (packages/daemon/src/orchestratorApi.ts) and
+// `projectDisplayName` (packages/ui/src/lib/projectContext.ts) predate it; the
+// UI's copy is the deliberate restatement precedent (it cannot import core), the
+// daemon's is not and folds into this one when that file is next touched. It
+// lands HERE rather than in the tree read model because it is a fact about a
+// PROJECT, and the project registry is where facts about projects live
+// (principle 9).
+//
+// PURE and TOTAL: string work only, and never blank — a root of `/` or a
+// trailing-slash-only path falls back to the root itself rather than to ''.
+export function projectDisplayName(project: ProjectRecord): string {
+  const declaredName = project.name?.trim() ?? '';
+  if (declaredName !== '') {
+    return declaredName;
+  }
+  const trimmedRoot = project.root.replace(/\/+$/, '');
+  const basename = trimmedRoot.slice(trimmedRoot.lastIndexOf('/') + 1);
+  return basename === '' ? project.root : basename;
 }

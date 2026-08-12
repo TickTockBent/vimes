@@ -40,6 +40,8 @@ export interface MetersState {
 
 export const metersProjection: Projection<MetersState> = {
   id: 'meters',
+  // D86: `MeterRecord`'s shape as of this version. See `Projection.version`.
+  version: 1,
 
   init(): MetersState {
     return { meters: {}, history: {} };

@@ -99,6 +99,8 @@ function emptyRecord(appSessionId: string): CacheObservabilityRecord {
 
 export const cacheObservabilityProjection: Projection<CacheObservabilityState> = {
   id: 'cache-observability',
+  // D86: this projection's record shape as of this version. See `Projection.version`.
+  version: 1,
 
   init(): CacheObservabilityState {
     return { perSession: {} };

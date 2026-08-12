@@ -157,6 +157,9 @@ describe('sessions projection — orchestratorForProjectId (D56)', () => {
     const snapshotStore = new MemorySnapshotStore();
     snapshotStore.save({
       projectionId: sessionsProjection.id,
+      // D86: the shape stamp. Written from the projection under test rather
+      // than a literal 1, so a future bump moves these fixtures with it.
+      version: sessionsProjection.version,
       lastAppliedSeq: { [APP_SESSION_ID]: 1 },
       state: preWideningState,
       savedAt: '2026-01-01T00:00:00.000Z',
@@ -566,6 +569,9 @@ describe('sessions projection — lastAppendAt / staleEpisodes (D34)', () => {
     const snapshotStore = new MemorySnapshotStore();
     snapshotStore.save({
       projectionId: sessionsProjection.id,
+      // D86: the shape stamp. Written from the projection under test rather
+      // than a literal 1, so a future bump moves these fixtures with it.
+      version: sessionsProjection.version,
       lastAppliedSeq: { [APP_SESSION_ID]: 1 },
       state: { sessions: { [APP_SESSION_ID]: oldShapeRecord } },
       savedAt: '2026-01-01T00:00:00.000Z',
@@ -587,6 +593,9 @@ describe('sessions projection — lastAppendAt / staleEpisodes (D34)', () => {
     const snapshotStore = new MemorySnapshotStore();
     snapshotStore.save({
       projectionId: sessionsProjection.id,
+      // D86: the shape stamp. Written from the projection under test rather
+      // than a literal 1, so a future bump moves these fixtures with it.
+      version: sessionsProjection.version,
       lastAppliedSeq: { [APP_SESSION_ID]: 1 },
       state: oldShapeState,
       savedAt: '2026-01-01T00:00:00.000Z',
@@ -890,6 +899,9 @@ describe('sessions projection — turnInFlight (D35)', () => {
     const snapshotStore = new MemorySnapshotStore();
     snapshotStore.save({
       projectionId: sessionsProjection.id,
+      // D86: the shape stamp. Written from the projection under test rather
+      // than a literal 1, so a future bump moves these fixtures with it.
+      version: sessionsProjection.version,
       lastAppliedSeq: { [APP_SESSION_ID]: 1 },
       state: { sessions: { [APP_SESSION_ID]: preD35Record } },
       savedAt: '2026-01-01T00:00:00.000Z',
@@ -1240,6 +1252,9 @@ describe('sessions projection — turnInFlight (D35)', () => {
         const snapshotStore = new MemorySnapshotStore();
         snapshotStore.save({
           projectionId: sessionsProjection.id,
+          // D86: the shape stamp. Written from the projection under test rather
+          // than a literal 1, so a future bump moves these fixtures with it.
+          version: sessionsProjection.version,
           lastAppliedSeq: cutPoint === 0 ? {} : { [APP_SESSION_ID]: records[cutPoint - 1]!.seq },
           state: replayFromEmpty(sessionsProjection, records.slice(0, cutPoint)),
           savedAt: '2026-01-01T00:00:00.000Z',
@@ -1286,6 +1301,9 @@ describe('sessions projection — turnInFlight (D35)', () => {
       const snapshotStore = new MemorySnapshotStore();
       snapshotStore.save({
         projectionId: sessionsProjection.id,
+        // D86: the shape stamp. Written from the projection under test rather
+        // than a literal 1, so a future bump moves these fixtures with it.
+        version: sessionsProjection.version,
         lastAppliedSeq: cutPoint === 0 ? {} : { [APP_SESSION_ID]: records[cutPoint - 1]!.seq },
         state: replayFromEmpty(sessionsProjection, records.slice(0, cutPoint)),
         savedAt: '2026-01-01T00:00:00.000Z',
@@ -1504,6 +1522,9 @@ describe('sessions projection — derivedTitle (Q3)', () => {
     const snapshotStore = new MemorySnapshotStore();
     snapshotStore.save({
       projectionId: sessionsProjection.id,
+      // D86: the shape stamp. Written from the projection under test rather
+      // than a literal 1, so a future bump moves these fixtures with it.
+      version: sessionsProjection.version,
       lastAppliedSeq: { [UNNAMED_SESSION_ID]: 1 },
       state: oldShapeState,
       savedAt: '2026-01-01T00:00:00.000Z',
@@ -1523,6 +1544,9 @@ describe('sessions projection — derivedTitle (Q3)', () => {
     const snapshotStore = new MemorySnapshotStore();
     snapshotStore.save({
       projectionId: sessionsProjection.id,
+      // D86: the shape stamp. Written from the projection under test rather
+      // than a literal 1, so a future bump moves these fixtures with it.
+      version: sessionsProjection.version,
       lastAppliedSeq: { [UNNAMED_SESSION_ID]: 2 },
       state: cutState,
       savedAt: '2026-01-01T00:00:00.000Z',

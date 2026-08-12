@@ -130,10 +130,29 @@ export function deriveSessionTitle(content: unknown): string | null {
 
 // ── the fallback rung ────────────────────────────────────────────────────────
 
-// How many leading characters of a session id make the short id. Long enough to
-// be distinguishable at a glance in a uuid corpus, short enough to fit a phone
-// row. Presentation only — it never keys anything.
-export const SHORT_SESSION_ID_LENGTH = 8;
+// ⚠ **THIS SLICE IS A DISPLAY DISTINGUISHER, NOT A D79 HANDLE (S14-F1, signed
+// 2026-08-12; slice-14.md §3c, third exemption).** D79 consolidated "shorten a
+// session id" into `sessionShortIds.ts` — one derivation, one base width,
+// collisions extended git-style — and S14·U2 initially migrated this rung onto
+// that width too. That was an ERROR OF THE SAME CLASS §3c already caught for
+// `founding.ts`'s task ids, and it broke the rung's only job: at the D79 base
+// width of 4, with no collision context to extend against, `sess-unnamed` and
+// `sess-blank` both render `sess` and the fallback stops distinguishing.
+//
+// The distinction that settles it is CONTEXT, not width. `shortSessionIds`
+// needs the whole estate's ids to know whether a prefix collides; this function
+// is handed ONE session and no scope at all, so it can never collision-extend —
+// which is precisely why it is NOT an addressable handle. It renders a label a
+// human reads next to a timestamp; D79's handle is the wire's collision-extended
+// `shortId` (`sessionShortIds.ts`), and nothing else is one.
+//
+// So the width is declared HERE, under this module's own name, at 8 — the width
+// the live corpus was measured against. It is deliberately independent of
+// `SHORT_SESSION_ID_BASE_LENGTH`: the two answer different questions and moving
+// one must not move the other. (The old spelling `SHORT_SESSION_ID_LENGTH` stays
+// dead — five scattered spellings is the history D79 ended, and resurrecting the
+// name would re-open it.)
+export const FALLBACK_LABEL_ID_LENGTH = 8;
 
 // The last-resort label when a session has no id at all (never seen live;
 // handled rather than assumed away, and printable so a leaf can never render
@@ -203,7 +222,9 @@ export function formatSessionFallbackLabel(
   earliestActivityAt: string | null | undefined,
 ): string {
   const shortSessionId =
-    sessionId.trim().length > 0 ? sessionId.slice(0, SHORT_SESSION_ID_LENGTH) : UNKNOWN_SESSION_LABEL;
+    sessionId.trim().length > 0
+      ? sessionId.slice(0, FALLBACK_LABEL_ID_LENGTH)
+      : UNKNOWN_SESSION_LABEL;
   const formattedTimestamp = formatSessionTimestamp(earliestActivityAt);
   if (formattedTimestamp === null) {
     return shortSessionId;

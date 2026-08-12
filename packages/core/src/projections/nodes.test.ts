@@ -41,11 +41,22 @@ const CHECKOUT_PROVENANCE = {
   path: '/home/user/projects/vimes-worktrees/session-tree',
 };
 
+const FIXTURE_EPOCH = '2026-08-05T00:00:00.000Z';
+const FIXTURE_STEP_MS = 1000;
+
 function makeStore(): MemoryEventStore {
   return new MemoryEventStore({
-    clock: new SteppingClock('2026-08-05T00:00:00.000Z', 1000),
+    clock: new SteppingClock(FIXTURE_EPOCH, FIXTURE_STEP_MS),
     ids: new CountingIdSource(),
   });
+}
+
+// The `ts` the fixture clock stamps on the record at `recordIndex` (0-based over
+// the whole log — `SteppingClock` steps PER RECORD). Spelled exactly rather than
+// matched loosely: S14-F2's claim is that `createdAt` IS the birth event's `ts`,
+// and `expect.any(String)` would pass for a clock read inside the fold too.
+function tsAt(recordIndex: number): string {
+  return new Date(Date.parse(FIXTURE_EPOCH) + recordIndex * FIXTURE_STEP_MS).toISOString();
 }
 
 // Fold a list of event batches through the projection exactly as boot would.
@@ -102,6 +113,8 @@ describe('nodes projection — node_created', () => {
       parentNodeId: null,
       projectId: PROJECT_A,
       name: 'vimes',
+      // S14-F2: the birth event's own ts, folded onto the record.
+      createdAt: tsAt(0),
       provenance: null,
       directory: '/p',
       // Not on the birth record — the projection's documented starting values.

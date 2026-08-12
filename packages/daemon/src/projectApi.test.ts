@@ -575,9 +575,15 @@ describe('POST /api/projects/:projectId/archive — retire', () => {
     expect(((await response.json()) as ProjectResponse).project).toEqual({
       projectId: project.projectId,
       root: harness.configuredRoot,
+      // S14-F2: the birth event's ts, unchanged by the archival — asserted
+      // against what the DECLARATION returned, so it is a claim about the fold
+      // carrying one value through rather than about the harness clock.
+      createdAt: project.createdAt,
       name: 'VIMES',
       archived: true,
     });
+    // ...and that value really is the birth record's `ts`, not a placeholder.
+    expect(project.createdAt).toBe(harness.projectEvents()[0]!.ts);
     expect(harness.projectEventTypes()).toEqual([
       EVENT_TYPES.projectCreated,
       EVENT_TYPES.projectArchived,

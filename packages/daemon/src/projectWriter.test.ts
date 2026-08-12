@@ -45,9 +45,20 @@ interface WriterHarness {
   currentProjects: () => ProjectsState;
 }
 
+const FIXTURE_EPOCH = '2026-07-29T12:00:00.000Z';
+const FIXTURE_STEP_MS = 1000;
+
+// The `ts` the harness clock stamps on the record at `recordIndex` (0-based over
+// everything the writer emitted). S14-F2 folds that `ts` onto the record as
+// `createdAt`, so the records below are asserted with the exact value rather
+// than a loose matcher.
+function tsAt(recordIndex: number): string {
+  return new Date(Date.parse(FIXTURE_EPOCH) + recordIndex * FIXTURE_STEP_MS).toISOString();
+}
+
 function buildHarness(): WriterHarness {
   const store = new MemoryEventStore({
-    clock: new SteppingClock('2026-07-29T12:00:00.000Z', 1000),
+    clock: new SteppingClock(FIXTURE_EPOCH, FIXTURE_STEP_MS),
     ids: new CountingIdSource(),
   });
   const emitted: EventInput[] = [];
@@ -99,6 +110,8 @@ describe('ProjectWriter — createProject', () => {
     expect(project).toEqual({
       projectId: project.projectId,
       root: ROOT_VIMES,
+      // S14-F2: the birth event's ts — the FIRST record this harness emitted.
+      createdAt: tsAt(0),
       name: 'VIMES',
       archived: false,
     });
@@ -202,6 +215,9 @@ describe('ProjectWriter — createProject', () => {
     expect(projects[originalId]).toEqual({
       projectId: originalId,
       root: ROOT_VIMES,
+      // The FIRST record; the archival and the re-declaration that followed it
+      // leave this record's creation marker alone.
+      createdAt: tsAt(0),
       name: 'the first vimes',
       archived: true,
     });
@@ -239,6 +255,7 @@ describe('ProjectWriter — updateProject', () => {
     expect(project).toEqual({
       projectId,
       root: ROOT_VIMES,
+      createdAt: tsAt(0),
       name: 'VIMES',
       description: 'a description',
       archived: false,
@@ -287,6 +304,7 @@ describe('ProjectWriter — updateProject', () => {
     expect((result as Extract<UpdateProjectResult, { outcome: 'updated' }>).project).toEqual({
       projectId,
       root: ROOT_VIMES,
+      createdAt: tsAt(0),
       name: 'retired, and renamed',
       archived: true,
     });

@@ -65,7 +65,10 @@ export interface OrchestratorBoardSummary {
 }
 
 // How many leading characters of a taskId make the short id. Presentation only,
-// like `SHORT_SESSION_ID_LENGTH` in sessionIdentity.ts, and the same width.
+// like `FALLBACK_LABEL_ID_LENGTH` in sessionIdentity.ts, and the same width —
+// and out of D79's scope for the same reason §3c gives that one (a display
+// distinguisher with no estate to collision-extend against is not an addressable
+// handle). These are TASK ids besides; D79 is about session ids.
 const SHORT_TASK_ID_LENGTH = 8;
 
 /**

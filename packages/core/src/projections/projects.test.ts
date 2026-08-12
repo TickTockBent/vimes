@@ -10,7 +10,13 @@ import {
   projectUpdated,
   taskCreated,
 } from '../events.js';
-import { readAllStreamsGrouped, replayFromEmpty } from './projection.js';
+import {
+  MemorySnapshotStore,
+  bootFromSnapshot,
+  readAllStreamsGrouped,
+  replayFromEmpty,
+} from './projection.js';
+import { nodesProjection } from './nodes.js';
 import { projectForCwd, projectsProjection, type ProjectsState } from './projects.js';
 
 // ─── S8·1 — the project registry projection + the attribution primitive ──────
@@ -27,11 +33,25 @@ const PROJECT_B = 'project-bbbb-0002';
 const ROOT_PROJECTS = '/home/ticktockbent/projects';
 const ROOT_VIMES = '/home/ticktockbent/projects/infrastructure/vimes';
 
+const FIXTURE_EPOCH = '2026-07-29T00:00:00.000Z';
+const FIXTURE_STEP_MS = 1000;
+
 function makeStore(): MemoryEventStore {
   return new MemoryEventStore({
-    clock: new SteppingClock('2026-07-29T00:00:00.000Z', 1000),
+    clock: new SteppingClock(FIXTURE_EPOCH, FIXTURE_STEP_MS),
     ids: new CountingIdSource(),
   });
+}
+
+// The `ts` the fixture clock stamps on the record at `recordIndex` (0-based over
+// the whole log, batches included — `SteppingClock` steps PER RECORD).
+//
+// ⚠ Spelled exactly rather than matched with `expect.any(String)`: S14-F2's
+// whole claim is that `createdAt` IS THE BIRTH EVENT'S `ts`, and a loose matcher
+// would pass equally for a clock read inside the fold (rule 0.3 violation), for
+// a constant, or for the ts of whatever event happened to come last.
+function tsAt(recordIndex: number): string {
+  return new Date(Date.parse(FIXTURE_EPOCH) + recordIndex * FIXTURE_STEP_MS).toISOString();
 }
 
 // Fold a list of event batches through the projection exactly as boot would.
@@ -80,6 +100,8 @@ describe('projects projection — project_created', () => {
     expect(project).toEqual({
       projectId: PROJECT_A,
       root: ROOT_VIMES,
+      // S14-F2: the birth event's own ts, folded onto the record.
+      createdAt: tsAt(0),
       name: 'VIMES',
       archived: false,
     });
@@ -102,7 +124,12 @@ describe('projects projection — project_created', () => {
     const project = state.projects[PROJECT_B]!;
     expect('name' in project).toBe(false);
     expect('description' in project).toBe(false);
-    expect(project).toEqual({ projectId: PROJECT_B, root: ROOT_PROJECTS, archived: false });
+    expect(project).toEqual({
+      projectId: PROJECT_B,
+      root: ROOT_PROJECTS,
+      createdAt: tsAt(0),
+      archived: false,
+    });
   });
 
   it('a duplicate projectId is a NO-OP — never clobber an existing record', () => {
@@ -119,6 +146,9 @@ describe('projects projection — project_created', () => {
     expect(state.projects[PROJECT_A]).toEqual({
       projectId: PROJECT_A,
       root: ROOT_VIMES,
+      // ⚠ THE FIRST birth's ts, not the duplicate's — the no-op must not
+      // re-stamp the creation marker any more than it re-stamps the root.
+      createdAt: tsAt(0),
       name: 'renamed after birth',
       archived: true,
     });
@@ -162,6 +192,7 @@ describe('projects projection — project_updated (patch semantics)', () => {
     expect(state.projects[PROJECT_B]).toEqual({
       projectId: PROJECT_B,
       root: ROOT_PROJECTS,
+      createdAt: tsAt(0),
       description: 'everything under ~/projects',
       archived: false,
     });
@@ -204,6 +235,7 @@ describe('projects projection — project_archived (the record STAYS)', () => {
     expect(state.projects[PROJECT_A]).toEqual({
       projectId: PROJECT_A,
       root: ROOT_VIMES,
+      createdAt: tsAt(0),
       name: 'VIMES',
       archived: true,
     });
@@ -341,6 +373,8 @@ describe('projects projection — purity and replay (I12, I6)', () => {
     expect(firstFold.projects[PROJECT_B]).toEqual({
       projectId: PROJECT_B,
       root: ROOT_PROJECTS,
+      // Second record in the log, so one clock step after PROJECT_A's birth.
+      createdAt: tsAt(1),
       name: 'everything',
       description: 'the parent root',
       archived: false,
@@ -425,9 +459,101 @@ describe('projectForCwd — longest-prefix-wins over live boundaries (D42)', () 
     expect(attributed).toEqual({
       projectId: PROJECT_A,
       root: ROOT_VIMES,
+      createdAt: tsAt(0),
       name: 'VIMES',
       archived: false,
     });
+  });
+});
+
+// ─── D86 × S14-F2: the version bump and the new field, together ──────────────
+
+describe('D86 — the projects projection bumped to 2 with the createdAt fold', () => {
+  it('declares version 2, and `nodes` deliberately did NOT bump', () => {
+    // The bump rule, asserted rather than only documented: `projects` changed
+    // its RECORD SHAPE and stored snapshots of it exist on real deployments, so
+    // it rises. `nodes` changed shape too, but its projection is new-born this
+    // slice — nothing has ever emitted a `nodes` event, so there is no snapshot
+    // anywhere to invalidate and a bump would be the mechanical rise D86 forbids.
+    expect(projectsProjection.version).toBe(2);
+    expect(nodesProjection.version).toBe(1);
+  });
+
+  it('a stored VERSION-1 snapshot is discarded, so no record survives without a createdAt', () => {
+    // ⚠ **THIS IS THE WHOLE REASON D86 HAD TO LAND BEFORE S14-F2.** A version-1
+    // snapshot holds pre-fix records with no creation marker, and their birth
+    // events sit BEHIND `lastAppliedSeq` where no tail replay will ever reach
+    // them. Read tolerantly, that project would carry `undefined` into the
+    // tree's root comparator forever. The bump makes the snapshot not-a-snapshot,
+    // and the full replay fills the field from the log.
+    const store = makeStore();
+    store.append([declareProjectA()]);
+    store.append([projectCreated({ projectId: PROJECT_B, root: ROOT_PROJECTS })]);
+
+    const snapshotStore = new MemorySnapshotStore();
+    snapshotStore.save({
+      projectionId: projectsProjection.id,
+      // The shape as it was before S14-F2: no createdAt on the record.
+      version: 1,
+      lastAppliedSeq: { projects: 2 },
+      state: {
+        projects: {
+          [PROJECT_A]: { projectId: PROJECT_A, root: ROOT_VIMES, name: 'VIMES', archived: false },
+          'project-that-never-existed': {
+            projectId: 'project-that-never-existed',
+            root: '/nowhere',
+            archived: false,
+          },
+        },
+      },
+      savedAt: '2026-08-11T00:00:00.000Z',
+    });
+
+    const booted = bootFromSnapshot(projectsProjection, snapshotStore, store);
+
+    // The planted lie — a project the log never created — is GONE, which is how
+    // we know the state came from the log rather than from the stale snapshot.
+    expect(booted.projects['project-that-never-existed']).toBeUndefined();
+    // Every surviving record carries the marker, including PROJECT_A whose birth
+    // event the snapshot claimed was already applied.
+    expect(booted.projects[PROJECT_A]!.createdAt).toBe(tsAt(0));
+    expect(booted.projects[PROJECT_B]!.createdAt).toBe(tsAt(1));
+    expect(projectsProjection.serialize(booted)).toBe(
+      projectsProjection.serialize(replayFromEmpty(projectsProjection, readAllStreamsGrouped(store))),
+    );
+  });
+
+  it('a stored VERSION-2 snapshot still short-circuits — the bump is not a permanent replay', () => {
+    // The other half: once the overwrite has re-stamped the row, boots go back
+    // to the fast path. A bump that never stopped replaying would be a
+    // performance regression wearing a correctness fix's clothes.
+    const store = makeStore();
+    store.append([declareProjectA()]);
+
+    const snapshotStore = new MemorySnapshotStore();
+    snapshotStore.save({
+      projectionId: projectsProjection.id,
+      version: 2,
+      lastAppliedSeq: { projects: 1 },
+      state: {
+        projects: {
+          [PROJECT_A]: {
+            projectId: PROJECT_A,
+            root: ROOT_VIMES,
+            createdAt: tsAt(0),
+            name: 'a name only the snapshot knows',
+            archived: false,
+          },
+        },
+      },
+      savedAt: '2026-08-12T00:00:00.000Z',
+    });
+
+    // The snapshot-only name survives, which proves the stored state was used
+    // as the base rather than the log being replayed over it.
+    expect(bootFromSnapshot(projectsProjection, snapshotStore, store).projects[PROJECT_A]!.name).toBe(
+      'a name only the snapshot knows',
+    );
   });
 });
 

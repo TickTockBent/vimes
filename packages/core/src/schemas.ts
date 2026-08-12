@@ -183,8 +183,18 @@ export const eventInputSchema = z.object({
 });
 export type EventInput = z.infer<typeof eventInputSchema>;
 
+// ⚠ **`version` IS D86'S CARRIER AND IT IS REQUIRED** (2026-08-12). It is the
+// RECORD-SHAPE version of the projection that wrote the state — not the event
+// log's `schemaVersion()`, which is a fact about the spine and which nothing
+// branches on. `bootFromSnapshot` compares it against the projection's declared
+// `version` and treats a difference exactly as no-snapshot-found. Required
+// rather than optional-defaulting-to-1 because a snapshot with no shape stamp
+// is a snapshot nobody can reason about; stores that predate the field supply
+// the default at the storage layer (see sqliteSnapshotStore's additive column),
+// which is the one place where "written before D86" is a knowable fact.
 export const projectionSnapshotSchema = z.object({
   projectionId: z.string(),
+  version: z.number().int(),
   lastAppliedSeq: z.record(z.string(), z.number()),
   state: z.unknown(),
   savedAt: z.string(),
@@ -450,9 +460,27 @@ export type TaskRecord = z.infer<typeof taskRecordSchema>;
 // boolean that is always written is a different shape from the optional
 // metadata above precisely because "not archived" is a fact about every project,
 // where "no description" is the absence of one.
+//
+// ⚠ **`createdAt` IS THE DURABLE CREATION MARKER (S14-F2, 2026-08-12).** It is
+// the `ts` of the project's own `project_created` record — the `SessionRecord.createdAt`
+// precedent, spelled the same way and for the same reason. Before it existed,
+// "project-creation order" survived only as the projection map's INSERTION
+// order, which is exact on a fresh fold and silently lexicographic-by-projectId
+// after the first snapshot round-trip (`canonicalJson` sorts object keys
+// deeply). The tree's root ordering sorts on this field, so the order a client
+// renders is a function of the RECORDS rather than of how the state was
+// reconstructed.
+//
+// REQUIRED, never optional: every project has a birth event, so there is no
+// honest absence to express — and an optional marker would put `undefined` in a
+// comparator, which is the ordering lie wearing a different hat. Adding it is a
+// RECORD-SHAPE change, so `projectsProjection.version` bumps to 2 (D86); stored
+// version-1 snapshots are discarded and replayed rather than read through this
+// shape.
 export const projectRecordSchema = z.object({
   projectId: z.string(),
   root: z.string(),
+  createdAt: z.string(),
   name: z.string().optional(),
   description: z.string().optional(),
   archived: z.boolean(),

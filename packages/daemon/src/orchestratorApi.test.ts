@@ -41,6 +41,8 @@ function projectRecord(overrides: Partial<ProjectRecord> = {}): ProjectRecord {
   return {
     projectId: PROJECT_ID,
     root: PROJECT_ROOT,
+    // S14-F2: the durable creation marker every ProjectRecord now carries.
+    createdAt: '2026-08-12T09:00:00.000Z',
     name: 'vimes',
     archived: false,
     ...overrides,

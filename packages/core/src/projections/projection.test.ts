@@ -37,6 +37,9 @@ import {
 import { sessionsProjection } from './sessions.js';
 import { metersProjection, meterSample } from './meters.js';
 import { instancesProjection } from './instances.js';
+import { cacheObservabilityProjection } from './cacheObservability.js';
+import { projectsProjection } from './projects.js';
+import { nodesProjection } from './nodes.js';
 // S11·U1 (D72 Move 2): the projection under test here is the INSTANCES fold —
 // `tasksProjection` is gone — and every task assertion below reads through the
 // legacy view, unchanged word for word. That is deliberate: this file's job is
@@ -610,5 +613,174 @@ describe('projection I6 — boot(snapshot+tail) equals replay-from-empty', () =>
     const booted = sessionsProjection.serialize(bootFromSnapshot(sessionsProjection, emptySnapshotStore, store));
     const replayed = sessionsProjection.serialize(replayFromEmpty(sessionsProjection, readAllStreamsGrouped(store)));
     expect(booted).toBe(replayed);
+  });
+});
+
+// ─── D86: the projection VERSION, and what a mismatch means ──────────────────
+//
+// ⚠ **THE PROBE PROJECTION EXISTS SO THE VERSION IS THE ONLY VARIABLE.** Both
+// cases below fold the SAME log through the SAME `apply`, from the SAME stored
+// snapshot; the single difference between "the snapshot was used" and "the
+// snapshot was not a snapshot" is the integer. Running these against a real
+// projection would couple the assertions to whatever version that projection
+// happens to carry this month, and the case would go quietly vacuous the day
+// somebody bumped it.
+//
+// Its state is an ORDERED LIST of what it has folded, which is what makes the
+// planted lie detectable at all: a state keyed by id would let a replayed
+// record overwrite the lie and the test could not tell "discarded" from
+// "reconstructed on top of".
+interface VersionProbeState {
+  readonly seen: readonly string[];
+}
+
+// The lie: a value NO event in the log can produce. If it is in the booted
+// state, the stored snapshot was the base state; if it is gone, it was not.
+const SNAPSHOT_LIE = 'a-record-the-log-never-produced';
+
+const PROBE_A = 'aaaaaaaa-0000-4000-8000-0000000000a1';
+const PROBE_B = 'aaaaaaaa-0000-4000-8000-0000000000b2';
+const PROBE_C = 'aaaaaaaa-0000-4000-8000-0000000000c3';
+
+function versionProbeProjection(version: number): Projection<VersionProbeState> {
+  return {
+    id: 'version-probe',
+    version,
+    init: () => ({ seen: [] }),
+    apply: (state, event) =>
+      event.type === 'session_created'
+        ? { seen: [...state.seen, (event.payload as { appSessionId: string }).appSessionId] }
+        : state,
+    serialize: (state) => JSON.stringify(state),
+  };
+}
+
+// Three sessions, each on its own stream (that is what `sessionCreated` emits),
+// so `lastAppliedSeq` can mark ONE of them as already folded and leave a real
+// tail behind it.
+function buildProbeStore(): MemoryEventStore {
+  const store = new MemoryEventStore({
+    clock: new SteppingClock('2026-08-12T09:00:00.000Z', 1000),
+    ids: new CountingIdSource(),
+  });
+  for (const appSessionId of [PROBE_A, PROBE_B, PROBE_C]) {
+    store.append([
+      sessionCreated({ appSessionId, channel: 'sdk', cwd: '/home/w/probe', name: null, forkedFrom: null, taskRef: null }),
+    ]);
+  }
+  return store;
+}
+
+// A stored snapshot at `version` that claims PROBE_A is already folded and
+// whose state holds the lie instead of PROBE_A's real record.
+function saveLyingSnapshot(snapshotStore: MemorySnapshotStore, version: number): void {
+  snapshotStore.save({
+    projectionId: 'version-probe',
+    version,
+    lastAppliedSeq: { [PROBE_A]: 1 },
+    state: { seen: [SNAPSHOT_LIE] } satisfies VersionProbeState,
+    savedAt: '2026-08-12T08:00:00.000Z',
+  });
+}
+
+describe('D86 — a snapshot whose version mismatches is not a snapshot', () => {
+  it('a version-1 snapshot loaded by a version-2 projection is IGNORED and fully replayed', () => {
+    const store = buildProbeStore();
+    const snapshotStore = new MemorySnapshotStore();
+    saveLyingSnapshot(snapshotStore, 1);
+
+    const booted = bootFromSnapshot(versionProbeProjection(2), snapshotStore, store);
+
+    // ⚠ THE LIE IS GONE — the state is provably from the LOG, not from the
+    // stale snapshot. This is the whole assertion: a tolerant load would have
+    // carried the lie forward and folded the tail on top of it.
+    expect(booted.seen).not.toContain(SNAPSHOT_LIE);
+    // ...and PROBE_A, which the stale snapshot claimed was already applied, was
+    // re-folded rather than skipped: the mismatch reset `lastAppliedSeq` too,
+    // not just the state.
+    expect(booted.seen).toEqual([PROBE_A, PROBE_B, PROBE_C]);
+    // Byte-identical to init() + the whole log, which is the definition of
+    // "treated exactly as no-snapshot-found".
+    const projection = versionProbeProjection(2);
+    expect(projection.serialize(booted)).toBe(
+      projection.serialize(replayFromEmpty(projection, readAllStreamsGrouped(store))),
+    );
+  });
+
+  it('the SAME-version fast path still short-circuits replay (the fast path must not regress)', () => {
+    const store = buildProbeStore();
+    const snapshotStore = new MemorySnapshotStore();
+    saveLyingSnapshot(snapshotStore, 2);
+
+    const booted = bootFromSnapshot(versionProbeProjection(2), snapshotStore, store);
+
+    // The lie SURVIVES — which proves the stored snapshot was used as the base
+    // state rather than the log being replayed from empty...
+    expect(booted.seen).toContain(SNAPSHOT_LIE);
+    // ...and PROBE_A was NOT re-folded, which proves the tail-only replay is
+    // still doing its job: only the streams past `lastAppliedSeq` were read.
+    expect(booted.seen).toEqual([SNAPSHOT_LIE, PROBE_B, PROBE_C]);
+    expect(booted.seen).not.toContain(PROBE_A);
+  });
+
+  it('the two cases differ ONLY in the stored version (the variable is isolated)', () => {
+    // Belt and braces on the pair above: same store, same snapshot state, same
+    // projection version — flip the STORED integer and nothing else, and the
+    // outcome flips with it.
+    const store = buildProbeStore();
+    const matching = new MemorySnapshotStore();
+    saveLyingSnapshot(matching, 7);
+    const mismatching = new MemorySnapshotStore();
+    saveLyingSnapshot(mismatching, 6);
+
+    expect(bootFromSnapshot(versionProbeProjection(7), matching, store).seen).toContain(SNAPSHOT_LIE);
+    expect(bootFromSnapshot(versionProbeProjection(7), mismatching, store).seen).not.toContain(
+      SNAPSHOT_LIE,
+    );
+  });
+
+  it('the overwrite after a mismatch stamps the NEW version and drops the lie', () => {
+    const store = buildProbeStore();
+    const snapshotStore = new MemorySnapshotStore();
+    saveLyingSnapshot(snapshotStore, 1);
+    const projection = versionProbeProjection(2);
+
+    // Boot (mismatch → full replay), then save the result exactly as the daemon
+    // does. There is no separate "upgrade the row" path: the ordinary save is
+    // the migration.
+    expect(bootFromSnapshot(projection, snapshotStore, store).seen).not.toContain(SNAPSHOT_LIE);
+    snapshotStore.save(
+      snapshotAfter(projection, readAllStreamsGrouped(store), new SteppingClock('2026-08-12T10:00:00.000Z', 1000)),
+    );
+
+    const stored = snapshotStore.load('version-probe')!;
+    expect(stored.version).toBe(2);
+    expect((stored.state as VersionProbeState).seen).toEqual([PROBE_A, PROBE_B, PROBE_C]);
+    // ...and the next boot at version 2 now takes the fast path over a snapshot
+    // that tells the truth.
+    expect(bootFromSnapshot(projection, snapshotStore, store).seen).toEqual([
+      PROBE_A,
+      PROBE_B,
+      PROBE_C,
+    ]);
+  });
+
+  it('every projection the daemon boots declares an integer version', () => {
+    // D86 made `version` part of the contract at every definition site. A
+    // projection that acquired one by inheriting a default would pass a load
+    // against a snapshot it never wrote — so assert the field is really there
+    // and really an integer, rather than trusting the type alone (a `1` typed
+    // as `number` is what tsc checks; that it is DECLARED is what this checks).
+    for (const projection of [
+      sessionsProjection,
+      metersProjection,
+      instancesProjection,
+      cacheObservabilityProjection,
+      projectsProjection,
+      nodesProjection,
+    ]) {
+      expect(Number.isInteger(projection.version), `${projection.id} version`).toBe(true);
+      expect(projection.version, `${projection.id} version`).toBeGreaterThanOrEqual(1);
+    }
   });
 });

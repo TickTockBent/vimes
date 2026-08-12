@@ -55,12 +55,28 @@ export {
   formatSessionFallbackLabel,
   formatSessionTimestamp,
   resolveSessionLabel,
+  FALLBACK_LABEL_ID_LENGTH,
   HARNESS_WRAPPER_TITLE_PREFIXES,
   SESSION_TITLE_MAX_LENGTH,
-  SHORT_SESSION_ID_LENGTH,
   UNKNOWN_SESSION_LABEL,
   type SessionLabelInputs,
 } from './sessionIdentity.js';
+// D79 (slice-14 F4) — short session ids, RENDERING and RESOLUTION as two
+// functions. The old `SHORT_SESSION_ID_LENGTH` export is GONE and the name stays
+// dead: a consumer that wants a collision-safe ADDRESSABLE HANDLE calls
+// `shortSessionIds` with the whole estate, and gets `SHORT_SESSION_ID_BASE_LENGTH`
+// as the floor that group collisions extend from.
+//
+// ⚠ **`FALLBACK_LABEL_ID_LENGTH` above is a different fact and is not this one**
+// (S14-F1, signed): the label ladder's fallback slice is a display distinguisher
+// handed one session and no estate, so it cannot extend and keeps its own width.
+// Same shape, different question — see the comment over it in sessionIdentity.ts.
+export {
+  shortSessionIds,
+  resolveShortSessionId,
+  SHORT_SESSION_ID_BASE_LENGTH,
+  type ShortSessionIdResolution,
+} from './sessionShortIds.js';
 export {
   metersProjection,
   meterSample,
@@ -120,8 +136,49 @@ export {
   projectsProjection,
   projectForCwd,
   isWithinProjectRoot,
+  projectDisplayName,
   type ProjectsState,
 } from './projections/projects.js';
+// S9·1 (E2) — the session forest: the fold, its read-time derivations, and the
+// ONE subtree aggregation. Unexported until now because nothing outside core had
+// a consumer (rule 0.5); S14 gives it two, the tree read model below and the
+// daemon's node writer + `/api/tree` route.
+export {
+  nodesProjection,
+  nodeIdForSession,
+  isEffectivelyClosed,
+  subtreeNodeIds,
+  type NodeRecord,
+  type NodesState,
+} from './projections/nodes.js';
+export {
+  rollupNode,
+  ATTENTION_SEVERITY_ORDER_VERSION,
+  ATTENTION_SEVERITY_RANKS,
+  type AttentionSeverity,
+  type NodeRollup,
+} from './projections/nodeRollup.js';
+// S14·U2 (§3b) — the ONE liveness+attention → severity join. `rollupNode`'s
+// severity callback has one implementation and this is it.
+export { sessionSeverityOf } from './projections/sessionSeverity.js';
+// S14·U2 (§3 F1/F2) — the composed tree read model. `treeOf` is what
+// `GET /api/tree` serves; `defaultRootForSession` is F2's named derivation, and
+// `projectRootId` / `UNFILED_ROOT_ID` are the virtual-id grammar a client
+// addresses roots with.
+export {
+  treeOf,
+  defaultRootForSession,
+  projectRootId,
+  PROJECT_ROOT_ID_PREFIX,
+  UNFILED_ROOT_ID,
+  UNFILED_ROOT_NAME,
+  type TreeResponse,
+  type TreeRoot,
+  type TreeNode,
+  type TreeSession,
+  type TreeOptions,
+  type TreeOverlays,
+} from './projections/tree.js';
 // S8·3 D56 — the standing orchestrator's briefing composers. A separate module
 // (and export) from `composeStageInstruction` for the reason those two are apart
 // from each other: this composes what a PERSISTENT CONVERSATION PARTNER is told at

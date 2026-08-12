@@ -7,6 +7,20 @@ import type { EventRecord, ProjectionSnapshot } from '../schemas.js';
 // references with live state and boot replays a snapshot forward.
 export interface Projection<StateType> {
   id: string;
+  // ⚠ **D86 — THE RECORD-SHAPE VERSION, DECLARED AT EVERY DEFINITION SITE.**
+  // Not optional-with-a-default: a snapshot is either this projection's own
+  // shape or it is nothing, and a field that can be forgotten is a field that
+  // will be. `snapshotAfter` stamps it; `bootFromSnapshot` compares it and
+  // treats a mismatch EXACTLY as no-snapshot-found (init + full replay +
+  // overwrite). Replay is the recovery path because the log is truth (I12) and
+  // every fold is total and deterministic.
+  //
+  // ⚠ **THE BUMP RULE (D86, part of the record):** the version rises in the
+  // same reviewed unit that changes the projection's RECORD SHAPE — a field
+  // added, removed, or re-meant — and NEVER for a fold-behaviour fix that
+  // produces the same shape. A mechanical bump is a full replay nobody asked
+  // for; a forgotten one is a stale record read through a new type.
+  version: number;
   init(): StateType;
   apply(state: StateType, event: EventRecord): StateType;
   serialize(state: StateType): string; // canonicalJson, deterministic
@@ -79,6 +93,10 @@ export function snapshotAfter<StateType>(
 ): ProjectionSnapshot {
   return {
     projectionId: projection.id,
+    // D86: the shape stamp travels WITH the state, written from the projection
+    // that produced it. The overwrite that follows a mismatch therefore
+    // re-stamps automatically — there is no separate "upgrade the row" path.
+    version: projection.version,
     lastAppliedSeq: streamHighWaterMarks(prefixRecords),
     state: replayFromEmpty(projection, prefixRecords),
     savedAt: clock.now(),
@@ -87,12 +105,30 @@ export function snapshotAfter<StateType>(
 
 // Boot: load the snapshot (or init from empty), then replay only the tail —
 // per stream, events with seq > lastAppliedSeq[stream], read from the store.
+//
+// ⚠ **D86 LIVES HERE, IN CORE, AND IN EXACTLY ONE PLACE.** This is the seam
+// that has both halves in hand — the loaded `ProjectionSnapshot` and the
+// `Projection` that will fold on top of it — so the comparison is made once,
+// for every SnapshotStore implementation (memory, sqlite, and whatever comes
+// next), rather than being re-spelled in each store. A store's job is to
+// PERSIST the version faithfully; deciding what a mismatch MEANS is the fold's
+// business, not the cache's.
 export function bootFromSnapshot<StateType>(
   projection: Projection<StateType>,
   snapshotStore: SnapshotStore,
   store: EventStore,
 ): StateType {
-  const snapshot = snapshotStore.load(projection.id);
+  const loadedSnapshot = snapshotStore.load(projection.id);
+  // ⚠ **A VERSION MISMATCH IS NOT A SNAPSHOT (D86).** Not a migration, not a
+  // tolerant parse, not a best-effort merge: a snapshot written against a
+  // different record shape is discarded whole, and the fold starts from
+  // `init()` over the entire log. The alternative — reading old records through
+  // a new type — is the failure D86 was written to make impossible: a field
+  // added to the fold today never reaches a record whose birth event sits
+  // behind `lastAppliedSeq`, so it would be `undefined` forever, self-healing
+  // never. Cheap because replay is cheap and always available (I12).
+  const snapshot =
+    loadedSnapshot !== null && loadedSnapshot.version === projection.version ? loadedSnapshot : null;
   let state: StateType;
   const highWaterByStream: Record<string, number> = {};
   if (snapshot === null) {
