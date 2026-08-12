@@ -644,6 +644,10 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     // its `initial`, and `GET /api/tasks/stage-edges` derives its membership
     // from its edges — one declaration, three readings.
     workflow: shippedWorkflow.workflow,
+    // S13·U2 (q25): the SAME pinned ref the writer stamps on every birth
+    // record (`instanceWriter` above), so the declaration-introspection
+    // routes key on the identity instances are actually recorded against.
+    workflowRef: shippedWorkflow.ref,
   });
 
   // ─── the project registry (S8·1, D42) ──────────────────────────────────────

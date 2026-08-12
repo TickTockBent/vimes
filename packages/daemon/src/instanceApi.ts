@@ -9,6 +9,7 @@ import {
   type TaskStage,
   type TransitionProposal,
   type TransitionProposedBy,
+  type WorkflowRef,
   type WorkOrderAmendedPayload,
 } from '@vimes/core';
 import { resolveWithinRoots, realpathProbe, type RealpathProbe } from './filePaths.js';
@@ -122,6 +123,15 @@ export interface InstanceApiDeps {
   // the compiled `INITIAL_TASK_STAGE`) and `workflow.edges` (the stage-edges
   // route's membership). This file still decides nothing.
   workflow: ParsedWorkflow;
+  // ── S13·U2 (q25) — the declaration's own identity ──────────────────────────
+  //
+  // The SAME ref `instanceWriter` stamps on every birth record (app.ts hands
+  // both the writer and this surface `shippedWorkflow.ref`), read here for
+  // exactly one thing: the exact-match key the two declaration-introspection
+  // routes below serve against. Never derived from the path params — a
+  // request is answered FROM this pinned identity or refused, never the other
+  // way round (slice-13 F3 ⟨signed⟩).
+  workflowRef: WorkflowRef;
   // Injected realpath probe (fs boundary). Defaults to the real one; mirrors
   // FileApiDeps / GitApiDeps.
   realpath?: RealpathProbe;
@@ -214,6 +224,52 @@ export interface StageEdgesResponse {
 // The descriptor↔schema drift test in instanceApi.test.ts is what keeps the two
 // halves honest, exactly as `exhaustiveVocabulary` guards the re-declared enums.
 export interface WorkOrderSchemaResponse {
+  fields: readonly WorkOrderFieldDescriptor[];
+}
+
+// ── S13·U2 (q25) — declaration introspection, workflow-keyed (F3 ⟨signed⟩) ────
+//
+// The generic twins `stage-edges` and `work-order-schema` never got (slice 12's
+// header above explains why: they needed a pinned declaration to introspect,
+// and Move 3 is what pins one). Both routes key on the declaration's own
+// identity — `extension`/`workflow`/`rev`, the SAME ref Move 3 stamps on every
+// instance — not on an instance id: introspection is a property of the
+// DECLARATION, so N instances of one workflow cost a client one fetch, not N
+// (F3 rider 2), and an unknown-workflow renderer can answer from a ref alone
+// (F3 rider 3, the D76 dependency).
+
+/**
+ * The wire form of one declared node — narrowed FROM `ParsedWorkflowNode`, not
+ * equal to it. `title` is omitted (not `null`/`undefined`) when the node
+ * declares none, so an unlabelled node does not put a nullish key on the wire.
+ */
+interface WorkflowDeclarationNode {
+  id: string;
+  kind: string;
+  title?: string;
+}
+
+export interface WorkflowDeclarationResponse {
+  ref: WorkflowRef;
+  workflow: {
+    id: string;
+    title: string;
+    initial: string;
+    nodes: readonly WorkflowDeclarationNode[];
+    // EXPANDED, verbatim — `ParsedWorkflow.edges` exactly as the adjudicator
+    // reads it, ordering included (the declaration's own order IS the wire
+    // order; no `WIRE_STAGE_EDGE_ORDER` here). Every row rides along, including
+    // ones whose `from`/`to` sit outside the nine-stage record enum (the tenth
+    // node, `manual-review`) — that is the FULL declared table q25 promised,
+    // in contrast to the legacy `stage-edges` route's record-vocabulary
+    // narrowing.
+    edges: ParsedWorkflow['edges'];
+    forbidden: ParsedWorkflow['forbidden'];
+  };
+}
+
+export interface WorkflowPayloadSchemaResponse {
+  ref: WorkflowRef;
   fields: readonly WorkOrderFieldDescriptor[];
 }
 
@@ -1187,6 +1243,86 @@ export function registerInstanceApi(app: Hono, deps: InstanceApiDeps): void {
   app.get('/api/tasks/work-order-schema', (context) => {
     const response: WorkOrderSchemaResponse = { fields: WORK_ORDER_FIELD_DESCRIPTORS };
     return context.json(response);
+  });
+
+  // ── S13·U2 (q25) — the generic twins, workflow-keyed ────────────────────────
+  //
+  // See the response-type comments above for the full rationale; this is the
+  // key check and the two route bodies.
+  //
+  // ⚠ EXACT-MATCH KEY, ELSE 404 — NEVER "SERVE THE CURRENT ONE INSTEAD" (F3
+  // ⟨signed⟩). This daemon holds exactly ONE boot-resolved declaration; a
+  // request naming any other extension/workflow/rev is a request for a
+  // declaration this daemon does not have, and a rev-keyed endpoint that
+  // answered anyway would break the immutable-caching promise below — a
+  // client caching by ref would cache the WRONG rev's bytes under the right
+  // rev's key.
+  const isRequestedWorkflow = (context: Context): boolean =>
+    context.req.param('extension') === deps.workflowRef.extension &&
+    context.req.param('workflow') === deps.workflowRef.workflow &&
+    context.req.param('rev') === deps.workflowRef.rev;
+
+  // Immutable for the ref it answers under (F3 ⟨signed⟩ property 1): the same
+  // extension/workflow/rev will never answer with different bytes, so a client
+  // (or an intermediate cache) may hold this response forever. `private`
+  // because the route sits behind the Access auth wall like everything else on
+  // this app — a shared cache must not serve one tenant's declaration to
+  // another. Set on 200s ONLY; the 404 carries no cache header; because "no
+  // declaration under this ref" is not a fact this daemon is the authority on
+  // forever — a later deploy could pin a different rev.
+  const IMMUTABLE_DECLARATION_CACHE_CONTROL = 'private, max-age=31536000, immutable';
+
+  // GET /api/workflows/:extension/:workflow/:rev/declaration — the FULL
+  // declared table (nodes/edges/forbidden), verbatim from `deps.workflow`.
+  //
+  // ⚠ THIS ROUTE INTERPRETS NOTHING. It reshapes (narrows nodes to
+  // id/kind/title, drops `record`) but never asks what a node MEANS — no
+  // stage-vocabulary filtering, no legality re-derivation, nothing an
+  // extension-blind route could get wrong about a tenant's workflow. Serving
+  // this would require the engine to hold a tenant opinion, which is slice
+  // kill criterion 2 (private-docs/slice-13.md §6.2) and did not come up: the
+  // declaration is already the wire shape, node-kit-parsed and PINNED, and
+  // this route only omits the two things rule 0.5 says have no consumer yet
+  // (node `properties`/`briefing`/`acceptance`, dispatch-side machinery) and
+  // the one thing that is meaningless off this host (`record`, an
+  // extension-relative file path — its own generic story is the sibling
+  // endpoint below).
+  app.get('/api/workflows/:extension/:workflow/:rev/declaration', (context) => {
+    if (!isRequestedWorkflow(context)) {
+      return context.text('not found', 404);
+    }
+    const response: WorkflowDeclarationResponse = {
+      ref: deps.workflowRef,
+      workflow: {
+        id: deps.workflow.id,
+        title: deps.workflow.title,
+        initial: deps.workflow.initial,
+        nodes: deps.workflow.nodes.map((node) => ({
+          id: node.id,
+          kind: node.kind,
+          ...(node.title === undefined ? {} : { title: node.title }),
+        })),
+        edges: deps.workflow.edges,
+        forbidden: deps.workflow.forbidden,
+      },
+    };
+    return context.json(response, 200, { 'Cache-Control': IMMUTABLE_DECLARATION_CACHE_CONTROL });
+  });
+
+  // GET /api/workflows/:extension/:workflow/:rev/payload-schema — the SAME
+  // `WORK_ORDER_FIELD_DESCRIPTORS` constant `/api/tasks/work-order-schema`
+  // serves (not forked, not copied — one definition, so the descriptor↔
+  // `createTaskBodySchema` drift test above keeps tying THIS response to what
+  // the create door actually validates, exactly as it does the alias's).
+  app.get('/api/workflows/:extension/:workflow/:rev/payload-schema', (context) => {
+    if (!isRequestedWorkflow(context)) {
+      return context.text('not found', 404);
+    }
+    const response: WorkflowPayloadSchemaResponse = {
+      ref: deps.workflowRef,
+      fields: WORK_ORDER_FIELD_DESCRIPTORS,
+    };
+    return context.json(response, 200, { 'Cache-Control': IMMUTABLE_DECLARATION_CACHE_CONTROL });
   });
 
   // ── NO `GET /api/instances` (and no `GET /api/tasks`) — deliberately ───────

@@ -43,6 +43,8 @@ import {
   type ProposeMoveResponse,
   type ProposeTransitionResponse,
   type RevisePayloadResponse,
+  type WorkflowDeclarationResponse,
+  type WorkflowPayloadSchemaResponse,
   type WorkOrderFieldDescriptor,
   type WorkOrderSchemaResponse,
 } from './instanceApi.js';
@@ -284,6 +286,9 @@ function buildApiHarness(
     instanceWriter,
     // The SAME declaration object the writer got (app.ts shares one).
     workflow: SHIPPED_WORKFLOW.workflow,
+    // S13·U2: the SAME pinned ref the writer got above, exactly as app.ts
+    // shares one.
+    workflowRef: SHIPPED_WORKFLOW.ref,
     // S11·U3: the generic routes' read-back. Composed exactly as app.ts does it
     // (the instances fold, no legacy narrowing), so the parity block compares
     // what production would answer.
@@ -1754,6 +1759,187 @@ describe('GET /api/tasks/work-order-schema — the served authoring descriptor',
 
     await harness.request('/api/tasks/work-order-schema', { headers: authHeaders() });
 
+    expect(harness.tasksHead()).toBe(headBefore);
+  });
+});
+
+// ── S13·U2 (q25) — declaration introspection, workflow-keyed ─────────────────
+//
+// F3 ⟨signed⟩: keyed by the declaration's own identity
+// (`extension`/`workflow`/`rev`), not by an instance id. Every case below
+// drives the SHIPPED ref (`SHIPPED_WORKFLOW.ref`) exactly as `app.ts` and the
+// harness wire it, so "the same declaration the adjudicator reads" is a fact
+// about the object identity, not a coincidence of fixture values.
+
+const DECLARATION_PATH =
+  `/api/workflows/${SHIPPED_WORKFLOW.ref.extension}/${SHIPPED_WORKFLOW.ref.workflow}/` +
+  `${SHIPPED_WORKFLOW.ref.rev}/declaration`;
+const PAYLOAD_SCHEMA_PATH =
+  `/api/workflows/${SHIPPED_WORKFLOW.ref.extension}/${SHIPPED_WORKFLOW.ref.workflow}/` +
+  `${SHIPPED_WORKFLOW.ref.rev}/payload-schema`;
+
+// A ref with one field perturbed at a time — wrong rev (a bumped patch, still
+// syntactically a rev), wrong extension, wrong workflow. Each names a
+// declaration this daemon does not hold, so each must 404 rather than fall
+// back to the one it does hold (F3 ⟨signed⟩ — a rev-keyed response answering
+// for a different rev would break the immutability clients are told to cache
+// on).
+function wrongRefPaths(suffix: 'declaration' | 'payload-schema'): Array<{ label: string; path: string }> {
+  const ref = SHIPPED_WORKFLOW.ref;
+  return [
+    {
+      label: 'wrong rev',
+      path: `/api/workflows/${ref.extension}/${ref.workflow}/${ref.rev}-bumped/${suffix}`,
+    },
+    {
+      label: 'wrong extension',
+      path: `/api/workflows/${ref.extension}-nope/${ref.workflow}/${ref.rev}/${suffix}`,
+    },
+    {
+      label: 'wrong workflow',
+      path: `/api/workflows/${ref.extension}/${ref.workflow}-nope/${ref.rev}/${suffix}`,
+    },
+  ];
+}
+
+describe('GET /api/workflows/:extension/:workflow/:rev/declaration — q25 (S13·U2)', () => {
+  it('S13-A3: edge rows equal deps.workflow.edges verbatim, including manual-review (the tenth node)', async () => {
+    const harness = buildApiHarness();
+    const response = await harness.request(DECLARATION_PATH, { headers: authHeaders() });
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as WorkflowDeclarationResponse;
+
+    // Full membership, as a set of `from -> to (by, maxTraversals)` rows —
+    // JSON round-tripping drops `undefined`-valued optional keys on both
+    // sides identically, so this set comparison is stable across the wire.
+    const rowOf = (edge: { from: string; to: string; by: readonly string[]; maxTraversals?: number }) =>
+      JSON.stringify({ from: edge.from, to: edge.to, by: edge.by, maxTraversals: edge.maxTraversals });
+    expect(new Set(body.workflow.edges.map(rowOf))).toEqual(
+      new Set(SHIPPED_WORKFLOW.workflow.edges.map(rowOf)),
+    );
+    // Stronger: the edges ride EXPANDED and verbatim (declaredFrom/declaredTo/
+    // onExhausted included), not just row-equal on a projected subset.
+    expect(body.workflow.edges).toEqual(SHIPPED_WORKFLOW.workflow.edges);
+
+    // The tenth node's rows are PRESENT — their absence was the legacy
+    // `stage-edges` route's record-vocabulary narrowing (S12·U2), and q25's
+    // whole point was the FULL declared table.
+    const manualReviewEdges = body.workflow.edges.filter(
+      (edge) => edge.from === 'manual-review' || edge.to === 'manual-review',
+    );
+    expect(manualReviewEdges.length).toBeGreaterThan(0);
+    expect(manualReviewEdges).toEqual(
+      expect.arrayContaining([expect.objectContaining({ from: 'manual-review', to: 'done' })]),
+    );
+
+    // forbidden rows, including their declared `reason` strings — what D76's
+    // declaration-only rendering will read.
+    expect(body.workflow.forbidden).toEqual(SHIPPED_WORKFLOW.workflow.forbidden);
+    expect(body.workflow.forbidden.some((row) => row.reason === 'quarantined-cannot-complete')).toBe(
+      true,
+    );
+  });
+
+  it('nodes are reshaped to {id, kind, title?}; record and node properties/briefing/acceptance never ride this wire', async () => {
+    const harness = buildApiHarness();
+    const response = await harness.request(DECLARATION_PATH, { headers: authHeaders() });
+    const body = (await response.json()) as WorkflowDeclarationResponse;
+
+    expect(body.ref).toEqual(SHIPPED_WORKFLOW.ref);
+    expect(body.workflow.id).toBe(SHIPPED_WORKFLOW.workflow.id);
+    expect(body.workflow.title).toBe(SHIPPED_WORKFLOW.workflow.title);
+    expect(body.workflow.initial).toBe(SHIPPED_WORKFLOW.workflow.initial);
+    expect(body.workflow.nodes.length).toBe(SHIPPED_WORKFLOW.workflow.nodes.length);
+    // The tenth node (`manual-review`) is a NODE here too, not just an edge
+    // endpoint — the full declared table, node list included.
+    expect(body.workflow.nodes.some((node) => node.id === 'manual-review')).toBe(true);
+    for (const node of body.workflow.nodes) {
+      expect(Object.keys(node).sort()).toEqual([...new Set(['id', 'kind', ...('title' in node ? ['title'] : [])])].sort());
+    }
+    // `record` (the extension-relative JSON-schema path, meaningless off this
+    // host) is excluded from the envelope entirely.
+    expect('record' in body.workflow).toBe(false);
+  });
+
+  it('wrong rev / extension / workflow → 404 (plain text), no cache header', async () => {
+    const harness = buildApiHarness();
+    for (const { label, path } of wrongRefPaths('declaration')) {
+      const response = await harness.request(path, { headers: authHeaders() });
+      expect(response.status, label).toBe(404);
+      expect(response.headers.get('cache-control'), label).toBeNull();
+      expect(await response.text(), label).toBe('not found');
+    }
+  });
+
+  it('200 carries exactly the immutable Cache-Control header', async () => {
+    const harness = buildApiHarness();
+    const response = await harness.request(DECLARATION_PATH, { headers: authHeaders() });
+    expect(response.headers.get('cache-control')).toBe('private, max-age=31536000, immutable');
+  });
+
+  it('NO token → 401 (I14), and a genuinely empty token is refused the same way', async () => {
+    const harness = buildApiHarness();
+    const noToken = await harness.request(DECLARATION_PATH, { headers: authHeaders(null) });
+    expect(noToken.status).toBe(401);
+    const emptyToken = await harness.request(DECLARATION_PATH, { headers: authHeaders('') });
+    expect(emptyToken.status).toBe(401);
+  });
+
+  it('is read-only: fetching it writes nothing to the tasks stream', async () => {
+    const harness = buildApiHarness();
+    const headBefore = harness.tasksHead();
+    await harness.request(DECLARATION_PATH, { headers: authHeaders() });
+    expect(harness.tasksHead()).toBe(headBefore);
+  });
+});
+
+describe('GET /api/workflows/:extension/:workflow/:rev/payload-schema — q25 (S13·U2)', () => {
+  it('S13-A4: fields deep-equal the legacy /api/tasks/work-order-schema response — same constant', async () => {
+    const harness = buildApiHarness();
+    const genericResponse = await harness.request(PAYLOAD_SCHEMA_PATH, { headers: authHeaders() });
+    const legacyResponse = await harness.request('/api/tasks/work-order-schema', {
+      headers: authHeaders(),
+    });
+
+    expect(genericResponse.status).toBe(200);
+    expect(legacyResponse.status).toBe(200);
+    const genericBody = (await genericResponse.json()) as WorkflowPayloadSchemaResponse;
+    const legacyBody = (await legacyResponse.json()) as WorkOrderSchemaResponse;
+
+    expect(genericBody.fields).toEqual(legacyBody.fields);
+    expect(genericBody.fields).toEqual(WORK_ORDER_FIELD_DESCRIPTORS);
+    expect(genericBody.ref).toEqual(SHIPPED_WORKFLOW.ref);
+  });
+
+  it('wrong rev / extension / workflow → 404 (plain text), no cache header', async () => {
+    const harness = buildApiHarness();
+    for (const { label, path } of wrongRefPaths('payload-schema')) {
+      const response = await harness.request(path, { headers: authHeaders() });
+      expect(response.status, label).toBe(404);
+      expect(response.headers.get('cache-control'), label).toBeNull();
+      expect(await response.text(), label).toBe('not found');
+    }
+  });
+
+  it('200 carries exactly the immutable Cache-Control header', async () => {
+    const harness = buildApiHarness();
+    const response = await harness.request(PAYLOAD_SCHEMA_PATH, { headers: authHeaders() });
+    expect(response.headers.get('cache-control')).toBe('private, max-age=31536000, immutable');
+  });
+
+  it('NO token → 401 (I14), and a genuinely empty token is refused the same way', async () => {
+    const harness = buildApiHarness();
+    const noToken = await harness.request(PAYLOAD_SCHEMA_PATH, { headers: authHeaders(null) });
+    expect(noToken.status).toBe(401);
+    const emptyToken = await harness.request(PAYLOAD_SCHEMA_PATH, { headers: authHeaders('') });
+    expect(emptyToken.status).toBe(401);
+  });
+
+  it('is read-only: fetching it writes nothing to the tasks stream', async () => {
+    const harness = buildApiHarness();
+    const headBefore = harness.tasksHead();
+    await harness.request(PAYLOAD_SCHEMA_PATH, { headers: authHeaders() });
     expect(harness.tasksHead()).toBe(headBefore);
   });
 });
