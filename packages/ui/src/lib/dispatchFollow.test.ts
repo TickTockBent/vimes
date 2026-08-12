@@ -116,7 +116,7 @@ describe('sessionToSubscribeAfterTransition — the D53 rider, same guard, diffe
     expect(
       sessionToSubscribeAfterTransition(200, {
         accepted: true,
-        task: {},
+        instance: {},
         dispatch: { outcome: 'spawned', appSessionId: SESSION_ID, cwd: '/x' },
       }),
     ).toBe(SESSION_ID);
@@ -125,7 +125,7 @@ describe('sessionToSubscribeAfterTransition — the D53 rider, same guard, diffe
   it('refused / deferred / in-flight riders spawn nothing', () => {
     for (const outcome of ['refused', 'deferred', 'in-flight']) {
       expect(
-        sessionToSubscribeAfterTransition(200, { accepted: true, task: {}, dispatch: { outcome } }),
+        sessionToSubscribeAfterTransition(200, { accepted: true, instance: {}, dispatch: { outcome } }),
         outcome,
       ).toBeNull();
     }
@@ -134,9 +134,9 @@ describe('sessionToSubscribeAfterTransition — the D53 rider, same guard, diffe
   it('an ABSENT `dispatch` key — every non-promotion accepted transition — returns null', () => {
     // The common case: an ordinary move, or an outcome edge. No dispatch was
     // attempted at all, and the key is omitted rather than `undefined` (see
-    // taskApi.ts's `ProposeTransitionResponse`) — the guard must read that
+    // instanceApi.ts's `ProposeMoveResponse`) — the guard must read that
     // absence as cleanly as it reads any other malformed shape.
-    expect(sessionToSubscribeAfterTransition(200, { accepted: true, task: {} })).toBeNull();
+    expect(sessionToSubscribeAfterTransition(200, { accepted: true, instance: {} })).toBeNull();
   });
 
   it('a `result` key (the DISPATCH route\'s shape, not this one\'s) is ignored — wrong key, no cross-talk', () => {

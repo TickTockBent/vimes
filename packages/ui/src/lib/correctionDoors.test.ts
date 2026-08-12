@@ -15,8 +15,17 @@ import {
 // mirror of the amendments route's own `empty-amendment` refusal, and it is
 // the ONLY place ABSENT-STAYS-ABSENT is enforced for the amend path.
 
-function record(overrides: Partial<AmendableTaskRecord> = {}): AmendableTaskRecord {
-  return { taskId: 'task-1', ...overrides };
+// One record in the INSTANCES shape (S13·U3): the four authored fields live
+// under the opaque `payload` key (q13's split) and the rev is `payloadRev`.
+// `payload` overrides merge into the payload bag; everything else sits on the
+// core record, so a test can reach either half.
+function record(overrides: Record<string, unknown> = {}): AmendableTaskRecord {
+  const { payload, ...core } = overrides;
+  return {
+    instanceId: 'instance-1',
+    ...core,
+    payload: { ...(payload as Record<string, unknown> | undefined) },
+  };
 }
 
 function formModel(overrides: Partial<AmendFormModel> = {}): AmendFormModel {
@@ -38,13 +47,15 @@ describe('seedAmendFormModel', () => {
   it('a fully-authored record round-trips, criteria carrying their REAL ids', () => {
     const seed = seedAmendFormModel(
       record({
-        scope: 'fold the doors onto the board',
-        explicitlyOut: ['the orchestrator door'],
-        acceptanceCriteria: [
-          { id: 'crit-1', text: 'both suites pass' },
-          { id: 'crit-2', text: 'no daemon change' },
-        ],
-        killCriterion: 'the contract looks different than documented',
+        payload: {
+          scope: 'fold the doors onto the board',
+          explicitlyOut: ['the orchestrator door'],
+          acceptanceCriteria: [
+            { id: 'crit-1', text: 'both suites pass' },
+            { id: 'crit-2', text: 'no daemon change' },
+          ],
+          killCriterion: 'the contract looks different than documented',
+        },
       }),
     );
     expect(seed).toEqual({
@@ -61,20 +72,33 @@ describe('seedAmendFormModel', () => {
   it('a malformed criterion (missing id or text) is skipped, not guessed at', () => {
     const seed = seedAmendFormModel(
       record({
-        acceptanceCriteria: [
-          { id: 'crit-1', text: 'kept' },
-          { text: 'no id' },
-          { id: 'crit-3' },
-          null,
-          'not an object',
-        ],
+        payload: {
+          acceptanceCriteria: [
+            { id: 'crit-1', text: 'kept' },
+            { text: 'no id' },
+            { id: 'crit-3' },
+            null,
+            'not an object',
+          ],
+        },
       }),
     );
     expect(seed.acceptanceCriteria).toEqual([{ id: 'crit-1', text: 'kept' }]);
   });
 
+  it('an absent or non-object payload seeds an empty form rather than throwing (I8)', () => {
+    // The payload is OPAQUE and arrives over the wire; a record carrying none
+    // seeds exactly the same blank form an unauthored task does.
+    for (const payload of [undefined, null, 'not a payload', 7, []]) {
+      expect(
+        seedAmendFormModel({ instanceId: 'instance-1', payload } as never),
+        JSON.stringify(payload ?? null),
+      ).toEqual({ scope: '', explicitlyOut: [], acceptanceCriteria: [], killCriterion: '' });
+    }
+  });
+
   it('a non-array explicitlyOut/acceptanceCriteria degrades to [] rather than throwing', () => {
-    const seed = seedAmendFormModel(record({ explicitlyOut: 'not an array', acceptanceCriteria: 42 }));
+    const seed = seedAmendFormModel(record({ payload: { explicitlyOut: 'not an array', acceptanceCriteria: 42 } }));
     expect(seed.explicitlyOut).toEqual([]);
     expect(seed.acceptanceCriteria).toEqual([]);
   });
@@ -205,7 +229,7 @@ describe('buildAmendmentBody', () => {
 });
 
 describe('correctionDoors', () => {
-  it('rev defaults to 0 when workOrderRev is absent', () => {
+  it('rev defaults to 0 when payloadRev is absent (never revised)', () => {
     const doors = correctionDoors(record());
     expect(doors).toEqual([
       { kind: 'steer', title: 'Steer — same work-order', detail: 'rev 0, fresh attempt — dispatches now' },
@@ -218,7 +242,7 @@ describe('correctionDoors', () => {
   });
 
   it('rev N reads through both doors\' detail strings, steer first', () => {
-    const doors = correctionDoors(record({ workOrderRev: 3 }));
+    const doors = correctionDoors(record({ payloadRev: 3 }));
     expect(doors[0]).toEqual({
       kind: 'steer',
       title: 'Steer — same work-order',
@@ -231,28 +255,28 @@ describe('correctionDoors', () => {
     });
   });
 
-  it('a malformed workOrderRev (non-number) falls back to 0 rather than throwing', () => {
-    const doors = correctionDoors(record({ workOrderRev: 'not a number' }));
+  it('a malformed payloadRev (non-number) falls back to 0 rather than throwing', () => {
+    const doors = correctionDoors(record({ payloadRev: 'not a number' }));
     expect(doors[0]!.detail).toBe('rev 0, fresh attempt — dispatches now');
   });
 });
 
 describe('correctionDoorsAvailable', () => {
-  it('false for a task with no sessionRefs at all', () => {
+  it('false for a task with no attachedSessions at all', () => {
     expect(correctionDoorsAvailable(record())).toBe(false);
   });
 
-  it('false for a task with an empty sessionRefs array — nothing has run yet', () => {
-    expect(correctionDoorsAvailable(record({ sessionRefs: [] }))).toBe(false);
+  it('false for a task with an empty attachedSessions array — nothing has run yet', () => {
+    expect(correctionDoorsAvailable(record({ attachedSessions: [] }))).toBe(false);
   });
 
   it('true once the task has run at least once', () => {
-    expect(correctionDoorsAvailable(record({ sessionRefs: [{ appSessionId: 's-1', stage: 'implementing' }] }))).toBe(
+    expect(correctionDoorsAvailable(record({ attachedSessions: [{ appSessionId: 's-1', node: 'implementing' }] }))).toBe(
       true,
     );
   });
 
-  it('a malformed (non-array) sessionRefs reads as not-available rather than throwing', () => {
-    expect(correctionDoorsAvailable(record({ sessionRefs: 'not an array' }))).toBe(false);
+  it('a malformed (non-array) attachedSessions reads as not-available rather than throwing', () => {
+    expect(correctionDoorsAvailable(record({ attachedSessions: 'not an array' }))).toBe(false);
   });
 });

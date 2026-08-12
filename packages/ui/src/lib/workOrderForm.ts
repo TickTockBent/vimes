@@ -3,7 +3,8 @@
 // The board's create sheet lets a human author the four work-order fields
 // (scope, explicitlyOut, acceptanceCriteria, killCriterion). The FIELD LIST is
 // not hard-coded here: it is served by the daemon as a descriptor
-// (`GET /api/tasks/work-order-schema`) and rendered from `store.workOrderSchema`,
+// (`GET /api/workflows/:e/:w/:r/payload-schema`, S13·U2's q25 introspection)
+// and rendered from `store.workOrderSchema`,
 // because `@vimes/core` — where the zod that defines the shape lives — is a
 // deliberate non-dependency of this package (see lib/types.ts). This file owns
 // only the two things that must NOT live in the .vue: the descriptor's narrow
@@ -11,7 +12,7 @@
 // builder is unit-tested; the .vue that drives it is manual (house rule).
 
 // The served descriptor's shape, mirrored narrowly (the daemon is the source —
-// see WorkOrderFieldDescriptor in packages/daemon/src/taskApi.ts). `kind` drives
+// see WorkOrderFieldDescriptor in packages/daemon/src/instanceApi.ts). `kind` drives
 // how the sheet renders each field:
 //   • longtext      → a <textarea>.
 //   • list          → repeatable plain-string rows.

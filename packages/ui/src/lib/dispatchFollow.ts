@@ -10,9 +10,9 @@
 //
 // ⚠ S7·7e — TWO WAYS A TASK ACTION NOW MINTS A SESSION, ONE GUARD. An explicit
 // `POST /.../dispatch` is one; a D53 promotion into an active stage is the
-// other — the transitions route makes its own dispatch attempt and rides the
-// result on a top-level `dispatch` field (see taskApi.ts's
-// `ProposeTransitionResponse`), rather than under `result` the way the
+// other — the moves route makes its own dispatch attempt and rides the
+// result on a top-level `dispatch` field (see instanceApi.ts's
+// `ProposeMoveResponse`), rather than under `result` the way the
 // dispatch route does. Both need the identical subscribe-and-refresh glue, so
 // both exported functions below share ONE inner check
 // (`spawnedSessionIdFromResult`) and differ only in WHERE they look for the
@@ -60,7 +60,7 @@ function spawnedSessionIdFromResult(result: unknown): string | null {
   return typeof appSessionId === 'string' && appSessionId.length > 0 ? appSessionId : null;
 }
 
-// `POST /api/tasks/:taskId/dispatch` — the result lives under `body.result`.
+// `POST /api/instances/:instanceId/dispatch` — the result lives under `body.result`.
 export function sessionToSubscribeAfterDispatch(status: number, body: unknown): string | null {
   if (status !== 200) {
     return null;
@@ -71,12 +71,12 @@ export function sessionToSubscribeAfterDispatch(status: number, body: unknown): 
   return spawnedSessionIdFromResult((body as Record<string, unknown>).result);
 }
 
-// `POST /api/tasks/:taskId/transitions` — an accepted promotion into an
+// `POST /api/instances/:instanceId/moves` — an accepted promotion into an
 // active stage carries the SAME shape of result, but at the TOP LEVEL of the
-// envelope as `body.dispatch` (taskApi.ts's `ProposeTransitionResponse`),
+// envelope as `body.dispatch` (instanceApi.ts's `ProposeMoveResponse`),
 // because `body.result` on this route is not a dispatch result at all — it
-// does not exist; the accepted envelope carries `task`. Every other accepted
-// transition (an outcome edge, a move into a non-active stage) omits the
+// does not exist; the accepted envelope carries `instance`. Every other accepted
+// move (an outcome edge, a move into a non-active stage) omits the
 // `dispatch` key entirely, which `spawnedSessionIdFromResult` handles for
 // free: a missing key reads as `undefined`, `typeof undefined !== 'object'`,
 // and the guard returns null exactly as it should for "nothing was

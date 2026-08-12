@@ -3,13 +3,14 @@
 // D46 gave the board exactly two legitimate ways to correct dispatched work,
 // and D46's own closing line is why this file exists at all: "the failure in
 // T7 was never a missing door — it was that the doors weren't labeled."
-//   • STEER — `review → implementing`, same `workOrderRev`, a fresh attempt
+//   • STEER — `review → implementing`, same `payloadRev`, a fresh attempt
 //     seeded with the prior diff + review feedback + worklog. This is just the
 //     board's existing dispatch, relabeled with its meaning: it rides the
 //     UNCHANGED dispatch handler in TaskBoardView.vue.
-//   • AMEND — a new `workOrderRev` via `POST /api/tasks/:taskId/amendments`
-//     (S7·2b, already landed daemon-side — see that route's own header in
-//     packages/daemon/src/taskApi.ts). D53 is explicit that amending NEVER
+//   • AMEND — a new `payloadRev` via
+//     `POST /api/instances/:instanceId/payload-revisions` (S7·2b, landed
+//     daemon-side — see that route's own header in
+//     packages/daemon/src/instanceApi.ts). D53 is explicit that amending NEVER
 //     dispatches: it changes what the work order SAYS, and whether to re-run
 //     against the new revision is a separate, later act.
 //
@@ -20,8 +21,9 @@
 // door descriptors themselves. The .vue renders both; it decides nothing.
 //
 // @vimes/core is deliberately NOT a dependency of this package (lib/types.ts's
-// header) — the wire shapes below mirror packages/core/src/schemas.ts and
-// packages/daemon/src/taskApi.ts's `amendWorkOrderBodySchema` narrowly.
+// header) — the wire shapes below mirror
+// packages/core/src/projections/instances.ts and
+// packages/daemon/src/instanceApi.ts's `amendWorkOrderBodySchema` narrowly.
 
 // One row of the amend form's criteria editor. `id === null` marks a NEW row
 // (the server mints its id); a non-null id is an EXISTING criterion being kept
@@ -42,7 +44,7 @@ export interface AmendFormModel {
   killCriterion: string;
 }
 
-// The amendments route's body (S7·2b): every field OPTIONAL — ABSENT MEANS
+// The payload-revisions route's body (S7·2b): every field OPTIONAL — ABSENT MEANS
 // UNTOUCHED, which is a different fact from "cleared". `amendedBy` is fixed:
 // the UI is always a human at the keyboard, never the dispatcher (that door
 // belongs to `report_review`'s verdict path, a different writer entirely).
@@ -54,25 +56,37 @@ export interface AmendmentBody {
   killCriterion?: string;
 }
 
-// The task-record fields this file reads, mirrored narrowly and loosely (the
-// same posture as taskBoard.ts's `TaskBoardRecord` — every field but `taskId`
-// is `unknown` on purpose, so a hostile or degenerate record never throws here;
-// see that interface's own note on why I8 forbids a stricter type). This is a
-// SEPARATE mirror from `TaskBoardRecord`, not a widening of it: that interface
-// is the CARD's inputs, this one is the AMEND FORM's, and they read different
-// slices of the same wire record.
+// The instance-record fields this file reads, mirrored narrowly and loosely
+// (the same posture as taskBoard.ts's `TaskBoardRecord` — every field but
+// `instanceId` is `unknown` on purpose, so a hostile or degenerate record never
+// throws here; see that interface's own note on why I8 forbids a stricter
+// type). This is a SEPARATE mirror from `TaskBoardRecord`, not a widening of
+// it: that interface is the CARD's inputs, this one is the AMEND FORM's, and
+// they read different slices of the same wire record.
+//
+// ⚠ S13·U3: THE FOUR AUTHORED FIELDS MOVED UNDER `payload` (q13's split) and
+// the rev is spelled `payloadRev`. The engine never reads inside `payload` to
+// decide anything; this form reads it because a work order IS tenant content.
 export interface AmendableTaskRecord {
-  readonly taskId: string;
-  readonly workOrderRev?: unknown;
-  readonly sessionRefs?: unknown;
-  readonly scope?: unknown;
-  readonly explicitlyOut?: unknown;
-  readonly acceptanceCriteria?: unknown;
-  readonly killCriterion?: unknown;
+  readonly instanceId: string;
+  readonly payloadRev?: unknown;
+  readonly attachedSessions?: unknown;
+  readonly payload?: unknown;
 }
 
 function asString(value: unknown): string | null {
   return typeof value === 'string' ? value : null;
+}
+
+// The instance's opaque payload as a plain bag, or an empty one when the record
+// carries none / carries a non-object. TOTAL (I8): the four reads below are all
+// guarded, so an empty bag is indistinguishable from an unauthored work order,
+// which is exactly right.
+function payloadOf(task: AmendableTaskRecord): Record<string, unknown> {
+  const payload = task.payload;
+  return typeof payload === 'object' && payload !== null && !Array.isArray(payload)
+    ? (payload as Record<string, unknown>)
+    : {};
 }
 
 function asNumber(value: unknown): number | null {
@@ -118,11 +132,12 @@ function asCriterionRows(value: unknown): AmendCriterionRow[] {
 // "undefined"); absent lists → `[]`; criteria carry their REAL ids, which is
 // what lets a submitted reword still key back to the record's own criterion.
 export function seedAmendFormModel(task: AmendableTaskRecord): AmendFormModel {
+  const payload = payloadOf(task);
   return {
-    scope: asString(task.scope) ?? '',
-    explicitlyOut: asStringArray(task.explicitlyOut),
-    acceptanceCriteria: asCriterionRows(task.acceptanceCriteria),
-    killCriterion: asString(task.killCriterion) ?? '',
+    scope: asString(payload.scope) ?? '',
+    explicitlyOut: asStringArray(payload.explicitlyOut),
+    acceptanceCriteria: asCriterionRows(payload.acceptanceCriteria),
+    killCriterion: asString(payload.killCriterion) ?? '',
   };
 }
 
@@ -164,8 +179,8 @@ function criteriaRowsEqual(
 // it) — the diff builder, the heart of this unit.
 //
 // Returns `null` when nothing survives the diff: the client-side mirror of the
-// amendments route's own `empty-amendment` refusal, so a no-op submit never
-// reaches the network at all.
+// payload-revisions route's own `empty-amendment` refusal, so a no-op submit
+// never reaches the network at all.
 //
 // ⚠ PROSE VS LIST, TWO DIFFERENT NOTIONS OF "CLEARED" (the wire's own limit,
 // not a choice made here). The event this route writes CANNOT express "clear
@@ -223,11 +238,13 @@ export interface CorrectionDoor {
 
 // The two doors, ALWAYS returned in this order (steer first — it is the
 // cheaper, more common correction: same contract, try again). `N` is the
-// task's current `workOrderRev`, defaulting to 0 for a record that predates
-// the field or carries a malformed one — the same "never throw, never guess a
-// non-zero number" posture as the rest of this file.
+// instance's current `payloadRev`, defaulting to 0 for a record that has never
+// been revised (the field is ABSENT until the first revision — the reader
+// spells the default, the record does not) or carries a malformed one — the
+// same "never throw, never guess a non-zero number" posture as the rest of
+// this file.
 export function correctionDoors(task: AmendableTaskRecord): readonly CorrectionDoor[] {
-  const rev = asNumber(task.workOrderRev) ?? 0;
+  const rev = asNumber(task.payloadRev) ?? 0;
   return [
     {
       kind: 'steer',
@@ -244,9 +261,9 @@ export function correctionDoors(task: AmendableTaskRecord): readonly CorrectionD
 
 // The doors render only once the task has run at least once — a never-
 // dispatched task has nothing to steer or amend against yet, and keeps
-// today's plain Dispatch button. `sessionRefs` is the same append-only trail
-// `taskBoard.ts`'s `sessionTrailOf` reads; a non-array (never dispatched, or a
-// malformed record) reads as "not available" rather than throwing.
+// today's plain Dispatch button. `attachedSessions` is the same append-only
+// trail `taskBoard.ts`'s `sessionTrailOf` reads; a non-array (never dispatched,
+// or a malformed record) reads as "not available" rather than throwing.
 export function correctionDoorsAvailable(task: AmendableTaskRecord): boolean {
-  return Array.isArray(task.sessionRefs) && task.sessionRefs.length > 0;
+  return Array.isArray(task.attachedSessions) && task.attachedSessions.length > 0;
 }

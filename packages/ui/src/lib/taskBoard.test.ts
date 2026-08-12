@@ -12,10 +12,13 @@ import {
   findTaskCard,
   groupTasksForBoard,
   moveOptionsFor,
+  nodeEdgesFromDeclaration,
+  readWorkflowRefs,
   sessionTrailOf,
   shortTaskId,
   stageKind,
   stageLabel,
+  workflowRefKey,
 } from './taskBoard.js';
 
 // ─── slice 6 step 9 — the task board's pure derivations ──────────────────────
@@ -29,11 +32,10 @@ import {
 //   • the move sheet IS filtered by the SERVED edge table, never a copy of it
 //     (assertion 8, reversed 2026-07-24 — see moveOptionsFor's own note).
 
-// A fixture mirroring the WIRE SHAPE `GET /api/tasks/stage-edges` serves (the
-// daemon's rendering of the declared legality table) —
-// transcribed here as test data ONLY, exactly like every other mirrored wire
-// shape in this file. This is not a second copy of the legality DECISION: it
-// stands in for what the daemon would hand `moveOptionsFor` at runtime.
+// A fixture standing in for the derived legal-target table (what
+// `nodeEdgesFromDeclaration` hands `moveOptionsFor` at runtime) — transcribed
+// here as test data ONLY, exactly like every other mirrored wire shape in this
+// file. This is not a second copy of the legality DECISION.
 const STAGE_EDGES_FIXTURE: Record<string, readonly string[]> = {
   backlog: ['planning', 'blocked-external'],
   planning: ['plan-ready', 'blocked-external', 'quarantined', 'backlog'],
@@ -50,28 +52,38 @@ const TASK_TWO = 'bbbbbbbb-2222-4000-8000-000000000002';
 const TASK_THREE = 'eeeeeeee-4444-4000-8000-000000000004';
 const SESSION_ONE = 'cccccccc-3333-4000-8000-000000000003';
 
+// One record in the INSTANCES shape (S13·U3) — `instanceId`/`project`/
+// `currentNode`/`attachedSessions`, with the authored fields under the opaque
+// `payload` key. `payload` overrides merge into the payload bag; every other
+// override sits on the core record, so a test can reach either half.
 function taskRecord(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  const { payload, ...core } = overrides;
   return {
-    taskId: TASK_ONE,
-    projectRoot: '/home/user/projects/vimes',
-    stage: 'backlog',
+    instanceId: TASK_ONE,
+    project: '/home/user/projects/vimes',
+    workflow: { extension: 'vimes-tasks', workflow: 'task', rev: '1.0.0' },
+    currentNode: 'backlog',
+    nodeHistory: [],
+    edgeTraversalCounts: {},
+    attemptsPerNode: {},
     manualReviewRequired: false,
     isolation: 'worktree',
     gates: {},
-    sessionRefs: [],
+    attachedSessions: [],
     createdBy: 'human',
     lastHeartbeatAt: null,
     staleRetries: 0,
-    ...overrides,
+    ...core,
+    payload: { ...(payload as Record<string, unknown> | undefined) },
   };
 }
 
-function projectionBody(...tasks: Record<string, unknown>[]): unknown {
+function projectionBody(...instances: Record<string, unknown>[]): unknown {
   const byId: Record<string, unknown> = {};
-  for (const task of tasks) {
-    byId[task.taskId as string] = task;
+  for (const instance of instances) {
+    byId[instance.instanceId as string] = instance;
   }
-  return { tasks: byId };
+  return { instances: byId };
 }
 
 function sessionRecord(overrides: Partial<SessionRecord> = {}): SessionRecord {
@@ -93,8 +105,8 @@ describe('groupTasksForBoard — stages, kinds, and the layout-agnostic contract
   it('puts each task under its own stage', () => {
     const board = groupTasksForBoard(
       projectionBody(
-        taskRecord({ taskId: TASK_ONE, stage: 'review' }),
-        taskRecord({ taskId: TASK_TWO, stage: 'implementing' }),
+        taskRecord({ instanceId: TASK_ONE, currentNode: 'review' }),
+        taskRecord({ instanceId: TASK_TWO, currentNode: 'implementing' }),
       ),
     );
     const review = board.flow.find((group) => group.stage === 'review')!;
@@ -108,7 +120,7 @@ describe('groupTasksForBoard — stages, kinds, and the layout-agnostic contract
   it('carries all six flow stages IN PIPELINE ORDER even when every one is empty', () => {
     // An empty stage still renders its header and its count: "nothing in
     // review" is information, not an absence. So the groups must exist at zero.
-    const board = groupTasksForBoard({ tasks: {} });
+    const board = groupTasksForBoard({ instances: {} });
     expect(board.flow.map((group) => group.stage)).toEqual([
       'backlog',
       'planning',
@@ -127,8 +139,8 @@ describe('groupTasksForBoard — stages, kinds, and the layout-agnostic contract
     // with the flow would draw them as steps of a pipeline they are not part of.
     const board = groupTasksForBoard(
       projectionBody(
-        taskRecord({ taskId: TASK_ONE, stage: 'quarantined' }),
-        taskRecord({ taskId: TASK_TWO, stage: 'blocked-external' }),
+        taskRecord({ instanceId: TASK_ONE, currentNode: 'quarantined' }),
+        taskRecord({ instanceId: TASK_TWO, currentNode: 'blocked-external' }),
       ),
     );
     expect(board.exceptions.map((group) => group.stage)).toEqual([...EXCEPTION_STAGES]);
@@ -156,7 +168,7 @@ describe('groupTasksForBoard — stages, kinds, and the layout-agnostic contract
     expect(EXCEPTION_STAGES).toContain('cancelled');
 
     const board = groupTasksForBoard(
-      projectionBody(taskRecord({ taskId: TASK_ONE, stage: 'cancelled' })),
+      projectionBody(taskRecord({ instanceId: TASK_ONE, currentNode: 'cancelled' })),
     );
     const cancelledGroup = board.exceptions.find((group) => group.stage === 'cancelled');
     expect(cancelledGroup).toBeDefined();
@@ -169,7 +181,7 @@ describe('groupTasksForBoard — stages, kinds, and the layout-agnostic contract
   });
 
   it('renders a ZERO-count tray — "no blocked work" is a fact worth showing', () => {
-    const board = groupTasksForBoard(projectionBody(taskRecord({ stage: 'backlog' })));
+    const board = groupTasksForBoard(projectionBody(taskRecord({ currentNode: 'backlog' })));
     expect(board.exceptions).toHaveLength(EXCEPTION_STAGES.length);
     expect(board.exceptions.map((group) => group.count)).toEqual(EXCEPTION_STAGES.map(() => 0));
   });
@@ -185,7 +197,7 @@ describe('groupTasksForBoard — stages, kinds, and the layout-agnostic contract
     //   2. the value carries NOTHING presentational — no CSS class, no width, no
     //      colour, no icon, no ordinal that only makes sense stacked.
     const board = groupTasksForBoard(
-      projectionBody(taskRecord({ stage: 'planning' }), taskRecord({ taskId: TASK_TWO, stage: 'quarantined' })),
+      projectionBody(taskRecord({ currentNode: 'planning' }), taskRecord({ instanceId: TASK_TWO, currentNode: 'quarantined' })),
     );
 
     for (const group of board.groups) {
@@ -229,7 +241,7 @@ describe('groupTasksForBoard — stages, kinds, and the layout-agnostic contract
 
 describe('deriveTaskCard — labelling, and never a fabricated field', () => {
   it('uses the TITLE when the record carries one', () => {
-    const card = deriveTaskCard(taskRecord({ title: 'add a card title to the board' }) as never);
+    const card = deriveTaskCard(taskRecord({ payload: { title: 'add a card title to the board' } }) as never);
     expect(card.label).toBe('add a card title to the board');
     expect(card.labelIsFallback).toBe(false);
   });
@@ -246,14 +258,14 @@ describe('deriveTaskCard — labelling, and never a fabricated field', () => {
     // editorialise). "Never a blank card" is decided in exactly one place, and
     // that place is here.
     for (const blankTitle of ['', '   ', '\t\n ']) {
-      const card = deriveTaskCard(taskRecord({ title: blankTitle }) as never);
+      const card = deriveTaskCard(taskRecord({ payload: { title: blankTitle } }) as never);
       expect(card.label, JSON.stringify(blankTitle)).toBe(shortTaskId(TASK_ONE));
       expect(card.labelIsFallback).toBe(true);
     }
   });
 
   it('trims a padded title rather than rendering the padding', () => {
-    const card = deriveTaskCard(taskRecord({ title: '  ship the board  ' }) as never);
+    const card = deriveTaskCard(taskRecord({ payload: { title: '  ship the board  ' } }) as never);
     expect(card.label).toBe('ship the board');
     expect(card.labelIsFallback).toBe(false);
   });
@@ -261,7 +273,7 @@ describe('deriveTaskCard — labelling, and never a fabricated field', () => {
   it('carries only what the record has: project basename, createdBy, isolation, review flag', () => {
     const card = deriveTaskCard(
       taskRecord({
-        projectRoot: '/home/user/projects/vimes',
+        project: '/home/user/projects/vimes',
         createdBy: 'orchestrator',
         isolation: 'worktree',
         manualReviewRequired: true,
@@ -300,7 +312,7 @@ describe('deriveTaskCard — labelling, and never a fabricated field', () => {
   it('renders NO chip when the record carries no createdBy at all', () => {
     // ⚠ THE FAIL-TO-NO-CHIP DIRECTION. A chip claiming the orchestrator wrote
     // something it did not would corrupt the measurement the chip exists to make.
-    expect(deriveTaskCard({ taskId: TASK_ONE }).authoredByOrchestrator).toBe(false);
+    expect(deriveTaskCard({ instanceId: TASK_ONE }).authoredByOrchestrator).toBe(false);
   });
 
   it('shows NO worktree marker for a shared-dir task — a badge nobody asked for is noise', () => {
@@ -311,7 +323,7 @@ describe('deriveTaskCard — labelling, and never a fabricated field', () => {
   it('never fabricates a field the record does not have', () => {
     // The pillar-4 posture: absent is null, and null is a thing the view must
     // render as absence — never as "unknown", never as a plausible default.
-    const card = deriveTaskCard({ taskId: TASK_ONE });
+    const card = deriveTaskCard({ instanceId: TASK_ONE });
     expect(card.projectName).toBeNull();
     expect(card.projectRoot).toBeNull();
     expect(card.createdBy).toBeNull();
@@ -324,9 +336,9 @@ describe('deriveTaskCard — labelling, and never a fabricated field', () => {
   it('reports the liveness of the MOST RECENT attached session', () => {
     const card = deriveTaskCard(
       taskRecord({
-        sessionRefs: [
-          { stage: 'planning', appSessionId: 'dddddddd-0000-4000-8000-000000000009' },
-          { stage: 'implementing', appSessionId: SESSION_ONE },
+        attachedSessions: [
+          { node: 'planning', appSessionId: 'dddddddd-0000-4000-8000-000000000009' },
+          { node: 'implementing', appSessionId: SESSION_ONE },
         ],
       }) as never,
       { [SESSION_ONE]: sessionRecord({ liveness: 'interrupted' }) },
@@ -342,7 +354,7 @@ describe('deriveTaskCard — labelling, and never a fabricated field', () => {
     // A known unknown. Rendering it as dead would be a lie about a session that
     // may well be running.
     const card = deriveTaskCard(
-      taskRecord({ sessionRefs: [{ stage: 'review', appSessionId: SESSION_ONE }] }) as never,
+      taskRecord({ attachedSessions: [{ node: 'review', appSessionId: SESSION_ONE }] }) as never,
       {},
     );
     expect(card.latestSession).toEqual({ appSessionId: SESSION_ONE, stage: 'review', liveness: null });
@@ -352,20 +364,20 @@ describe('deriveTaskCard — labelling, and never a fabricated field', () => {
 describe('groupTasksForBoard — the PROJECT SCOPE (S8·2, D42)', () => {
   const VIMES_ROOT = '/home/w/projects/infrastructure/vimes';
   const scopedBody = {
-    tasks: {
-      [TASK_ONE]: taskRecord({ taskId: TASK_ONE, stage: 'backlog', projectRoot: VIMES_ROOT }),
+    instances: {
+      [TASK_ONE]: taskRecord({ instanceId: TASK_ONE, currentNode: 'backlog', project: VIMES_ROOT }),
       [TASK_TWO]: taskRecord({
-        taskId: TASK_TWO,
-        stage: 'backlog',
-        projectRoot: `${VIMES_ROOT}/packages/ui`,
+        instanceId: TASK_TWO,
+        currentNode: 'backlog',
+        project: `${VIMES_ROOT}/packages/ui`,
       }),
       [TASK_THREE]: taskRecord({
-        taskId: TASK_THREE,
-        stage: 'backlog',
+        instanceId: TASK_THREE,
+        currentNode: 'backlog',
         // ⚠ THE TRAP, one level up: a SIBLING project whose root shares a string
         // prefix with vimes. A bare startsWith would put this card on vimes's
         // board, which is exactly what the boundary guard exists to prevent.
-        projectRoot: `${VIMES_ROOT}-2`,
+        project: `${VIMES_ROOT}-2`,
       }),
     },
   };
@@ -394,9 +406,166 @@ describe('groupTasksForBoard — the PROJECT SCOPE (S8·2, D42)', () => {
   it('EXCLUDES a task with no usable projectRoot from a scoped board, keeps it unscoped', () => {
     // A boundary is proved, never assumed (D42) — a task that cannot be shown to
     // belong here does not appear here. Unscoped, it is still a task that exists.
-    const body = { tasks: { [TASK_ONE]: { taskId: TASK_ONE, stage: 'backlog' } } };
+    const body = { instances: { [TASK_ONE]: { instanceId: TASK_ONE, currentNode: 'backlog' } } };
     expect(groupTasksForBoard(body, {}, VIMES_ROOT).totalTasks).toBe(0);
     expect(groupTasksForBoard(body, {}).totalTasks).toBe(1);
+  });
+});
+
+// ── S13·U3: q25 declaration introspection, read client-side ─────────────────
+
+describe('readWorkflowRefs / workflowRefKey — the discovery half (U2b)', () => {
+  const BOOT_REF = { extension: 'vimes-tasks', workflow: 'task', rev: '1.0.0' };
+
+  it('reads the refs the index lists, in index order', () => {
+    expect(readWorkflowRefs({ workflows: [{ ref: BOOT_REF }] })).toEqual([BOOT_REF]);
+  });
+
+  it('DEDUPES by ref — one fetch per ref is the whole point (F3 rider 2)', () => {
+    const refs = readWorkflowRefs({
+      workflows: [{ ref: BOOT_REF }, { ref: { ...BOOT_REF } }, { ref: { ...BOOT_REF, rev: '2.0.0' } }],
+    });
+    expect(refs).toHaveLength(2);
+    expect(refs.map(workflowRefKey)).toEqual(['vimes-tasks/task/1.0.0', 'vimes-tasks/task/2.0.0']);
+  });
+
+  it('is TOTAL over hostile bodies — an unreadable index is [], never a throw', () => {
+    for (const body of [
+      null,
+      undefined,
+      7,
+      'workflows',
+      [],
+      {},
+      { workflows: null },
+      { workflows: 'nope' },
+      { workflows: [null, 7, 'x'] },
+      { workflows: [{}] },
+      { workflows: [{ ref: null }] },
+      { workflows: [{ ref: { extension: 'e', workflow: 'w' } }] },
+      { workflows: [{ ref: { extension: 'e', workflow: 'w', rev: 3 } }] },
+    ]) {
+      expect(readWorkflowRefs(body), JSON.stringify(body)).toEqual([]);
+    }
+  });
+
+  it('keeps the usable entries and drops only the malformed siblings', () => {
+    expect(readWorkflowRefs({ workflows: [null, { ref: BOOT_REF }, { ref: { extension: 'e' } }] })).toEqual([
+      BOOT_REF,
+    ]);
+  });
+});
+
+describe('nodeEdgesFromDeclaration — the FULL declared table, narrowed to the board', () => {
+  // A declaration body in the wire shape `GET /api/workflows/:e/:w/:r/declaration`
+  // serves. ⚠ IT INCLUDES `manual-review` ROWS ON PURPOSE: the q25 route serves
+  // the full declared table (unlike the retired stage-edges alias, which was
+  // pre-narrowed daemon-side), so the narrowing is what this function is for.
+  function declaration(edges: readonly Record<string, unknown>[]): unknown {
+    return {
+      ref: { extension: 'vimes-tasks', workflow: 'task', rev: '1.0.0' },
+      workflow: {
+        id: 'task',
+        title: 'Task',
+        initial: 'backlog',
+        nodes: [],
+        edges,
+        forbidden: [{ from: 'quarantined', to: 'done', reason: 'quarantined-cannot-complete' }],
+      },
+    };
+  }
+
+  it('reads a node’s declared out-edges, in DECLARATION order', () => {
+    const edges = nodeEdgesFromDeclaration(
+      declaration([
+        { from: 'review', to: 'done' },
+        { from: 'review', to: 'quarantined' },
+        { from: 'review', to: 'blocked-external' },
+      ]),
+    );
+    // Declaration order, NOT the frozen wire order the retired alias imposed —
+    // an accepted cosmetic delta (orchestrator ruling 2026-08-12).
+    expect(edges!.review).toEqual(['done', 'quarantined', 'blocked-external']);
+  });
+
+  it('⚠ DROPS every row touching a node outside the nine the board knows', () => {
+    // The manual-review rows are the reason this narrowing exists. Offering
+    // `manual-review` in the move sheet would be a NEW capability (slice-13 §2)
+    // AND a proposal to a node the record's own enum cannot hold.
+    const edges = nodeEdgesFromDeclaration(
+      declaration([
+        { from: 'review', to: 'done' },
+        { from: 'review', to: 'manual-review' },
+        { from: 'manual-review', to: 'done' },
+        { from: 'manual-review', to: 'implementing' },
+      ]),
+    )!;
+    expect(edges.review).toEqual(['done']);
+    expect(Object.keys(edges)).not.toContain('manual-review');
+    for (const targets of Object.values(edges)) {
+      expect(targets).not.toContain('manual-review');
+    }
+  });
+
+  it('gives EVERY known stage a key, including a terminal one with no out-edges', () => {
+    const edges = nodeEdgesFromDeclaration(declaration([{ from: 'backlog', to: 'planning' }]))!;
+    expect(Object.keys(edges).sort()).toEqual([...KNOWN_STAGES].sort());
+    expect(edges.done).toEqual([]);
+    // ...and a terminal stage's empty set means the sheet offers nothing.
+    expect(moveOptionsFor('done', edges)).toEqual([]);
+  });
+
+  it('dedupes a pair the expanded table lists twice — never two identical buttons', () => {
+    const edges = nodeEdgesFromDeclaration(
+      declaration([
+        { from: 'backlog', to: 'planning' },
+        { from: 'backlog', to: 'planning' },
+      ]),
+    )!;
+    expect(edges.backlog).toEqual(['planning']);
+  });
+
+  it('is TOTAL over hostile bodies — null (a safe empty), never a throw', () => {
+    for (const body of [
+      null,
+      undefined,
+      7,
+      'declaration',
+      {},
+      { workflow: null },
+      { workflow: 'nope' },
+      { workflow: {} },
+      { workflow: { edges: null } },
+      { workflow: { edges: 'nope' } },
+    ]) {
+      expect(nodeEdgesFromDeclaration(body), JSON.stringify(body)).toBeNull();
+    }
+  });
+
+  it('skips a malformed edge row without losing its well-formed siblings', () => {
+    const edges = nodeEdgesFromDeclaration(
+      declaration([
+        { from: 'backlog', to: 'planning' },
+        null as unknown as Record<string, unknown>,
+        { from: 42, to: 'planning' },
+        { from: 'backlog', to: null },
+        { from: 'backlog' },
+        { from: 'backlog', to: 'blocked-external' },
+      ]),
+    )!;
+    expect(edges.backlog).toEqual(['planning', 'blocked-external']);
+  });
+
+  it('feeds moveOptionsFor exactly as the served table used to', () => {
+    const edges = nodeEdgesFromDeclaration(
+      declaration([
+        { from: 'planning', to: 'plan-ready' },
+        { from: 'planning', to: 'quarantined' },
+        { from: 'planning', to: 'manual-review' },
+      ]),
+    );
+    const offered = moveOptionsFor('planning', edges).map((option) => option.stage);
+    expect(offered).toEqual(['plan-ready', 'quarantined']);
   });
 });
 
@@ -470,7 +639,7 @@ describe('findTaskCard + moveOptionsFor — the sheet follows the LIVE task, not
   it('re-derives destinations when the task moves stage under an open sheet', () => {
     // The sheet opens over the task while it is in `implementing`.
     const boardBefore = groupTasksForBoard(
-      projectionBody(taskRecord({ taskId: TASK_ONE, stage: 'implementing' })),
+      projectionBody(taskRecord({ instanceId: TASK_ONE, currentNode: 'implementing' })),
     );
     const snapshot = findTaskCard(boardBefore, TASK_ONE)!; // what openSheet captured
     const optionsAtOpen = moveOptionsFor(snapshot.stage, STAGE_EDGES_FIXTURE).map((option) => option.stage);
@@ -478,7 +647,7 @@ describe('findTaskCard + moveOptionsFor — the sheet follows the LIVE task, not
 
     // The transition streams back: the projection now has the task in `review`.
     const boardAfter = groupTasksForBoard(
-      projectionBody(taskRecord({ taskId: TASK_ONE, stage: 'review' })),
+      projectionBody(taskRecord({ instanceId: TASK_ONE, currentNode: 'review' })),
     );
 
     // OLD (snapshot) behavior would keep offering `implementing`'s destinations.
@@ -491,7 +660,7 @@ describe('findTaskCard + moveOptionsFor — the sheet follows the LIVE task, not
   });
 
   it('returns null when the taskId is not in the board (sheet closes over a gone task)', () => {
-    const board = groupTasksForBoard(projectionBody(taskRecord({ taskId: TASK_ONE, stage: 'backlog' })));
+    const board = groupTasksForBoard(projectionBody(taskRecord({ instanceId: TASK_ONE, currentNode: 'backlog' })));
     expect(findTaskCard(board, 'no-such-id')).toBeNull();
   });
 });
@@ -499,8 +668,23 @@ describe('findTaskCard + moveOptionsFor — the sheet follows the LIVE task, not
 // ── ASSERTION 9: every rejection reason gets its own honest sentence ────────
 
 describe('describeRejectionReason / describeMoveResponse — the 409 is the feature', () => {
-  // Every enumerated `TransitionRejectionReason` in packages/core.
-  const ENUMERATED_REASONS = [
+  // ── S13-A9: BOTH SPELLING FAMILIES, and both must render ──────────────────
+  //
+  // The engine's refusal reasons were respelled node-generic in S13·U1. The
+  // stage-spelled ones did NOT go away: they are what every refusal recorded
+  // before that unit says, forever (q21 — history is never rewritten), so the
+  // sentence map keeps them as a permanent read-side alias. `illegal-edge`
+  // (engine, never named a node) and `quarantined-cannot-complete` (tenant
+  // content declared in the manifest's forbidden row, F2) are unchanged and
+  // appear in both lists.
+  const NODE_SPELLED_REASONS = [
+    'illegal-edge',
+    'terminal-node',
+    'same-node',
+    'quarantined-cannot-complete',
+    'unknown-node',
+  ] as const;
+  const LEGACY_STAGE_SPELLED_REASONS = [
     'illegal-edge',
     'terminal-stage',
     'same-stage',
@@ -508,14 +692,41 @@ describe('describeRejectionReason / describeMoveResponse — the 409 is the feat
     'unknown-stage',
   ] as const;
 
-  it('maps every enumerated reason to a DISTINCT, non-empty human sentence', () => {
-    const sentences = ENUMERATED_REASONS.map((reason) => describeRejectionReason(reason));
+  it.each([
+    ['node-spelled (the engine\'s vocabulary from S13·U1)', NODE_SPELLED_REASONS],
+    ['legacy stage-spelled (what the log already holds)', LEGACY_STAGE_SPELLED_REASONS],
+  ])('maps every %s reason to a DISTINCT, non-empty human sentence', (_family, reasons) => {
+    const sentences = reasons.map((reason) => describeRejectionReason(reason));
     for (const [index, sentence] of sentences.entries()) {
-      expect(sentence.length, ENUMERATED_REASONS[index]).toBeGreaterThan(20);
+      expect(sentence.length, reasons[index]).toBeGreaterThan(20);
       // Not the reason code echoed back at the operator as if it were English.
-      expect(sentence, ENUMERATED_REASONS[index]).not.toBe(ENUMERATED_REASONS[index]);
+      expect(sentence, reasons[index]).not.toBe(reasons[index]);
+      // ...and not the "no plain-words description yet" fallback either — that
+      // is the whole point of having a row for it.
+      expect(sentence, reasons[index]).not.toContain('no plain-words description');
     }
-    expect(new Set(sentences).size, 'two reasons share a sentence').toBe(ENUMERATED_REASONS.length);
+    expect(new Set(sentences).size, 'two reasons share a sentence').toBe(reasons.length);
+  });
+
+  it('the two spellings of one engine reason SHARE their sentence — same fact, new word', () => {
+    // Deliberate, and the reason the distinctness check above is per-family:
+    // `same-node` and `same-stage` are the same refusal in two vocabularies, so
+    // an operator reading a historical refusal gets the identical explanation.
+    expect(describeRejectionReason('same-node')).toBe(describeRejectionReason('same-stage'));
+    expect(describeRejectionReason('terminal-node')).toBe(describeRejectionReason('terminal-stage'));
+    expect(describeRejectionReason('unknown-node')).toBe(describeRejectionReason('unknown-stage'));
+  });
+
+  it('⚠ S13-A9 — DELETING THE LEGACY ROWS IS A REGRESSION, NOT A CLEANUP', () => {
+    // This test exists to fail loudly if somebody "tidies up" the stage-spelled
+    // rows out of the sentence map. Old spellings persist in the log and may
+    // surface through any historical read; these rows are their permanent
+    // read-side alias.
+    for (const legacyReason of LEGACY_STAGE_SPELLED_REASONS) {
+      const sentence = describeRejectionReason(legacyReason);
+      expect(sentence, legacyReason).not.toContain('no plain-words description');
+      expect(sentence, legacyReason).not.toContain(legacyReason);
+    }
   });
 
   it('an UNRECOGNISED reason still renders something honest, never blank (rule 0.6)', () => {
@@ -544,7 +755,7 @@ describe('describeRejectionReason / describeMoveResponse — the 409 is the feat
   });
 
   it('200 reports acceptance and says the board has to catch up (no optimistic move)', () => {
-    const outcome = describeMoveResponse(200, { accepted: true, task: { stage: 'review' } });
+    const outcome = describeMoveResponse(200, { accepted: true, instance: { currentNode: 'review' } });
     expect(outcome.kind).toBe('accepted');
     expect(outcome).toMatchObject({ stage: 'review' });
     // The sentence must not claim the card has moved — the projection decides that.
@@ -582,7 +793,7 @@ describe('describeRejectionReason / describeMoveResponse — the 409 is the feat
 
 describe('describeCreateResponse — creation, without mirroring the daemon’s cap', () => {
   it('201 reports creation and does NOT claim the board has updated', () => {
-    const outcome = describeCreateResponse(201, { task: { taskId: TASK_ONE } });
+    const outcome = describeCreateResponse(201, { instance: { instanceId: TASK_ONE } });
     expect(outcome).toMatchObject({ kind: 'created', taskId: TASK_ONE });
     expect(outcome.sentence.toLowerCase()).toContain('catch up');
   });
@@ -781,13 +992,13 @@ describe('groupTasksForBoard — hostile input never throws and never drops a ta
   const degenerateBodies: readonly (readonly [string, unknown])[] = [
     ['null body', null],
     ['undefined body', undefined],
-    ['a string body', 'tasks'],
+    ['a string body', 'instances'],
     ['a number body', 7],
     ['an array body', []],
-    ['no tasks key', { sessions: {} }],
-    ['tasks is null', { tasks: null }],
-    ['tasks is an array', { tasks: [] }],
-    ['tasks is a string', { tasks: 'nope' }],
+    ['no instances key', { sessions: {} }],
+    ['instances is null', { instances: null }],
+    ['instances is an array', { instances: [] }],
+    ['instances is a string', { instances: 'nope' }],
   ];
 
   for (const [caseName, body] of degenerateBodies) {
@@ -807,8 +1018,8 @@ describe('groupTasksForBoard — hostile input never throws and never drops a ta
     // the task exists at all.
     const board = groupTasksForBoard(
       projectionBody(
-        taskRecord({ taskId: TASK_ONE, stage: 'teleported' }),
-        taskRecord({ taskId: TASK_TWO, stage: 'backlog' }),
+        taskRecord({ instanceId: TASK_ONE, currentNode: 'teleported' }),
+        taskRecord({ instanceId: TASK_TWO, currentNode: 'backlog' }),
       ),
     );
     expect(board.totalTasks).toBe(2);
@@ -825,9 +1036,9 @@ describe('groupTasksForBoard — hostile input never throws and never drops a ta
 
   it('a task with NO stage, or a non-string stage, is still visible', () => {
     const board = groupTasksForBoard({
-      tasks: {
-        [TASK_ONE]: { taskId: TASK_ONE, projectRoot: '/a' },
-        [TASK_TWO]: { taskId: TASK_TWO, stage: 42 },
+      instances: {
+        [TASK_ONE]: { instanceId: TASK_ONE, project: '/a' },
+        [TASK_TWO]: { instanceId: TASK_TWO, currentNode: 42 },
       },
     });
     expect(board.totalTasks).toBe(2);
@@ -838,7 +1049,7 @@ describe('groupTasksForBoard — hostile input never throws and never drops a ta
   });
 
   it('a NULL task value is kept under its map key, not dropped', () => {
-    const board = groupTasksForBoard({ tasks: { [TASK_ONE]: null, [TASK_TWO]: 'nope' } });
+    const board = groupTasksForBoard({ instances: { [TASK_ONE]: null, [TASK_TWO]: 'nope' } });
     expect(board.totalTasks).toBe(2);
     const visibleIds = board.groups.flatMap((group) => group.tasks.map((card) => card.taskId));
     expect(visibleIds.sort()).toEqual([TASK_ONE, TASK_TWO].sort());
@@ -847,16 +1058,16 @@ describe('groupTasksForBoard — hostile input never throws and never drops a ta
   it('a record whose taskId disagrees with its map key is filed under the KEY', () => {
     // The key is the addressable one — it is what every route takes as :taskId.
     const board = groupTasksForBoard({
-      tasks: { [TASK_ONE]: { taskId: 42, stage: 'backlog' } },
+      instances: { [TASK_ONE]: { instanceId: 42, currentNode: 'backlog' } },
     });
     const backlog = board.flow.find((group) => group.stage === 'backlog')!;
     expect(backlog.tasks.map((card) => card.taskId)).toEqual([TASK_ONE]);
   });
 
-  it('a record with malformed sessionRefs never throws and never guesses', () => {
+  it('a record with malformed attachedSessions never throws and never guesses', () => {
     for (const malformedRefs of [null, 'nope', 42, [null], [{ appSessionId: 42 }], [{}]]) {
       const board = groupTasksForBoard(
-        projectionBody(taskRecord({ sessionRefs: malformedRefs })),
+        projectionBody(taskRecord({ attachedSessions: malformedRefs })),
       );
       const backlog = board.flow.find((group) => group.stage === 'backlog')!;
       expect(backlog.tasks, JSON.stringify(malformedRefs)).toHaveLength(1);
@@ -864,11 +1075,11 @@ describe('groupTasksForBoard — hostile input never throws and never drops a ta
     }
   });
 
-  it('walks sessionRefs BACKWARDS past a malformed tail to the last usable ref', () => {
+  it('walks attachedSessions BACKWARDS past a malformed tail to the last usable ref', () => {
     const board = groupTasksForBoard(
       projectionBody(
         taskRecord({
-          sessionRefs: [{ stage: 'planning', appSessionId: SESSION_ONE }, null, { appSessionId: 7 }],
+          attachedSessions: [{ node: 'planning', appSessionId: SESSION_ONE }, null, { appSessionId: 7 }],
         }),
       ),
       { [SESSION_ONE]: sessionRecord({ liveness: 'dormant' }) },
@@ -883,12 +1094,12 @@ describe('groupTasksForBoard — hostile input never throws and never drops a ta
 
   it('a projection body carrying EVERY hostile shape at once still boards cleanly', () => {
     const board = groupTasksForBoard({
-      tasks: {
+      instances: {
         'id-null': null,
         'id-empty': {},
-        'id-unknown-stage': { stage: 'teleported' },
-        'id-bad-stage': { stage: [] },
-        'id-good': taskRecord({ taskId: 'id-good', stage: 'review', title: 'real' }),
+        'id-unknown-stage': { currentNode: 'teleported' },
+        'id-bad-stage': { currentNode: [] },
+        'id-good': taskRecord({ instanceId: 'id-good', currentNode: 'review', payload: { title: 'real' } }),
       },
     });
     expect(board.totalTasks).toBe(5);
@@ -916,12 +1127,12 @@ describe('sessionTrailOf — the task’s full session history, oldest first', (
 
   it('walks a multi-stage history FORWARDS, numbering attempts per stage', () => {
     const task = taskRecord({
-      sessionRefs: [
-        { stage: 'planning', appSessionId: SESSION_PLANNING },
-        { stage: 'implementing', appSessionId: SESSION_IMPL_ONE },
-        { stage: 'review', appSessionId: SESSION_REVIEW_ONE },
-        { stage: 'implementing', appSessionId: SESSION_IMPL_TWO },
-        { stage: 'review', appSessionId: SESSION_REVIEW_TWO },
+      attachedSessions: [
+        { node: 'planning', appSessionId: SESSION_PLANNING },
+        { node: 'implementing', appSessionId: SESSION_IMPL_ONE },
+        { node: 'review', appSessionId: SESSION_REVIEW_ONE },
+        { node: 'implementing', appSessionId: SESSION_IMPL_TWO },
+        { node: 'review', appSessionId: SESSION_REVIEW_TWO },
       ],
     }) as never;
 
@@ -938,12 +1149,12 @@ describe('sessionTrailOf — the task’s full session history, oldest first', (
 
   it('skips a malformed entry (no usable appSessionId) without throwing and without counting it', () => {
     const task = taskRecord({
-      sessionRefs: [
-        { stage: 'planning', appSessionId: SESSION_PLANNING },
+      attachedSessions: [
+        { node: 'planning', appSessionId: SESSION_PLANNING },
         null,
         { appSessionId: 7 },
         {},
-        { stage: 'planning' },
+        { node: 'planning' },
       ],
     }) as never;
 
@@ -958,7 +1169,7 @@ describe('sessionTrailOf — the task’s full session history, oldest first', (
 
   it('keeps a usable id with a malformed stage — stage: "", not dropped, not guessed', () => {
     const task = taskRecord({
-      sessionRefs: [{ appSessionId: SESSION_PLANNING }, { stage: 42, appSessionId: SESSION_IMPL_ONE }],
+      attachedSessions: [{ appSessionId: SESSION_PLANNING }, { node: 42, appSessionId: SESSION_IMPL_ONE }],
     }) as never;
 
     const trail = sessionTrailOf(task, {});
@@ -969,18 +1180,18 @@ describe('sessionTrailOf — the task’s full session history, oldest first', (
     ]);
   });
 
-  it('is TOTAL over hostile sessionRefs shapes — never throws, always []', () => {
+  it('is TOTAL over hostile attachedSessions shapes — never throws, always []', () => {
     for (const malformedRefs of [null, undefined, 'nope', 42, {}]) {
-      const task = taskRecord({ sessionRefs: malformedRefs }) as never;
+      const task = taskRecord({ attachedSessions: malformedRefs }) as never;
       expect(sessionTrailOf(task, {}), JSON.stringify(malformedRefs)).toEqual([]);
     }
   });
 
   it('joins liveness from sessionsById — present session → its liveness, absent → null', () => {
     const task = taskRecord({
-      sessionRefs: [
-        { stage: 'planning', appSessionId: SESSION_PLANNING },
-        { stage: 'implementing', appSessionId: SESSION_IMPL_ONE },
+      attachedSessions: [
+        { node: 'planning', appSessionId: SESSION_PLANNING },
+        { node: 'implementing', appSessionId: SESSION_IMPL_ONE },
       ],
     }) as never;
 

@@ -74,7 +74,7 @@ onMounted(() => {
 });
 
 // S8·2 — SCOPED TO THE OPEN PROJECT when this tab has one (D42's read-time
-// derivation over each task's own `projectRoot`). `groupTasksForBoard` applies
+// derivation over each instance's own `project`). `groupTasksForBoard` applies
 // the scope, so the group counts describe the board on screen. Null project →
 // the whole board, exactly as before.
 const board = computed(() =>
@@ -131,18 +131,23 @@ const moveOptions = computed<readonly MoveOption[]>(() =>
   openCard.value === null ? [] : moveOptionsFor(openCard.value.stage, store.stageEdges),
 );
 
-// S7·7g — the open card's SESSION TRAIL. `sessionTrailOf` reads `sessionRefs`
-// off the wire record, which `TaskCard` deliberately does not carry (see
-// lib/taskBoard.ts's note on why the trail sits standalone rather than
-// widening every card). So this looks the raw record back up out of the
-// projection body by the open taskId, using the SAME key-vs-own-taskId
+// S7·7g — the open card's SESSION TRAIL. `sessionTrailOf` reads
+// `attachedSessions` off the wire record, which `TaskCard` deliberately does
+// not carry (see lib/taskBoard.ts's note on why the trail sits standalone
+// rather than widening every card). So this looks the raw record back up out of
+// the projection body by the open id, using the SAME key-vs-own-instanceId
 // precedence `readTaskCards` uses internally — the two agree in every
 // projection the daemon serializes (see that function's own comment).
 const openTaskRecord = computed<TaskBoardRecord | null>(() => {
-  const taskId = openCardId.value;
-  const body = store.tasksProjectionBody as { tasks?: Record<string, unknown> } | null | undefined;
-  const raw = taskId === null ? undefined : body?.tasks?.[taskId];
-  return typeof raw === 'object' && raw !== null ? ({ ...raw, taskId } as TaskBoardRecord) : null;
+  const instanceId = openCardId.value;
+  const body = store.tasksProjectionBody as
+    | { instances?: Record<string, unknown> }
+    | null
+    | undefined;
+  const raw = instanceId === null ? undefined : body?.instances?.[instanceId];
+  return typeof raw === 'object' && raw !== null
+    ? ({ ...raw, instanceId } as TaskBoardRecord)
+    : null;
 });
 const sessionTrail = computed<readonly TaskSessionTrailEntry[]>(() =>
   openTaskRecord.value === null ? [] : sessionTrailOf(openTaskRecord.value, store.sessions),
@@ -167,7 +172,7 @@ function closeSheet(): void {
   amendOpen.value = false;
 }
 
-async function proposeMove(toStage: string): Promise<void> {
+async function proposeMove(toNode: string): Promise<void> {
   const card = openCard.value;
   if (card === null || moveInFlight.value) {
     return;
@@ -176,7 +181,7 @@ async function proposeMove(toStage: string): Promise<void> {
   dispatchNotice.value = null;
   dispatchedSessionId.value = null;
   try {
-    const answer = await store.proposeTaskTransition(card.taskId, toStage);
+    const answer = await store.proposeTaskTransition(card.taskId, toNode);
     const outcome = describeMoveResponse(answer.status, answer.body);
     moveNotice.value = { tone: outcome.kind, sentence: outcome.sentence };
     // ⚠ NOTHING MOVES HERE. Not even on `accepted` — the sheet stays open with
@@ -184,9 +189,9 @@ async function proposeMove(toStage: string): Promise<void> {
     // catches up.
 
     // S7·7e — THE D53 DISPATCH RIDER. A promotion into an active stage makes
-    // its own dispatch attempt (taskApi.ts's transitions route), and an
+    // its own dispatch attempt (instanceApi.ts's moves route), and an
     // accepted envelope carries that attempt's result on a top-level
-    // `dispatch` field — see `ProposeTransitionResponse`. When it is present,
+    // `dispatch` field — see `ProposeMoveResponse`. When it is present,
     // re-wrap it in the `{ result }` shape `describeDispatchResponse` already
     // reads and hand it to that SAME describer, rather than writing a second
     // one for a field that carries the identical `DispatchAttemptResult`
@@ -239,11 +244,11 @@ const dispatchedSessionHref = computed(() =>
 // section renders `correctionDoors`' descriptors verbatim rather than a bare
 // button. `correctionTaskRecord` re-reads the SAME raw record `openTaskRecord`
 // already resolved (S7·7g), cast to `correctionDoors.ts`'s own narrow mirror:
-// `TaskBoardRecord` is the CARD's inputs and does not carry `workOrderRev` /
-// `scope` / etc, so this is a second narrow VIEW of the identical wire object,
-// not a second lookup.
+// `TaskBoardRecord` is the CARD's inputs and does not carry `payloadRev`, so
+// this is a second narrow VIEW of the identical wire object, not a second
+// lookup.
 const correctionTaskRecord = computed<AmendableTaskRecord | null>(() =>
-  openTaskRecord.value === null ? null : (openTaskRecord.value as unknown as AmendableTaskRecord),
+  openTaskRecord.value === null ? null : (openTaskRecord.value satisfies AmendableTaskRecord),
 );
 const correctionAvailable = computed<boolean>(
   () => correctionTaskRecord.value !== null && correctionDoorsAvailable(correctionTaskRecord.value),
@@ -255,34 +260,33 @@ const correctionDoorList = computed<readonly CorrectionDoor[]>(() =>
 // absent/malformed stays silent rather than printing a guessed "rev 0" next
 // to doors that already say so in their own detail strings.
 const correctionRevDisplay = computed<number | null>(() => {
-  const rev = correctionTaskRecord.value?.workOrderRev;
+  const rev = correctionTaskRecord.value?.payloadRev;
   return typeof rev === 'number' ? rev : null;
 });
 
 // ── The work-order INSPECTION section (S8·6b) ───────────────────────────────
 // Read-only rendering of the SAME wire fields `correctionTaskRecord` above
 // seeds the amend door from — a THIRD narrow view of the identical
-// `openTaskRecord` object, not a third lookup. Same cast idiom as
-// `correctionTaskRecord`: `TaskBoardRecord` and `WorkOrderDisplayRecord` are
-// two independently-narrow mirrors of the identical wire record and share no
-// declared keys, so TS's weak-type (no-common-properties) check rejects a
-// direct pass — `as unknown as` states the runtime fact (the object really
-// does carry these fields; the TYPE is just a narrower view of it) rather
-// than fighting the checker. Closes the gap this unit exists for: until now
-// the ONLY surface rendering scope/explicitly-out/acceptance-criteria/
-// kill-criterion was the amend FORM — an inspection surface that is secretly
-// an edit form is not one, and the Gate-2 trial requires grading authored
-// work-orders from the board.
+// `openTaskRecord` object, not a third lookup. Since S13·U3 all three mirrors
+// read the instance record's opaque `payload` key, so the three declared
+// shapes overlap and a direct pass typechecks (the `as unknown as` casts this
+// block used to need — TS's weak-type/no-common-properties check — are gone,
+// and `satisfies` above pins the overlap so a future divergence fails the
+// build instead of being papered over by a cast). Closes the gap this unit
+// exists for: until S8·6b the ONLY surface rendering scope/explicitly-out/
+// acceptance-criteria/kill-criterion was the amend FORM — an inspection
+// surface that is secretly an edit form is not one, and the Gate-2 trial
+// requires grading authored work-orders from the board.
 const workOrderDisplay = computed<WorkOrderDisplay | null>(() =>
   openTaskRecord.value === null
     ? null
-    : deriveWorkOrderDisplay(openTaskRecord.value as unknown as WorkOrderDisplayRecord),
+    : deriveWorkOrderDisplay(openTaskRecord.value satisfies WorkOrderDisplayRecord),
 );
 
 function openCorrectionDoor(kind: CorrectionDoor['kind']): void {
   if (kind === 'steer') {
     // The steer door IS the existing dispatch handler, relabeled with its
-    // meaning (D46: same workOrderRev, a fresh attempt) — not a new action.
+    // meaning (D46: same payloadRev, a fresh attempt) — not a new action.
     void dispatch();
   } else {
     openAmend();
@@ -290,10 +294,10 @@ function openCorrectionDoor(kind: CorrectionDoor['kind']): void {
 }
 
 // ── The amend sheet (S7·8) ──────────────────────────────────────────────────
-// D46's second door: writes a NEW workOrderRev via `POST
-// /api/tasks/:taskId/amendments` (S7·2b) and dispatches NOTHING (D53 — no
-// chaining; whether to re-run against the new revision is a later, explicit
-// act). Reuses the create sheet's own field-rendering pattern (driven by the
+// D46's second door: writes a NEW payloadRev via `POST
+// /api/instances/:instanceId/payload-revisions` (S7·2b) and dispatches NOTHING
+// (D53 — no chaining; whether to re-run against the new revision is a later,
+// explicit act). Reuses the create sheet's own field-rendering pattern (driven by the
 // SAME `store.workOrderSchema` descriptor) rather than inventing a parallel
 // one, seeded from the record via `seedAmendFormModel` instead of starting
 // blank.
@@ -374,7 +378,7 @@ function updateAmendRowText(fieldKey: string, rowIndex: number, value: string): 
   rows[rowIndex] = { id: row.id, text: value };
 }
 
-// The amend route's error vocabulary, in plain words. Not exported/tested
+// The payload-revisions route's error vocabulary, in plain words. Not exported/tested
 // (house rule — the .vue is manual): every branch here is presentation of an
 // already-classified daemon answer, not a decision.
 function amendErrorMessage(status: number, body: unknown): string {
@@ -393,7 +397,8 @@ function amendErrorMessage(status: number, body: unknown): string {
   if (detail === 'empty-amendment') {
     // Reachable only if the daemon and this form's own client-side mirror
     // (buildAmendmentBody returning null) somehow disagree — kept honest
-    // rather than assumed unreachable.
+    // rather than assumed unreachable. The detail string is the daemon's own
+    // (the wire spelling of this refusal is unchanged by the rename).
     return 'The daemon read that as changing nothing, so nothing was written.';
   }
   return `The daemon answered ${status}${detail === null ? '' : `: ${detail}`}. Nothing was amended.`;
@@ -421,7 +426,7 @@ async function submitAmend(): Promise<void> {
   }
   amendInFlight.value = true;
   try {
-    const answer = await store.amendTask(record.taskId, body);
+    const answer = await store.amendTask(record.instanceId, body);
     if (answer.status === 200) {
       // ⚠ NO LOCAL PATCH, same NO-OPTIMISTIC-UI posture as every other write in
       // this file. The 'tasks' stream carries the amendment's fold, the store
@@ -512,8 +517,9 @@ function openCreate(): void {
     createProjectRoot.value = openProjectRoot;
   }
   // Seed the work-order form from the served descriptor (fetched on mount by
-  // watchTasks, the same place stage-edges is fetched). Falls back to no fields
-  // until the descriptor lands — never a hard-coded list.
+  // watchTasks, the same place the workflow declaration is fetched — one ref,
+  // both reads). Falls back to no fields until the descriptor lands — never a
+  // hard-coded list.
   resetWorkOrderForm();
   createOpen.value = true;
   if (createProjectRoot.value === '' && rootOptions.value.length > 0) {
@@ -989,7 +995,7 @@ function livenessClass(liveness: string): string {
                doors below; `authoredByOrchestrator` reuses S8·6's chip derivation
                verbatim rather than re-deriving provenance a third time. -->
           <p class="text-[11px] text-ink-dim">
-            rev {{ workOrderDisplay.workOrderRev ?? 0 }} · authored by
+            rev {{ workOrderDisplay.payloadRev ?? 0 }} · authored by
             {{ openCard.authoredByOrchestrator ? 'orchestrator' : 'human' }}
           </p>
         </div>
@@ -1101,7 +1107,7 @@ function livenessClass(liveness: string): string {
     </div>
 
     <!-- ── THE AMEND SHEET (S7·8) ──────────────────────────────────────────────
-         D46's second door: writes a NEW workOrderRev, dispatches NOTHING
+         D46's second door: writes a NEW payloadRev, dispatches NOTHING
          (D53 — no chaining). Opened by the Amend door in the card sheet above,
          so it stacks OVER it (z-50 vs the card sheet's z-40). Reuses the
          create sheet's own field-rendering pattern below, driven by the same

@@ -15,7 +15,8 @@
 // authority — but seeds nothing and edits nothing: this is display, not a form.
 //
 // @vimes/core is deliberately NOT a dependency of this package (lib/types.ts's
-// header) — the wire shapes below mirror packages/core/src/schemas.ts narrowly.
+// header) — the wire shapes below mirror
+// packages/core/src/projections/instances.ts narrowly.
 
 // One acceptance-criterion row as rendered: text AND id. The id is the stable
 // identity verdicts key against, and it renders small/dim rather than hidden —
@@ -42,12 +43,12 @@ export interface WorkOrderDisplay {
   readonly acceptanceCriteria: readonly WorkOrderDisplayCriterion[] | null;
   // null → the view renders an em-dash line, same posture as `scope`.
   readonly killCriterion: string | null;
-  // null → the record predates the field or carries a malformed one. The view
-  // defaults this to 0 for display (matching `correctionDoors.ts`'s
-  // `correctionDoors` rev default), which is why this stays `null` here rather
-  // than pre-defaulting: the view's default is a PRESENTATION choice, not a
-  // fact this derivation should bake in.
-  readonly workOrderRev: number | null;
+  // null → the instance has never been revised (the field is ABSENT until the
+  // first revision) or carries a malformed one. The view defaults this to 0 for
+  // display (matching `correctionDoors.ts`'s `correctionDoors` rev default),
+  // which is why this stays `null` here rather than pre-defaulting: the view's
+  // default is a PRESENTATION choice, not a fact this derivation should bake in.
+  readonly payloadRev: number | null;
 }
 
 // The wire record's fields this module reads, mirrored narrowly and loosely —
@@ -56,14 +57,15 @@ export interface WorkOrderDisplay {
 // half of the footer this unit renders REUSES `taskBoard.ts`'s
 // `authoredByOrchestrator` (already derived, already tested there) rather than
 // re-deriving it a third time — see TaskBoardView.vue's `workOrderDisplay`
-// computed for where the two facts (this model's `workOrderRev` + the card's
+// computed for where the two facts (this model's `payloadRev` + the card's
 // `authoredByOrchestrator`) are combined into the one footer line.
+//
+// ⚠ S13·U3: the four authored fields live under `payload` (q13's split) and the
+// rev is spelled `payloadRev` — the same move `correctionDoors.ts` made, on the
+// same wire object.
 export interface WorkOrderDisplayRecord {
-  readonly scope?: unknown;
-  readonly explicitlyOut?: unknown;
-  readonly acceptanceCriteria?: unknown;
-  readonly killCriterion?: unknown;
-  readonly workOrderRev?: unknown;
+  readonly payload?: unknown;
+  readonly payloadRev?: unknown;
 }
 
 // A string field that is present AND has real content once whitespace is
@@ -76,6 +78,16 @@ function asAuthoredString(value: unknown): string | null {
 
 function asNumber(value: unknown): number | null {
   return typeof value === 'number' ? value : null;
+}
+
+// The instance's opaque payload as a plain bag, or an empty one when the record
+// carries none / carries a non-object. TOTAL (I8) — every read off it below is
+// guarded, so an empty bag reads exactly like an unauthored work order.
+function payloadOf(record: WorkOrderDisplayRecord): Record<string, unknown> {
+  const payload = record.payload;
+  return typeof payload === 'object' && payload !== null && !Array.isArray(payload)
+    ? (payload as Record<string, unknown>)
+    : {};
 }
 
 // A record's list field, filtered to the strings it actually carries — a
@@ -124,22 +136,23 @@ function asDisplayCriterionList(value: unknown): readonly WorkOrderDisplayCriter
  *
  * ⚠ `null` MEANS "an unauthored task" — the card then shows one honest line
  * ("No work-order authored.") rather than an empty section skeleton. The
- * check is over the four CONTENT fields only (`scope`, `explicitlyOut`,
- * `acceptanceCriteria`, `killCriterion`); `workOrderRev` deliberately does NOT
- * participate. `workOrderRev` is metadata about a work order, not a work
- * order in itself — a record predating slice 7 carries neither; a record with
- * a rev but genuinely no content is not a shape the writers produce (a rev
- * only bumps alongside a real content change, see `taskWriter.ts`) — and
- * treating a bare rev as "authored" would be a guess this module exists not
- * to make.
+ * check is over the four CONTENT fields only (`payload.scope`,
+ * `payload.explicitlyOut`, `payload.acceptanceCriteria`,
+ * `payload.killCriterion`); `payloadRev` deliberately does NOT participate.
+ * `payloadRev` is metadata about a work order, not a work order in itself — a
+ * record predating slice 7 carries neither; a record with a rev but genuinely
+ * no content is not a shape the writers produce (a rev only bumps alongside a
+ * real content change, see `instanceWriter.ts`) — and treating a bare rev as
+ * "authored" would be a guess this module exists not to make.
  *
  * TOTAL over its input: no shape of `record` throws.
  */
 export function deriveWorkOrderDisplay(record: WorkOrderDisplayRecord): WorkOrderDisplay | null {
-  const scope = asAuthoredString(record.scope);
-  const killCriterion = asAuthoredString(record.killCriterion);
-  const explicitlyOut = asDisplayStringList(record.explicitlyOut);
-  const acceptanceCriteria = asDisplayCriterionList(record.acceptanceCriteria);
+  const payload = payloadOf(record);
+  const scope = asAuthoredString(payload.scope);
+  const killCriterion = asAuthoredString(payload.killCriterion);
+  const explicitlyOut = asDisplayStringList(payload.explicitlyOut);
+  const acceptanceCriteria = asDisplayCriterionList(payload.acceptanceCriteria);
 
   if (scope === null && killCriterion === null && explicitlyOut === null && acceptanceCriteria === null) {
     return null;
@@ -150,6 +163,6 @@ export function deriveWorkOrderDisplay(record: WorkOrderDisplayRecord): WorkOrde
     explicitlyOut,
     acceptanceCriteria,
     killCriterion,
-    workOrderRev: asNumber(record.workOrderRev),
+    payloadRev: asNumber(record.payloadRev),
   };
 }

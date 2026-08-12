@@ -5,11 +5,16 @@ import { deriveWorkOrderDisplay, type WorkOrderDisplayRecord } from './workOrder
 //
 // House rule: the `.vue` is untested; every DECISION this unit makes lives
 // here. `null` on no-fields, per-field absence, criterion id+text passthrough
-// (and malformed-entry skip), and workOrderRev in both directions are the
+// (and malformed-entry skip), and payloadRev in both directions are the
 // four assertion families the work order names — one describe block each.
 
-function record(overrides: Partial<WorkOrderDisplayRecord> = {}): WorkOrderDisplayRecord {
-  return { ...overrides };
+// One record in the INSTANCES shape (S13·U3): the four authored fields live
+// under the opaque `payload` key (q13's split), the rev is `payloadRev`.
+function record(
+  payload: Record<string, unknown> = {},
+  payloadRev?: unknown,
+): WorkOrderDisplayRecord {
+  return payloadRev === undefined ? { payload } : { payload, payloadRev };
 }
 
 describe('deriveWorkOrderDisplay — null on no-fields', () => {
@@ -30,8 +35,20 @@ describe('deriveWorkOrderDisplay — null on no-fields', () => {
     ).toBeNull();
   });
 
-  it('a bare workOrderRev with no content is STILL null — rev alone is not authorship', () => {
-    expect(deriveWorkOrderDisplay(record({ workOrderRev: 3 }))).toBeNull();
+  it('a bare payloadRev with no content is STILL null — rev alone is not authorship', () => {
+    expect(deriveWorkOrderDisplay(record({}, 3))).toBeNull();
+  });
+
+  it('an absent or non-object payload degrades to null rather than throwing (I8)', () => {
+    // The payload is OPAQUE and arrives over the wire; a record carrying none,
+    // or carrying something that is not a bag of fields, reads exactly like an
+    // unauthored work order — never a throw, never a fabricated section.
+    for (const payload of [undefined, null, 'not a payload', 7, []]) {
+      expect(
+        deriveWorkOrderDisplay({ payload } as never),
+        JSON.stringify(payload ?? null),
+      ).toBeNull();
+    }
   });
 
   it('any ONE content field present is enough to produce a model', () => {
@@ -84,11 +101,11 @@ describe('deriveWorkOrderDisplay — per-field absence', () => {
     expect(deriveWorkOrderDisplay(record({ scope: 's', acceptanceCriteria: [] }))?.acceptanceCriteria).toBeNull();
   });
 
-  it('workOrderRev: absent/wrong-type reads as null; a real number passes through', () => {
-    expect(deriveWorkOrderDisplay(record({ scope: 's' }))?.workOrderRev).toBeNull();
-    expect(deriveWorkOrderDisplay(record({ scope: 's', workOrderRev: '3' }))?.workOrderRev).toBeNull();
-    expect(deriveWorkOrderDisplay(record({ scope: 's', workOrderRev: 0 }))?.workOrderRev).toBe(0);
-    expect(deriveWorkOrderDisplay(record({ scope: 's', workOrderRev: 3 }))?.workOrderRev).toBe(3);
+  it('payloadRev: absent/wrong-type reads as null; a real number passes through', () => {
+    expect(deriveWorkOrderDisplay(record({ scope: 's' }))?.payloadRev).toBeNull();
+    expect(deriveWorkOrderDisplay(record({ scope: 's' }, '3'))?.payloadRev).toBeNull();
+    expect(deriveWorkOrderDisplay(record({ scope: 's' }, 0))?.payloadRev).toBe(0);
+    expect(deriveWorkOrderDisplay(record({ scope: 's' }, 3))?.payloadRev).toBe(3);
   });
 });
 
@@ -133,15 +150,15 @@ describe('deriveWorkOrderDisplay — criterion id+text passthrough', () => {
   });
 });
 
-describe('deriveWorkOrderDisplay — workOrderRev, both directions', () => {
-  it('absent workOrderRev on an otherwise-authored record reads as null', () => {
+describe('deriveWorkOrderDisplay — payloadRev, both directions', () => {
+  it('absent payloadRev on an otherwise-authored record reads as null', () => {
     const display = deriveWorkOrderDisplay(record({ scope: 'do the thing' }));
     expect(display).not.toBeNull();
-    expect(display?.workOrderRev).toBeNull();
+    expect(display?.payloadRev).toBeNull();
   });
 
-  it('present workOrderRev on an authored record reads through, including 0', () => {
-    expect(deriveWorkOrderDisplay(record({ scope: 's', workOrderRev: 0 }))?.workOrderRev).toBe(0);
-    expect(deriveWorkOrderDisplay(record({ scope: 's', workOrderRev: 2 }))?.workOrderRev).toBe(2);
+  it('present payloadRev on an authored record reads through, including 0', () => {
+    expect(deriveWorkOrderDisplay(record({ scope: 's' }, 0))?.payloadRev).toBe(0);
+    expect(deriveWorkOrderDisplay(record({ scope: 's' }, 2))?.payloadRev).toBe(2);
   });
 });

@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia';
-import { reactive, ref } from 'vue';
+import { computed, reactive, ref } from 'vue';
 import { parseServerEnvelope, serializeClientEnvelope, type ClientEnvelope, type ServerEnvelope } from '../lib/envelope.js';
 import { advanceOffset, deframeTerminalOutput, frameTerminalInputText } from '../lib/terminalFraming.js';
 import { parseRootsPayload } from '../lib/treeNode.js';
@@ -7,7 +7,12 @@ import type { TerminalListItem } from '../lib/terminalList.js';
 import type { CacheObservabilityRecord } from '../lib/cacheBadge.js';
 import type { DerivedUsageBody, UsageRefreshOutcome, UsageSnapshot } from '../lib/meterDisplay.js';
 import type { CostLedgerBody } from '../lib/costDisplay.js';
-import type { TaskApiAnswer } from '../lib/taskBoard.js';
+import {
+  nodeEdgesFromDeclaration,
+  readWorkflowRefs,
+  workflowRefKey,
+  type TaskApiAnswer,
+} from '../lib/taskBoard.js';
 import type { ProjectView } from '../lib/projectContext.js';
 import type { WorkOrderBody, WorkOrderFieldDescriptor } from '../lib/workOrderForm.js';
 import type { AmendmentBody } from '../lib/correctionDoors.js';
@@ -183,10 +188,11 @@ export const useVimesStore = defineStore('vimes', () => {
   // disable itself and the view can show a spinner instead of a stale-vs-fresh
   // ambiguity.
   const costLedgerLoading = ref(false);
-  // ── Task board (slice 6 step 9) — the tasks projection, read over the SAME
-  // endpoint everything else reads (GET /api/projections/tasks). There is
-  // deliberately no `GET /api/tasks`: 4b omitted it on purpose (principle 9, one
-  // source of record per fact) and that decision stands.
+  // ── Task board (slice 6 step 9) — the instances projection, read over the
+  // SAME endpoint everything else reads (GET /api/projections/instances). There
+  // is deliberately no `GET /api/instances`: 4b omitted the list route on
+  // purpose (principle 9, one source of record per fact) and that decision
+  // stands — instanceApi.ts still says so in its own footer.
   //
   // Held as the RAW body rather than a parsed shape, because every derivation
   // lives in lib/taskBoard.ts and that module is TOTAL over hostile input (I8).
@@ -196,17 +202,42 @@ export const useVimesStore = defineStore('vimes', () => {
   // have not looked yet" from "we looked and the board is empty". An empty board
   // is a fact; a blank screen that means "still loading" is not.
   const tasksLoading = ref(false);
-  // S8: the legal-edge table, fetched from GET /api/tasks/stage-edges. Null
-  // until the first fetch lands — `moveOptionsFor` treats null as "not loaded
-  // yet" and offers nothing (a safe empty, never all-stages). This is the SERVED
-  // form of the workflow declaration's legality table; it is never re-derived here.
-  const stageEdges = ref<Record<string, string[]> | null>(null);
+  // ── q25 declaration introspection (S13·U2/U2b, consumed here in S13·U3) ────
+  //
+  // The RAW declaration body for the workflow this board renders, fetched from
+  // GET /api/workflows/:e/:w/:r/declaration. Null until the first fetch lands.
+  // Raw for the same reason `tasksProjectionBody` is raw: the derivation
+  // (`nodeEdgesFromDeclaration`) is total over hostile input and lives in lib/.
+  //
+  // ⚠ ONE DECLARATION, NOT A PER-REF MAP, AND THAT IS TODAY'S TRUTH RATHER THAN
+  // A SIMPLIFICATION: `GET /api/workflows` lists exactly one ref (the daemon's
+  // boot-resolved declaration — see instanceApi.ts's index route). The day it
+  // lists more, the board must pick the declaration by each instance's OWN
+  // pinned `workflow` ref rather than holding a single one — that is D76's
+  // unknown-workflow rendering, its own unit, and this is where it lands.
+  const workflowDeclaration = ref<unknown>(null);
+  // The legal-edge table the move sheet filters against, DERIVED from the
+  // declaration rather than served pre-narrowed. Null until a declaration lands
+  // — `moveOptionsFor` treats null as "not loaded yet" and offers nothing (a
+  // safe empty, never all-stages). See `nodeEdgesFromDeclaration` for the
+  // nine-stage restriction and why it is load-bearing.
+  const stageEdges = computed<Record<string, string[]> | null>(() =>
+    nodeEdgesFromDeclaration(workflowDeclaration.value),
+  );
   // S7·3: the work-order authoring descriptor, fetched from
-  // GET /api/tasks/work-order-schema. Null until the first fetch lands — the
-  // create sheet renders nothing until then (never a hard-coded field list). This
-  // is the SERVED shape of the daemon's WORK_ORDER_FIELD_DESCRIPTORS; the value is
-  // never re-derived here (the UI cannot import the zod that defines it).
+  // GET /api/workflows/:e/:w/:r/payload-schema. Null until the first fetch lands
+  // — the create sheet renders nothing until then (never a hard-coded field
+  // list). This is the SERVED shape of the daemon's
+  // WORK_ORDER_FIELD_DESCRIPTORS; the value is never re-derived here (the UI
+  // cannot import the zod that defines it).
   const workOrderSchema = ref<WorkOrderFieldDescriptor[] | null>(null);
+  // The refs whose per-ref responses we have already fetched, keyed by
+  // `workflowRefKey`. **THIS IS THE DEDUPE (F3 ⟨signed⟩ rider 2): one fetch per
+  // REF, never one per instance.** It is deliberately NOT a cache of the
+  // responses — the per-ref responses are served `immutable`, so the BROWSER
+  // cache is the persistence layer and building a second one here would be a
+  // second authority on freshness for bytes that can never go stale.
+  const fetchedWorkflowRefKeys = new Set<string>();
   // ── Git review (slice 4 step 3) — the primary-human-job surface (spec §3.4) ──
   // Plain REST-into-ref, mirroring fetchTerminals: fetch, credentials
   // same-origin, tolerant of transient failure. The daemon's /api/git/* endpoints
@@ -521,16 +552,16 @@ export const useVimesStore = defineStore('vimes', () => {
 
   // ── Task board (slice 6 step 9) ────────────────────────────────────────────
   //
-  // GET /api/projections/tasks — the SAME endpoint every other projection is read
-  // through, returning the projection's serialized canonical JSON. Deliberately
-  // NOT a new `GET /api/tasks`: 4b omitted that route on purpose (principle 9),
-  // and a second reader of the same fact is exactly the drift it forbids.
+  // GET /api/projections/instances — the SAME endpoint every other projection is
+  // read through, returning the projection's serialized canonical JSON.
+  // Deliberately NOT a list route: 4b omitted one on purpose (principle 9), and
+  // a second reader of the same fact is exactly the drift it forbids.
   //
   // Called on the board's open, and again whenever an event lands on the 'tasks'
   // stream (see applyServerEnvelope). NO POLLING LOOP.
   async function fetchTasks(): Promise<void> {
     try {
-      const response = await fetch('/api/projections/tasks', { credentials: 'same-origin' });
+      const response = await fetch('/api/projections/instances', { credentials: 'same-origin' });
       if (!response.ok) {
         return;
       }
@@ -546,48 +577,70 @@ export const useVimesStore = defineStore('vimes', () => {
     }
   }
 
-  // GET /api/tasks/stage-edges (S8) — the legal-edge table, mirroring
-  // fetchRoots: same-origin fetch, tolerant of a transient failure or a
-  // malformed body. A bad/absent body leaves `stageEdges` at its previous value
-  // (null before the first success) rather than throwing — `moveOptionsFor`
-  // treats null as "not loaded" and offers nothing, which is the safe empty.
-  // Static data (the edge table never changes at runtime), so this is called
-  // once where the board mounts and never polled.
-  async function fetchStageEdges(): Promise<void> {
+  // ── q25 declaration introspection (S13·U3 consumes S13·U2/U2b) ─────────────
+  //
+  // THREE ROUTES, IN ONE ORDER, AND THE ORDER IS THE POINT:
+  //
+  //   1. GET /api/workflows — the DISCOVERY half (U2b). Without it a client with
+  //      zero instances holds no ref to key the other two with, and a fresh
+  //      client on an EMPTY board could not render its create sheet at all —
+  //      a capability regression, which §2 forbids more strongly than it
+  //      forbids additions. NOT cacheable: the SET of refs is a fact about this
+  //      deploy, so it is re-read on every board open (cheap, one small body).
+  //   2. GET /api/workflows/:e/:w/:r/declaration — the full declared table.
+  //   3. GET /api/workflows/:e/:w/:r/payload-schema — the authoring descriptor.
+  //
+  // ⚠ ONE FETCH PER **REF**, NEVER ONE PER INSTANCE (F3 ⟨signed⟩ rider 2).
+  // `fetchedWorkflowRefKeys` is the dedupe; the per-ref responses are immutable
+  // for their key and the daemon says so in a cache header, so the browser cache
+  // is the persistence and NOTHING here builds a second cache layer.
+  //
+  // Tolerant throughout, mirroring fetchRoots: a transient failure or a
+  // malformed body leaves the previous values in place (null before the first
+  // success), and `moveOptionsFor` / the create sheet both treat null as "not
+  // loaded yet" and render a safe empty rather than a fabricated one. A ref is
+  // marked fetched only AFTER both per-ref reads succeed, so a half-failed pair
+  // is retried on the next board open instead of being remembered as done.
+  async function fetchWorkflowIntrospection(): Promise<void> {
+    let refs: ReturnType<typeof readWorkflowRefs>;
     try {
-      const response = await fetch('/api/tasks/stage-edges', { credentials: 'same-origin' });
+      const response = await fetch('/api/workflows', { credentials: 'same-origin' });
       if (!response.ok) {
         return;
       }
-      const parsed = (await response.json()) as { edges?: unknown };
-      if (parsed.edges !== null && typeof parsed.edges === 'object') {
-        stageEdges.value = parsed.edges as Record<string, string[]>;
-      }
+      refs = readWorkflowRefs(await response.json());
     } catch {
-      // Transient network hiccup — stageEdges stays whatever it was (null
-      // before the first success), and moveOptionsFor's null-case handles it.
+      // Transient network hiccup — the next board open retries. Nothing is
+      // invalidated: whatever declaration we already hold is still true.
+      return;
     }
-  }
 
-  // GET /api/tasks/work-order-schema (S7·3) — the authoring descriptor, the exact
-  // sibling of fetchStageEdges: same-origin fetch, tolerant of a transient failure
-  // or a malformed body, leaving `workOrderSchema` at its previous value (null
-  // before the first success) rather than throwing. The create sheet treats null
-  // as "not loaded" and renders no work-order fields. Static data (the descriptor
-  // never changes at runtime), so this is called where the board mounts, not polled.
-  async function fetchWorkOrderSchema(): Promise<void> {
-    try {
-      const response = await fetch('/api/tasks/work-order-schema', { credentials: 'same-origin' });
-      if (!response.ok) {
-        return;
+    for (const ref of refs) {
+      const key = workflowRefKey(ref);
+      if (fetchedWorkflowRefKeys.has(key)) {
+        continue;
       }
-      const parsed = (await response.json()) as { fields?: unknown };
-      if (Array.isArray(parsed.fields)) {
-        workOrderSchema.value = parsed.fields as WorkOrderFieldDescriptor[];
+      const path = `/api/workflows/${encodeURIComponent(ref.extension)}/${encodeURIComponent(
+        ref.workflow,
+      )}/${encodeURIComponent(ref.rev)}`;
+      try {
+        const [declarationResponse, schemaResponse] = await Promise.all([
+          fetch(`${path}/declaration`, { credentials: 'same-origin' }),
+          fetch(`${path}/payload-schema`, { credentials: 'same-origin' }),
+        ]);
+        if (!declarationResponse.ok || !schemaResponse.ok) {
+          continue;
+        }
+        const declaration = (await declarationResponse.json()) as unknown;
+        const parsedSchema = (await schemaResponse.json()) as { fields?: unknown };
+        workflowDeclaration.value = declaration;
+        if (Array.isArray(parsedSchema.fields)) {
+          workOrderSchema.value = parsedSchema.fields as WorkOrderFieldDescriptor[];
+        }
+        fetchedWorkflowRefKeys.add(key);
+      } catch {
+        // Same posture as above: leave what we hold, retry on the next open.
       }
-    } catch {
-      // Transient network hiccup — workOrderSchema stays whatever it was (null
-      // before the first success), and the sheet's null-case renders no fields.
     }
   }
 
@@ -599,8 +652,9 @@ export const useVimesStore = defineStore('vimes', () => {
   // posting to /api/projects would read as a mistake.
   //
   // ⚠ THAT IS THE WHOLE POINT (rule 0.3, principle 10). The daemon's answer is
-  // the answer: a 409 carries an enumerated rejection the state machine made and
-  // the log already records (I7). The store must not turn it into a boolean, and
+  // the answer: a 409 carries the adjudicator's refusal reason — engine-owned or
+  // declared by the workflow — and the log already records it (I7). The store
+  // must not turn it into a boolean, and
   // must not update `tasksProjectionBody` from a response — the PROJECTION is the
   // record, and the board only moves when the projection says it moved. There is
   // no optimistic path here to accidentally take.
@@ -639,8 +693,13 @@ export const useVimesStore = defineStore('vimes', () => {
   function createTask(
     input: { projectRoot: string; title?: string } & WorkOrderBody,
   ): Promise<TaskApiAnswer> {
-    return postJsonApi('/api/tasks', {
-      projectRoot: input.projectRoot,
+    // S13·U3: `POST /api/instances`, whose body spells the two location fields
+    // `project` and `node` (the create door's own zod, instanceApi.ts's
+    // `createInstanceBodySchema`). The node is deliberately NOT sent: omitting
+    // it is what lets the daemon fill it from the declaration's `initial`
+    // (S12·U2) rather than this client naming a starting node it does not own.
+    return postJsonApi('/api/instances', {
+      project: input.projectRoot,
       createdBy: 'human',
       ...(input.title === undefined ? {} : { title: input.title }),
       ...(input.scope === undefined ? {} : { scope: input.scope }),
@@ -659,19 +718,19 @@ export const useVimesStore = defineStore('vimes', () => {
   // ⚠ NO SUBSCRIBE GLUE, UNLIKE `proposeTaskTransition`/`dispatchTask` BELOW.
   // Those two glue a spawned session onto the WS subscription because a
   // promotion or a dispatch can mint a live session the client would otherwise
-  // never see events for. An amendment can never spawn anything (D53 — amending
+  // never see events for. A payload revision can never spawn anything (D53 — amending
   // changes what the work order SAYS; whether to re-run against the new
   // revision is a later, separate, explicit `dispatchTask` call) — so there is
   // nothing here to subscribe to, and nothing schedules a sessions refresh.
-  function amendTask(taskId: string, body: AmendmentBody): Promise<TaskApiAnswer> {
-    return postJsonApi(`/api/tasks/${encodeURIComponent(taskId)}/amendments`, body);
+  function amendTask(instanceId: string, body: AmendmentBody): Promise<TaskApiAnswer> {
+    return postJsonApi(`/api/instances/${encodeURIComponent(instanceId)}/payload-revisions`, body);
   }
 
   // PROPOSE a transition. The name is the contract: this does not move anything.
   //
   // S7·7e — mirrors `dispatchTask`'s subscribe glue below, for the SAME reason:
   // D53 made a promotion into an active stage make its own dispatch attempt
-  // (taskApi.ts's transitions route), and an accepted promotion carries that
+  // (instanceApi.ts's moves route), and an accepted promotion carries that
   // attempt's result on a top-level `dispatch` field. A `spawned` result there
   // mints a brand-new session exactly like an explicit dispatch does, and the
   // client still only gets live events for streams it is subscribed to — so
@@ -682,9 +741,9 @@ export const useVimesStore = defineStore('vimes', () => {
   // instead — same guard, different envelope shape); this glue only acts on
   // it. The returned `TaskApiAnswer` is UNCHANGED — this adds a side effect,
   // it does not reinterpret what the caller renders.
-  async function proposeTaskTransition(taskId: string, toStage: string): Promise<TaskApiAnswer> {
-    const answer = await postJsonApi(`/api/tasks/${encodeURIComponent(taskId)}/transitions`, {
-      toStage,
+  async function proposeTaskTransition(instanceId: string, toNode: string): Promise<TaskApiAnswer> {
+    const answer = await postJsonApi(`/api/instances/${encodeURIComponent(instanceId)}/moves`, {
+      toNode,
       proposedBy: 'human',
     });
     const spawnedSessionId = sessionToSubscribeAfterTransition(answer.status, answer.body);
@@ -705,8 +764,8 @@ export const useVimesStore = defineStore('vimes', () => {
   // `sessionToSubscribeAfterDispatch` makes the strict spawned+id decision;
   // this glue only acts on it. The returned `TaskApiAnswer` is UNCHANGED —
   // this adds a side effect, it does not reinterpret what the caller renders.
-  async function dispatchTask(taskId: string): Promise<TaskApiAnswer> {
-    const answer = await postJsonApi(`/api/tasks/${encodeURIComponent(taskId)}/dispatch`, {});
+  async function dispatchTask(instanceId: string): Promise<TaskApiAnswer> {
+    const answer = await postJsonApi(`/api/instances/${encodeURIComponent(instanceId)}/dispatch`, {});
     const spawnedSessionId = sessionToSubscribeAfterDispatch(answer.status, answer.body);
     if (spawnedSessionId !== null) {
       subscribe(spawnedSessionId);
@@ -747,13 +806,14 @@ export const useVimesStore = defineStore('vimes', () => {
     tasksLoading.value = tasksProjectionBody.value === null;
     subscribe(TASKS_STREAM);
     void fetchTasks();
-    // S8: the legal-edge table the move sheet filters against. Fetched
-    // alongside the tasks projection rather than gated behind opening a card,
-    // so the sheet has it ready the first time an operator taps a card.
-    void fetchStageEdges();
-    // S7·3: the work-order authoring descriptor, fetched the same way, so the
-    // create sheet has its field list ready when an operator opens New Task.
-    void fetchWorkOrderSchema();
+    // S13·U3: ONE call now fetches both the legal-edge table the move sheet
+    // filters against AND the work-order authoring descriptor the create sheet
+    // renders from, because both are keyed by the SAME workflow ref and the
+    // discovery route that yields that ref is fetched once for the pair.
+    // Fetched alongside the instances projection rather than gated behind
+    // opening a card or the New Task sheet, exactly as its two predecessors
+    // were — so both sheets have what they need the first time they open.
+    void fetchWorkflowIntrospection();
   }
 
   // ── Git review fetches (mirror fetchTerminals: plain REST, same-origin creds,
@@ -1576,12 +1636,12 @@ export const useVimesStore = defineStore('vimes', () => {
     // dispatch. Nothing here writes task state locally.
     tasksProjectionBody,
     tasksLoading,
+    workflowDeclaration,
     stageEdges,
     workOrderSchema,
     watchTasks,
     fetchTasks,
-    fetchStageEdges,
-    fetchWorkOrderSchema,
+    fetchWorkflowIntrospection,
     createTask,
     amendTask,
     proposeTaskTransition,

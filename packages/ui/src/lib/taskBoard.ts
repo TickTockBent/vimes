@@ -1,8 +1,8 @@
-// Pure derivation for the task board (slice 6 step 9) — turns the tasks
-// projection (GET /api/projections/tasks) into display-ready groups and cards,
-// and turns the task API's three answers (transition / dispatch) into honest
-// sentences. No Vue, no DOM, no I/O: every branch is unit-tested without a
-// browser (same split as lib/costDisplay.ts and lib/meterDisplay.ts).
+// Pure derivation for the task board (slice 6 step 9) — turns the instances
+// projection (GET /api/projections/instances) into display-ready groups and
+// cards, and turns the instance API's three answers (move / create / dispatch)
+// into honest sentences. No Vue, no DOM, no I/O: every branch is unit-tested
+// without a browser (same split as lib/costDisplay.ts and lib/meterDisplay.ts).
 //
 // ════════════════════════════════════════════════════════════════════════════
 // ⚠ RULE ONE: THIS MODULE IS **LAYOUT-AGNOSTIC**, AND THAT IS EXPENSIVE TO
@@ -27,18 +27,20 @@
 // ════════════════════════════════════════════════════════════════════════════
 //
 // ⚠ RULE TWO: **THE UI PROPOSES, THE DAEMON DECIDES.** The legality table is
-// NOT copied into this source and must never be — but `moveOptionsFor` DOES now
-// filter to the legal targets, read from the edge table the daemon SERVES at
-// runtime (`GET /api/tasks/stage-edges`, derived from the workflow declaration
-// that is the one source) and the store fetches.
-// So the UI reflects that legality without owning it, and `POST
-// /api/tasks/:taskId/transitions` STILL enforces on submit. See that function's
-// note for the 2026-07-24 reversal (show only valid moves) and why daemon-
-// sourcing answers the drift objection this comment used to rest on.
+// NOT copied into this source and must never be — but `moveOptionsFor` DOES
+// filter to the legal targets, read from the workflow DECLARATION the daemon
+// serves at runtime (`GET /api/workflows/:e/:w/:r/declaration`, S13·U2's q25
+// introspection — the same declaration the adjudicator reads) and the store
+// fetches. So the UI reflects that legality without owning it, and `POST
+// /api/instances/:instanceId/moves` STILL enforces on submit. See
+// `nodeEdgesFromDeclaration` / `moveOptionsFor` for the 2026-07-24 reversal
+// (show only valid moves) and why daemon-sourcing answers the drift objection
+// this comment used to rest on.
 //
 // @vimes/core is deliberately NOT a dependency of packages/ui (see the header of
-// lib/types.ts), so the wire shapes below mirror packages/core/src/schemas.ts
-// and the taskApi/taskDispatcher envelopes NARROWLY. Unknown keys are tolerated.
+// lib/types.ts), so the wire shapes below mirror
+// packages/core/src/projections/instances.ts and the instanceApi/taskDispatcher
+// envelopes NARROWLY. Unknown keys are tolerated.
 
 import type { Liveness, SessionRecord } from './types.js';
 // The project-scope predicate — the ONE browser-side mirror of core's attribution
@@ -124,24 +126,33 @@ export function stageKind(stage: string): StageKind {
   return 'unknown';
 }
 
-// ── Mirrored record shape ───────────────────────────────────────────────────
+// ── Mirrored record shape (S13·U3: the INSTANCES shape) ─────────────────────
 //
-// Every field but `taskId` is optional/loose ON PURPOSE. This is parsed from a
-// projection body over the wire, and I8 says hostile or degenerate input must
-// never crash a reader and must never silently swallow a record. `stage` is
-// typed `string`, not `TaskStage`, for exactly the reason
-// `proposeTransitionBodySchema` types `toStage` as a plain string in the daemon:
-// a value outside the enum physically reaches us, and refusing to model it is
-// how it disappears.
+// Every field but `instanceId` is optional/loose ON PURPOSE. This is parsed
+// from a projection body over the wire, and I8 says hostile or degenerate input
+// must never crash a reader and must never silently swallow a record.
+// `currentNode` is typed `string`, not `TaskStage`, for exactly the reason
+// `proposeMoveBodySchema` types `toNode` as a plain string in the daemon: a
+// value outside the enum physically reaches us, and refusing to model it is how
+// it disappears.
+//
+// ⚠ S13·U3 REPLACED THE LEGACY NARROWING (q24's shape alias, now retired).
+// This board used to read a derived task-shaped view of the instances fold; it
+// now reads `GET /api/projections/instances` directly. Four fields that
+// narrowing HID — `nodeHistory`, `edgeTraversalCounts`, `attemptsPerNode`,
+// `workflow` — are therefore present on the wire; they are deliberately NOT
+// mirrored here, because rendering them is a later unit with its own design
+// (slice-13 §2). `title` sits under `payload` on the instances shape (q13's
+// payload split), so `deriveTaskCard` reads it through `payloadOf`.
 export interface TaskBoardRecord {
-  readonly taskId: string;
-  readonly projectRoot?: unknown;
-  readonly title?: unknown;
-  readonly stage?: unknown;
+  readonly instanceId: string;
+  readonly project?: unknown;
+  readonly payload?: unknown;
+  readonly currentNode?: unknown;
   readonly manualReviewRequired?: unknown;
   readonly isolation?: unknown;
   readonly createdBy?: unknown;
-  readonly sessionRefs?: unknown;
+  readonly attachedSessions?: unknown;
 }
 
 // One card, as the board renders it. Everything here comes from the record;
@@ -222,6 +233,18 @@ function asString(value: unknown): string | null {
   return typeof value === 'string' ? value : null;
 }
 
+// The instance's tenant-shaped payload as a plain bag, or an empty one when the
+// record carries none / carries something that is not an object. TOTAL by
+// design (I8): the payload is opaque to the engine and arbitrary to this
+// reader, so every field is looked up through `asString`-style guards after
+// this and nothing here may throw.
+function payloadOf(record: { readonly payload?: unknown }): Record<string, unknown> {
+  const payload = record.payload;
+  return typeof payload === 'object' && payload !== null && !Array.isArray(payload)
+    ? (payload as Record<string, unknown>)
+    : {};
+}
+
 // The short form of a taskId, for a card with no title. The FRONT of the id,
 // not the back: ids are minted as UUIDs whose leading characters carry the
 // entropy, and a leading fragment is what an operator can match against a log
@@ -250,20 +273,22 @@ export function deriveTaskCard(
   task: TaskBoardRecord,
   sessionsById: Readonly<Record<string, SessionRecord>> = {},
 ): TaskCard {
-  const rawTitle = asString(task.title);
+  // q13's payload split: the authored title is tenant content and lives under
+  // `payload`, not on the core record.
+  const rawTitle = asString(payloadOf(task).title);
   // ⚠ A WHITESPACE-ONLY TITLE FALLS BACK TOO. The daemon records `''` verbatim
   // (it bounds length, it does not editorialise), which is the right call there
   // and would be a blank card here. "Never a blank card" is decided in exactly
   // one place, and this is it.
   const usableTitle = rawTitle !== null && rawTitle.trim().length > 0 ? rawTitle.trim() : null;
 
-  const rawStage = asString(task.stage);
+  const rawStage = asString(task.currentNode);
   const stage = rawStage ?? '';
-  const projectRoot = asString(task.projectRoot);
+  const projectRoot = asString(task.project);
 
   return {
-    taskId: task.taskId,
-    label: usableTitle ?? shortTaskId(task.taskId),
+    taskId: task.instanceId,
+    label: usableTitle ?? shortTaskId(task.instanceId),
     labelIsFallback: usableTitle === null,
     stage,
     stageKind: stageKind(stage),
@@ -284,21 +309,21 @@ function latestSessionOf(
   task: TaskBoardRecord,
   sessionsById: Readonly<Record<string, SessionRecord>>,
 ): TaskCard['latestSession'] {
-  if (!Array.isArray(task.sessionRefs)) {
+  if (!Array.isArray(task.attachedSessions)) {
     return null;
   }
-  // `sessionRefs` is a CHRONOLOGICAL trail (the projection appends, never
+  // `attachedSessions` is a CHRONOLOGICAL trail (the projection appends, never
   // sorts), so the most recent run is the last usable entry — walked backwards
   // so a malformed entry at the tail does not hide a good one behind it.
-  for (let index = task.sessionRefs.length - 1; index >= 0; index -= 1) {
-    const candidate = task.sessionRefs[index] as { stage?: unknown; appSessionId?: unknown } | null;
+  for (let index = task.attachedSessions.length - 1; index >= 0; index -= 1) {
+    const candidate = task.attachedSessions[index] as { node?: unknown; appSessionId?: unknown } | null;
     const appSessionId = asString(candidate?.appSessionId);
     if (appSessionId === null) {
       continue;
     }
     return {
       appSessionId,
-      stage: asString(candidate?.stage) ?? '',
+      stage: asString(candidate?.node) ?? '',
       // Absent from the projection → null, NOT a guess. A ref whose session we
       // cannot see is a known unknown; rendering it as 'dead' would be a lie
       // about a session that may well be running.
@@ -308,7 +333,7 @@ function latestSessionOf(
   return null;
 }
 
-// One entry in a task's session trail (S7·7g). `latestSessionOf`'s SIBLING,
+// One entry in an instance's session trail (S7·7g). `latestSessionOf`'s SIBLING,
 // not its replacement: that function answers "what is the card's badge right
 // now" (the single most recent usable ref, walked backwards); this one
 // answers "what is the task's whole history" (every usable ref, walked
@@ -330,13 +355,13 @@ export interface TaskSessionTrailEntry {
 
 /**
  * The task's full session trail, chronological (first dispatch → latest).
- * TOTAL over `task.sessionRefs`: a non-array, or an array of nulls/numbers,
+ * TOTAL over `task.attachedSessions`: a non-array, or an array of nulls/numbers,
  * never throws — a malformed entry with no usable `appSessionId` is skipped
  * (it can neither be linked nor counted); a usable id with a malformed stage
  * is kept with `stage: ''`.
  *
- * ⚠ NO PER-REF OUTCOME. `sessionRefs` does not carry one, and inventing one
- * from stage position (e.g. "the run before a later stage must have
+ * ⚠ NO PER-REF OUTCOME. `attachedSessions` does not carry one, and inventing
+ * one from stage position (e.g. "the run before a later stage must have
  * succeeded") would be a guess dressed as a fact — exactly what this board
  * exists not to do. The trail says WHO ran WHEN, not how each run ended.
  */
@@ -344,21 +369,21 @@ export function sessionTrailOf(
   task: TaskBoardRecord,
   sessionsById: Readonly<Record<string, SessionRecord>>,
 ): TaskSessionTrailEntry[] {
-  if (!Array.isArray(task.sessionRefs)) {
+  if (!Array.isArray(task.attachedSessions)) {
     return [];
   }
   const trail: TaskSessionTrailEntry[] = [];
   const attemptByStage = new Map<string, number>();
-  // Walked FORWARDS — `sessionRefs` is append-only, so index order already is
-  // chronological order (contrast `latestSessionOf`'s backwards walk, which
+  // Walked FORWARDS — `attachedSessions` is append-only, so index order already
+  // is chronological order (contrast `latestSessionOf`'s backwards walk, which
   // only needs the tail).
-  for (const raw of task.sessionRefs) {
-    const candidate = raw as { stage?: unknown; appSessionId?: unknown } | null;
+  for (const raw of task.attachedSessions) {
+    const candidate = raw as { node?: unknown; appSessionId?: unknown } | null;
     const appSessionId = asString(candidate?.appSessionId);
     if (appSessionId === null) {
       continue;
     }
-    const stage = asString(candidate?.stage) ?? '';
+    const stage = asString(candidate?.node) ?? '';
     const attempt = (attemptByStage.get(stage) ?? 0) + 1;
     attemptByStage.set(stage, attempt);
     trail.push({
@@ -372,11 +397,12 @@ export function sessionTrailOf(
 }
 
 /**
- * Read the tasks projection body into a classified board.
+ * Read the instances projection body into a classified board.
  *
  * TOTAL AND NON-THROWING over any body (I8, assertion 11): a null body, a
- * missing `tasks` key, `tasks` as an array/string/number, null task values and
- * records missing every field all produce a board rather than an exception.
+ * missing `instances` key, `instances` as an array/string/number, null record
+ * values and records missing every field all produce a board rather than an
+ * exception.
  *
  * ⚠ **NOTHING IS EVER SILENTLY DROPPED.** A task whose stage is absent, not a
  * string, or outside the vocabulary this UI knows lands in an `unknown` group
@@ -395,7 +421,7 @@ export function groupTasksForBoard(
   // than in the view so `count` and `totalTasks` describe the board actually on
   // screen: a "review 3" header over one visible card would be a meter that lies.
   //
-  // A task with NO usable projectRoot is EXCLUDED from a scoped board, and
+  // A task with NO usable `project` is EXCLUDED from a scoped board, and
   // included in an unscoped one. It cannot be shown to belong here, and D42's
   // whole posture is that a boundary is proved, never assumed.
   projectRoot: string | null = null,
@@ -454,26 +480,27 @@ function readTaskCards(
   if (typeof body !== 'object' || body === null) {
     return [];
   }
-  const tasks = (body as { tasks?: unknown }).tasks;
-  if (typeof tasks !== 'object' || tasks === null || Array.isArray(tasks)) {
+  const instances = (body as { instances?: unknown }).instances;
+  if (typeof instances !== 'object' || instances === null || Array.isArray(instances)) {
     return [];
   }
 
   const cards: TaskCard[] = [];
-  for (const [key, value] of Object.entries(tasks as Record<string, unknown>)) {
+  for (const [key, value] of Object.entries(instances as Record<string, unknown>)) {
     if (typeof value !== 'object' || value === null) {
-      // A null/primitive value under a real key is still evidence a task exists.
-      // It is kept with the MAP KEY as its id rather than dropped — the key is
-      // the taskId in the projection's own shape, so this fabricates nothing.
-      cards.push(deriveTaskCard({ taskId: key }, sessionsById));
+      // A null/primitive value under a real key is still evidence an instance
+      // exists. It is kept with the MAP KEY as its id rather than dropped — the
+      // key is the instanceId in the projection's own shape, so this fabricates
+      // nothing.
+      cards.push(deriveTaskCard({ instanceId: key }, sessionsById));
       continue;
     }
     const record = value as Record<string, unknown>;
-    // The record's own taskId when it has one, otherwise the map key it is
+    // The record's own instanceId when it has one, otherwise the map key it is
     // filed under. They agree in every projection the daemon serializes; when
     // they do not, the key is the addressable one.
     cards.push(
-      deriveTaskCard({ ...record, taskId: asString(record.taskId) ?? key }, sessionsById),
+      deriveTaskCard({ ...record, instanceId: asString(record.instanceId) ?? key }, sessionsById),
     );
   }
   return cards;
@@ -510,6 +537,151 @@ export interface TaskApiAnswer {
   readonly body: unknown;
 }
 
+// ── q25 declaration introspection, read client-side (S13·U3) ────────────────
+//
+// Two routes replace the legacy stage-edges alias (q24, deleted in S13·U4):
+//   • `GET /api/workflows` — the DISCOVERY half (S13·U2b). At zero instances a
+//     client holds no ref to key the per-ref routes with, so the index is what
+//     lets a fresh client render a create sheet on an empty board.
+//   • `GET /api/workflows/:e/:w/:r/declaration` — the FULL declared table for
+//     one ref, immutable for that ref (the daemon says so in its cache header;
+//     the browser cache is the persistence, this module builds none).
+//
+// The client fetches ONE declaration per REF, never one per instance (F3
+// ⟨signed⟩ rider 2) — `workflowRefKey` is that dedupe key.
+
+/** The declaration's identity, as `GET /api/workflows` lists it. */
+export interface WorkflowRefLike {
+  readonly extension: string;
+  readonly workflow: string;
+  readonly rev: string;
+}
+
+/**
+ * The dedupe/cache key for one ref. Plain, printable, and derived only from
+ * the three identity fields — the same three the daemon's route matches on.
+ */
+export function workflowRefKey(ref: WorkflowRefLike): string {
+  return `${ref.extension}/${ref.workflow}/${ref.rev}`;
+}
+
+/**
+ * The refs `GET /api/workflows` lists, deduped by key and in index order.
+ *
+ * TOTAL over hostile input (I8): a null body, a missing/`non-array`
+ * `workflows`, an entry that is not an object, and a `ref` missing any of its
+ * three string fields all degrade to "not a ref I can key with" rather than
+ * throwing. An unreadable index yields `[]`, which the store treats exactly as
+ * "nothing to fetch yet" — the same safe empty a failed fetch produces.
+ */
+export function readWorkflowRefs(body: unknown): WorkflowRefLike[] {
+  if (typeof body !== 'object' || body === null) {
+    return [];
+  }
+  const listed = (body as { workflows?: unknown }).workflows;
+  if (!Array.isArray(listed)) {
+    return [];
+  }
+  const refs: WorkflowRefLike[] = [];
+  const seen = new Set<string>();
+  for (const entry of listed) {
+    if (typeof entry !== 'object' || entry === null) {
+      continue;
+    }
+    const raw = (entry as { ref?: unknown }).ref;
+    if (typeof raw !== 'object' || raw === null) {
+      continue;
+    }
+    const candidate = raw as { extension?: unknown; workflow?: unknown; rev?: unknown };
+    const extension = asString(candidate.extension);
+    const workflow = asString(candidate.workflow);
+    const rev = asString(candidate.rev);
+    if (extension === null || workflow === null || rev === null) {
+      continue;
+    }
+    const ref: WorkflowRefLike = { extension, workflow, rev };
+    const key = workflowRefKey(ref);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    refs.push(ref);
+  }
+  return refs;
+}
+
+/**
+ * The legal-target table the move sheet filters against, derived from the
+ * declaration body: for each node, the nodes its declared out-edges reach.
+ *
+ * ⚠ **RESTRICTED TO THE NINE STAGES THIS BOARD KNOWS (`KNOWN_STAGES`), BOTH
+ * ENDS OF EVERY EDGE — AND THAT RESTRICTION IS LOAD-BEARING, NOT TIDYING.**
+ * The legacy stage-edges alias served declaration membership already narrowed
+ * to the record vocabulary (the daemon dropped every row touching the tenth
+ * node, `manual-review`); the q25 declaration route serves the FULL declared
+ * table, so the narrowing moved here. Two reasons it must stay:
+ *
+ *   1. **§2 — no screen gains a capability.** Offering `manual-review` in the
+ *      move sheet would be a new destination the board has never offered.
+ *   2. **The record enum cannot hold it.** A proposal to a node outside the
+ *      nine would reach a record whose stage vocabulary has no such value —
+ *      the daemon would refuse, and the sheet would have baited the operator
+ *      into a refusal that is a UI bug rather than a machine decision.
+ *
+ * This is NOT a copied legality DECISION (rule two at the top of this file):
+ * membership comes wholly from the served declaration. What is applied here is
+ * the BOARD's own vocabulary — the nine stages it already mirrors and can name
+ * — which is the tasks extension's own surface knowing its own nodes.
+ *
+ * ⚠ ORDER IS THE DECLARATION'S, not the frozen `WIRE_STAGE_EDGE_ORDER` the
+ * legacy route imposed. Accepted cosmetic delta (orchestrator ruling
+ * 2026-08-12): the buttons in the move sheet may appear in a different order
+ * than they did; the SET is identical. No order-preservation machinery.
+ *
+ * TOTAL over hostile input (I8): `null` (nothing fetched yet, or an unreadable
+ * body) returns `null`, which `moveOptionsFor` already treats as "not loaded"
+ * and answers with a safe empty — never all-stages.
+ */
+export function nodeEdgesFromDeclaration(declaration: unknown): Record<string, string[]> | null {
+  if (typeof declaration !== 'object' || declaration === null) {
+    return null;
+  }
+  const workflow = (declaration as { workflow?: unknown }).workflow;
+  if (typeof workflow !== 'object' || workflow === null) {
+    return null;
+  }
+  const edges = (workflow as { edges?: unknown }).edges;
+  if (!Array.isArray(edges)) {
+    return null;
+  }
+  // Every known stage gets a key, including a terminal one whose set stays
+  // empty — the legacy route did the same, and `moveOptionsFor` reads an empty
+  // array and an absent key identically anyway.
+  const targetsByStage = new Map<string, string[]>();
+  for (const stage of KNOWN_STAGES) {
+    targetsByStage.set(stage, []);
+  }
+  for (const raw of edges) {
+    if (typeof raw !== 'object' || raw === null) {
+      continue;
+    }
+    const edge = raw as { from?: unknown; to?: unknown };
+    const from = asString(edge.from);
+    const to = asString(edge.to);
+    if (from === null || to === null || !isKnownStage(from) || !isKnownStage(to)) {
+      continue;
+    }
+    const targets = targetsByStage.get(from)!;
+    // The declaration is the expanded table and may list a pair more than once
+    // (a wildcard row expanded onto a row somebody also wrote by hand); the
+    // sheet must not show the same destination twice.
+    if (!targets.includes(to)) {
+      targets.push(to);
+    }
+  }
+  return Object.fromEntries(targetsByStage);
+}
+
 // ── The move sheet ──────────────────────────────────────────────────────────
 
 export interface MoveOption {
@@ -528,9 +700,9 @@ export interface MoveOption {
  * sheet shows only legal targets. The original three objections are ANSWERED,
  * not ignored:
  *   1. The edge table is NOT copied into the UI (the drift hazard) — it is
- *      FETCHED from the daemon, which derives it from the workflow declaration
- *      (the one source), and passed in here. A stage added to the declaration
- *      flows through the served table; nothing here re-declares the vocabulary.
+ *      derived by `nodeEdgesFromDeclaration` from the workflow declaration the
+ *      daemon SERVES (the one source), and passed in here. An edge added to
+ *      the declaration flows through; nothing here re-declares legality.
  *   2. This is not a second AUTHORITY: the UI reflects the machine's own rules
  *      and the server STILL enforces on submit — a forced illegal edge is still
  *      409 + an evented task_transition_rejected, so I7 stays assertable and is
@@ -539,7 +711,7 @@ export interface MoveOption {
  *   3. The refusal path is unchanged and still the record; it is simply no
  *      longer the primary way to discover the graph.
  *
- * Current stage is excluded (a no-op; the machine says same-stage). No served
+ * Current stage is excluded (a no-op; the machine says same-node). No declared
  * edges yet, or a stage with an empty edge set (e.g. terminal `done`) → no
  * options, which is correct.
  */
@@ -563,18 +735,44 @@ export function moveOptionsFor(
 
 // ── The machine's answer, in human words ────────────────────────────────────
 
-// Every enumerated `TransitionRejectionReason` (packages/core
-// tasks/taskStateMachine.ts), each with its OWN sentence. A shared "that move
-// isn't allowed" would throw away the one thing the 409 is carrying.
+// Every refusal reason a move can carry, each with its OWN sentence. A shared
+// "that move isn't allowed" would throw away the one thing the 409 is carrying.
+//
+// TWO SPELLING FAMILIES LIVE HERE, PERMANENTLY (S13·U1 F1, assertion S13-A9):
+//
+//   • the NODE-GENERIC engine reasons — `unknown-node`, `same-node`,
+//     `terminal-node` — which is what the engine emits from S13·U1 onward;
+//   • the LEGACY STAGE-SPELLED engine reasons — `unknown-stage`, `same-stage`,
+//     `terminal-stage` — which is what every refusal recorded BEFORE that unit
+//     says, forever.
+//
+// ⚠ **DELETING THE LEGACY ROWS IS A REGRESSION, NOT A CLEANUP.** History is
+// never rewritten (q21): the old spellings persist in the log and may surface
+// through any historical read, and these rows are their permanent read-side
+// alias — the same treatment q21 gives every retired spelling. The mixed
+// vocabulary is the DESIGNED outcome of F1+F2, not an incomplete migration.
+//
+// `illegal-edge` is engine vocabulary that never named a node, so it is
+// unchanged. `quarantined-cannot-complete` is TENANT content declared in the
+// manifest's forbidden row (F2) — not respelled, and it reaches this map
+// through the declared channel rather than an engine enum.
 const REJECTION_SENTENCE: Readonly<Record<string, string>> = {
   'illegal-edge': 'That move is not one of the edges out of this stage. The task has not moved.',
+  // ── the node-generic engine spellings (S13·U1) ────────────────────────────
+  'terminal-node':
+    'Done is final. Reopening finished work mints a NEW task rather than resurrecting this one, so the audit trail stays honest.',
+  'same-node': 'The task is already in that stage, so nothing was proposed.',
+  'unknown-node':
+    'The machine does not recognise one of the stages in that proposal. The refusal is in the log.',
+  // ── the legacy stage-spelled engine reasons — KEEP FOREVER (S13-A9) ───────
   'terminal-stage':
     'Done is final. Reopening finished work mints a NEW task rather than resurrecting this one, so the audit trail stays honest.',
   'same-stage': 'The task is already in that stage, so nothing was proposed.',
-  'quarantined-cannot-complete':
-    'A quarantined run may not complete. Send it back through planning or implementing, park it as blocked, or return it to the backlog — it cannot go straight to done.',
   'unknown-stage':
     'The machine does not recognise one of the stages in that proposal. The refusal is in the log.',
+  // ── declared, tenant-authored (F2) ────────────────────────────────────────
+  'quarantined-cannot-complete':
+    'A quarantined run may not complete. Send it back through planning or implementing, park it as blocked, or return it to the backlog — it cannot go straight to done.',
 };
 
 /**
@@ -603,9 +801,9 @@ export type MoveOutcome =
   | { readonly kind: 'error'; readonly sentence: string };
 
 /**
- * Classify the response to `POST /api/tasks/:taskId/transitions`.
+ * Classify the response to `POST /api/instances/:instanceId/moves`.
  *
- * The status-code contract is `taskApi.ts`'s, read as it is written there:
+ * The status-code contract is `instanceApi.ts`'s, read as it is written there:
  *   • 200 → the machine ACCEPTED. The card must still not move until the
  *     PROJECTION says it did (no optimistic UI) — this only reports the answer.
  *   • 409 → the machine REFUSED, and the refusal IS IN THE LOG (I7). Never
@@ -617,7 +815,9 @@ export function describeMoveResponse(status: number, body: unknown): MoveOutcome
   const parsed = (typeof body === 'object' && body !== null ? body : {}) as Record<string, unknown>;
 
   if (status === 200) {
-    const movedTo = asString((parsed.task as Record<string, unknown> | undefined)?.stage) ?? '';
+    // The accepted envelope is `{ accepted, instance, dispatch? }` — the
+    // moved-to node is the instance's own `currentNode`.
+    const movedTo = asString((parsed.instance as Record<string, unknown> | undefined)?.currentNode) ?? '';
     return {
       kind: 'accepted',
       stage: movedTo,
@@ -672,7 +872,7 @@ export type CreateOutcome =
   | { readonly kind: 'error'; readonly sentence: string };
 
 /**
- * Classify the response to `POST /api/tasks`.
+ * Classify the response to `POST /api/instances`.
  *
  * ⚠ THE TITLE CAP IS NOT MIRRORED HERE, for the same reason the edge table is
  * not: it is the daemon's policy, it may change without this client changing,
@@ -683,13 +883,12 @@ export function describeCreateResponse(status: number, body: unknown): CreateOut
   const parsed = (typeof body === 'object' && body !== null ? body : {}) as Record<string, unknown>;
 
   if (status === 201) {
-    const task = (typeof parsed.task === 'object' && parsed.task !== null ? parsed.task : {}) as Record<
-      string,
-      unknown
-    >;
+    const instance = (
+      typeof parsed.instance === 'object' && parsed.instance !== null ? parsed.instance : {}
+    ) as Record<string, unknown>;
     return {
       kind: 'created',
-      taskId: asString(task.taskId) ?? '',
+      taskId: asString(instance.instanceId) ?? '',
       sentence: 'Created. Waiting for the board to catch up.',
     };
   }
@@ -761,8 +960,8 @@ const NOTHING_TO_SAY_NOTE =
   'The session was started but told NOTHING — stage instructions are not written yet, so it will sit idle until you talk to it. That is the current design, not a hang.';
 
 /**
- * Classify the body of `POST /api/tasks/:taskId/dispatch` (and, re-wrapped, a
- * D53 promotion's `dispatch` rider — see `dispatchFollow.ts`).
+ * Classify the body of `POST /api/instances/:instanceId/dispatch` (and,
+ * re-wrapped, a D53 promotion's `dispatch` rider — see `dispatchFollow.ts`).
  *
  * Every outcome the dispatcher can produce gets its OWN report — `spawned`,
  * `deferred`, `refused`, `spawn-failed`, `worktree-failed`, `in-flight` —
