@@ -75,12 +75,17 @@ describe("TASK_STAGES — the record vocabulary, in the schema's own order", () 
     ]);
   });
 
-  // ⚠ THE ORDER IS WIRE-LOAD-BEARING, not cosmetic. S12·U2 derives the key order
-  // of `GET /api/tasks/stage-edges` from this vocabulary, and that response is a
-  // contract the deployed UI parses (slice-12 F4, and the frozen wire literal in
-  // the daemon's `instanceApi.test.ts` is its byte-level pin). Re-ordering the
-  // enum in `schemas.ts` is a wire change; this test is where it announces itself.
-  it('rides the enum declaration order, which the served stage-edges keys inherit', () => {
+  // ⚠ THE ORDER WAS WIRE-LOAD-BEARING, not cosmetic, through S13·U3: S12·U2
+  // derived the key order of the legacy per-record stage-edges GET route from
+  // this vocabulary, and that response was a contract the deployed UI parsed
+  // (slice-12 F4, pinned by a frozen wire literal in the daemon's
+  // `instanceApi.test.ts`). S13·U4 deleted that route, its wire-order constant
+  // (`WIRE_STAGE_EDGE_ORDER`), and the frozen literal together — this
+  // assertion is untouched (out of this unit's deletion list) and stays
+  // pinned as the schema's own declared order regardless of whether a route
+  // currently reads it that way; a future consumer of this order is free to
+  // exist without this test changing.
+  it('rides the enum declaration order — the schema-declared order, not transcribed', () => {
     expect([...TASK_STAGES]).toEqual([
       'backlog',
       'planning',

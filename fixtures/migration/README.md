@@ -108,6 +108,25 @@ halts." A legitimate, reviewed, *intentional* change to the projection's
 output shape is a new dated fixture with its own decision record, not a
 silent re-export over this one.
 
+## Addendum — the instances-shape succession (S13·U4, 2026-08-12)
+
+`tasks-state.json` above records what `tasksProjection` (pre-D72) and, from
+S11 on, `legacyTasksViewOf` of the instances fold produced — the view the
+`/api/tasks/*` alias routes served. S13·U4 deleted those alias routes and
+re-pointed `tasksFixtureReplay.test.ts`'s S13-A7 assertion to the INSTANCES
+serialization directly (`instancesProjection.serialize`, no legacy-view
+narrowing). Its frozen expectation is a **third file, `tasks-state-
+instances.json`** — produced by folding `tasks-stream.jsonl` (the SAME 111
+events, untouched) through `instancesProjection` and writing
+`instancesProjection.serialize(state)` verbatim, determinism-checked (two
+independent folds byte-identical) before freezing, exactly mirroring the
+export method above with the new projection in place of the old one.
+
+`tasks-state.json` is **not superseded or retired** — it stays as the
+permanent historical record of what the pre-D72 shape produced, and nothing
+reads it any more. Both `.json` files and `tasks-stream.jsonl` are frozen; do
+not regenerate any of them to make a test pass (same discipline as above).
+
 ## Secret scrub
 
 Every payload in `tasks-stream.jsonl` was read before freezing. It contains

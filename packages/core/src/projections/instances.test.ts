@@ -39,10 +39,10 @@ import { legacyTasksViewOf, type TasksState } from './legacyTasksView.js';
 
 // ─── S11·U1 (D72 Move 2) — the instances reducer's assertions ────────────────
 //
-// This file REPLACES `projections/tasks.test.ts`, which died with the projection
-// it tested. Every behaviour assertion that file made is here, re-expressed in
-// the generic vocabulary; nothing was dropped. Three things changed and only
-// three:
+// This file REPLACES the old task-projection test file, which died with the
+// projection it tested. Every behaviour assertion that file made is here,
+// re-expressed in the generic vocabulary; nothing was dropped. Three things
+// changed and only three:
 //
 //   1. the vocabulary (taskId -> instanceId, stage -> node, and so on),
 //   2. the cases that pinned the LEGACY RECORD SHAPE now read through
@@ -78,8 +78,10 @@ function stateFromLog(batches: EventInput[][]): InstancesState {
 }
 
 // The legacy shape, derived — the only place these tests are allowed to speak
-// task vocabulary, and the exact derivation the `/api/projections/tasks` alias
-// route serves.
+// task vocabulary, and the exact derivation `app.ts`'s `readTasksAsLegacyView`
+// still runs for the writer/dispatcher/orchestrator/watchdog `readTasks`
+// callbacks (the legacy tasks-projection alias route this once ALSO served,
+// through S13·U3, was deleted S13·U4 — see legacyTasksView.ts's header).
 function legacyFromLog(batches: EventInput[][]): TasksState {
   return legacyTasksViewOf(stateFromLog(batches));
 }

@@ -91,12 +91,13 @@ export {
   type HeadroomGateReason,
   type HeadroomGateResult,
 } from './meterDerivations.js';
-// S11·U1 (D72 Move 2): the INSTANCE store replaced the task store, and
-// `projections/tasks.ts` was deleted in the same unit (D72: a unit that leaves
-// both paths live is not finished). `legacyTasksViewOf` + `TasksState` are the
-// narrowing that keeps today's consumers — the `/api/projections/tasks` alias
-// route and the frozen-fixture exit gate — reading the shape they already know;
-// both die with the aliases, one deploy after the UI migrates (q24).
+// S11·U1 (D72 Move 2): the INSTANCE store replaced the task store, and the old
+// task-projection source file was deleted in the same unit (D72: a unit that
+// leaves both paths live is not finished). `legacyTasksViewOf` + `TasksState`
+// are the narrowing. S13·U4 deleted its original two consumers (the legacy
+// tasks-projection alias route and the frozen-fixture exit gate, which now
+// pins the instances serialization directly) — its one remaining consumer and
+// its Move-4 death trigger are named in legacyTasksView.ts's own header.
 export {
   instancesProjection,
   type InstanceRecord,

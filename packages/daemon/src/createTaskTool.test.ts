@@ -130,8 +130,8 @@ describe('buildCreateTaskSpec — the happy path (the forced fields win)', () =>
     expect(input.projectRoot).toBe(PROJECT_ROOT);
     expect(input.createdBy).toBe('orchestrator');
     expect(input.stage).toBe('backlog');
-    // ⚠ READ FROM THE HUMAN DOOR (`createTaskBodySchema.isolation`'s default), not
-    // invented: both doors must produce the same kind of record.
+    // ⚠ READ FROM THE HUMAN DOOR (`createInstanceBodySchema`'s `isolation`
+    // default), not invented: both doors must produce the same kind of record.
     expect(input.isolation).toBe('worktree');
   });
 

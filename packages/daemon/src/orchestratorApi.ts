@@ -128,7 +128,7 @@ export function registerOrchestratorApi(app: Hono, deps: OrchestratorApiDeps): v
   //   • **409 `archived-project`** — the boundary has been retired; founding a
   //     standing entity for it would be reviving something a human put away.
   //   • **200 + the envelope** for every other outcome, refusals included — the
-  //     `POST /api/tasks/:taskId/dispatch` convention verbatim: the caller gets
+  //     instance API's dispatch route convention verbatim: the caller gets
   //     "here is what happened", never a 4xx that invites retry machinery.
   app.post('/api/projects/:projectId/orchestrator', (context) => {
     const projectId = context.req.param('projectId');

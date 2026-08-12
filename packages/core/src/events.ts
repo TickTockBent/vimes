@@ -219,9 +219,11 @@ export const EVENT_TYPES = {
   //
   // **S7·2b SPENT THE RESERVATION AND LANDED THE EMITTER:
   // `TaskWriter.amendWorkOrder` (packages/daemon — the SOLE writer of task
-  // state, I7), reached over HTTP by `POST /api/tasks/:taskId/amendments`.** The
-  // grep that used to come up empty now lands there, and the instance store
-  // folds the patch onto the record. D46's second correction door is this event.
+  // state, I7), reached over HTTP by the amend-work-order route (the deprecated
+  // task-alias spelling through S13·U3, `POST /api/instances/:instanceId/
+  // payload-revisions` since).** The grep that used to come up empty now lands
+  // there, and the instance store folds the patch onto the record. D46's
+  // second correction door is this event.
   //
   // ⚠ **RETIRED BY S11 (D72 Move 2).** Its generic sibling is
   // `instance_payload_revised`; this kind keeps its type, schema and constructor

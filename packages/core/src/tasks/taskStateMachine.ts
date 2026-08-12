@@ -13,7 +13,9 @@
 //     → parsed by `extensions/manifest.ts` into a `ParsedWorkflow`
 //     → adjudicated by `extensions/proposeMove.ts` (tenant-blind, decision-only)
 //     → written by the daemon's instance writer, which resolves the workflow
-//       once at boot and serves it to the UI over `GET /api/tasks/stage-edges`.
+//       once at boot and serves it to the UI over `GET /api/workflows/
+//       :extension/:workflow/:rev/declaration` (q25, S13·U2 — the legacy
+//       per-record stage-edges GET route this replaced was deleted S13·U4).
 //
 // Nothing in this file decides legality any more, and nothing may re-acquire
 // that job: a second table would be a second authority, which is the exact

@@ -279,9 +279,9 @@ export function registerProjectApi(app: Hono, deps: ProjectApiDeps): void {
   // ── POST /api/projects/:projectId/metadata — patch name/description ─────────
   //
   // A POST to a named sub-resource rather than a PATCH on `/api/projects/:id`,
-  // matching `/api/tasks/:taskId/amendments`: the registry is event-sourced, so
-  // this appends a `project_updated` rather than editing a stored row, and the
-  // route's shape says so.
+  // matching the instance API's payload-revisions door: the registry is
+  // event-sourced, so this appends a `project_updated` rather than editing a
+  // stored row, and the route's shape says so.
   //
   // ⚠ **`root` CANNOT BE CHANGED THROUGH THIS DOOR OR ANY OTHER.** D42: a
   // different directory is a different project — declare it, and archive the old

@@ -82,9 +82,10 @@ export interface CreateTaskToolDeps {
 // authored work-orders need a human rewrite, and a caller that could name its own
 // `createdBy` could quietly poison that measurement.
 const AUTHORED_TASK_CREATED_BY = 'orchestrator' as const;
-// ⚠ **READ FROM THE HUMAN DOOR, NOT INVENTED.** `createTaskBodySchema.isolation`
-// (taskApi.ts) defaults to `'worktree'`, so a task a human creates without saying
-// anything about isolation gets `'worktree'` — and an authored one gets the same,
+// ⚠ **READ FROM THE HUMAN DOOR, NOT INVENTED.** `createInstanceBodySchema`'s
+// `isolation` field (instanceApi.ts) defaults to `'worktree'`, so a task a
+// human creates without saying anything about isolation gets `'worktree'` —
+// and an authored one gets the same,
 // because the two doors must produce the same KIND of record. If that default
 // ever moves, this constant moves with it; they are one decision in two places
 // only because the model's door and the human's door do not share a schema.

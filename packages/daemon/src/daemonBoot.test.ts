@@ -23,12 +23,14 @@ let databaseFileCounter = 0;
 
 const permissiveVerifier: AccessVerifier = { verify: async () => ({ ok: true }) };
 const ANY_TOKEN = 'valid-token-stub';
-// S11·U1: `tasks` stays in this list on purpose — it is now the ALIAS route
-// (`legacyTasksViewOf` of the instances fold), and the assertion that it boots
-// byte-identically is exactly the guarantee the deployed UI depends on across
-// the one deploy of overlap (q24). `instances` is its generic twin, checked
-// beside it so both answers are pinned.
-const PROJECTION_IDS = ['sessions', 'meters', 'tasks', 'instances'] as const;
+// S11·U1 through S13·U3: `tasks` stayed in this list on purpose — it was the
+// legacy tasks-projection ALIAS route (`legacyTasksViewOf` of the instances
+// fold), and the assertion that it booted byte-identically was exactly the
+// guarantee the deployed UI depended on across the one deploy of overlap
+// (q24). S13·U4 deleted that alias route (instanceApi.ts's header); `tasks`
+// is dropped from this list accordingly, leaving `instances` — its generic
+// twin — as the sole reader of instance state.
+const PROJECTION_IDS = ['sessions', 'meters', 'instances'] as const;
 
 function nextDatabasePath(): string {
   databaseFileCounter += 1;
@@ -176,11 +178,12 @@ describe('daemon boot — snapshot+tail cold start over a real sqlite file', () 
       //
       // ⚠ `instances` is where `tasks` used to be in this list (S11·U1, D72
       // Move 2). The projection id moved with the fold — the STREAM is still
-      // 'tasks' and the `/api/projections/tasks` ROUTE still answers (as the
-      // legacy view) — so on the real database the old 'tasks' snapshot row
-      // survives, orphaned and harmless, and the first boot after the deploy
-      // replays the tasks stream from seq 1 under the new id (slice-11.md).
-      // This test starts from an empty file, so only the new id appears.
+      // 'tasks' (through S13·U3 the legacy tasks-projection alias route also
+      // still answered off it, as the legacy view; S13·U4 deleted that route)
+      // — so on the real database the old 'tasks' snapshot row survives,
+      // orphaned and harmless, and the first boot after the deploy replays
+      // the tasks stream from seq 1 under the new id (slice-11.md). This test
+      // starts from an empty file, so only the new id appears.
       expect(snapshotRows.map((row) => row.projectionId)).toEqual([
         'cache-observability',
         'instances',

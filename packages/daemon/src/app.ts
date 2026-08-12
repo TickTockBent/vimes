@@ -24,7 +24,6 @@ import {
   sessionsProjection,
   instancesProjection,
   legacyTasksViewOf,
-  canonicalJson,
   SYSTEM_STREAM,
   // B1 — the usage-poller auth-failure backoff DECISION. Pure reducer; this
   // boundary owns the actual setTimeout that drives it (rule 0.3).
@@ -166,10 +165,6 @@ const DAEMON_PROJECTIONS: ReadonlyArray<Projection<unknown>> = [
 const PROJECTION_BY_ID = new Map<string, Projection<unknown>>(
   DAEMON_PROJECTIONS.map((projection) => [projection.id, projection]),
 );
-
-// The projection id the deployed UI still asks for. Not a Projection any more —
-// there is no such fold — it is the id the ALIAS answers under.
-const LEGACY_TASKS_PROJECTION_ID = 'tasks';
 
 export interface DaemonDeps {
   config: DaemonConfig;
@@ -454,23 +449,24 @@ export function createDaemon(deps: DaemonDeps): Daemon {
   };
 
   // S11·U1: read the instance store the way every task-shaped consumer in this
-  // file still wants it — as the legacy narrowing. ONE derivation, called from
-  // the alias route and from the four `readTasks` callbacks below, so the alias
-  // and the writers can never answer from different folds.
+  // file still wants it — as the legacy narrowing. ONE derivation.
+  //
+  // ⚠ SURVIVES S13·U4 (alias death) — NOT DEAD CODE. Through S13·U3 this fed
+  // BOTH the legacy tasks-projection alias route and the four `readTasks`
+  // callbacks below; S13·U4 deleted the alias branch in `serializeProjection`
+  // (below) and the app.ts caller count on this function dropped from 5 to 4,
+  // but it did NOT reach zero. `InstanceWriter`, `TaskDispatcher`,
+  // `registerOrchestratorApi` and `TaskWatchdog` still take the legacy
+  // `TaskRecord` narrowing (instanceWriter.ts's own note: "the ADJUDICATION no
+  // longer takes the narrowing `legacyTasksViewOf` produces" is about the
+  // MOVE-adjudication path specifically, not this read) — that dependency is
+  // Move 4 territory (`packages/ext-tasks/`), explicitly out of this unit. See
+  // `packages/core/src/projections/legacyTasksView.ts`'s header, updated to
+  // name this as its one remaining consumer.
   const readTasksAsLegacyView = (): ReturnType<typeof legacyTasksViewOf> =>
     legacyTasksViewOf(bootFromSnapshot(instancesProjection, snapshotStore, store));
 
   const serializeProjection = (projectionId: string): string | null => {
-    // ⚠ THE ALIAS (q24, one deploy of overlap): `/api/projections/tasks` keeps
-    // answering after the projection behind it was renamed, served as
-    // `legacyTasksViewOf` of the instances fold. The deployed UI reads this path
-    // and is deliberately untouched this slice — a UI that learned the new
-    // vocabulary would ship itself ahead of the daemon (the D37 failure class).
-    // U3 owns the rest of the route story; this row dies with the alias set, one
-    // deploy after the UI migrates.
-    if (projectionId === LEGACY_TASKS_PROJECTION_ID) {
-      return canonicalJson(readTasksAsLegacyView());
-    }
     const projection = PROJECTION_BY_ID.get(projectionId);
     if (projection === undefined) {
       return null;
@@ -617,11 +613,12 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     instanceWriter,
   });
 
-  // S11·U3 (D72 Move 2): the generic instance routes ARE the contract now, and
-  // every `/api/tasks/*` path they replaced is registered beside them as a
-  // deprecated alias for exactly one deploy (q24 — the inventory is in
-  // instanceApi.ts's header, together with the `/api/projections/tasks` row
-  // above). The deployed UI reads the aliases and is deliberately untouched.
+  // S11·U3 (D72 Move 2): the generic instance routes ARE the contract. Through
+  // S13·U3 every deprecated task-alias path they replaced was registered
+  // beside them for exactly one deploy of overlap (q24 — the inventory was in
+  // instanceApi.ts's header, together with the legacy tasks-projection row
+  // above); S13·U4 deleted the alias set once the UI unit switched every call
+  // site to the generic routes, closing q24.
   registerInstanceApi(app, {
     instanceWriter,
     // ONE explicit attempt per request. No loop, no timer, no scheduling — step
@@ -635,13 +632,13 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     getAllowedRoots: () => [...config.projectRoots, ...sessionHost.liveSessionCwds()],
     // The INSTANCE fold, read fresh per response — the generic routes' envelopes
     // carry the record as the projection folded it (I12). Deliberately NOT
-    // `readTasksAsLegacyView` above: that narrowing exists for the writers and
-    // the alias, and handing it to the generic surface would make the new
-    // contract a view of the old one.
+    // `readTasksAsLegacyView` above: that narrowing exists for the writers
+    // (Move 4 territory), and handing it to the generic surface would make the
+    // new contract a view of the old one.
     readInstances: () => bootFromSnapshot(instancesProjection, snapshotStore, store),
     // S12·U2 (D72 Move 3): the SAME boot-resolved declaration object the writer
     // adjudicates against. The create doors default their starting node from
-    // its `initial`, and `GET /api/tasks/stage-edges` derives its membership
+    // its `initial`, and the q25 declaration route derives its edge table
     // from its edges — one declaration, three readings.
     workflow: shippedWorkflow.workflow,
     // S13·U2 (q25): the SAME pinned ref the writer stamps on every birth

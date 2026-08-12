@@ -47,43 +47,32 @@ import type { DispatchAttemptResult } from './taskDispatcher.js';
 //
 // Not a rewrite: every behaviour above and below is the one that shipped. What
 // changed is which SPELLING is the contract. The generic `/api/instances/*`
-// routes are now the surface the system is built on; the `/api/tasks/*` paths
-// survive as DEPRECATED ALIASES for exactly one deploy (see the inventory
-// below). `taskApi.ts` is deleted in this same unit — D72's governing rule is
-// that a unit which leaves both paths live is not finished.
+// routes are the surface the system is built on. Through S13·U3 the deprecated
+// task-alias paths (`POST .../tasks`, `.../tasks/:taskId/transitions`,
+// `.../amendments`, `.../dispatch`) survived for exactly one deploy of overlap
+// (q24) — `taskApi.ts` was deleted in the SAME unit that opened the alias
+// window, D72's governing rule being that a unit which leaves both paths live
+// is not finished.
 //
-// ⚠ ONE HANDLER CORE PER OPERATION, TWO SURFACE REGISTRATIONS. The alias and
-// its generic twin are the SAME code path: they differ only in how the request
-// body spells the location fields (`projectRoot`/`stage` vs `project`/`node`),
-// which path param carries the id, and which key the success envelope hangs the
-// record on (`task` vs `instance`). Everything that could drift BEHAVIOURALLY —
-// validation, the allowlist wall, the writer call, the status codes, the error
-// bodies, the dispatch rider — is shared, so the two surfaces cannot answer
-// differently while both exist (S11-A4).
+// ─── S13·U4 (D72 Move 4) — THE ALIAS WINDOW CLOSED, q24 IS DONE ──────────────
 //
-// ─── THE ALIAS INVENTORY (q24 — ONE DEPLOY OF OVERLAP, then these die) ───────
+// The one deploy of overlap happened, the UI unit (S13·U3) switched every call
+// site to the generic routes, and this unit deleted the four write aliases,
+// the two read aliases (the legacy stage-edges and work-order-schema GETs —
+// their generalisation, q25's declaration-introspection routes below, shipped
+// in S13·U2, so nothing here waits on a Move-3+ pin any more),
+// `WIRE_STAGE_EDGE_ORDER`, and the legacy tasks-projection alias branch
+// (app.ts). No deprecated task-alias path and no stage-edges/work-order-schema
+// route answers from this file any more — see `registerInstanceApi` below for
+// the surviving, purely generic surface.
 //
-// This deploy serves the generic routes AND every alias below; the deployed UI
-// keeps working untouched (a UI that learned the new vocabulary would ship
-// itself ahead of the daemon via ci-gate — the D37 failure class). A LATER UI
-// unit switches the client to the generic routes; the daemon deploy AFTER that
-// deletes this list. Exactly one deploy of overlap, as decided.
-//
-//   • POST /api/tasks                        → POST /api/instances
-//   • POST /api/tasks/:taskId/transitions    → POST /api/instances/:instanceId/moves
-//   • POST /api/tasks/:taskId/amendments     → POST /api/instances/:instanceId/payload-revisions
-//   • POST /api/tasks/:taskId/dispatch       → POST /api/instances/:instanceId/dispatch
-//   • GET  /api/projections/tasks            → (app.ts, S11·U1: `legacyTasksViewOf`
-//                                              of the instances fold — same window,
-//                                              listed here so the inventory is in
-//                                              ONE place)
-//
-// ⚠ TWO ROUTES ARE NOT ON THAT LIST AND HAVE NO GENERIC TWIN THIS SLICE:
-// `GET /api/tasks/stage-edges` and `GET /api/tasks/work-order-schema` move
-// VERBATIM, old paths only. Their generalisation is DECLARATION INTROSPECTION
-// (q25) and needs pinned workflow/node declarations to introspect — Move 3+,
-// not here. Inventing a `/api/instances/edges` that served the compiled task
-// table would be declared truth over observed (rule 0.7).
+// ⚠ ONE HANDLER CORE PER OPERATION SURVIVES THE ALIAS'S DEATH. The create/move/
+// payload-revision/dispatch cores below (`handleCreate`, `handleMove`,
+// `handlePayloadRevision`, `handleDispatch`) were written to be surface-generic
+// from S11·U2 on — the alias was ONE registration calling the same core, not a
+// separate implementation — so deleting the alias registration removed a
+// caller, not a behaviour. Everything the alias contract tested is still true
+// of the generic route it shared code with.
 
 export interface InstanceApiDeps {
   // The SOLE instance writer (step 4b, re-homed S11·U2). Not an emit function:
@@ -120,8 +109,10 @@ export interface InstanceApiDeps {
   //
   // Read for exactly two things here, both of them derivations and neither a
   // decision: `workflow.initial` (the create doors' starting node, in place of
-  // the compiled `INITIAL_TASK_STAGE`) and `workflow.edges` (the stage-edges
-  // route's membership). This file still decides nothing.
+  // the compiled `INITIAL_TASK_STAGE`) and `workflow.edges`/`.nodes`/
+  // `.forbidden` (served VERBATIM by the q25 declaration route below — the
+  // legacy `stage-edges` route's record-vocabulary-narrowed membership died
+  // with it, S13·U4). This file still decides nothing.
   workflow: ParsedWorkflow;
   // ── S13·U2 (q25) — the declaration's own identity ──────────────────────────
   //
@@ -137,27 +128,27 @@ export interface InstanceApiDeps {
   realpath?: RealpathProbe;
 }
 
-// ── the wire contract ────────────────────────────────────────────────────────
+// ── the wire contract — GENERIC, ONE SURFACE (the alias half died S13·U4) ────
 //
-// ⚠ THE LEGACY HALF OF THIS SECTION IS THE ALIAS CONTRACT, FROZEN. Every type
-// below whose success key is `task` is what an `/api/tasks/*` alias serves, and
-// it is byte-identical to what shipped — the deployed UI parses these exact
-// shapes. They die with the aliases (q24), not before.
+// Through S13·U3 this section had a legacy half (every type whose success key
+// was `task`, byte-identical to what the deployed UI parsed) and this generic
+// half. The alias window closed and the legacy half is DELETED, along with the
+// deprecated task-alias route registrations that were its only caller — see
+// the file header.
 
-export interface CreateTaskResponse {
-  task: TaskRecord;
+export interface CreateInstanceResponse {
+  instance: InstanceRecord;
 }
-export type ProposeTransitionResponse =
+export type ProposeMoveResponse =
   | {
       accepted: true;
-      task: TaskRecord;
+      instance: InstanceRecord;
       // ── S7·7c: THE DISPATCH-ON-PROMOTION RIDER (D53), OPTIONAL ON PURPOSE ─────
       //
       // Present ONLY when the accepted edge was a PROMOTION INTO AN ACTIVE STAGE
       // and the route therefore made one dispatch attempt. On every other accepted
       // transition — an outcome edge, a move into a non-active stage — the key is
-      // ABSENT, not `undefined`, so those envelopes stay byte-identical to what
-      // they were before this unit and no existing client sees a new field.
+      // ABSENT, not `undefined`.
       //
       // It carries the dispatcher's own result VERBATIM, whatever it says. See the
       // route for why a `refused` / `spawn-failed` dispatch still rides a 200.
@@ -172,66 +163,20 @@ export type ProposeTransitionResponse =
 export interface DispatchResponse {
   result: DispatchAttemptResult;
 }
-// S7·2b. The SAME `{ task }` shape the create route returns, and for the same
-// reason: the body is the record **as the projection folded it**, so a client
-// reads the amendment's real effect (including the bumped `workOrderRev`) rather
-// than an echo of what it asked for.
-export interface AmendWorkOrderResponse {
-  task: TaskRecord;
-}
-
-// ── the generic half — THE CONTRACT FROM THIS SLICE ON ───────────────────────
-//
-// Same envelopes, same status codes, same optional-key discipline; the record is
-// the INSTANCE record as `readInstances()` folded it, under `instance`.
-// `DispatchResponse` above is shared by both surfaces unchanged — the dispatch
-// result vocabulary is already engine-shaped and workflow-blind, so there is
-// nothing in it to re-spell.
-
-export interface CreateInstanceResponse {
-  instance: InstanceRecord;
-}
-export type ProposeMoveResponse =
-  | {
-      accepted: true;
-      instance: InstanceRecord;
-      // The S7·7c rider, unchanged and still ABSENT rather than `undefined` on a
-      // non-promoting move — see `ProposeTransitionResponse` above for the whole
-      // reasoning; the two surfaces make ONE dispatch decision in ONE place.
-      dispatch?: DispatchAttemptResult;
-    }
-  // S13·U1: a `string`, for the reason `ProposeTransitionResponse` states above.
-  | { accepted: false; reason: string };
+// S7·2b. The record **as the projection folded it**, so a client reads the
+// amendment's real effect (including the bumped `payloadRev`) rather than an
+// echo of what it asked for.
 export interface RevisePayloadResponse {
   instance: InstanceRecord;
 }
 
-// S8: the legal-edge table, served so the move sheet can filter to legal next
-// stages without the UI copying the table (the drift `taskBoard.ts`'s comment
-// used to warn against). Static and read-only — as of S12·U2 it is a pure
-// derivation of the BOOT-RESOLVED DECLARATION (see the route), so it still
-// touches neither the writer nor the log.
-export interface StageEdgesResponse {
-  edges: Record<TaskStage, TaskStage[]>;
-}
-// S7·3: the work-order authoring descriptor, served for the SAME reason the
-// legal-edge table is (Wes, 2026-07-25) — the board's create sheet must render
-// the four authored work-order fields, but `packages/ui` cannot import the zod
-// that defines them (`@vimes/core` is a deliberate non-dependency of the UI, and
-// `createTaskBodySchema` lives here). So the daemon owns the field shape once (in
-// `createTaskBodySchema`, S7·2a) and serves a descriptor derived from the SAME
-// cap constants; the UI reflects it without a second hand-mirrored field list.
-// The descriptor↔schema drift test in instanceApi.test.ts is what keeps the two
-// halves honest, exactly as `exhaustiveVocabulary` guards the re-declared enums.
-export interface WorkOrderSchemaResponse {
-  fields: readonly WorkOrderFieldDescriptor[];
-}
-
 // ── S13·U2 (q25) — declaration introspection, workflow-keyed (F3 ⟨signed⟩) ────
 //
-// The generic twins `stage-edges` and `work-order-schema` never got (slice 12's
-// header above explains why: they needed a pinned declaration to introspect,
-// and Move 3 is what pins one). Both routes key on the declaration's own
+// The generic twins the legacy `stage-edges` and `work-order-schema` routes
+// never got when THIS comment was first written (slice 12's header explained
+// why: they needed a pinned declaration to introspect, and Move 3 is what pins
+// one) shipped here in S13·U2 — and S13·U4 deleted the legacy routes they
+// replace, closing q24/q25 together. Both routes key on the declaration's own
 // identity — `extension`/`workflow`/`rev`, the SAME ref Move 3 stamps on every
 // instance — not on an instance id: introspection is a property of the
 // DECLARATION, so N instances of one workflow cost a client one fetch, not N
@@ -425,11 +370,12 @@ const MAX_LIST_ITEMS = 100;
 
 // ── the create body, MINUS the two renamed location fields ───────────────────
 //
-// ⚠ ONE SET OF FIELD SCHEMAS, SHARED BY BOTH SURFACES BY REFERENCE — not two
-// copies that happen to agree today. The alias body and the generic body differ
-// in EXACTLY two keys (`projectRoot`→`project`, `stage`→`node`); everything else
-// is literally the same schema object, so a cap change, an added field or a
-// tightened enum lands on both doors at once and cannot drift (principle 9).
+// Through S13·U3 this was ONE SET OF FIELD SCHEMAS, SHARED BY REFERENCE between
+// the alias body and the generic body — they differed in EXACTLY two keys
+// (`projectRoot`→`project`, `stage`→`node`), everything else the literal same
+// schema object, so a cap change, an added field or a tightened enum landed on
+// both doors at once (principle 9). S13·U4 deleted the alias's door; the shared
+// shape itself is unchanged and unmoved — there was never a second copy to prune.
 //
 // The five authored fields stay TOP-LEVEL in the wire body on the generic route
 // too, even though the record and the event nest them under `payload`: the wire
@@ -462,47 +408,35 @@ const createBodyCommonShape = {
   killCriterion: z.string().min(1).max(MAX_WORK_ORDER_TEXT).optional(),
 };
 
-// POST /api/tasks body — THE ALIAS SPELLING (q24), byte-identical to what
-// shipped: `projectRoot` and `stage`, with the same defaults and the same caps.
-//
-// Exported for the S7·3 drift guard ONLY (instanceApi.test.ts), which binds
-// `WORK_ORDER_FIELD_DESCRIPTORS` to this schema's shape, optionality, and caps so
-// the served descriptor can never drift from what the route actually validates.
-// It stays bound to THIS schema (rather than the generic twin) because the
-// descriptor is served on the alias path `/api/tasks/work-order-schema`, which
-// the deployed UI reads.
-export const createTaskBodySchema = z.object({
-  projectRoot: z.string(),
+// POST /api/instances body — THE CONTRACT. Through S13·U3 this shared the
+// `createBodyCommonShape` fields with the alias schema `createTaskBodySchema`
+// (`projectRoot`/`stage` rather than `project`/`node` — the two renames q13's
+// core field list made); S13·U4 deleted the alias schema with the route that
+// was its only caller. `createBodyCommonShape` itself survives unrenamed and
+// unmoved — it was always the shared source, never alias-specific.
+export const createInstanceBodySchema = z.object({
+  project: z.string(),
   // OPTIONAL, not `.default('backlog')` — S12·U2. The wire contract is UNCHANGED
   // (a body that omits it still creates on the starting node, a body that names
   // one is still validated against the record vocabulary); what moved is WHERE
   // the absent case is filled in, from this constant to the surface that can see
   // the boot-resolved `workflow.initial`.
-  stage: z.enum(TASK_STAGE_VALUES).optional(),
-  ...createBodyCommonShape,
-});
-
-// POST /api/instances body — THE CONTRACT. Same fields, same caps, same
-// defaults; `projectRoot`→`project` and `stage`→`node`, which are exactly the
-// two renames q13's core field list makes.
-export const createInstanceBodySchema = z.object({
-  project: z.string(),
   node: z.enum(TASK_STAGE_VALUES).optional(),
   ...createBodyCommonShape,
 });
 
-// What both create bodies carry once the two renamed location fields are set
-// aside. Derived from the alias schema rather than hand-written, so it cannot
-// drift from what is actually validated.
-type CreateBodyCommonFields = Omit<z.infer<typeof createTaskBodySchema>, 'projectRoot' | 'stage'>;
+// What the create body carries once the renamed location fields are set
+// aside. Derived from the schema rather than hand-written, so it cannot drift
+// from what is actually validated.
+type CreateBodyCommonFields = Omit<z.infer<typeof createInstanceBodySchema>, 'project' | 'node'>;
 
 // ── S7·3: the work-order authoring descriptor (SINGLE SOURCE, served) ─────────
 //
 // The board's create sheet renders the four authored work-order fields from THIS
 // descriptor rather than a hand-mirrored field list in the UI — see
-// `WorkOrderSchemaResponse` above for why it is served and not imported. The
-// point of the exercise is ONE definition: every cap here is the SAME const
-// `createTaskBodySchema` validates against (MAX_WORK_ORDER_TEXT / _LINE /
+// `WorkflowPayloadSchemaResponse` above for why it is served and not imported.
+// The point of the exercise is ONE definition: every cap here is the SAME const
+// `createInstanceBodySchema` validates against (MAX_WORK_ORDER_TEXT / _LINE /
 // MAX_LIST_ITEMS), so a future cap change touches one place, and the drift test
 // in instanceApi.test.ts binds this array to the schema (same keys, same
 // optionality, same caps) so the two cannot diverge unnoticed.
@@ -559,50 +493,45 @@ export const WORK_ORDER_FIELD_DESCRIPTORS: readonly WorkOrderFieldDescriptor[] =
   },
 ];
 
-// The move body, minus the renamed destination field. Shared by reference
-// between the two surfaces for the same reason `createBodyCommonShape` is.
+// The move body, minus the renamed destination field. Through S13·U3 this was
+// shared by reference between the alias (`proposeTransitionBodySchema`,
+// deleted S13·U4) and the generic surface below; the shared shape itself was
+// never alias-specific and survives unmoved.
 const moveBodyCommonShape = {
   manualReviewRequired: z.boolean().optional(),
   proposedBy: z.enum(PROPOSED_BY_VALUES),
   note: z.string().optional(),
 };
 
-// POST /api/tasks/:taskId/transitions body — THE ALIAS SPELLING (q24).
+// POST /api/instances/:instanceId/moves body — THE CONTRACT.
 //
 // ⚠ THE DESTINATION IS VALIDATED AS A PLAIN STRING, NOT THE STAGE ENUM, AND THAT
-// IS DELIBERATE — on BOTH surfaces. Step 1 typed `task_transition_rejected`'s
-// stage fields as `z.string()` precisely so an `unknown-node` rejection stays
-// RECORDABLE. If zod refused an unknown stage here, that rejection reason would
-// become structurally unreachable through the API, I7 would lose a branch, and
-// the one case where the record matters most (slice 7's hostile input) would
-// produce a 400 with nothing written down. So an unknown stage is let through to
-// the writer, and the DECLARATION-READING ADJUDICATOR refuses it — on the record.
-const proposeTransitionBodySchema = z.object({
-  toStage: z.string(),
-  ...moveBodyCommonShape,
-});
-
-// POST /api/instances/:instanceId/moves body — THE CONTRACT. `toStage`→`toNode`,
-// still a plain string, for the reason stated above.
+// IS DELIBERATE. Step 1 typed `task_transition_rejected`'s stage fields as
+// `z.string()` precisely so an `unknown-node` rejection stays RECORDABLE. If zod
+// refused an unknown stage here, that rejection reason would become structurally
+// unreachable through the API, I7 would lose a branch, and the one case where
+// the record matters most (slice 7's hostile input) would produce a 400 with
+// nothing written down. So an unknown stage is let through to the writer, and
+// the DECLARATION-READING ADJUDICATOR refuses it — on the record.
 const proposeMoveBodySchema = z.object({
   toNode: z.string(),
   ...moveBodyCommonShape,
 });
 
-type MoveBodyCommonFields = Omit<z.infer<typeof proposeTransitionBodySchema>, 'toStage'>;
+type MoveBodyCommonFields = Omit<z.infer<typeof proposeMoveBodySchema>, 'toNode'>;
 
-// The payload-revision body (S7·2b), SHARED VERBATIM BY BOTH SURFACES — the four
-// patchable fields and the author, spelled identically on the alias and on
-// `/api/instances/:instanceId/payload-revisions`. Nothing in it names a node or a
-// project, so the rename had nothing to touch.
+// The payload-revision body (S7·2b), for `/api/instances/:instanceId/payload-
+// revisions`. Nothing in it names a node or a project, so the alias/generic
+// rename never touched it — this was the ONE body shared VERBATIM by both
+// surfaces through S13·U3, and it is unchanged by the alias's S13·U4 deletion.
 //
-// The PATCH half of `createTaskBodySchema`, bounded by the SAME caps — one policy
-// for work-order text, whichever door it arrives through, so an amendment cannot
-// smuggle in a scope the create route would have refused. Every work-order field
-// is optional here; naming NONE of them is not a schema error but an
-// `empty-amendment` (the writer's outcome, a 400 below), because "you sent a
-// well-formed request that asks for nothing" is a different fact from "your body
-// was not a request".
+// The PATCH half of `createInstanceBodySchema`, bounded by the SAME caps — one
+// policy for work-order text, whichever door it arrives through, so an
+// amendment cannot smuggle in a scope the create route would have refused.
+// Every work-order field is optional here; naming NONE of them is not a schema
+// error but an `empty-amendment` (the writer's outcome, a 400 below), because
+// "you sent a well-formed request that asks for nothing" is a different fact
+// from "your body was not a request".
 //
 // ⚠ THE CRITERION SHAPE IS `{ id?, text }` — DIFFERENT FROM THE CREATE ROUTE'S
 // `{ text }`, deliberately. On create there is nothing to keep, so every id is
@@ -611,10 +540,10 @@ type MoveBodyCommonFields = Omit<z.infer<typeof proposeTransitionBodySchema>, 't
 // is what lets a reworded work order preserve the per-criterion identity
 // `report_review` keys its verdicts to (see `RevisePayloadInput`).
 //
-// ⚠ THE AUTHOR FIELD IS STILL SPELLED `amendedBy` ON BOTH DOORS. The writer maps
-// it to the payload's `revisedBy` (S11·U2); re-spelling the WIRE field is a
-// change to a request contract, which belongs with the alias removal rather than
-// with a unit whose whole point is that nothing observable changed.
+// ⚠ THE AUTHOR FIELD IS STILL SPELLED `amendedBy`. The writer maps it to the
+// payload's `revisedBy` (S11·U2); re-spelling the WIRE field is a change to a
+// request contract that q24's alias removal did not touch and this unit does
+// not widen into.
 const amendWorkOrderBodySchema = z.object({
   amendedBy: z.enum(AMENDED_BY_VALUES),
   scope: z.string().min(1).max(MAX_WORK_ORDER_TEXT).optional(),
@@ -635,9 +564,14 @@ const amendWorkOrderBodySchema = z.object({
 //
 // A SURFACE is everything about a route that is NOT behaviour: how its body
 // spells the location fields, where its id lives, and how its success envelope
-// is shaped. Two surfaces per operation, one core. Anything you find yourself
-// wanting to put in here that could answer a request DIFFERENTLY belongs in the
-// core instead — that is the whole point of the split.
+// is shaped. Through S13·U3 there were two surfaces per operation (the alias
+// and its generic twin) sharing one core; S13·U4 deleted the alias's
+// registration, leaving one surface per operation below. The split itself is
+// left in place rather than collapsed — a route helper that could answer a
+// request DIFFERENTLY still belongs in the core, not here, and nothing about
+// that discipline changed with the alias's death. Collapsing the generic
+// parameterisation into inline logic is a simplification pass, not an alias
+// deletion, and this unit does not widen into it.
 
 interface CreateSurface<BodyType extends CreateBodyCommonFields> {
   readonly schema: z.ZodType<BodyType, unknown>;
@@ -710,81 +644,6 @@ function transitionProposalFrom(body: MoveBodyCommonFields, toNode: string): Tra
       : { manualReviewRequired: body.manualReviewRequired }),
     ...(body.note === undefined ? {} : { note: body.note }),
   };
-}
-
-// ── S12·U2 (F4): the stage-edges wire ORDER, frozen ──────────────────────────
-//
-// ⚠ **PRESENTATION ORDER ONLY. THIS CONSTANT DECIDES NOTHING.** It says in what
-// sequence a stage's legal targets appear in `GET /api/tasks/stage-edges`, and
-// that is all: an entry here that the DECLARATION does not declare is filtered
-// out and never served, so this table can neither grant an edge nor keep a
-// removed one alive. Legality lives in the declaration; a completeness tripwire
-// in instanceApi.test.ts asserts the two agree as SETS, per stage, both
-// directions.
-//
-// PROVENANCE: a literal copy of what the compiled record helper returned at
-// 2026-08-10 — the compiled legality table's own insertion order, captured at
-// Move 3 (that table and its helper were deleted later the same day, in S12·U3)
-// so the response stays BYTE-IDENTICAL across the flip while the deployed UI
-// still reads it mid-alias-window (F4). The declaration groups its rows by
-// intent and would order several stages differently.
-//
-// LIFESPAN: this dies with the route's generic twin (q25), where declaration
-// introspection serves the full declared table and the order question is
-// answered by the declaration itself. It is not a second source of legality and
-// must never become one.
-export const WIRE_STAGE_EDGE_ORDER: Record<TaskStage, readonly TaskStage[]> = {
-  backlog: ['planning', 'blocked-external', 'cancelled'],
-  planning: ['plan-ready', 'blocked-external', 'quarantined', 'backlog', 'cancelled'],
-  'plan-ready': ['implementing', 'planning', 'blocked-external', 'backlog', 'cancelled'],
-  implementing: ['review', 'blocked-external', 'quarantined', 'cancelled'],
-  review: ['done', 'implementing', 'blocked-external', 'quarantined', 'cancelled'],
-  done: [],
-  'blocked-external': ['backlog', 'planning', 'plan-ready', 'implementing', 'review', 'cancelled'],
-  quarantined: ['backlog', 'planning', 'implementing', 'blocked-external', 'cancelled'],
-  cancelled: ['backlog'],
-};
-
-/**
- * The declared edge table, restricted to the record vocabulary — the MEMBERSHIP
- * half of the stage-edges response (S12-A4). Exported for the completeness
- * tripwire, which asserts this and `WIRE_STAGE_EDGE_ORDER` agree as sets.
- *
- * A row whose `from` or `to` is outside the nine stages is dropped: that is
- * exactly the tenth node (`manual-review`), which the record schema cannot hold
- * and no reachable path can put an instance on this slice.
- */
-export function declaredStageEdgeMembership(
-  workflow: ParsedWorkflow,
-): Record<TaskStage, Set<TaskStage>> {
-  const membership = {} as Record<TaskStage, Set<TaskStage>>;
-  for (const stage of TASK_STAGE_VALUES) membership[stage] = new Set<TaskStage>();
-  const recordVocabulary = z.enum(TASK_STAGE_VALUES);
-  for (const edge of workflow.edges) {
-    const from = recordVocabulary.safeParse(edge.from);
-    const to = recordVocabulary.safeParse(edge.to);
-    if (!from.success || !to.success) continue;
-    membership[from.data].add(to.data);
-  }
-  return membership;
-}
-
-/**
- * The stage-edges response: DECLARED membership, WIRE order (F4). Keys are
- * emitted in the record vocabulary's own order, which is the order the compiled
- * record helper emitted them in before D72 Move 3 deleted it — `JSON.stringify`
- * preserves insertion order, so key order is part of the bytes this route
- * promises.
- */
-export function stageEdgesFromDeclaration(
-  workflow: ParsedWorkflow,
-): Record<TaskStage, TaskStage[]> {
-  const membership = declaredStageEdgeMembership(workflow);
-  const edges = {} as Record<TaskStage, TaskStage[]>;
-  for (const stage of TASK_STAGE_VALUES) {
-    edges[stage] = WIRE_STAGE_EDGE_ORDER[stage].filter((target) => membership[stage].has(target));
-  }
-  return edges;
 }
 
 // ── S12·U2: the declaration's starting node, narrowed to the record vocabulary ─
@@ -949,10 +808,10 @@ export function registerInstanceApi(app: Hono, deps: InstanceApiDeps): void {
         case 'rejected': {
           // The writer ALREADY emitted the `instance_move_rejected`. This branch
           // only reports it — I7 is satisfied by the record, not by this response.
-          // The envelope carries no record, so BOTH surfaces answer with the same
-          // bytes here; the rejection is a fact about the proposal, not about a
-          // spelling.
-          const response: ProposeTransitionResponse = { accepted: false, reason: result.reason };
+          // The envelope carries no record, so the (deleted) alias and this route
+          // answered with the same bytes here; the rejection is a fact about the
+          // proposal, not about a spelling.
+          const response: ProposeMoveResponse = { accepted: false, reason: result.reason };
           return context.json(response, 409);
         }
         case 'accepted': {
@@ -994,7 +853,7 @@ export function registerInstanceApi(app: Hono, deps: InstanceApiDeps): void {
   //
   // The status codes, in the same vocabulary the move core established:
   //   • **200 + the record** — revised, and the record is the FOLD (see
-  //     `AmendWorkOrderResponse`). Not a 201: the thing a client cares about is
+  //     `RevisePayloadResponse`). Not a 201: the thing a client cares about is
   //     the instance's new state, and there is no per-revision resource to point a
   //     `Location` at — the event lives in the log, which is not addressable here.
   //   • **404** — no such instance, nothing written.
@@ -1081,10 +940,10 @@ export function registerInstanceApi(app: Hono, deps: InstanceApiDeps): void {
   // `spawn-failed`, for the same reason — it is a complete, honest answer about
   // what happened, not an HTTP error.
   //
-  // ⚠ NOT PARAMETERISED BY SURFACE, AND THAT IS THE FINDING RATHER THAN AN
-  // OVERSIGHT: the dispatch result vocabulary is already engine-shaped and
-  // workflow-blind, so the alias and the generic twin return literally the same
-  // bytes. There is nothing here to re-spell.
+  // ⚠ NOT PARAMETERISED BY SURFACE, AND THAT WAS THE FINDING RATHER THAN AN
+  // OVERSIGHT WHILE THE ALIAS LIVED: the dispatch result vocabulary is already
+  // engine-shaped and workflow-blind, so the (now-deleted) alias and this route
+  // returned literally the same bytes. There is nothing here to re-spell.
   const handleDispatch = async (context: Context, instanceId: string): Promise<Response> => {
     const result = await deps.dispatchTask(instanceId);
     if (result.outcome === 'unknown-task') {
@@ -1094,14 +953,13 @@ export function registerInstanceApi(app: Hono, deps: InstanceApiDeps): void {
     return context.json(response, 200);
   };
 
-  // ── the generic routes — THE CONTRACT ──────────────────────────────────────
+  // ── the routes — THE CONTRACT (the alias set died S13·U4; this is all of it) ─
 
   app.post('/api/instances', async (context) =>
     handleCreate(context, {
       schema: createInstanceBodySchema,
       projectOf: (body) => body.project,
-      // The declaration's `initial` fills the absent case (S12·U2) — the SAME
-      // resolved value the alias door below uses.
+      // The declaration's `initial` fills the absent case (S12·U2).
       nodeOf: (body) => body.node ?? declaredInitialNode,
       created: (responseContext, record) => {
         const response: CreateInstanceResponse = { instance: instanceRecordOf(record.taskId) };
@@ -1118,8 +976,7 @@ export function registerInstanceApi(app: Hono, deps: InstanceApiDeps): void {
         const response: ProposeMoveResponse = {
           accepted: true,
           instance: instanceRecordOf(record.taskId),
-          // Spread rather than set: ABSENT stays absent on a non-promoting move,
-          // exactly as on the alias.
+          // Spread rather than set: ABSENT stays absent on a non-promoting move.
           ...(dispatch === undefined ? {} : { dispatch }),
         };
         return responseContext.json(response, 200);
@@ -1137,124 +994,6 @@ export function registerInstanceApi(app: Hono, deps: InstanceApiDeps): void {
   app.post('/api/instances/:instanceId/dispatch', async (context) =>
     handleDispatch(context, context.req.param('instanceId')),
   );
-
-  // ── the ALIAS routes — deprecated, ONE DEPLOY (q24) ────────────────────────
-  //
-  // Each of the four below is the SAME core as its generic twin above, wearing
-  // the legacy body spelling and the legacy response key. They exist so the
-  // DEPLOYED UI keeps working, unrestarted and untouched, through this slice's
-  // daemon deploy; they are deleted in the daemon deploy after the UI unit
-  // switches to the generic paths. See the full alias inventory in the file
-  // header.
-
-  // ALIAS (q24) — twin of POST /api/instances.
-  app.post('/api/tasks', async (context) =>
-    handleCreate(context, {
-      schema: createTaskBodySchema,
-      projectOf: (body) => body.projectRoot,
-      nodeOf: (body) => body.stage ?? declaredInitialNode,
-      created: (responseContext, record) => {
-        const response: CreateTaskResponse = { task: record };
-        return responseContext.json(response, 201);
-      },
-    }),
-  );
-
-  // ALIAS (q24) — twin of POST /api/instances/:instanceId/moves.
-  app.post('/api/tasks/:taskId/transitions', async (context) =>
-    handleMove(context, context.req.param('taskId'), {
-      schema: proposeTransitionBodySchema,
-      toNodeOf: (body) => body.toStage,
-      accepted: (responseContext, record, dispatch) => {
-        const response: ProposeTransitionResponse = {
-          accepted: true,
-          task: record,
-          // Spread rather than set: ABSENT stays absent on a non-promoting
-          // transition, so its envelope is byte-identical to the pre-S7·7c one.
-          ...(dispatch === undefined ? {} : { dispatch }),
-        };
-        return responseContext.json(response, 200);
-      },
-    }),
-  );
-
-  // ALIAS (q24) — twin of POST /api/instances/:instanceId/payload-revisions.
-  app.post('/api/tasks/:taskId/amendments', async (context) =>
-    handlePayloadRevision(context, context.req.param('taskId'), (responseContext, record) => {
-      const response: AmendWorkOrderResponse = { task: record };
-      return responseContext.json(response, 200);
-    }),
-  );
-
-  // ALIAS (q24) — twin of POST /api/instances/:instanceId/dispatch. The response
-  // is identical on both paths (see the dispatch core), so this alias differs
-  // from its twin in the URL and nothing else.
-  app.post('/api/tasks/:taskId/dispatch', async (context) =>
-    handleDispatch(context, context.req.param('taskId')),
-  );
-
-  // ── GET /api/tasks/stage-edges — the legal-edge table (S8) ──────────────────
-  //
-  // Wes ruled 2026-07-24: the move sheet must offer only LEGAL next stages, not
-  // every stage — but the UI must not gain a second copy of the legality table to
-  // do it (principle 9: one source of record per fact). So the table is SERVED
-  // from here, behind the same auth wall as every other route on this app, and
-  // the board fetches it instead of re-declaring it. Static, read-only, events
-  // nothing — the response is a pure derivation of the declaration.
-  //
-  // This does NOT reopen the "no `GET /api/tasks`" decision below: that route
-  // would be a second reader of TASK STATE (the projection already serves it).
-  // This route serves the TRANSITION RULES, a fact nothing else exposes.
-  //
-  // ⚠ MOVED VERBATIM, OLD PATH ONLY, AND NO GENERIC TWIN THIS SLICE (q25).
-  // Generalising this route means serving DECLARATION INTROSPECTION over the
-  // FULL declared table (the tenth node's out-edges included) and giving the
-  // route its generic twin — deferred to q25, whose trigger is now half-armed:
-  // a pinned declaration exists as of this unit; the route shape question does
-  // not.
-  //
-  // ─── S12·U2 (D72 Move 3): DERIVED FROM THE DECLARATION, WIRE-STABLE (F4) ────
-  //
-  // The response is now computed from `deps.workflow` — the same declaration the
-  // adjudicator reads — instead of from the compiled record helper (deleted in
-  // S12·U3).
-  // Two rules, and the split between them is the whole of F4:
-  //
-  //   • LEGALITY (membership) comes from the DECLARATION, restricted to the nine
-  //     stages the record vocabulary holds. That restriction drops exactly the
-  //     tenth node's rows (`manual-review`, unreachable upstream by schema
-  //     fencing this slice) and nothing else.
-  //   • PRESENTATION (order) comes from the frozen constant below. The
-  //     declaration groups its edges by INTENT — the spine, then the review/fix
-  //     loop, then quarantine, then the park — which does not reproduce the
-  //     hand-ordered arrays this route has served since S8 (`review` declares
-  //     `quarantined` before `blocked-external`; the wire has them the other way
-  //     round). Deriving order from the declaration would change the bytes the
-  //     DEPLOYED UI reads, mid-alias-window, for no behavioural reason.
-  app.get('/api/tasks/stage-edges', (context) => {
-    const response: StageEdgesResponse = { edges: stageEdgesFromDeclaration(deps.workflow) };
-    return context.json(response);
-  });
-
-  // ── GET /api/tasks/work-order-schema — the authoring descriptor (S7·3) ──────
-  //
-  // The exact sibling of `stage-edges`: static, read-only, events nothing, behind
-  // the same auth wall. The board's create sheet fetches this and renders the
-  // four authored work-order fields from it, so the UI reflects the field shape
-  // without a second copy of it (principle 9). The descriptor is derived from the
-  // SAME caps `createTaskBodySchema` validates against; the drift test in
-  // instanceApi.test.ts is the guard that they never fall out of step.
-  //
-  // ⚠ MOVED VERBATIM, OLD PATH ONLY, AND NO GENERIC TWIN THIS SLICE (q25) — the
-  // same fence as `stage-edges` above, and for the same reason: the generic form
-  // of "what may be authored here" is a NODE-KIND declaration's payload schema,
-  // which Move 3+ pins. Until then this descriptor describes the tasks
-  // extension's work order, and the tasks extension does not exist yet either
-  // (q29).
-  app.get('/api/tasks/work-order-schema', (context) => {
-    const response: WorkOrderSchemaResponse = { fields: WORK_ORDER_FIELD_DESCRIPTORS };
-    return context.json(response);
-  });
 
   // ── S13·U2 (q25) — the generic twins, workflow-keyed ────────────────────────
   //
@@ -1343,10 +1082,10 @@ export function registerInstanceApi(app: Hono, deps: InstanceApiDeps): void {
   });
 
   // GET /api/workflows/:extension/:workflow/:rev/payload-schema — the SAME
-  // `WORK_ORDER_FIELD_DESCRIPTORS` constant `/api/tasks/work-order-schema`
-  // serves (not forked, not copied — one definition, so the descriptor↔
-  // `createTaskBodySchema` drift test above keeps tying THIS response to what
-  // the create door actually validates, exactly as it does the alias's).
+  // `WORK_ORDER_FIELD_DESCRIPTORS` constant the deleted legacy work-order-
+  // schema alias used to serve (not forked, not copied — one definition, so the
+  // descriptor↔`createInstanceBodySchema` drift test in instanceApi.test.ts
+  // keeps tying THIS response to what the create door actually validates).
   app.get('/api/workflows/:extension/:workflow/:rev/payload-schema', (context) => {
     if (!isRequestedWorkflow(context)) {
       return context.text('not found', 404);
@@ -1358,14 +1097,14 @@ export function registerInstanceApi(app: Hono, deps: InstanceApiDeps): void {
     return context.json(response, 200, { 'Cache-Control': IMMUTABLE_DECLARATION_CACHE_CONTROL });
   });
 
-  // ── NO `GET /api/instances` (and no `GET /api/tasks`) — deliberately ───────
+  // ── NO `GET /api/instances` — deliberately ──────────────────────────────────
   //
-  // `GET /api/projections/tasks` already serves instance state (as the legacy
-  // view, S11·U1), behind the same auth wall, and the kanban UI (step 9) reads
-  // it. A second reader of the same fact is exactly the drift principle 9
-  // forbids, and rule 0.5 says machinery waits for its consumer. Nothing in this
-  // unit needed one — and inventing one HERE, in the unit whose contract is "the
-  // aliases answer exactly as they did", is how an alias window grows a feature.
+  // `GET /api/projections/instances` already serves instance state (app.ts),
+  // behind the same auth wall, and the kanban UI reads it. A second reader of
+  // the same fact is exactly the drift principle 9 forbids, and rule 0.5 says
+  // machinery waits for its consumer. Nothing in this file needs one — inventing
+  // one here would be a second source of record for a fact one route already
+  // answers.
 }
 
 // ── boundary helpers ─────────────────────────────────────────────────────────
@@ -1403,11 +1142,12 @@ async function parseJsonBody<OutputType>(
 // to reconcile. Any other throw is re-raised: swallowing an unknown failure here
 // would turn a bug into a quiet wrong answer.
 //
-// ⚠ THE BODY IS SHARED BY BOTH SURFACES, WORD FOR WORD — including the string
-// `'task store finding'`. The alias contract is byte-identity with what shipped,
-// and giving the generic twin a differently-worded 500 would be the one place the
-// two surfaces answered differently. Re-spelling it belongs with the alias
-// removal, which is the last moment both spellings exist.
+// ⚠ THE BODY, including the string `'task store finding'`, is UNCHANGED by the
+// alias's S13·U4 deletion. Through S13·U3 it was shared word-for-word by both
+// surfaces so neither answered a projection/log divergence differently; now
+// that only one surface exists the string could be re-spelled, but doing so is
+// its own deliberate wire-contract change and this unit does not widen into it
+// (the deletion list is instanceApi.ts's header, and this is not on it).
 function findingResponse(context: Context, error: unknown): Response {
   if (error instanceof InstanceProjectionDisagreementError) {
     return context.json({ error: 'task store finding', detail: error.message }, 500);

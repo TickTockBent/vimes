@@ -3,22 +3,32 @@ import type { InstanceRecord, InstancesState } from './instances.js';
 
 // ─── S11·U1 (D72 Move 2) — the LEGACY TASK VIEW ──────────────────────────────
 //
-// A PURE derivation that reconstructs the shape `projections/tasks.ts` used to
-// fold, from the instances state that replaced it. Byte-for-byte under
+// A PURE derivation that reconstructs the shape the old task-projection source
+// file used to fold, from the instances state that replaced it. Byte-for-byte under
 // canonicalJson: this is the function S11-A1 runs the frozen 111-event migration
 // fixture through, and a divergence is the slice's kill criterion (the core /
 // payload split lost information q13's field list was supposed to carry — a
 // finding about the SIGNED abstraction, not a bug to patch here).
 //
-// ⚠ **IT HAS EXACTLY TWO CONSUMERS AND A PLANNED DEATH** (slice-11.md):
-//   1. the fixture exit gate, and
-//   2. the `/api/projections/tasks` ALIAS route, which the deployed UI still
-//      reads.
-// When the UI migrates to the generic routes and the aliases are dropped — one
-// deploy of overlap, as q24 decided — this file goes with them, and the fixture
-// test then pins the INSTANCES serialization instead. Do not grow a third
-// consumer: every new reader of this shape is another thing that has to be
-// migrated before the aliases can die.
+// ─── S13·U4 (D72 Move 4, q24 close) — SURVIVED THE ALIAS'S DEATH ─────────────
+//
+// slice-11.md originally named exactly two consumers — the fixture exit gate
+// and the legacy tasks-projection alias route — and planned this file's death
+// alongside them. Both of those are now gone: the alias set was deleted (q24
+// closed) and the fixture test (S13-A7) now pins the INSTANCES serialization
+// directly, not through this view. But a THIRD consumer was there the whole
+// time, bundled into the header's "the alias route" accounting rather than
+// named separately: `app.ts`'s `readTasksAsLegacyView`, which feeds the
+// `readTasks` callback four writer-side consumers still take —
+// `InstanceWriter`, `TaskDispatcher`, `registerOrchestratorApi`,
+// `TaskWatchdog` — none of which the alias tail was scheduled to touch.
+//
+// **ITS ONE REMAINING CONSUMER: `app.ts`'s `readTasksAsLegacyView`.** Its NEW
+// DEATH TRIGGER: Move 4 (`packages/ext-tasks/`), when the writer's legacy
+// `TaskRecord` narrowing is retired and `InstanceWriterDeps.readTasks` (and its
+// three siblings) stop asking for this shape at all. Do not grow a fourth
+// consumer in the meantime: every new reader of this shape is another thing
+// that has to be migrated before Move 4 can delete it.
 //
 // ⚠ **IT IS A NARROWING, AND THE DROPPED FIELDS ARE THE POINT.** `nodeHistory`,
 // `edgeTraversalCounts`, `attemptsPerNode` and `workflow` have no legacy

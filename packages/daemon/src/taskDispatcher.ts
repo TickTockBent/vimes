@@ -438,7 +438,7 @@ export class TaskDispatcher {
    * ⚠ **ASYNC SINCE STEP 8, and the reason is structural rather than stylistic:**
    * creating a worktree is a SUBPROCESS, and a subprocess cannot be awaited from a
    * synchronous function. Nothing else about the contract moved — every RESULT SHAPE
-   * is unchanged field-for-field, so the `/api/tasks/:taskId/dispatch` envelope is
+   * is unchanged field-for-field, so the dispatch route's envelope is
    * byte-identical, and the method is still total (it returns a rejected promise for
    * nothing; every path resolves to a result).
    *
@@ -650,7 +650,7 @@ export class TaskDispatcher {
             cwd,
             // Spread rather than set: under the default seam the key is ABSENT, so
             // the result is byte-identical to step 4a's and every prior assertion
-            // (and the `/api/tasks/:id/dispatch` envelope) is untouched.
+            // (and the dispatch route's envelope) is untouched.
             ...(instructionDelivery === undefined ? {} : { instructionDelivery }),
           };
         }

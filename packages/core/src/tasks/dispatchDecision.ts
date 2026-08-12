@@ -96,7 +96,7 @@ export function isDispatchableStage(candidateStage: string): boolean {
 //     forbids: a reported completion must not start a reviewer, and a bounced
 //     verdict (`review→implementing`, proposed by the dispatcher) must not start
 //     a fixer. Landing there UN-dispatched is correct — the orchestrator's
-//     explicit `POST /api/tasks/:taskId/dispatch` is its decision for that task.
+//     explicit call to the dispatch route is its decision for that task.
 //
 // ⚠ **THE TWO PROMOTER VALUES ARE MATCHED EXPLICITLY, NOT AS `!== 'dispatcher'`.**
 // The negated form reads identically today and fails open tomorrow: a fourth
@@ -115,9 +115,9 @@ export function isDispatchableStage(candidateStage: string): boolean {
 // different callers. The route asks this one first; the dispatcher then asks
 // `decideDispatch`, which may still refuse or defer.
 //
-// SCOPE NOTE — TRANSITIONS ONLY. Task CREATION into an active stage
-// (`POST /api/tasks` with `stage: 'planning'`) does NOT come through here and
-// does NOT auto-dispatch; a birth record is not a promotion, and nobody decided
+// SCOPE NOTE — TRANSITIONS ONLY. Task CREATION into an active stage (a create
+// request with `node: 'planning'`) does NOT come through here and does NOT
+// auto-dispatch; a birth record is not a promotion, and nobody decided
 // anything by writing one.
 export function shouldDispatchOnTransition(transition: {
   readonly toStage: TaskStage;

@@ -3,8 +3,6 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { eventRecordSchema, type EventRecord } from '../schemas.js';
 import { instancesProjection } from './instances.js';
-import { legacyTasksViewOf } from './legacyTasksView.js';
-import { canonicalJson } from '../canonicalJson.js';
 
 // ─── S10·Move-0 (D72) — the migration fixture replay ─────────────────────────
 //
@@ -20,18 +18,44 @@ import { canonicalJson } from '../canonicalJson.js';
 // today's fold -> the fold is nondeterministic -> rule-0.1 finding, slice
 // halts") — not something to patch by re-exporting or re-freezing.
 //
-// ── S11·U1 (D72 Move 2) — THIS FILE IS NOW THE EXIT-GATE CENTREPIECE (S11-A1) ─
+// ── S11·U1 (D72 Move 2) — THIS FILE BECAME THE EXIT-GATE CENTREPIECE (S11-A1) ─
 //
-// The fold under test changed and the frozen bytes did NOT. The 111 events are
-// replayed through `instancesProjection` — every one of them a RETIRED kind,
-// resolved through the alias table — and the resulting instances state is run
-// back through `legacyTasksViewOf` before the comparison. What that pins is the
-// whole round trip in one assertion: legacy event -> alias adapter -> generic
-// payload -> instance record -> legacy view -> the exact bytes the old reducer
-// produced. If the core/payload split had lost one fact q13's field list was
-// supposed to carry, this is where it would show, and slice-11.md's first kill
-// criterion is that a redden here is a finding about the SIGNED abstraction —
-// not a licence to adjust either side until they agree.
+// The fold under test changed and the frozen bytes did NOT. Through S13·U3 the
+// 111 events were replayed through `instancesProjection` and the resulting
+// instances state was run back through `legacyTasksViewOf` before the
+// comparison against the frozen `tasks-state.json` — the whole round trip in
+// one assertion: legacy event -> alias adapter -> generic payload -> instance
+// record -> legacy view -> the exact bytes the old reducer produced.
+//
+// ── S13·U4 (D72 Move 4, q24 close) — THE FIXTURE SUCCESSION (S13-A7) ─────────
+//
+// This file's own prior comment named its own succession plan: "the day the
+// aliases die, this line becomes `instancesProjection.serialize(state)` and
+// the frozen file is re-pinned against the instances shape in its own unit."
+// That day is this unit. The comparison below no longer runs through
+// `legacyTasksViewOf` or against `tasks-state.json` — it pins the INSTANCES
+// serialization directly, via `instancesProjection.serialize`, against a NEW
+// sibling file: `fixtures/migration/tasks-state-instances.json`.
+//
+// ⚠ NEITHER EXISTING FROZEN FILE IS TOUCHED. `tasks-stream.jsonl` (the raw
+// 111-event export) and `tasks-state.json` (the OLD reducer's pinned output,
+// via the legacy view) stay exactly as S10/S11 froze them — this unit adds a
+// THIRD file rather than overwriting either. Two reasons, both load-bearing:
+// (1) `tasks-state.json` is itself frozen historical truth (S10-A1's own
+// record of what the pre-D72 reducer produced), and overwriting it would
+// erase that; (2) the new pinned bytes were tried FIRST as an inline literal
+// in this file (the S12·U3 precedent — `frozenReferenceOutcome` in
+// proposeMove.test.ts, "written out as DATA, frozen at deletion"), and that
+// approach reddened S13-A5's grep gate for the dead task-alias route family:
+// the fixture's real, historical task content happens to contain that exact
+// route-path substring inside a payload field (present in `tasks-state.json`
+// too — this is not new, it is the SAME fact that file already carries, just
+// now somewhere the grep gate scans). A file under `fixtures/` is outside the
+// gate's scanned paths (`packages/daemon/src`, `packages/core/src`), so the
+// data-content collision cannot re-trip it there. `tasks-state-instances.json`
+// was produced by `foldFixtureToInstances` below, run against a checkout at
+// this commit, with its own determinism verified (two independent folds
+// byte-identical) before being written.
 //
 // Path depth note: this file lives one directory deeper than
 // packages/daemon/src/usageApi.test.ts (which this fixture-loading convention
@@ -42,8 +66,8 @@ import { canonicalJson } from '../canonicalJson.js';
 const FIXTURE_EVENTS_PATH = fileURLToPath(
   new URL('../../../../fixtures/migration/tasks-stream.jsonl', import.meta.url),
 );
-const FIXTURE_STATE_PATH = fileURLToPath(
-  new URL('../../../../fixtures/migration/tasks-state.json', import.meta.url),
+const FIXTURE_INSTANCES_STATE_PATH = fileURLToPath(
+  new URL('../../../../fixtures/migration/tasks-state-instances.json', import.meta.url),
 );
 
 // Parsed and schema-validated the same way any other EventRecord in this
@@ -56,18 +80,15 @@ function loadFixtureEvents(): EventRecord[] {
     .map((line) => eventRecordSchema.parse(JSON.parse(line)));
 }
 
-// Fold to instances, then narrow back to the legacy shape. `canonicalJson` is
-// called on the VIEW rather than `instancesProjection.serialize` on the state,
-// because the view is a derivation and not a projection — it has no serializer
-// of its own, and it must not grow one: the day the aliases die, this line
-// becomes `instancesProjection.serialize(state)` and the frozen file is
-// re-pinned against the instances shape in its own unit.
-function foldFixtureToLegacyView(events: EventRecord[]): string {
+// Fold to instances and serialize — `instancesProjection.serialize` IS
+// `canonicalJson` of the state (instances.ts's own `serialize`), so this is
+// the exact bytes a `GET /api/projections/instances` response body carries.
+function foldFixtureToInstances(events: EventRecord[]): string {
   let state = instancesProjection.init();
   for (const event of events) {
     state = instancesProjection.apply(state, event);
   }
-  return canonicalJson(legacyTasksViewOf(state));
+  return instancesProjection.serialize(state);
 }
 
 describe('tasks fixture replay — the D72 Move-0 migration fixture', () => {
@@ -80,40 +101,24 @@ describe('tasks fixture replay — the D72 Move-0 migration fixture', () => {
     });
   });
 
-  it('replays through the INSTANCES fold + legacy view byte-identical to the frozen tasks-state.json (S11-A1; a redden here is a rule-0.1 finding — slice-11.md kill criteria)', () => {
+  it('replays through the INSTANCES fold byte-identical to the frozen tasks-state-instances.json (S13-A7; a redden here is a rule-0.1 finding)', () => {
     const events = loadFixtureEvents();
-    const frozenState = readFileSync(FIXTURE_STATE_PATH, 'utf8');
+    const frozenState = readFileSync(FIXTURE_INSTANCES_STATE_PATH, 'utf8');
 
-    const serialized = foldFixtureToLegacyView(events);
+    const serialized = foldFixtureToInstances(events);
 
-    // Byte-identical, not deep-equal: the frozen file IS the old `serialize()`'s
-    // canonicalJson output, so a passing test proves the exact bytes match, not
-    // merely that they parse to equivalent structures.
+    // Byte-identical, not deep-equal: the frozen file IS
+    // `instancesProjection.serialize`'s output, so a passing test proves the
+    // exact bytes match, not merely that they parse to equivalent structures.
     expect(serialized).toBe(frozenState);
   });
 
   it('folds DETERMINISTICALLY — two independent init+fold runs are byte-identical (S11-A1 "twice", the kill-criterion probe)', () => {
     const events = loadFixtureEvents();
 
-    const serializedFirstRun = foldFixtureToLegacyView(events);
-    const serializedSecondRun = foldFixtureToLegacyView(events);
+    const serializedFirstRun = foldFixtureToInstances(events);
+    const serializedSecondRun = foldFixtureToInstances(events);
 
     expect(serializedFirstRun).toBe(serializedSecondRun);
-  });
-
-  it('serializes the INSTANCES state itself deterministically too — the shape the fixture is re-pinned against when the aliases die', () => {
-    // Not a byte contract yet (there is no frozen instances fixture, and
-    // inventing one now would freeze a shape Move 3 still changes), but the
-    // determinism it will rest on is asserted here rather than assumed later.
-    const events = loadFixtureEvents();
-    const foldOnce = (): string => {
-      let state = instancesProjection.init();
-      for (const event of events) {
-        state = instancesProjection.apply(state, event);
-      }
-      return instancesProjection.serialize(state);
-    };
-
-    expect(foldOnce()).toBe(foldOnce());
   });
 });

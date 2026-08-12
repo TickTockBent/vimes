@@ -31,23 +31,17 @@ import { createAccessAuthMiddleware, type AccessVerifier } from './auth.js';
 import { createDaemon, NO_OBSERVATION_IS_FRESH_STALE_BAND_MS, type Daemon, type DaemonDeps } from './app.js';
 import type { DaemonConfig } from './config.js';
 import {
-  createTaskBodySchema,
-  declaredStageEdgeMembership,
+  createInstanceBodySchema,
   registerInstanceApi,
-  WIRE_STAGE_EDGE_ORDER,
   WORK_ORDER_FIELD_DESCRIPTORS,
-  type AmendWorkOrderResponse,
   type CreateInstanceResponse,
-  type CreateTaskResponse,
   type DispatchResponse,
   type ProposeMoveResponse,
-  type ProposeTransitionResponse,
   type RevisePayloadResponse,
   type WorkflowDeclarationResponse,
   type WorkflowIndexResponse,
   type WorkflowPayloadSchemaResponse,
   type WorkOrderFieldDescriptor,
-  type WorkOrderSchemaResponse,
 } from './instanceApi.js';
 import { InstanceWriter } from './instanceWriter.js';
 import { loadShippedWorkflow } from './shippedManifest.js';
@@ -78,29 +72,33 @@ import type {
 // So every such case asserts the log head did not move, or that the spawn
 // recorder is empty, in addition to whatever came back over the wire.
 //
-// ─── S11·U3 (D72 Move 2) — WHAT THIS FILE IS NOW ─────────────────────────────
+// ─── S11·U3 (D72 Move 2) — WHAT THIS FILE WAS ────────────────────────────────
 //
-// `taskApi.test.ts` re-homed alongside its subject. **EVERY PRE-EXISTING
-// ASSERTION IN THIS FILE IS THE ALIAS CONTRACT** and still drives the
-// `/api/tasks/*` paths on purpose: those routes must answer BYTE-IDENTICALLY to
-// what shipped, because the deployed UI keeps calling them, unrestarted and
-// untouched, through this slice's daemon deploy (q24, one deploy of overlap).
-// An assertion below that changed would be an alias that changed, which is the
-// one thing this unit may not do — so the only edits to the existing bodies are
-// the import site and two new harness accessors.
+// `taskApi.test.ts` re-homed alongside its subject. Through S11-S12, EVERY
+// PRE-EXISTING ASSERTION IN THIS FILE drove the deprecated task-alias paths
+// on purpose, because the deployed UI kept calling them unrestarted through
+// each slice's daemon deploy (q24, one deploy of overlap) — plus a parity
+// block (S11-A4) proving the generic `/api/instances/*` twin agreed with the
+// alias on every case, event for event.
 //
-// The NEW half is the parity block at the end of the file (S11-A4): each
-// generic route and its alias, driven with equivalent requests, must append
-// IDENTICAL events and answer with the same record under their own envelope
-// keys. That is what makes "one handler core, two surfaces" a fact rather than
-// an intention.
+// ─── S13·U4 (D72 Move 4, q24 close) — WHAT THIS FILE IS NOW ──────────────────
+//
+// The alias window closed: the four write aliases, the two read aliases, and
+// the legacy tasks-projection alias are DELETED (instanceApi.ts's header).
+// The behavioural cases below — one core handler per operation, always was —
+// now drive the GENERIC `/api/instances/*` surface directly. Rather than
+// reshape every assertion to the instance-keyed envelope, each case reads the
+// generic response and narrows it back to the pre-migration TaskRecord shape
+// through `legacyTasksViewOf` (see `asLegacyRecord` and its siblings below) —
+// the SAME pure derivation the alias route itself used to run its answer
+// through, so the assertion bodies are the byte-for-byte record they always
+// were and only the request construction changed. The old S11-A4 parity block
+// is gone with it: there is nothing left to compare two surfaces against.
 
 // ── S12·U2 (D72 Move 3): the harness reads the SHIPPED declaration ───────────
 //
 // Resolved once, exactly as `createDaemon` resolves it, and handed to BOTH the
 // writer and the route registration below — one declaration, as in production.
-// Every alias-contract assertion in this file therefore now proves the flipped
-// code answers identically, which is the point of the unit.
 const SHIPPED_WORKFLOW = loadShippedWorkflow();
 
 const temporaryDirectory = mkdtempSync(join(tmpdir(), 'vimes-taskapi-'));
@@ -327,32 +325,75 @@ function postJson(body: unknown, token: string | null = ANY_TOKEN): RequestInit 
   };
 }
 
+// ── S13·U4 (alias death) — LOCAL, TEST-ONLY legacy-shape helpers ─────────────
+//
+// The production `CreateTaskResponse` / `ProposeTransitionResponse` /
+// `AmendWorkOrderResponse` envelope types died with the aliases they described
+// (instanceApi.ts's header, q24's window closed). Every case below is still
+// proving the SAME core handler's behaviour — only the surface it drives
+// changed, from the alias to its generic twin — so rather than reshape each
+// assertion to the instance-keyed envelope, the helpers here read the GENERIC
+// response and narrow it back through `legacyTasksViewOf`, the SAME pure
+// derivation `readTasksAsLegacyView` (app.ts) and the dead alias route used to
+// run their own answers through. The result is byte-for-byte the TaskRecord
+// shape the pre-migration assertions were written against. These types are
+// TEST-LOCAL ONLY — nothing here is a claim that a `task`-keyed route exists.
+function asLegacyRecord(instance: InstanceRecord): TaskRecord {
+  return legacyTasksViewOf({ instances: { [instance.instanceId]: instance } }).tasks[
+    instance.instanceId
+  ]!;
+}
+
+type LegacyCreateResponse = { task: TaskRecord };
+function asLegacyCreateResponse(response: CreateInstanceResponse): LegacyCreateResponse {
+  return { task: asLegacyRecord(response.instance) };
+}
+
+type LegacyMoveResponse =
+  | { accepted: true; task: TaskRecord; dispatch?: DispatchAttemptResult }
+  | { accepted: false; reason: string };
+function asLegacyMoveResponse(response: ProposeMoveResponse): LegacyMoveResponse {
+  if (!response.accepted) {
+    return response;
+  }
+  return {
+    accepted: true,
+    task: asLegacyRecord(response.instance),
+    ...(response.dispatch === undefined ? {} : { dispatch: response.dispatch }),
+  };
+}
+
+type LegacyAmendResponse = { task: TaskRecord };
+function asLegacyAmendResponse(response: RevisePayloadResponse): LegacyAmendResponse {
+  return { task: asLegacyRecord(response.instance) };
+}
+
 async function createTaskThrough(
   harness: ApiHarness,
   overrides: Record<string, unknown> = {},
 ): Promise<TaskRecord> {
   const response = await harness.request(
-    '/api/tasks',
-    postJson({ projectRoot: harness.allowedRoot, createdBy: 'human', ...overrides }),
+    '/api/instances',
+    postJson({ project: harness.allowedRoot, createdBy: 'human', ...overrides }),
   );
   expect(response.status).toBe(201);
-  return ((await response.json()) as CreateTaskResponse).task;
+  return asLegacyCreateResponse((await response.json()) as CreateInstanceResponse).task;
 }
 
 // ── assertion 8: create ──────────────────────────────────────────────────────
 
-describe('POST /api/tasks — create', () => {
+describe('POST /api/instances — create', () => {
   it('creates (201) and applies the D32 `worktree` and `backlog` defaults', async () => {
     // Assertion 8. D32 (spike S2) pinned `worktree` as the isolation default, and
     // this route is the FIRST PLACE IN CODE that default becomes real.
     const harness = buildApiHarness();
     const response = await harness.request(
-      '/api/tasks',
-      postJson({ projectRoot: harness.allowedRoot, createdBy: 'human' }),
+      '/api/instances',
+      postJson({ project: harness.allowedRoot, createdBy: 'human' }),
     );
 
     expect(response.status).toBe(201);
-    const body = (await response.json()) as CreateTaskResponse;
+    const body = asLegacyCreateResponse((await response.json()) as CreateInstanceResponse);
     expect(body.task.isolation).toBe('worktree');
     expect(body.task.stage).toBe('backlog');
     expect(body.task.gates).toEqual({});
@@ -391,15 +432,6 @@ describe('POST /api/tasks — create', () => {
     const harness = buildApiHarness();
     const task = await createTaskThrough(harness);
     expect(task.stage).toBe(SHIPPED_WORKFLOW.workflow.initial);
-
-    const genericResponse = await harness.request(
-      '/api/instances',
-      postJson({ project: harness.allowedRoot, createdBy: 'human' }),
-    );
-    expect(genericResponse.status).toBe(201);
-    const created = ((await genericResponse.json()) as CreateInstanceResponse).instance;
-    // Both doors, one declaration — the generic twin starts on the same node.
-    expect(created.currentNode).toBe(SHIPPED_WORKFLOW.workflow.initial);
   });
 
   it('honours an explicit isolation and stage over the defaults', async () => {
@@ -407,7 +439,7 @@ describe('POST /api/tasks — create', () => {
     const harness = buildApiHarness();
     const task = await createTaskThrough(harness, {
       isolation: 'shared-dir',
-      stage: 'planning',
+      node: 'planning',
       createdBy: 'orchestrator',
     });
     expect(task.isolation).toBe('shared-dir');
@@ -465,9 +497,9 @@ describe('POST /api/tasks — create', () => {
     const headAfterAcceptedTitle = harness.tasksHead();
 
     const overTheCap = await harness.request(
-      '/api/tasks',
+      '/api/instances',
       postJson({
-        projectRoot: harness.allowedRoot,
+        project: harness.allowedRoot,
         createdBy: 'human',
         title: 'x'.repeat(cap + 1),
       }),
@@ -483,8 +515,8 @@ describe('POST /api/tasks — create', () => {
     const harness = buildApiHarness();
     for (const hostileTitle of [42, { text: 'nope' }, ['nope'], true]) {
       const response = await harness.request(
-        '/api/tasks',
-        postJson({ projectRoot: harness.allowedRoot, createdBy: 'human', title: hostileTitle }),
+        '/api/instances',
+        postJson({ project: harness.allowedRoot, createdBy: 'human', title: hostileTitle }),
       );
       expect(response.status, JSON.stringify(hostileTitle)).toBe(400);
     }
@@ -589,9 +621,9 @@ describe('POST /api/tasks — create', () => {
     const headAfterAccepted = harness.tasksHead();
 
     const overTheCap = await harness.request(
-      '/api/tasks',
+      '/api/instances',
       postJson({
-        projectRoot: harness.allowedRoot,
+        project: harness.allowedRoot,
         createdBy: 'human',
         scope: 'x'.repeat(cap + 1),
       }),
@@ -614,8 +646,8 @@ describe('POST /api/tasks — create', () => {
 
     const overCap = Array.from({ length: 101 }, (_unused, index) => ({ text: `criterion ${index}` }));
     const response = await harness.request(
-      '/api/tasks',
-      postJson({ projectRoot: harness.allowedRoot, createdBy: 'human', acceptanceCriteria: overCap }),
+      '/api/instances',
+      postJson({ project: harness.allowedRoot, createdBy: 'human', acceptanceCriteria: overCap }),
     );
     expect(response.status).toBe(400);
     expect(harness.tasksHead()).toBe(headAfterAccepted);
@@ -629,9 +661,9 @@ describe('POST /api/tasks — create', () => {
     const headBefore = harness.tasksHead();
 
     const response = await harness.request(
-      '/api/tasks',
+      '/api/instances',
       postJson({
-        projectRoot: harness.outsideRoot,
+        project: harness.outsideRoot,
         createdBy: 'human',
         scope: 'this should never be written',
         acceptanceCriteria: [{ text: 'nor should this' }],
@@ -646,7 +678,7 @@ describe('POST /api/tasks — create', () => {
 
 // ── assertion 9: THE SECURITY BOUNDARY ───────────────────────────────────────
 
-describe('POST /api/tasks — the projectRoot allowlist wall (403, and NOTHING is written)', () => {
+describe('POST /api/instances — the project allowlist wall (403, and NOTHING is written)', () => {
   // ⚠ WHY THIS WALL EXISTS, in one line: `sessionHost.spawnSession()` does NOT
   // validate `cwd` — the only other guard in the daemon is inside
   // `wsHub.handleSpawn`. A task is a DURABLE instruction to spawn a Claude process
@@ -660,8 +692,8 @@ describe('POST /api/tasks — the projectRoot allowlist wall (403, and NOTHING i
     const headBefore = harness.tasksHead();
 
     const response = await harness.request(
-      '/api/tasks',
-      postJson({ projectRoot: harness.outsideRoot, createdBy: 'human' }),
+      '/api/instances',
+      postJson({ project: harness.outsideRoot, createdBy: 'human' }),
     );
 
     expect(response.status).toBe(403);
@@ -675,8 +707,8 @@ describe('POST /api/tasks — the projectRoot allowlist wall (403, and NOTHING i
     const headBefore = harness.tasksHead();
 
     const response = await harness.request(
-      '/api/tasks',
-      postJson({ projectRoot: `${harness.allowedRoot}/../../etc`, createdBy: 'human' }),
+      '/api/instances',
+      postJson({ project: `${harness.allowedRoot}/../../etc`, createdBy: 'human' }),
     );
 
     expect(response.status).toBe(403);
@@ -692,8 +724,8 @@ describe('POST /api/tasks — the projectRoot allowlist wall (403, and NOTHING i
     symlinkSync(harness.outsideRoot, escapeLink);
 
     const response = await harness.request(
-      '/api/tasks',
-      postJson({ projectRoot: escapeLink, createdBy: 'human' }),
+      '/api/instances',
+      postJson({ project: escapeLink, createdBy: 'human' }),
     );
 
     expect(response.status).toBe(403);
@@ -708,7 +740,7 @@ describe('POST /api/tasks — the projectRoot allowlist wall (403, and NOTHING i
     mkdirSync(join(harness.allowedRoot, 'nested'), { recursive: true });
 
     const task = await createTaskThrough(harness, {
-      projectRoot: `${harness.allowedRoot}/nested/..`,
+      project: `${harness.allowedRoot}/nested/..`,
     });
 
     expect(task.projectRoot).toBe(harness.allowedRoot);
@@ -720,7 +752,7 @@ describe('POST /api/tasks — the projectRoot allowlist wall (403, and NOTHING i
 
 // ── assertion 10: I7 over HTTP ───────────────────────────────────────────────
 
-describe('POST /api/tasks/:taskId/transitions — I7 over HTTP', () => {
+describe('POST /api/instances/:instanceId/moves — I7 over HTTP', () => {
   it('accepts a legal edge: 200 + the moved task, one task_transitioned — AND, since S7·7c, the D53 dispatch', async () => {
     // ⚠ **THIS CASE MOVED IN S7·7c, AND THE MOVE IS THE FEATURE.** It used to
     // assert exactly `[task_created, task_transitioned]` and an envelope of
@@ -736,18 +768,37 @@ describe('POST /api/tasks/:taskId/transitions — I7 over HTTP', () => {
     const task = await createTaskThrough(harness);
 
     const response = await harness.request(
-      `/api/tasks/${task.taskId}/transitions`,
-      postJson({ toStage: 'planning', proposedBy: 'human' }),
+      `/api/instances/${task.taskId}/moves`,
+      postJson({ toNode: 'planning', proposedBy: 'human' }),
     );
 
     expect(response.status).toBe(200);
-    const body = (await response.json()) as ProposeTransitionResponse;
+    const body = asLegacyMoveResponse((await response.json()) as ProposeMoveResponse);
+    // ⚠ S13·U4 FINDING, RECORDED HERE (not fixed — out of this unit's deletion
+    // list): the alias and the generic route did NOT answer identically for an
+    // accepted, dispatch-triggering move. The alias's `accepted` callback used
+    // `result.task` — the writer's own return value, frozen BEFORE the dispatch
+    // ran, so it never carried the new `sessionRefs` entry. The generic route's
+    // `accepted` callback calls `instanceRecordOf(record.taskId)` — a FRESH
+    // projection read — and that call happens AFTER `await deps.dispatchTask(...)`
+    // resolves, so it DOES see the session `TaskDispatcher` just attached. This
+    // was true of both surfaces' code the whole time the alias existed; nothing
+    // in this unit's migration introduced it. It went uncaught because the
+    // S11-A4 parity suite (deleted with the alias, S13·U4) compared the two
+    // surfaces only under a FAKE `dispatchResult` (no real session ever
+    // attaches under a fake), and this exact case — a REAL dispatcher, run
+    // against the alias alone — was never run against the generic route until
+    // this migration. The instances-shaped fold IS the fresher, more honest
+    // answer (I12: read the log back, never echo a stale snapshot), so this
+    // assertion is corrected to the generic route's real, current behaviour
+    // rather than the alias-era snapshot timing.
     expect(body).toEqual({
       accepted: true,
-      // The task as the WRITER returned it — computed before the dispatch ran, so
-      // it carries no `sessionRefs` yet. The transition and the dispatch are two
-      // facts, and the envelope does not blend them.
-      task: { ...task, stage: 'planning' },
+      task: {
+        ...task,
+        stage: 'planning',
+        sessionRefs: [{ appSessionId: 'ffffffff-0000-4000-8000-000000000001', stage: 'planning' }],
+      },
       dispatch: {
         outcome: 'spawned',
         taskId: task.taskId,
@@ -774,8 +825,8 @@ describe('POST /api/tasks/:taskId/transitions — I7 over HTTP', () => {
     const task = await createTaskThrough(harness);
 
     const response = await harness.request(
-      `/api/tasks/${task.taskId}/transitions`,
-      postJson({ toStage: 'review', proposedBy: 'orchestrator' }),
+      `/api/instances/${task.taskId}/moves`,
+      postJson({ toNode: 'review', proposedBy: 'orchestrator' }),
     );
 
     // Half one: the wire.
@@ -797,7 +848,7 @@ describe('POST /api/tasks/:taskId/transitions — I7 over HTTP', () => {
   });
 
   it('an UNKNOWN STAGE is refused BY THE MACHINE (409 + evented), not by zod', async () => {
-    // ⚠ THE BRANCH THAT WOULD VANISH IF `toStage` WERE VALIDATED AS THE ENUM.
+    // ⚠ THE BRANCH THAT WOULD VANISH IF `toNode` WERE VALIDATED AS THE ENUM.
     // Step 1 typed the rejection payload's stage fields as `z.string()` precisely
     // so an unknown-node rejection stays RECORDABLE. A 400 here would leave the
     // one case slice 7's hostile input cares about most with nothing in the log.
@@ -809,8 +860,8 @@ describe('POST /api/tasks/:taskId/transitions — I7 over HTTP', () => {
     const task = await createTaskThrough(harness);
 
     const response = await harness.request(
-      `/api/tasks/${task.taskId}/transitions`,
-      postJson({ toStage: 'shipped-it-lol', proposedBy: 'orchestrator' }),
+      `/api/instances/${task.taskId}/moves`,
+      postJson({ toNode: 'shipped-it-lol', proposedBy: 'orchestrator' }),
     );
 
     expect(response.status).toBe(409);
@@ -847,10 +898,10 @@ describe('POST /api/tasks/:taskId/transitions — I7 over HTTP', () => {
 
     for (const rejectionCase of rejectionCases) {
       const harness = buildApiHarness();
-      const task = await createTaskThrough(harness, { stage: rejectionCase.startingStage });
+      const task = await createTaskThrough(harness, { node: rejectionCase.startingStage });
       const response = await harness.request(
-        `/api/tasks/${task.taskId}/transitions`,
-        postJson({ toStage: rejectionCase.toStage, proposedBy: 'dispatcher' }),
+        `/api/instances/${task.taskId}/moves`,
+        postJson({ toNode: rejectionCase.toStage, proposedBy: 'dispatcher' }),
       );
 
       expect(response.status, rejectionCase.reason).toBe(409);
@@ -871,8 +922,8 @@ describe('POST /api/tasks/:taskId/transitions — I7 over HTTP', () => {
     const headBefore = harness.tasksHead();
 
     const response = await harness.request(
-      '/api/tasks/task-that-never-existed/transitions',
-      postJson({ toStage: 'planning', proposedBy: 'human' }),
+      '/api/instances/task-that-never-existed/moves',
+      postJson({ toNode: 'planning', proposedBy: 'human' }),
     );
 
     expect(response.status).toBe(404);
@@ -904,18 +955,18 @@ const RELAYED_DISPATCH_RESULT: DispatchAttemptResult = {
   meterId: 'window-5h',
 };
 
-describe('POST /api/tasks/:taskId/transitions — the D53 dispatch rider (S7·7c)', () => {
+describe('POST /api/instances/:instanceId/moves — the D53 dispatch rider (S7·7c)', () => {
   it('a PROMOTION into planning (human) dispatches once and relays the result verbatim', async () => {
     const harness = buildApiHarness({ dispatchResult: RELAYED_DISPATCH_RESULT });
     const task = await createTaskThrough(harness);
 
     const response = await harness.request(
-      `/api/tasks/${task.taskId}/transitions`,
-      postJson({ toStage: 'planning', proposedBy: 'human' }),
+      `/api/instances/${task.taskId}/moves`,
+      postJson({ toNode: 'planning', proposedBy: 'human' }),
     );
 
     expect(response.status).toBe(200);
-    const body = (await response.json()) as ProposeTransitionResponse;
+    const body = asLegacyMoveResponse((await response.json()) as ProposeMoveResponse);
     expect(body).toEqual({
       accepted: true,
       task: { ...task, stage: 'planning' },
@@ -930,15 +981,15 @@ describe('POST /api/tasks/:taskId/transitions — the D53 dispatch rider (S7·7c
     // The second promotion edge in D53's taxonomy: plan approval. Same rule, a
     // different proposer, so neither value is hard-wired to one stage.
     const harness = buildApiHarness({ dispatchResult: RELAYED_DISPATCH_RESULT });
-    const task = await createTaskThrough(harness, { stage: 'plan-ready' });
+    const task = await createTaskThrough(harness, { node: 'plan-ready' });
 
     const response = await harness.request(
-      `/api/tasks/${task.taskId}/transitions`,
-      postJson({ toStage: 'implementing', proposedBy: 'orchestrator' }),
+      `/api/instances/${task.taskId}/moves`,
+      postJson({ toNode: 'implementing', proposedBy: 'orchestrator' }),
     );
 
     expect(response.status).toBe(200);
-    const body = (await response.json()) as ProposeTransitionResponse;
+    const body = asLegacyMoveResponse((await response.json()) as ProposeMoveResponse);
     expect(body).toEqual({
       accepted: true,
       task: { ...task, stage: 'implementing' },
@@ -955,15 +1006,15 @@ describe('POST /api/tasks/:taskId/transitions — the D53 dispatch rider (S7·7c
     // touches this route at all; the route is asserted anyway, because the MCP
     // surface will be a thin client of it and could propose exactly this.)
     const harness = buildApiHarness({ dispatchResult: RELAYED_DISPATCH_RESULT });
-    const task = await createTaskThrough(harness, { stage: 'review' });
+    const task = await createTaskThrough(harness, { node: 'review' });
 
     const response = await harness.request(
-      `/api/tasks/${task.taskId}/transitions`,
-      postJson({ toStage: 'implementing', proposedBy: 'dispatcher' }),
+      `/api/instances/${task.taskId}/moves`,
+      postJson({ toNode: 'implementing', proposedBy: 'dispatcher' }),
     );
 
     expect(response.status).toBe(200);
-    const body = (await response.json()) as ProposeTransitionResponse;
+    const body = asLegacyMoveResponse((await response.json()) as ProposeMoveResponse);
     // KEY ABSENCE, not `undefined` — a present-but-undefined key would still show
     // up in the JSON's shape discussions and would not be byte-identical.
     expect(Object.keys(body).sort()).toEqual(['accepted', 'task']);
@@ -983,15 +1034,15 @@ describe('POST /api/tasks/:taskId/transitions — the D53 dispatch rider (S7·7c
 
     for (const inertCase of inertCases) {
       const harness = buildApiHarness({ dispatchResult: RELAYED_DISPATCH_RESULT });
-      const task = await createTaskThrough(harness, { stage: inertCase.startingStage });
+      const task = await createTaskThrough(harness, { node: inertCase.startingStage });
 
       const response = await harness.request(
-        `/api/tasks/${task.taskId}/transitions`,
-        postJson({ toStage: inertCase.toStage, proposedBy: 'human' }),
+        `/api/instances/${task.taskId}/moves`,
+        postJson({ toNode: inertCase.toStage, proposedBy: 'human' }),
       );
 
       expect(response.status, inertCase.toStage).toBe(200);
-      const body = (await response.json()) as ProposeTransitionResponse;
+      const body = asLegacyMoveResponse((await response.json()) as ProposeMoveResponse);
       expect(Object.keys(body).sort(), inertCase.toStage).toEqual(['accepted', 'task']);
       expect(harness.dispatchedTaskIds(), inertCase.toStage).toEqual([]);
     }
@@ -1004,9 +1055,9 @@ describe('POST /api/tasks/:taskId/transitions — the D53 dispatch rider (S7·7c
     const task = await createTaskThrough(harness);
 
     const response = await harness.request(
-      `/api/tasks/${task.taskId}/transitions`,
+      `/api/instances/${task.taskId}/moves`,
       // backlog → implementing is not a legal edge.
-      postJson({ toStage: 'implementing', proposedBy: 'human' }),
+      postJson({ toNode: 'implementing', proposedBy: 'human' }),
     );
 
     expect(response.status).toBe(409);
@@ -1022,7 +1073,7 @@ describe('POST /api/tasks/:taskId/transitions — the D53 dispatch rider (S7·7c
     // Explicitly out of D53's mechanics: a birth record is not a promotion.
     // Nobody decided anything by writing one, so nothing starts.
     const harness = buildApiHarness({ dispatchResult: RELAYED_DISPATCH_RESULT });
-    const task = await createTaskThrough(harness, { stage: 'planning' });
+    const task = await createTaskThrough(harness, { node: 'planning' });
 
     expect(task.stage).toBe('planning');
     expect(harness.dispatchedTaskIds()).toEqual([]);
@@ -1049,12 +1100,12 @@ describe('POST /api/tasks/:taskId/transitions — the D53 dispatch rider (S7·7c
       const task = await createTaskThrough(harness);
 
       const response = await harness.request(
-        `/api/tasks/${task.taskId}/transitions`,
-        postJson({ toStage: 'planning', proposedBy: 'human' }),
+        `/api/instances/${task.taskId}/moves`,
+        postJson({ toNode: 'planning', proposedBy: 'human' }),
       );
 
       expect(response.status, dispatchResult.outcome).toBe(200);
-      const body = (await response.json()) as ProposeTransitionResponse;
+      const body = asLegacyMoveResponse((await response.json()) as ProposeMoveResponse);
       expect(body, dispatchResult.outcome).toEqual({
         accepted: true,
         task: { ...task, stage: 'planning' },
@@ -1081,7 +1132,7 @@ describe('POST /api/tasks/:taskId/transitions — the D53 dispatch rider (S7·7c
 //   3. **it never dispatches.** `dispatchCallCount` staying at 0 is the assertable
 //      form of D53's "an amendment is not a promotion".
 
-describe('POST /api/tasks/:taskId/amendments — amend the work order (S7·2b)', () => {
+describe('POST /api/instances/:instanceId/payload-revisions — amend the work order (S7·2b)', () => {
   it('200 + the folded record with a bumped rev, ONE event, and NO dispatch', async () => {
     const harness = buildApiHarness();
     const task = await createTaskThrough(harness, {
@@ -1090,12 +1141,12 @@ describe('POST /api/tasks/:taskId/amendments — amend the work order (S7·2b)',
     });
 
     const response = await harness.request(
-      `/api/tasks/${task.taskId}/amendments`,
+      `/api/instances/${task.taskId}/payload-revisions`,
       postJson({ amendedBy: 'human', scope: 'the narrowed scope' }),
     );
 
     expect(response.status).toBe(200);
-    const body = (await response.json()) as AmendWorkOrderResponse;
+    const body = asLegacyAmendResponse((await response.json()) as RevisePayloadResponse);
     // The RECORD as folded — the response is the read-back, not an echo of the
     // request, which is why the untouched `killCriterion` rides along on it.
     expect(body.task).toEqual({
@@ -1130,7 +1181,7 @@ describe('POST /api/tasks/:taskId/amendments — amend the work order (S7·2b)',
     const firstCriterionId = task.acceptanceCriteria![0]!.id;
 
     const response = await harness.request(
-      `/api/tasks/${task.taskId}/amendments`,
+      `/api/instances/${task.taskId}/payload-revisions`,
       postJson({
         amendedBy: 'orchestrator',
         acceptanceCriteria: [
@@ -1141,8 +1192,8 @@ describe('POST /api/tasks/:taskId/amendments — amend the work order (S7·2b)',
     );
 
     expect(response.status).toBe(200);
-    const amendedCriteria = ((await response.json()) as AmendWorkOrderResponse).task
-      .acceptanceCriteria!;
+    const amendedCriteria = asLegacyAmendResponse((await response.json()) as RevisePayloadResponse)
+      .task.acceptanceCriteria!;
     // The restated criterion KEPT its id — that stability is what `report_review`
     // keys its per-criterion verdicts to. The new one got a server-minted id, and
     // the dropped one is gone (the list is a replacement, not a delta).
@@ -1160,7 +1211,7 @@ describe('POST /api/tasks/:taskId/amendments — amend the work order (S7·2b)',
     const headBefore = harness.tasksHead();
 
     const response = await harness.request(
-      '/api/tasks/task-that-never-existed/amendments',
+      '/api/instances/task-that-never-existed/payload-revisions',
       postJson({ amendedBy: 'human', scope: 'an amendment to nothing' }),
     );
 
@@ -1180,7 +1231,7 @@ describe('POST /api/tasks/:taskId/amendments — amend the work order (S7·2b)',
     const headAfterCreate = harness.tasksHead();
 
     const response = await harness.request(
-      `/api/tasks/${task.taskId}/amendments`,
+      `/api/instances/${task.taskId}/payload-revisions`,
       postJson({
         amendedBy: 'human',
         scope: 'a scope that must not land',
@@ -1207,7 +1258,7 @@ describe('POST /api/tasks/:taskId/amendments — amend the work order (S7·2b)',
     const headAfterCreate = harness.tasksHead();
 
     const response = await harness.request(
-      `/api/tasks/${task.taskId}/amendments`,
+      `/api/instances/${task.taskId}/payload-revisions`,
       postJson({ amendedBy: 'human' }),
     );
 
@@ -1225,12 +1276,14 @@ describe('POST /api/tasks/:taskId/amendments — amend the work order (S7·2b)',
     });
 
     const response = await harness.request(
-      `/api/tasks/${task.taskId}/amendments`,
+      `/api/instances/${task.taskId}/payload-revisions`,
       postJson({ amendedBy: 'human', acceptanceCriteria: [] }),
     );
 
     expect(response.status).toBe(200);
-    expect(((await response.json()) as AmendWorkOrderResponse).task.acceptanceCriteria).toEqual([]);
+    expect(
+      asLegacyAmendResponse((await response.json()) as RevisePayloadResponse).task.acceptanceCriteria,
+    ).toEqual([]);
     expect(harness.taskEventTypes()).toEqual([
       EVENT_TYPES.instanceCreated,
       EVENT_TYPES.instancePayloadRevised,
@@ -1242,10 +1295,10 @@ describe('POST /api/tasks/:taskId/amendments — amend the work order (S7·2b)',
     // might expect the amendment to restart the work. It does not: `planning` is
     // exactly where the temptation to chain lives, and the count stays 0.
     const harness = buildApiHarness({ dispatchResult: RELAYED_DISPATCH_RESULT });
-    const task = await createTaskThrough(harness, { stage: 'planning' });
+    const task = await createTaskThrough(harness, { node: 'planning' });
 
     const response = await harness.request(
-      `/api/tasks/${task.taskId}/amendments`,
+      `/api/instances/${task.taskId}/payload-revisions`,
       postJson({ amendedBy: 'orchestrator', scope: 'a scope amended mid-planning' }),
     );
 
@@ -1253,7 +1306,9 @@ describe('POST /api/tasks/:taskId/amendments — amend the work order (S7·2b)',
     expect(harness.dispatchedTaskIds()).toEqual([]);
     expect(harness.sessionHost.spawnCalls).toEqual([]);
     // The stage did not move either — an amendment is a record fact, not a transition.
-    expect(((await response.json()) as AmendWorkOrderResponse).task.stage).toBe('planning');
+    expect(
+      asLegacyAmendResponse((await response.json()) as RevisePayloadResponse).task.stage,
+    ).toBe('planning');
   });
 });
 
@@ -1267,16 +1322,16 @@ describe('malformed input — 400, nothing evented, nothing crashes (I8)', () =>
     { caseName: 'unparseable JSON', body: '{ not json at all' },
     { caseName: 'empty body', body: '' },
     { caseName: 'a JSON array rather than an object', body: [1, 2, 3] },
-    { caseName: 'missing required proposedBy', body: { toStage: 'planning' } },
-    { caseName: 'missing required toStage', body: { proposedBy: 'human' } },
-    { caseName: 'wrong-typed toStage (number)', body: { toStage: 7, proposedBy: 'human' } },
+    { caseName: 'missing required proposedBy', body: { toNode: 'planning' } },
+    { caseName: 'missing required toNode', body: { proposedBy: 'human' } },
+    { caseName: 'wrong-typed toNode (number)', body: { toNode: 7, proposedBy: 'human' } },
     {
       caseName: 'proposedBy outside the vocabulary',
-      body: { toStage: 'planning', proposedBy: 'the-cat' },
+      body: { toNode: 'planning', proposedBy: 'the-cat' },
     },
     {
       caseName: 'wrong-typed manualReviewRequired',
-      body: { toStage: 'done', proposedBy: 'human', manualReviewRequired: 'yes' },
+      body: { toNode: 'done', proposedBy: 'human', manualReviewRequired: 'yes' },
     },
   ];
 
@@ -1287,7 +1342,7 @@ describe('malformed input — 400, nothing evented, nothing crashes (I8)', () =>
       const headAfterCreate = harness.tasksHead();
 
       const response = await harness.request(
-        `/api/tasks/${task.taskId}/transitions`,
+        `/api/instances/${task.taskId}/moves`,
         postJson(malformedCase.body),
       );
 
@@ -1299,21 +1354,21 @@ describe('malformed input — 400, nothing evented, nothing crashes (I8)', () =>
 
   const malformedCreateBodies: Array<{ caseName: string; body: unknown }> = [
     { caseName: 'unparseable JSON', body: '}{' },
-    { caseName: 'missing required projectRoot', body: { createdBy: 'human' } },
-    { caseName: 'missing required createdBy', body: { projectRoot: '/tmp' } },
-    { caseName: 'wrong-typed projectRoot (number)', body: { projectRoot: 5, createdBy: 'human' } },
+    { caseName: 'missing required project', body: { createdBy: 'human' } },
+    { caseName: 'missing required createdBy', body: { project: '/tmp' } },
+    { caseName: 'wrong-typed project (number)', body: { project: 5, createdBy: 'human' } },
     {
       caseName: 'isolation outside the vocabulary',
-      body: { projectRoot: '/tmp', createdBy: 'human', isolation: 'a-submarine' },
+      body: { project: '/tmp', createdBy: 'human', isolation: 'a-submarine' },
     },
     {
-      caseName: 'stage outside the vocabulary',
-      body: { projectRoot: '/tmp', createdBy: 'human', stage: 'almost-done' },
+      caseName: 'node outside the vocabulary',
+      body: { project: '/tmp', createdBy: 'human', node: 'almost-done' },
     },
     {
       caseName: 'wrong-typed gates.requireHeadroom.pct',
       body: {
-        projectRoot: '/tmp',
+        project: '/tmp',
         createdBy: 'human',
         gates: { requireHeadroom: { meterId: 'window-5h', pct: 'lots' } },
       },
@@ -1362,7 +1417,7 @@ describe('malformed input — 400, nothing evented, nothing crashes (I8)', () =>
       const headAfterCreate = harness.tasksHead();
 
       const response = await harness.request(
-        `/api/tasks/${task.taskId}/amendments`,
+        `/api/instances/${task.taskId}/payload-revisions`,
         postJson(malformedCase.body),
       );
 
@@ -1378,7 +1433,7 @@ describe('malformed input — 400, nothing evented, nothing crashes (I8)', () =>
       const harness = buildApiHarness();
       const headBefore = harness.tasksHead();
 
-      const response = await harness.request('/api/tasks', postJson(malformedCase.body));
+      const response = await harness.request('/api/instances', postJson(malformedCase.body));
 
       expect(response.status).toBe(400);
       expect(harness.tasksHead()).toBe(headBefore);
@@ -1392,16 +1447,16 @@ describe('malformed input — 400, nothing evented, nothing crashes (I8)', () =>
     // PROPOSES an edge, and refusing it is a decision the machine must RECORD.
     const harness = buildApiHarness();
     const createResponse = await harness.request(
-      '/api/tasks',
-      postJson({ projectRoot: harness.allowedRoot, createdBy: 'human', stage: 'nonsense' }),
+      '/api/instances',
+      postJson({ project: harness.allowedRoot, createdBy: 'human', node: 'nonsense' }),
     );
     expect(createResponse.status).toBe(400);
     expect(harness.taskEvents()).toEqual([]);
 
     const task = await createTaskThrough(harness);
     const transitionResponse = await harness.request(
-      `/api/tasks/${task.taskId}/transitions`,
-      postJson({ toStage: 'nonsense', proposedBy: 'human' }),
+      `/api/instances/${task.taskId}/moves`,
+      postJson({ toNode: 'nonsense', proposedBy: 'human' }),
     );
     expect(transitionResponse.status).toBe(409);
     expect(harness.taskEvents()[1]!.type).toBe(EVENT_TYPES.instanceMoveRejected);
@@ -1411,19 +1466,19 @@ describe('malformed input — 400, nothing evented, nothing crashes (I8)', () =>
     const harness = buildApiHarness();
     const task = await createTaskThrough(harness);
     const hostileBodies = [
-      '{"toStage": "__proto__", "proposedBy": "human"}',
-      '{"toStage": "", "proposedBy": "human"}',
-      '{"toStage": {"nested": true}, "proposedBy": "human"}',
+      '{"toNode": "__proto__", "proposedBy": "human"}',
+      '{"toNode": "", "proposedBy": "human"}',
+      '{"toNode": {"nested": true}, "proposedBy": "human"}',
       '\u0000\u0001\u0002',
       '[]',
       'null',
       '"just a string"',
-      '{"toStage":"planning","proposedBy":"human","note":' + '"' + 'x'.repeat(5000) + '"}',
+      '{"toNode":"planning","proposedBy":"human","note":' + '"' + 'x'.repeat(5000) + '"}',
     ];
 
     for (const hostileBody of hostileBodies) {
       const response = await harness.request(
-        `/api/tasks/${task.taskId}/transitions`,
+        `/api/instances/${task.taskId}/moves`,
         postJson(hostileBody),
       );
       // Every one is answered — never a hang, never a 500.
@@ -1457,16 +1512,16 @@ describe('I14 — every task route is behind the auth wall', () => {
   // the handler's SIDE EFFECTS are absent, not merely that the status is 401 —
   // a route that ran and then 401'd would still have written an event.
   const taskRoutes: Array<{ routeName: string; path: string; body: unknown }> = [
-    { routeName: 'create', path: '/api/tasks', body: { projectRoot: '/tmp', createdBy: 'human' } },
+    { routeName: 'create', path: '/api/instances', body: { project: '/tmp', createdBy: 'human' } },
     {
-      routeName: 'transitions',
-      path: '/api/tasks/any-task/transitions',
-      body: { toStage: 'planning', proposedBy: 'human' },
+      routeName: 'moves',
+      path: '/api/instances/any-task/moves',
+      body: { toNode: 'planning', proposedBy: 'human' },
     },
-    { routeName: 'dispatch', path: '/api/tasks/any-task/dispatch', body: {} },
+    { routeName: 'dispatch', path: '/api/instances/any-task/dispatch', body: {} },
     {
-      routeName: 'amendments',
-      path: '/api/tasks/any-task/amendments',
+      routeName: 'payload-revisions',
+      path: '/api/instances/any-task/payload-revisions',
       body: { amendedBy: 'human', scope: 'a scope nobody authenticated to write' },
     },
   ];
@@ -1502,103 +1557,18 @@ describe('I14 — every task route is behind the auth wall', () => {
   }
 });
 
-// ── S8: the served legal-edge table ──────────────────────────────────────────
-
-// ⚠ **THE FROZEN WIRE BYTES (S12-A4, clause b).** Captured 2026-08-10, from the
-// route as it answered BEFORE D72 Move 3 flipped it — i.e. the exact bytes the
-// compiled record helper produced and the deployed UI has been reading since S8,
-// key order and target order included. It was written out as a LITERAL on
-// purpose: clause (a) compared the route to that helper while the helper still
-// stood, and S12·U3 deleted it — this literal is what survives it, so the byte
-// promise outlives its reference (the same trick S12-A3 plays with the edge set).
-const FROZEN_STAGE_EDGES_WIRE_BYTES =
-  '{"edges":{"backlog":["planning","blocked-external","cancelled"],' +
-  '"planning":["plan-ready","blocked-external","quarantined","backlog","cancelled"],' +
-  '"plan-ready":["implementing","planning","blocked-external","backlog","cancelled"],' +
-  '"implementing":["review","blocked-external","quarantined","cancelled"],' +
-  '"review":["done","implementing","blocked-external","quarantined","cancelled"],' +
-  '"done":[],' +
-  '"blocked-external":["backlog","planning","plan-ready","implementing","review","cancelled"],' +
-  '"quarantined":["backlog","planning","implementing","blocked-external","cancelled"],' +
-  '"cancelled":["backlog"]}}';
-
-describe('GET /api/tasks/stage-edges — the legal-edge table the move sheet filters against', () => {
-  // ── S12-A4, clause (a) — RETIRED BY U3 WITH ITS REFERENCE (D72 Move 3) ─────
-  //
-  // It compared the route against the compiled record helper while that helper
-  // still stood. U3 deleted it; clause (b) below is what carries the byte
-  // promise now, which is why it was frozen as a literal in the first place.
-
-  // ── S12-A4, clause (b) — SURVIVES U3 ───────────────────────────────────────
-  it('serves the FROZEN wire bytes, literally (S12-A4)', async () => {
-    const harness = buildApiHarness();
-    const response = await harness.request('/api/tasks/stage-edges', {
-      headers: authHeaders(),
-    });
-
-    expect(response.status).toBe(200);
-    expect(JSON.stringify(await response.json())).toBe(FROZEN_STAGE_EDGES_WIRE_BYTES);
-  });
-
-  // ── the completeness tripwire (F4's honesty guard) ─────────────────────────
-  //
-  // The route's ORDER comes from a frozen constant and its MEMBERSHIP from the
-  // declaration. This asserts the two agree as SETS, per stage, in BOTH
-  // directions — so the constant can neither hide an edge the declaration
-  // declares (a target missing from the ordering array would be silently
-  // unservable) nor smuggle one the declaration dropped (that target is filtered,
-  // so the constant would be carrying a lie).
-  //
-  // ⚠ A RED HERE IS A FINDING, NOT A TUNING OPPORTUNITY: it means the shipped
-  // manifest and the frozen wire contract have diverged, and which of the two is
-  // wrong is a decision, not an edit.
-  it('the frozen ORDER and the declared MEMBERSHIP agree as sets, per stage, both ways', () => {
-    const membership = declaredStageEdgeMembership(SHIPPED_WORKFLOW.workflow);
-    const stages = Object.keys(WIRE_STAGE_EDGE_ORDER) as (keyof typeof WIRE_STAGE_EDGE_ORDER)[];
-    // Third witness: the constant covers the whole record vocabulary, so a stage
-    // dropped from it cannot pass by simply not being compared.
-    expect(stages.length).toBe(9);
-    for (const stage of stages) {
-      const ordered = [...WIRE_STAGE_EDGE_ORDER[stage]].sort();
-      const declared = [...membership[stage]].sort();
-      expect({ stage, targets: ordered }).toEqual({ stage, targets: declared });
-    }
-  });
-
-  it('NO token → 401 (I14), and a genuinely empty token is refused the same way', async () => {
-    const harness = buildApiHarness();
-
-    const noToken = await harness.request('/api/tasks/stage-edges', {
-      headers: authHeaders(null),
-    });
-    expect(noToken.status).toBe(401);
-
-    const emptyToken = await harness.request('/api/tasks/stage-edges', {
-      headers: authHeaders(''),
-    });
-    expect(emptyToken.status).toBe(401);
-  });
-
-  it('is read-only: fetching it writes nothing to the tasks stream', async () => {
-    const harness = buildApiHarness();
-    const headBefore = harness.tasksHead();
-
-    await harness.request('/api/tasks/stage-edges', { headers: authHeaders() });
-
-    expect(harness.tasksHead()).toBe(headBefore);
-  });
-});
-
 // ── S7·3: the work-order authoring descriptor + its drift guard ──────────────
 //
 // This is the "one definition" insurance the S7·3 unit exists to test. The board
-// renders the four authored work-order fields from the SERVED descriptor
-// (`GET /api/tasks/work-order-schema`), and the descriptor is derived from the
-// SAME caps `createTaskBodySchema` validates against. These tests bind the two
+// renders the four authored work-order fields from the SERVED descriptor — the
+// legacy work-order-schema GET alias through S13·U3, its generic twin
+// `GET /api/workflows/.../payload-schema` (q25) after S13·U4 deleted the
+// alias — and the descriptor is derived from the SAME caps
+// `createInstanceBodySchema` validates against. These tests bind the two
 // together so they can never drift silently: same keys, same optionality, same
 // caps — a change to one place that is not mirrored in the other reddens here.
 
-describe('WORK_ORDER_FIELD_DESCRIPTORS — bound to createTaskBodySchema (no drift)', () => {
+describe('WORK_ORDER_FIELD_DESCRIPTORS — bound to createInstanceBodySchema (no drift)', () => {
   // The four AUTHORED work-order fields, enumerated. Deliberately NOT derived from
   // the descriptor or the schema — this hard-coded set is the third witness, so a
   // field silently added to (or dropped from) EITHER side is caught rather than
@@ -1611,10 +1581,10 @@ describe('WORK_ORDER_FIELD_DESCRIPTORS — bound to createTaskBodySchema (no dri
   ] as const;
 
   // A minimal body that parses, so a single field under test can be swapped in and
-  // its cap probed against the schema the route actually uses. projectRoot is only
+  // its cap probed against the schema the route actually uses. `project` is only
   // shape-checked here (the allowlist wall is the route's job, not the schema's).
   function baseBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
-    return { projectRoot: '/tmp', createdBy: 'human', ...overrides };
+    return { project: '/tmp', createdBy: 'human', ...overrides };
   }
 
   const descriptorByKey = new Map<string, WorkOrderFieldDescriptor>(
@@ -1629,9 +1599,9 @@ describe('WORK_ORDER_FIELD_DESCRIPTORS — bound to createTaskBodySchema (no dri
     expect(new Set(descriptorKeys)).toEqual(new Set(EXPECTED_WORK_ORDER_KEYS));
   });
 
-  it('every descriptor key exists in createTaskBodySchema.shape AND is optional there', () => {
+  it('every descriptor key exists in createInstanceBodySchema.shape AND is optional there', () => {
     for (const descriptor of WORK_ORDER_FIELD_DESCRIPTORS) {
-      const shapeField = createTaskBodySchema.shape[descriptor.key as keyof typeof createTaskBodySchema.shape];
+      const shapeField = createInstanceBodySchema.shape[descriptor.key as keyof typeof createInstanceBodySchema.shape];
       expect(shapeField, `${descriptor.key} exists in the schema`).toBeDefined();
       // Optional: an unauthored creation must still parse (the widening is
       // optional-only), so a descriptor field that became required in the schema
@@ -1649,13 +1619,13 @@ describe('WORK_ORDER_FIELD_DESCRIPTORS — bound to createTaskBodySchema (no dri
       expect(cap, `${descriptor.key} declares a maxLength`).toBeGreaterThan(0);
       // AT the descriptor's declared cap → the schema accepts it.
       expect(
-        createTaskBodySchema.safeParse(baseBody({ [descriptor.key]: 'x'.repeat(cap) })).success,
+        createInstanceBodySchema.safeParse(baseBody({ [descriptor.key]: 'x'.repeat(cap) })).success,
         `${descriptor.key} at cap parses`,
       ).toBe(true);
       // One character OVER → the schema rejects the whole body. This is what binds
       // the descriptor's advertised cap to what the route enforces.
       expect(
-        createTaskBodySchema.safeParse(baseBody({ [descriptor.key]: 'x'.repeat(cap + 1) })).success,
+        createInstanceBodySchema.safeParse(baseBody({ [descriptor.key]: 'x'.repeat(cap + 1) })).success,
         `${descriptor.key} over cap fails`,
       ).toBe(false);
     }
@@ -1667,20 +1637,20 @@ describe('WORK_ORDER_FIELD_DESCRIPTORS — bound to createTaskBodySchema (no dri
     const itemMaxLength = descriptor.itemMaxLength!;
 
     const atItemCap = Array.from({ length: maxItems }, () => 'row');
-    expect(createTaskBodySchema.safeParse(baseBody({ explicitlyOut: atItemCap })).success).toBe(true);
+    expect(createInstanceBodySchema.safeParse(baseBody({ explicitlyOut: atItemCap })).success).toBe(true);
 
     const overItemCap = Array.from({ length: maxItems + 1 }, () => 'row');
-    expect(createTaskBodySchema.safeParse(baseBody({ explicitlyOut: overItemCap })).success).toBe(
+    expect(createInstanceBodySchema.safeParse(baseBody({ explicitlyOut: overItemCap })).success).toBe(
       false,
     );
 
     // A single line AT its length cap parses; one over fails.
     expect(
-      createTaskBodySchema.safeParse(baseBody({ explicitlyOut: ['x'.repeat(itemMaxLength)] }))
+      createInstanceBodySchema.safeParse(baseBody({ explicitlyOut: ['x'.repeat(itemMaxLength)] }))
         .success,
     ).toBe(true);
     expect(
-      createTaskBodySchema.safeParse(baseBody({ explicitlyOut: ['x'.repeat(itemMaxLength + 1)] }))
+      createInstanceBodySchema.safeParse(baseBody({ explicitlyOut: ['x'.repeat(itemMaxLength + 1)] }))
         .success,
     ).toBe(false);
   });
@@ -1692,23 +1662,23 @@ describe('WORK_ORDER_FIELD_DESCRIPTORS — bound to createTaskBodySchema (no dri
     const itemMaxLength = descriptor.itemMaxLength!;
 
     const atItemCap = Array.from({ length: maxItems }, () => ({ text: 'ok' }));
-    expect(createTaskBodySchema.safeParse(baseBody({ acceptanceCriteria: atItemCap })).success).toBe(
+    expect(createInstanceBodySchema.safeParse(baseBody({ acceptanceCriteria: atItemCap })).success).toBe(
       true,
     );
 
     const overItemCap = Array.from({ length: maxItems + 1 }, () => ({ text: 'ok' }));
     expect(
-      createTaskBodySchema.safeParse(baseBody({ acceptanceCriteria: overItemCap })).success,
+      createInstanceBodySchema.safeParse(baseBody({ acceptanceCriteria: overItemCap })).success,
     ).toBe(false);
 
     // One criterion's TEXT at its length cap parses; one over fails.
     expect(
-      createTaskBodySchema.safeParse(
+      createInstanceBodySchema.safeParse(
         baseBody({ acceptanceCriteria: [{ text: 'x'.repeat(itemMaxLength) }] }),
       ).success,
     ).toBe(true);
     expect(
-      createTaskBodySchema.safeParse(
+      createInstanceBodySchema.safeParse(
         baseBody({ acceptanceCriteria: [{ text: 'x'.repeat(itemMaxLength + 1) }] }),
       ).success,
     ).toBe(false);
@@ -1716,51 +1686,8 @@ describe('WORK_ORDER_FIELD_DESCRIPTORS — bound to createTaskBodySchema (no dri
     // The INPUT shape carries no id — the writer mints it (S7·2a). A criterion sent
     // with an id must not become part of the advertised contract.
     expect(
-      createTaskBodySchema.safeParse(baseBody({ acceptanceCriteria: [{ text: 'ok' }] })).success,
+      createInstanceBodySchema.safeParse(baseBody({ acceptanceCriteria: [{ text: 'ok' }] })).success,
     ).toBe(true);
-  });
-});
-
-describe('GET /api/tasks/work-order-schema — the served authoring descriptor', () => {
-  it('serves WORK_ORDER_FIELD_DESCRIPTORS verbatim behind the same auth wall', async () => {
-    const harness = buildApiHarness();
-    const response = await harness.request('/api/tasks/work-order-schema', {
-      headers: authHeaders(),
-    });
-
-    expect(response.status).toBe(200);
-    const body = (await response.json()) as WorkOrderSchemaResponse;
-    expect(body).toEqual({ fields: WORK_ORDER_FIELD_DESCRIPTORS });
-    // The four keys are present and in the authored order.
-    expect(body.fields.map((field) => field.key)).toEqual([
-      'scope',
-      'explicitlyOut',
-      'acceptanceCriteria',
-      'killCriterion',
-    ]);
-  });
-
-  it('NO token → 401 (I14), and a genuinely empty token is refused the same way', async () => {
-    const harness = buildApiHarness();
-
-    const noToken = await harness.request('/api/tasks/work-order-schema', {
-      headers: authHeaders(null),
-    });
-    expect(noToken.status).toBe(401);
-
-    const emptyToken = await harness.request('/api/tasks/work-order-schema', {
-      headers: authHeaders(''),
-    });
-    expect(emptyToken.status).toBe(401);
-  });
-
-  it('is read-only: fetching it writes nothing to the tasks stream', async () => {
-    const harness = buildApiHarness();
-    const headBefore = harness.tasksHead();
-
-    await harness.request('/api/tasks/work-order-schema', { headers: authHeaders() });
-
-    expect(harness.tasksHead()).toBe(headBefore);
   });
 });
 
@@ -1942,19 +1869,18 @@ describe('GET /api/workflows/:extension/:workflow/:rev/declaration — q25 (S13�
 });
 
 describe('GET /api/workflows/:extension/:workflow/:rev/payload-schema — q25 (S13·U2)', () => {
-  it('S13-A4: fields deep-equal the legacy /api/tasks/work-order-schema response — same constant', async () => {
+  // S13-A4, post-alias-death form: the legacy work-order-schema GET route
+  // this once compared against is deleted (S13·U4, q24 close) — the
+  // "one source of record" principle-9 claim now has only one route to make it
+  // about, so this pins that route directly against the SAME constant rather
+  // than against a sibling that no longer exists.
+  it('S13-A4: fields deep-equal WORK_ORDER_FIELD_DESCRIPTORS — the one served constant', async () => {
     const harness = buildApiHarness();
     const genericResponse = await harness.request(PAYLOAD_SCHEMA_PATH, { headers: authHeaders() });
-    const legacyResponse = await harness.request('/api/tasks/work-order-schema', {
-      headers: authHeaders(),
-    });
 
     expect(genericResponse.status).toBe(200);
-    expect(legacyResponse.status).toBe(200);
     const genericBody = (await genericResponse.json()) as WorkflowPayloadSchemaResponse;
-    const legacyBody = (await legacyResponse.json()) as WorkOrderSchemaResponse;
 
-    expect(genericBody.fields).toEqual(legacyBody.fields);
     expect(genericBody.fields).toEqual(WORK_ORDER_FIELD_DESCRIPTORS);
     expect(genericBody.ref).toEqual(SHIPPED_WORKFLOW.ref);
   });
@@ -1993,7 +1919,7 @@ describe('GET /api/workflows/:extension/:workflow/:rev/payload-schema — q25 (S
 
 // ── assertion 13: dispatch ───────────────────────────────────────────────────
 
-describe('POST /api/tasks/:taskId/dispatch — one explicit attempt', () => {
+describe('POST /api/instances/:instanceId/dispatch — one explicit attempt', () => {
   // CONVENTION UNDER TEST: **200 + the envelope for every honest outcome**.
   // A refusal is a complete answer, not an HTTP error — mirrors
   // `/api/usage/refresh` (documented in app.ts). 4xx-ing it would push clients
@@ -2001,9 +1927,9 @@ describe('POST /api/tasks/:taskId/dispatch — one explicit attempt', () => {
 
   it('spawned → 200 + the envelope, and dispatchTask ran EXACTLY once', async () => {
     const harness = buildApiHarness();
-    const task = await createTaskThrough(harness, { stage: 'planning' });
+    const task = await createTaskThrough(harness, { node: 'planning' });
 
-    const response = await harness.request(`/api/tasks/${task.taskId}/dispatch`, postJson({}));
+    const response = await harness.request(`/api/instances/${task.taskId}/dispatch`, postJson({}));
 
     expect(response.status).toBe(200);
     const body = (await response.json()) as DispatchResponse;
@@ -2025,12 +1951,12 @@ describe('POST /api/tasks/:taskId/dispatch — one explicit attempt', () => {
       },
     });
     const task = await createTaskThrough(harness, {
-      stage: 'planning',
+      node: 'planning',
       gates: { deferUntilReset: 'window-5h' },
     });
     const eventsAfterCreate = harness.taskEventTypes();
 
-    const response = await harness.request(`/api/tasks/${task.taskId}/dispatch`, postJson({}));
+    const response = await harness.request(`/api/instances/${task.taskId}/dispatch`, postJson({}));
 
     expect(response.status).toBe(200);
     const body = (await response.json()) as DispatchResponse;
@@ -2045,7 +1971,7 @@ describe('POST /api/tasks/:taskId/dispatch — one explicit attempt', () => {
     // `backlog` is not a dispatchable stage.
     const task = await createTaskThrough(harness);
 
-    const response = await harness.request(`/api/tasks/${task.taskId}/dispatch`, postJson({}));
+    const response = await harness.request(`/api/instances/${task.taskId}/dispatch`, postJson({}));
 
     expect(response.status).toBe(200);
     const body = (await response.json()) as DispatchResponse;
@@ -2060,9 +1986,9 @@ describe('POST /api/tasks/:taskId/dispatch — one explicit attempt', () => {
   it('spawn-failed → 200 + the envelope carrying the HOST\'s reason verbatim', async () => {
     const harness = buildApiHarness();
     harness.sessionHost.refuseNextSpawn('preflight-failed');
-    const task = await createTaskThrough(harness, { stage: 'implementing' });
+    const task = await createTaskThrough(harness, { node: 'implementing' });
 
-    const response = await harness.request(`/api/tasks/${task.taskId}/dispatch`, postJson({}));
+    const response = await harness.request(`/api/instances/${task.taskId}/dispatch`, postJson({}));
 
     expect(response.status).toBe(200);
     const body = (await response.json()) as DispatchResponse;
@@ -2075,7 +2001,7 @@ describe('POST /api/tasks/:taskId/dispatch — one explicit attempt', () => {
 
   it('404 for an unknown task, and dispatchTask still ran only once', async () => {
     const harness = buildApiHarness();
-    const response = await harness.request('/api/tasks/no-such-task/dispatch', postJson({}));
+    const response = await harness.request('/api/instances/no-such-task/dispatch', postJson({}));
 
     expect(response.status).toBe(404);
     expect(harness.dispatchCallCount()).toBe(1);
@@ -2088,7 +2014,7 @@ describe('POST /api/tasks/:taskId/dispatch — one explicit attempt', () => {
     const harness = buildApiHarness();
     const task = await createTaskThrough(harness);
     for (let requestIndex = 0; requestIndex < 4; requestIndex += 1) {
-      await harness.request(`/api/tasks/${task.taskId}/dispatch`, postJson({}));
+      await harness.request(`/api/instances/${task.taskId}/dispatch`, postJson({}));
     }
     expect(harness.dispatchCallCount()).toBe(4);
   });
@@ -2114,7 +2040,7 @@ describe('POST /api/tasks/:taskId/dispatch — one explicit attempt', () => {
         expectedOutcome: 'spawned',
         build: async () => {
           const harness = buildApiHarness();
-          const task = await createTaskThrough(harness, { stage: 'planning' });
+          const task = await createTaskThrough(harness, { node: 'planning' });
           return { harness, taskId: task.taskId };
         },
       },
@@ -2138,7 +2064,7 @@ describe('POST /api/tasks/:taskId/dispatch — one explicit attempt', () => {
             },
           });
           const task = await createTaskThrough(harness, {
-            stage: 'planning',
+            node: 'planning',
             gates: { deferUntilReset: 'window-5h' },
           });
           return { harness, taskId: task.taskId };
@@ -2150,7 +2076,7 @@ describe('POST /api/tasks/:taskId/dispatch — one explicit attempt', () => {
         build: async () => {
           const harness = buildApiHarness();
           harness.sessionHost.refuseNextSpawn('preflight-failed');
-          const task = await createTaskThrough(harness, { stage: 'implementing' });
+          const task = await createTaskThrough(harness, { node: 'implementing' });
           return { harness, taskId: task.taskId };
         },
       },
@@ -2158,7 +2084,7 @@ describe('POST /api/tasks/:taskId/dispatch — one explicit attempt', () => {
 
     for (const envelopeCase of envelopeCases) {
       const { harness, taskId } = await envelopeCase.build();
-      const response = await harness.request(`/api/tasks/${taskId}/dispatch`, postJson({}));
+      const response = await harness.request(`/api/instances/${taskId}/dispatch`, postJson({}));
 
       expect(response.status, `${envelopeCase.name}: still 200`).toBe(200);
       const body = (await response.json()) as Record<string, unknown>;
@@ -2177,10 +2103,10 @@ describe('POST /api/tasks/:taskId/dispatch — one explicit attempt', () => {
     // which is exactly the point — the safe world is the one you get by saying
     // nothing.
     const harness = buildApiHarness();
-    const task = await createTaskThrough(harness, { stage: 'planning' });
+    const task = await createTaskThrough(harness, { node: 'planning' });
     expect(task.isolation).toBe('worktree');
 
-    const response = await harness.request(`/api/tasks/${task.taskId}/dispatch`, postJson({}));
+    const response = await harness.request(`/api/instances/${task.taskId}/dispatch`, postJson({}));
 
     expect(response.status).toBe(200);
     const body = (await response.json()) as DispatchResponse;
@@ -2209,11 +2135,11 @@ describe('I10 end-to-end over HTTP — a failed gate never reaches the session h
       meters: { meters: { 'window-5h': meterRecord({ percent: 40 }) }, history: {} },
     });
     const task = await createTaskThrough(harness, {
-      stage: 'implementing',
+      node: 'implementing',
       gates: { requireHeadroom: { meterId: 'window-5h', pct: 75 } },
     });
 
-    const response = await harness.request(`/api/tasks/${task.taskId}/dispatch`, postJson({}));
+    const response = await harness.request(`/api/instances/${task.taskId}/dispatch`, postJson({}));
 
     // 1. THE INVARIANT: the session host was never reached.
     expect(harness.sessionHost.spawnCalls).toEqual([]);
@@ -2244,11 +2170,11 @@ describe('I10 end-to-end over HTTP — a failed gate never reaches the session h
       meters: { meters: { 'window-5h': meterRecord({ percent: 10 }) }, history: {} },
     });
     const task = await createTaskThrough(harness, {
-      stage: 'implementing',
+      node: 'implementing',
       gates: { requireHeadroom: { meterId: 'window-5h', pct: 75 } },
     });
 
-    await harness.request(`/api/tasks/${task.taskId}/dispatch`, postJson({}));
+    await harness.request(`/api/instances/${task.taskId}/dispatch`, postJson({}));
 
     expect(harness.sessionHost.spawnCalls).toHaveLength(1);
     expect(
@@ -2290,11 +2216,11 @@ describe('NO_OBSERVATION_IS_FRESH_STALE_BAND_MS — the poller-disabled band', (
       },
     });
     const task = await createTaskThrough(harness, {
-      stage: 'implementing',
+      node: 'implementing',
       gates: { requireHeadroom: { meterId: 'window-5h', pct: 10 } },
     });
 
-    const response = await harness.request(`/api/tasks/${task.taskId}/dispatch`, postJson({}));
+    const response = await harness.request(`/api/instances/${task.taskId}/dispatch`, postJson({}));
 
     expect(harness.sessionHost.spawnCalls).toEqual([]);
     expect(((await response.json()) as DispatchResponse).result).toEqual({
@@ -2315,11 +2241,11 @@ describe('NO_OBSERVATION_IS_FRESH_STALE_BAND_MS — the poller-disabled band', (
       meters: { meters: {}, history: {} },
     });
     const task = await createTaskThrough(harness, {
-      stage: 'implementing',
+      node: 'implementing',
       gates: { requireHeadroom: { meterId: 'window-5h', pct: 10 } },
     });
 
-    const response = await harness.request(`/api/tasks/${task.taskId}/dispatch`, postJson({}));
+    const response = await harness.request(`/api/instances/${task.taskId}/dispatch`, postJson({}));
 
     expect(harness.sessionHost.spawnCalls).toEqual([]);
     expect(((await response.json()) as DispatchResponse).result).toMatchObject({
@@ -2346,11 +2272,11 @@ describe('NO_OBSERVATION_IS_FRESH_STALE_BAND_MS — the poller-disabled band', (
       meters: { meters: { 'window-5h': meterRecord({ percent: 1, observedAt: FIXED_NOW }) }, history: {} },
     });
     const task = await createTaskThrough(harness, {
-      stage: 'implementing',
+      node: 'implementing',
       gates: { requireHeadroom: { meterId: 'window-5h', pct: 10 } },
     });
 
-    const response = await harness.request(`/api/tasks/${task.taskId}/dispatch`, postJson({}));
+    const response = await harness.request(`/api/instances/${task.taskId}/dispatch`, postJson({}));
 
     // The gate refused — headroom is UNKNOWN, not "insufficient" — and NO
     // spawnSession call was made. Assert the call count directly, not merely the
@@ -2370,9 +2296,9 @@ describe('NO_OBSERVATION_IS_FRESH_STALE_BAND_MS — the poller-disabled band', (
       staleAfterMs: NO_OBSERVATION_IS_FRESH_STALE_BAND_MS,
       meters: { meters: { 'window-5h': meterRecord({ percent: 1 }) }, history: {} },
     });
-    const task = await createTaskThrough(harness, { stage: 'implementing' });
+    const task = await createTaskThrough(harness, { node: 'implementing' });
 
-    const response = await harness.request(`/api/tasks/${task.taskId}/dispatch`, postJson({}));
+    const response = await harness.request(`/api/instances/${task.taskId}/dispatch`, postJson({}));
 
     expect(harness.sessionHost.spawnCalls).toHaveLength(1);
     expect(((await response.json()) as DispatchResponse).result).toMatchObject({
@@ -2467,9 +2393,9 @@ describe('the production wiring in app.ts', () => {
     const { daemon, port } = await startDaemonWithRoot(projectRoot);
     try {
       for (const path of [
-        '/api/tasks',
-        '/api/tasks/any/transitions',
-        '/api/tasks/any/dispatch',
+        '/api/instances',
+        '/api/instances/any/moves',
+        '/api/instances/any/dispatch',
       ]) {
         const response = await fetch(`http://127.0.0.1:${port}${path}`, {
           method: 'POST',
@@ -2479,12 +2405,12 @@ describe('the production wiring in app.ts', () => {
         expect(response.status, path).toBe(401);
       }
       // Nothing reached the task stream: no route ran.
-      const tasksBody = await (
-        await fetch(`http://127.0.0.1:${port}/api/projections/tasks`, {
+      const instancesBody = await (
+        await fetch(`http://127.0.0.1:${port}/api/projections/instances`, {
           headers: { 'cf-access-jwt-assertion': ANY_TOKEN },
         })
       ).json();
-      expect(tasksBody).toEqual({ tasks: {} });
+      expect(instancesBody).toEqual({ instances: {} });
     } finally {
       await daemon.stop();
     }
@@ -2505,16 +2431,18 @@ describe('the production wiring in app.ts', () => {
       });
     try {
       // A GATED task: refused, and NO session is created for it.
-      const gatedResponse = await call('/api/tasks', {
-        projectRoot,
+      const gatedResponse = await call('/api/instances', {
+        project: projectRoot,
         createdBy: 'human',
-        stage: 'implementing',
+        node: 'implementing',
         gates: { requireHeadroom: { meterId: 'window-5h', pct: 10 } },
       });
       expect(gatedResponse.status).toBe(201);
-      const gatedTask = ((await gatedResponse.json()) as CreateTaskResponse).task;
+      const gatedTask = asLegacyCreateResponse(
+        (await gatedResponse.json()) as CreateInstanceResponse,
+      ).task;
       const gatedDispatch = (await (
-        await call(`/api/tasks/${gatedTask.taskId}/dispatch`, {})
+        await call(`/api/instances/${gatedTask.taskId}/dispatch`, {})
       ).json()) as DispatchResponse;
       expect(gatedDispatch.result).toEqual({
         outcome: 'refused',
@@ -2524,21 +2452,27 @@ describe('the production wiring in app.ts', () => {
       expect(daemon.sessionHost.liveSessionCwds()).toEqual([]);
 
       // An UNGATED task: spawns, through the real session host, on the fake SDK.
-      const ungatedTask = ((await (
-        await call('/api/tasks', { projectRoot, createdBy: 'human', stage: 'implementing' })
-      ).json()) as CreateTaskResponse).task;
+      const ungatedTask = asLegacyCreateResponse(
+        (await (
+          await call('/api/instances', { project: projectRoot, createdBy: 'human', node: 'implementing' })
+        ).json()) as CreateInstanceResponse,
+      ).task;
       const ungatedDispatch = (await (
-        await call(`/api/tasks/${ungatedTask.taskId}/dispatch`, {})
+        await call(`/api/instances/${ungatedTask.taskId}/dispatch`, {})
       ).json()) as DispatchResponse;
       expect(ungatedDispatch.result).toMatchObject({ outcome: 'spawned', cwd: projectRoot });
 
       // ...and the board, read through the projection route (the ONE reader —
-      // there is deliberately no GET /api/tasks), agrees with the log.
-      const board = (await (
-        await fetch(`http://127.0.0.1:${port}/api/projections/tasks`, {
+      // there is deliberately no GET /api/instances), agrees with the log. The
+      // instances projection is narrowed back to the legacy shape (S13·U4: the
+      // legacy tasks-projection alias this once read directly is deleted) so
+      // the field-name assertions below are unchanged.
+      const rawBoard = (await (
+        await fetch(`http://127.0.0.1:${port}/api/projections/instances`, {
           headers: { 'cf-access-jwt-assertion': ANY_TOKEN },
         })
-      ).json()) as { tasks: Record<string, TaskRecord> };
+      ).json()) as InstancesState;
+      const board = legacyTasksViewOf(rawBoard);
       expect(board.tasks[gatedTask.taskId]!.gates).toEqual({
         requireHeadroom: { meterId: 'window-5h', pct: 10 },
       });
@@ -2548,7 +2482,7 @@ describe('the production wiring in app.ts', () => {
     }
   });
 
-  it('walls a projectRoot outside the configured roots (403, nothing written)', async () => {
+  it('walls a project outside the configured roots (403, nothing written)', async () => {
     // The allowlist union app.ts hands the task API is the same one the file/git
     // APIs get; this proves the wiring passed it, not just that the route can use
     // one.
@@ -2556,540 +2490,22 @@ describe('the production wiring in app.ts', () => {
     const outside = realpathSync(mkdtempSync(join(temporaryDirectory, 'daemon-outside-')));
     const { daemon, port } = await startDaemonWithRoot(projectRoot);
     try {
-      const response = await fetch(`http://127.0.0.1:${port}/api/tasks`, {
+      const response = await fetch(`http://127.0.0.1:${port}/api/instances`, {
         method: 'POST',
         headers: authHeaders(),
-        body: JSON.stringify({ projectRoot: outside, createdBy: 'human' }),
+        body: JSON.stringify({ project: outside, createdBy: 'human' }),
       });
       expect(response.status).toBe(403);
 
-      const board = (await (
-        await fetch(`http://127.0.0.1:${port}/api/projections/tasks`, {
+      const rawBoard = (await (
+        await fetch(`http://127.0.0.1:${port}/api/projections/instances`, {
           headers: { 'cf-access-jwt-assertion': ANY_TOKEN },
         })
-      ).json()) as { tasks: Record<string, TaskRecord> };
-      expect(board.tasks).toEqual({});
+      ).json()) as InstancesState;
+      expect(legacyTasksViewOf(rawBoard).tasks).toEqual({});
     } finally {
       await daemon.stop();
     }
   });
 });
 
-// ─── S11-A4: the alias set and its generic twins are ONE handler ──────────────
-//
-// The load-bearing property of S11·U3: for equivalent requests, an
-// `/api/tasks/*` alias and its `/api/instances/*` twin append IDENTICAL events
-// and answer with the SAME record, each under its own envelope key. Everything
-// above this line pins the alias contract byte-for-byte (that is the alias half
-// of A4); everything below pins that the generic contract cannot drift away
-// from it while both exist.
-//
-// ⚠ THE INSTRUMENT IS THE LOG, FIRST. Two routes can agree on a response body
-// and disagree about what they wrote — the response is derived, the log is the
-// fact — so every case below compares the recorded events before it looks at a
-// status code, and the comparison includes MINTED IDS (each harness owns a
-// CountingIdSource seeded identically, so an id that differed would be a route
-// minting differently rather than entropy).
-
-interface SurfacePair {
-  readonly alias: ApiHarness;
-  readonly generic: ApiHarness;
-}
-
-// Two harnesses, identically composed: same fixed clock, same counting id
-// source, same fake session host. One drives the alias, the other the generic
-// twin, so neither script can contaminate the other's log.
-function surfacePair(options: Parameters<typeof buildApiHarness>[0] = {}): SurfacePair {
-  return { alias: buildApiHarness(options), generic: buildApiHarness(options) };
-}
-
-// Every recorded event as `{ type, payload }`, with the harness's own temp
-// project root substituted out. The root is the ONE thing that legitimately
-// differs between two identical scripts (each harness mkdtemps its own), so
-// substituting it is what turns "these payloads differ by a mkdtemp suffix"
-// into the byte comparison the parity claim actually means. Nothing else is
-// normalised — a difference in any other field is a real divergence.
-function normalisedEvents(harness: ApiHarness): unknown {
-  const asJson = JSON.stringify(
-    harness.taskEvents().map((record) => ({ type: record.type, payload: record.payload })),
-  );
-  return JSON.parse(asJson.split(harness.allowedRoot).join('<ALLOWED-ROOT>')) as unknown;
-}
-
-// The generic create door, mirroring `createTaskThrough` above field for field —
-// `project`/`node` in place of `projectRoot`/`stage`, and nothing else.
-async function createInstanceThrough(
-  harness: ApiHarness,
-  overrides: Record<string, unknown> = {},
-): Promise<InstanceRecord> {
-  const response = await harness.request(
-    '/api/instances',
-    postJson({ project: harness.allowedRoot, createdBy: 'human', ...overrides }),
-  );
-  expect(response.status).toBe(201);
-  return ((await response.json()) as CreateInstanceResponse).instance;
-}
-
-describe('S11-A4 — POST /api/instances and its POST /api/tasks alias', () => {
-  it('write the SAME birth record, and each answers from its own fold', async () => {
-    const pair = surfacePair();
-    // Everything except the two renamed location fields is spelled identically
-    // on both doors — that is the design (`createBodyCommonShape` is ONE object,
-    // shared by reference), so the bodies below differ in exactly two keys.
-    const authoredHalf = {
-      createdBy: 'orchestrator',
-      isolation: 'shared-dir',
-      title: 'the same instance, twice',
-      gates: { requireHeadroom: { meterId: 'window-5h', pct: 40 } },
-      scope: 'prove the two doors are one handler',
-      explicitlyOut: ['the UI', 'adjudication'],
-      acceptanceCriteria: [{ text: 'the events are identical' }],
-      killCriterion: 'the two surfaces answer differently',
-    };
-
-    const aliasResponse = await pair.alias.request(
-      '/api/tasks',
-      postJson({ projectRoot: pair.alias.allowedRoot, stage: 'planning', ...authoredHalf }),
-    );
-    const genericResponse = await pair.generic.request(
-      '/api/instances',
-      postJson({ project: pair.generic.allowedRoot, node: 'planning', ...authoredHalf }),
-    );
-
-    expect(aliasResponse.status).toBe(201);
-    expect(genericResponse.status).toBe(201);
-
-    // (a) THE LOG — identical in type and payload, minted criterion ids included.
-    expect(pair.generic.taskEventTypes()).toEqual([EVENT_TYPES.instanceCreated]);
-    expect(normalisedEvents(pair.generic)).toEqual(normalisedEvents(pair.alias));
-
-    // (b) THE ENVELOPES — each carries its own fold, under its own key, and
-    // neither grew the other's.
-    const genericBody = (await genericResponse.json()) as Record<string, unknown>;
-    expect(Object.keys(genericBody)).toEqual(['instance']);
-    const created = genericBody.instance as InstanceRecord;
-    expect(created).toEqual(pair.generic.readInstances().instances[created.instanceId]);
-    expect(created.currentNode).toBe('planning');
-    expect(created.project).toBe(pair.generic.allowedRoot);
-    expect(created.payload.title).toBe('the same instance, twice');
-
-    const aliasBody = (await aliasResponse.json()) as Record<string, unknown>;
-    expect(Object.keys(aliasBody)).toEqual(['task']);
-    const task = aliasBody.task as TaskRecord;
-    expect(task).toEqual(legacyTasksViewOf(pair.alias.readInstances()).tasks[created.instanceId]);
-    // The SAME id came out of both doors: one counting source, one mint order.
-    expect(task.taskId).toBe(created.instanceId);
-  });
-
-  it('apply the SAME defaults — worktree isolation and the backlog start node', async () => {
-    // D32's default and the initial node, asserted on the NEW contract rather
-    // than inherited by assumption: a generic door that quietly defaulted
-    // differently would be a second policy.
-    const pair = surfacePair();
-    await createTaskThrough(pair.alias);
-    const created = await createInstanceThrough(pair.generic);
-
-    expect(created.isolation).toBe('worktree');
-    expect(created.currentNode).toBe('backlog');
-    expect(normalisedEvents(pair.generic)).toEqual(normalisedEvents(pair.alias));
-  });
-
-  it('refuse a project outside the allowlist identically — 403, same body, NO EVENT', async () => {
-    // The security wall is the core's, not the surface's. Both doors answer with
-    // the same classified refusal and neither leaves an instance-shaped record.
-    const pair = surfacePair();
-
-    const aliasResponse = await pair.alias.request(
-      '/api/tasks',
-      postJson({ projectRoot: pair.alias.outsideRoot, createdBy: 'human' }),
-    );
-    const genericResponse = await pair.generic.request(
-      '/api/instances',
-      postJson({ project: pair.generic.outsideRoot, createdBy: 'human' }),
-    );
-
-    expect(genericResponse.status).toBe(403);
-    expect(aliasResponse.status).toBe(403);
-    expect(await genericResponse.json()).toEqual(await aliasResponse.json());
-    expect(pair.generic.tasksHead()).toBe(0);
-    expect(pair.alias.tasksHead()).toBe(0);
-  });
-
-  it('enforce the SAME caps, and each door refuses the OTHER door’s spelling', async () => {
-    // Two halves. First: one character over the title cap is a 400 with the same
-    // body on both doors — the caps are one set of schema objects, shared by
-    // reference. Second, and the point of the rename: the generic door does NOT
-    // quietly accept `projectRoot`/`stage`, and the alias does not accept
-    // `project`/`node`. A door that took both spellings would make the migration
-    // unobservable.
-    const pair = surfacePair();
-
-    const aliasOverCap = await pair.alias.request(
-      '/api/tasks',
-      postJson({ projectRoot: pair.alias.allowedRoot, createdBy: 'human', title: 'x'.repeat(201) }),
-    );
-    const genericOverCap = await pair.generic.request(
-      '/api/instances',
-      postJson({ project: pair.generic.allowedRoot, createdBy: 'human', title: 'x'.repeat(201) }),
-    );
-    expect(genericOverCap.status).toBe(400);
-    expect(aliasOverCap.status).toBe(400);
-    expect(await genericOverCap.json()).toEqual(await aliasOverCap.json());
-
-    const genericWithLegacySpelling = await pair.generic.request(
-      '/api/instances',
-      postJson({ projectRoot: pair.generic.allowedRoot, createdBy: 'human' }),
-    );
-    expect(genericWithLegacySpelling.status).toBe(400);
-
-    const aliasWithGenericSpelling = await pair.alias.request(
-      '/api/tasks',
-      postJson({ project: pair.alias.allowedRoot, createdBy: 'human' }),
-    );
-    expect(aliasWithGenericSpelling.status).toBe(400);
-
-    expect(pair.generic.tasksHead()).toBe(0);
-    expect(pair.alias.tasksHead()).toBe(0);
-  });
-});
-
-describe('S11-A4 — POST /api/instances/:instanceId/moves and its transitions alias', () => {
-  it('accept the same edge identically, dispatch rider and all', async () => {
-    // The promotion path (D53's S7·7c rider) is the busiest thing either surface
-    // does: parse → propose → ONE dispatch attempt → relay. Both doors run the
-    // same core, so the events, the attempt count and the relayed result all
-    // match; only the envelope key differs.
-    const pair = surfacePair({ dispatchResult: RELAYED_DISPATCH_RESULT });
-    const task = await createTaskThrough(pair.alias);
-    const created = await createInstanceThrough(pair.generic);
-
-    const aliasResponse = await pair.alias.request(
-      `/api/tasks/${task.taskId}/transitions`,
-      postJson({ toStage: 'planning', proposedBy: 'human' }),
-    );
-    const genericResponse = await pair.generic.request(
-      `/api/instances/${created.instanceId}/moves`,
-      postJson({ toNode: 'planning', proposedBy: 'human' }),
-    );
-
-    expect(genericResponse.status).toBe(200);
-    expect(aliasResponse.status).toBe(200);
-    expect(pair.generic.taskEventTypes()).toEqual([
-      EVENT_TYPES.instanceCreated,
-      EVENT_TYPES.instanceMoved,
-    ]);
-    expect(normalisedEvents(pair.generic)).toEqual(normalisedEvents(pair.alias));
-    // ONE attempt each, on the instance that moved — no surface dispatches twice.
-    expect(pair.generic.dispatchedTaskIds()).toEqual([created.instanceId]);
-    expect(pair.alias.dispatchedTaskIds()).toEqual([task.taskId]);
-
-    const genericBody = (await genericResponse.json()) as ProposeMoveResponse;
-    expect(genericBody).toEqual({
-      accepted: true,
-      instance: pair.generic.readInstances().instances[created.instanceId],
-      // Relayed VERBATIM on the generic door too, including the taskId the fake
-      // made up: the route reports, it does not reconstruct.
-      dispatch: RELAYED_DISPATCH_RESULT,
-    });
-    const aliasBody = (await aliasResponse.json()) as ProposeTransitionResponse;
-    expect(aliasBody).toEqual({
-      accepted: true,
-      task: { ...task, stage: 'planning' },
-      dispatch: RELAYED_DISPATCH_RESULT,
-    });
-  });
-
-  it('omit the dispatch key identically when the move is not a promotion', async () => {
-    // ABSENT, not `undefined`, on both doors — the spread is in the surface, but
-    // the DECISION is in the core, so neither envelope can grow a key the other
-    // lacks.
-    const pair = surfacePair({ dispatchResult: RELAYED_DISPATCH_RESULT });
-    const task = await createTaskThrough(pair.alias, { stage: 'implementing' });
-    const created = await createInstanceThrough(pair.generic, { node: 'implementing' });
-
-    const genericResponse = await pair.generic.request(
-      `/api/instances/${created.instanceId}/moves`,
-      postJson({ toNode: 'review', proposedBy: 'human' }),
-    );
-    const aliasResponse = await pair.alias.request(
-      `/api/tasks/${task.taskId}/transitions`,
-      postJson({ toStage: 'review', proposedBy: 'human' }),
-    );
-
-    expect(Object.keys((await genericResponse.json()) as object).sort()).toEqual([
-      'accepted',
-      'instance',
-    ]);
-    expect(Object.keys((await aliasResponse.json()) as object).sort()).toEqual([
-      'accepted',
-      'task',
-    ]);
-    expect(pair.generic.dispatchedTaskIds()).toEqual([]);
-    expect(pair.alias.dispatchedTaskIds()).toEqual([]);
-    expect(normalisedEvents(pair.generic)).toEqual(normalisedEvents(pair.alias));
-  });
-
-  it('record the same rejection, with the same 409 body, on both doors (I7)', async () => {
-    // The rejection envelope carries no record, so the two surfaces answer with
-    // literally the same bytes — and BOTH wrote the rejection down, which is the
-    // half that matters.
-    const pair = surfacePair();
-    const task = await createTaskThrough(pair.alias);
-    const created = await createInstanceThrough(pair.generic);
-
-    const genericResponse = await pair.generic.request(
-      `/api/instances/${created.instanceId}/moves`,
-      postJson({ toNode: 'review', proposedBy: 'orchestrator' }),
-    );
-    const aliasResponse = await pair.alias.request(
-      `/api/tasks/${task.taskId}/transitions`,
-      postJson({ toStage: 'review', proposedBy: 'orchestrator' }),
-    );
-
-    expect(genericResponse.status).toBe(409);
-    expect(aliasResponse.status).toBe(409);
-    expect(await genericResponse.json()).toEqual(await aliasResponse.json());
-    expect(pair.generic.taskEventTypes()).toEqual([
-      EVENT_TYPES.instanceCreated,
-      EVENT_TYPES.instanceMoveRejected,
-    ]);
-    expect(normalisedEvents(pair.generic)).toEqual(normalisedEvents(pair.alias));
-  });
-
-  it('let an UNKNOWN NODE through to the machine on both doors, and record it', async () => {
-    // `toNode` is a plain string on the generic door for the SAME reason `toStage`
-    // is on the alias: refusing it in zod would make the unknown-node refusal
-    // structurally unreachable and leave the hostile-input case with nothing in
-    // the log. (S13·U1 respelled that reason `unknown-stage` → `unknown-node`;
-    // this is a live adjudication, so it speaks the new spelling.)
-    const pair = surfacePair();
-    const created = await createInstanceThrough(pair.generic);
-
-    const response = await pair.generic.request(
-      `/api/instances/${created.instanceId}/moves`,
-      postJson({ toNode: 'shipped-it-lol', proposedBy: 'orchestrator' }),
-    );
-
-    expect(response.status).toBe(409);
-    expect(await response.json()).toEqual({ accepted: false, reason: 'unknown-node' });
-    expect(pair.generic.taskEvents()[1]!.payload).toMatchObject({
-      attemptedToNode: 'shipped-it-lol',
-      reason: 'unknown-node',
-    });
-  });
-
-  it('404 an unknown instance on both doors, and write nothing', async () => {
-    const pair = surfacePair();
-
-    const genericResponse = await pair.generic.request(
-      '/api/instances/instance-that-never-existed/moves',
-      postJson({ toNode: 'planning', proposedBy: 'human' }),
-    );
-    const aliasResponse = await pair.alias.request(
-      '/api/tasks/instance-that-never-existed/transitions',
-      postJson({ toStage: 'planning', proposedBy: 'human' }),
-    );
-
-    expect(genericResponse.status).toBe(404);
-    expect(aliasResponse.status).toBe(404);
-    expect(await genericResponse.json()).toEqual(await aliasResponse.json());
-    expect(pair.generic.tasksHead()).toBe(0);
-    expect(pair.alias.tasksHead()).toBe(0);
-  });
-});
-
-describe('S11-A4 — POST /api/instances/:instanceId/payload-revisions and its amendments alias', () => {
-  const REVISION_BODY = {
-    amendedBy: 'human',
-    scope: 'the revised scope',
-    explicitlyOut: ['the thing we dropped'],
-    acceptanceCriteria: [{ text: 'a freshly minted criterion' }],
-    killCriterion: 'the revision folded differently on the two doors',
-  };
-
-  it('write the same revision and each answers with its own folded record', async () => {
-    const pair = surfacePair();
-    const task = await createTaskThrough(pair.alias);
-    const created = await createInstanceThrough(pair.generic);
-
-    const genericResponse = await pair.generic.request(
-      `/api/instances/${created.instanceId}/payload-revisions`,
-      postJson(REVISION_BODY),
-    );
-    const aliasResponse = await pair.alias.request(
-      `/api/tasks/${task.taskId}/amendments`,
-      postJson(REVISION_BODY),
-    );
-
-    expect(genericResponse.status).toBe(200);
-    expect(aliasResponse.status).toBe(200);
-    expect(pair.generic.taskEventTypes()).toEqual([
-      EVENT_TYPES.instanceCreated,
-      EVENT_TYPES.instancePayloadRevised,
-    ]);
-    expect(normalisedEvents(pair.generic)).toEqual(normalisedEvents(pair.alias));
-
-    const genericBody = (await genericResponse.json()) as RevisePayloadResponse;
-    expect(genericBody.instance).toEqual(
-      pair.generic.readInstances().instances[created.instanceId],
-    );
-    // The rev the fold recorded, read back rather than echoed.
-    expect(genericBody.instance.payloadRev).toBe(1);
-    expect(genericBody.instance.payload.scope).toBe('the revised scope');
-
-    const aliasBody = (await aliasResponse.json()) as AmendWorkOrderResponse;
-    expect(aliasBody.task.workOrderRev).toBe(1);
-    expect(aliasBody.task.scope).toBe('the revised scope');
-  });
-
-  it('refuse an empty revision and an unknown instance identically, writing nothing', async () => {
-    const pair = surfacePair();
-    const task = await createTaskThrough(pair.alias);
-    const created = await createInstanceThrough(pair.generic);
-    const genericHeadBefore = pair.generic.tasksHead();
-    const aliasHeadBefore = pair.alias.tasksHead();
-
-    const genericEmpty = await pair.generic.request(
-      `/api/instances/${created.instanceId}/payload-revisions`,
-      postJson({ amendedBy: 'human' }),
-    );
-    const aliasEmpty = await pair.alias.request(
-      `/api/tasks/${task.taskId}/amendments`,
-      postJson({ amendedBy: 'human' }),
-    );
-    expect(genericEmpty.status).toBe(400);
-    expect(aliasEmpty.status).toBe(400);
-    expect(await genericEmpty.json()).toEqual(await aliasEmpty.json());
-
-    const genericUnknown = await pair.generic.request(
-      '/api/instances/nope/payload-revisions',
-      postJson(REVISION_BODY),
-    );
-    const aliasUnknown = await pair.alias.request('/api/tasks/nope/amendments', postJson(REVISION_BODY));
-    expect(genericUnknown.status).toBe(404);
-    expect(aliasUnknown.status).toBe(404);
-    expect(await genericUnknown.json()).toEqual(await aliasUnknown.json());
-
-    expect(pair.generic.tasksHead()).toBe(genericHeadBefore);
-    expect(pair.alias.tasksHead()).toBe(aliasHeadBefore);
-  });
-
-  it('refuse an unknown criterion id identically, echoing the SAME offending id', async () => {
-    const pair = surfacePair();
-    const created = await createInstanceThrough(pair.generic);
-    const task = await createTaskThrough(pair.alias);
-    const staleRevision = {
-      amendedBy: 'human',
-      acceptanceCriteria: [{ id: 'a-criterion-from-another-life', text: 'restated' }],
-    };
-
-    const genericResponse = await pair.generic.request(
-      `/api/instances/${created.instanceId}/payload-revisions`,
-      postJson(staleRevision),
-    );
-    const aliasResponse = await pair.alias.request(
-      `/api/tasks/${task.taskId}/amendments`,
-      postJson(staleRevision),
-    );
-
-    expect(genericResponse.status).toBe(400);
-    expect(aliasResponse.status).toBe(400);
-    expect(await genericResponse.json()).toEqual(await aliasResponse.json());
-    expect(pair.generic.taskEventTypes()).toEqual([EVENT_TYPES.instanceCreated]);
-  });
-});
-
-describe('S11-A4 — POST /api/instances/:instanceId/dispatch and its alias', () => {
-  it('return literally the same envelope — the dispatch vocabulary needed no rename', async () => {
-    // The one operation with no surface difference at all: the result vocabulary
-    // is already engine-shaped and workflow-blind, so both routes share the core
-    // AND the response type.
-    const pair = surfacePair({ dispatchResult: RELAYED_DISPATCH_RESULT });
-    const created = await createInstanceThrough(pair.generic, { node: 'planning' });
-    const task = await createTaskThrough(pair.alias, { stage: 'planning' });
-
-    const genericResponse = await pair.generic.request(
-      `/api/instances/${created.instanceId}/dispatch`,
-      postJson({}),
-    );
-    const aliasResponse = await pair.alias.request(`/api/tasks/${task.taskId}/dispatch`, postJson({}));
-
-    expect(genericResponse.status).toBe(200);
-    expect(aliasResponse.status).toBe(200);
-    expect(await genericResponse.json()).toEqual(await aliasResponse.json());
-    // ONE attempt per request on either door — no surface loops or retries.
-    expect(pair.generic.dispatchCallCount()).toBe(1);
-    expect(pair.alias.dispatchCallCount()).toBe(1);
-    expect(normalisedEvents(pair.generic)).toEqual(normalisedEvents(pair.alias));
-  });
-
-  it('404 an unknown instance identically, having attempted exactly once', async () => {
-    const pair = surfacePair();
-
-    const genericResponse = await pair.generic.request('/api/instances/nope/dispatch', postJson({}));
-    const aliasResponse = await pair.alias.request('/api/tasks/nope/dispatch', postJson({}));
-
-    expect(genericResponse.status).toBe(404);
-    expect(aliasResponse.status).toBe(404);
-    expect(await genericResponse.json()).toEqual(await aliasResponse.json());
-    expect(pair.generic.dispatchCallCount()).toBe(1);
-    expect(pair.alias.dispatchCallCount()).toBe(1);
-  });
-});
-
-describe('S11-A4 — the alias window, stated as tests', () => {
-  // ⚠ THE INVENTORY IS THE CONTRACT (q24). These cases pin WHICH paths exist
-  // during the one deploy of overlap, so the alias-removal unit can delete a
-  // named list and watch exactly these reddens — and so nothing quietly grows a
-  // generic twin the slice deliberately did not build.
-
-  it('every generic route is behind the SAME auth wall (I14), with no side effect', async () => {
-    const genericRoutes: Array<{ routeName: string; path: string; body: unknown }> = [
-      { routeName: 'create', path: '/api/instances', body: { project: '/tmp', createdBy: 'human' } },
-      {
-        routeName: 'moves',
-        path: '/api/instances/any-instance/moves',
-        body: { toNode: 'planning', proposedBy: 'human' },
-      },
-      {
-        routeName: 'payload-revisions',
-        path: '/api/instances/any-instance/payload-revisions',
-        body: { amendedBy: 'human', scope: 'a scope nobody authenticated to write' },
-      },
-      { routeName: 'dispatch', path: '/api/instances/any-instance/dispatch', body: {} },
-    ];
-
-    for (const genericRoute of genericRoutes) {
-      const harness = buildApiHarness();
-      for (const token of [null, ''] as const) {
-        const response = await harness.request(genericRoute.path, postJson(genericRoute.body, token));
-        expect(response.status, `${genericRoute.routeName}/${String(token)}`).toBe(401);
-      }
-      expect(harness.tasksHead()).toBe(0);
-      expect(harness.sessionHost.spawnCalls).toEqual([]);
-      expect(harness.dispatchCallCount()).toBe(0);
-    }
-  });
-
-  it('stage-edges and work-order-schema have NO generic twin this slice (q25)', async () => {
-    // Their generalisation is DECLARATION INTROSPECTION and needs pinned
-    // declarations to introspect (Move 3+). Serving the compiled task table under
-    // an `/api/instances/...` name would be declared truth over observed (0.7),
-    // so the old paths keep answering and the new ones do not exist yet. Asserted
-    // rather than assumed, because "we deliberately did not build it" and "we
-    // forgot" look identical in a diff.
-    const harness = buildApiHarness();
-
-    for (const absentPath of ['/api/instances/node-edges', '/api/instances/payload-schema']) {
-      const response = await harness.request(absentPath, { headers: authHeaders() });
-      expect(response.status, absentPath).toBe(404);
-    }
-
-    for (const servedPath of ['/api/tasks/stage-edges', '/api/tasks/work-order-schema']) {
-      const response = await harness.request(servedPath, { headers: authHeaders() });
-      expect(response.status, servedPath).toBe(200);
-    }
-    // Read-only on either path: fetching the tables wrote nothing.
-    expect(harness.tasksHead()).toBe(0);
-  });
-});

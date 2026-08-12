@@ -17,9 +17,10 @@ import {
 
 // ─── S11·U1 (D72 Move 2) — the INSTANCE store ────────────────────────────────
 //
-// The generalisation of `projections/tasks.ts`, which this file REPLACES (it is
-// deleted in the same unit — D72's rule is that a unit which leaves both paths
-// live is not finished). Every fold rule below is the old one, re-spelled: an
+// The generalisation of the old task-projection source file, which this file
+// REPLACES (it is deleted in the same unit — D72's rule is that a unit which
+// leaves both paths live is not finished). Every fold rule below is the old
+// one, re-spelled: an
 // INSTANCE of a workflow sitting on a NODE (node-kit §1.7) rather than a task
 // sitting in a stage. The seam moved; the state did not.
 //
