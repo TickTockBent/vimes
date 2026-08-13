@@ -409,6 +409,77 @@ export const useVimesStore = defineStore('vimes', () => {
     }
   }
 
+  // ── the tree's WRITE surface (S15·U3 — the first client of E2's three routes)
+  //
+  // Three POSTs, one posture: the daemon's status and body come back VERBATIM in
+  // a `TaskApiAnswer` (`postJsonApi`, the same helper the task and project writes
+  // use), and the store flattens NOTHING. A 409 carries the engine's own refusal
+  // reason and the view renders it through `nodeWriteFailureMessage`
+  // (lib/sessionTreeActions.ts) — the store must never turn a refusal into a
+  // boolean, because the reason IS the information (rule 0.3, and projectApi's
+  // own words at the other end of the wire).
+  //
+  // ⚠ **NOTHING HERE PATCHES `tree` LOCALLY (U8).** A successful write schedules
+  // a REFETCH through the same throttle every other tree trigger goes through, so
+  // what the operator sees after a create is the forest `treeOf` composed, not an
+  // echo of the request. This is `declareProject`'s idiom (2xx → `fetchProjects`)
+  // applied to the tree.
+  //
+  // ⚠ **WHY THE EXPLICIT REFRESH EXISTS AT ALL.** `TREE_AFFECTING_TYPES` lists
+  // the three node events, and the daemon does emit them (`router.emit`), but
+  // this client subscribes only to session streams and `'tasks'` — never the
+  // `'nodes'` stream — so a node event reaches no browser today. Without the call
+  // below, an operator would create a node and watch nothing happen. Reported as
+  // a finding (S15·U3 checkpoint) rather than closed here: making node events
+  // PUSH to every client is a `subscribe('nodes')` decision about the whole
+  // client, not a side effect of the write surface.
+  async function createNode(input: {
+    projectId: string;
+    parentNodeId: string | null;
+    name: string;
+  }): Promise<TaskApiAnswer> {
+    const answer = await postJsonApi('/api/nodes', {
+      projectId: input.projectId,
+      // Spelled explicitly, including the null: the route reads absent as null
+      // anyway, and a top-level node is an ordinary shape rather than an
+      // omission.
+      parentNodeId: input.parentNodeId,
+      name: input.name,
+    });
+    if (answer.status === 201) {
+      scheduleTreeRefresh();
+    }
+    return answer;
+  }
+
+  // POST /api/nodes/:nodeId/close. **IRREVERSIBLE — E2 has no reopen event**, so
+  // the confirmation lives at the affordance (TreeView's killConfirm idiom) and
+  // this function fires the moment it is called.
+  //
+  // The route reads NO body (`nodeApi.ts`: "Closing names no parameters"); the
+  // empty object is what `postJsonApi` sends when there is nothing to say.
+  async function closeNode(nodeId: string): Promise<TaskApiAnswer> {
+    const answer = await postJsonApi(`/api/nodes/${encodeURIComponent(nodeId)}/close`, {});
+    if (answer.status === 200) {
+      scheduleTreeRefresh();
+    }
+    return answer;
+  }
+
+  // POST /api/nodes/:nodeId/sessions — a session joins a node. There is no
+  // detach and no re-attach in v1 (a move is `node_moved` wearing another name),
+  // so a session already living elsewhere comes back 409 `attached-elsewhere`
+  // and the view says so.
+  async function attachSessionToNode(nodeId: string, appSessionId: string): Promise<TaskApiAnswer> {
+    const answer = await postJsonApi(`/api/nodes/${encodeURIComponent(nodeId)}/sessions`, {
+      appSessionId,
+    });
+    if (answer.status === 200) {
+      scheduleTreeRefresh();
+    }
+    return answer;
+  }
+
   // ── the project registry (S8·2, D42/D61) ──────────────────────────────────
   //
   // GET /api/projects, held as the decorated LIST the daemon serves (each entry
@@ -1742,6 +1813,10 @@ export const useVimesStore = defineStore('vimes', () => {
     treeError,
     refreshTree,
     scheduleTreeRefresh,
+    // The tree's write surface (S15·U3) — the daemon's answer, verbatim
+    createNode,
+    closeNode,
+    attachSessionToNode,
     // Cache observability (slice 4 step 4)
     cacheObservability,
     fetchCacheObservability,

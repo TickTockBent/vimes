@@ -18,6 +18,25 @@
 // deliberately NO `v-if="seen"` anywhere near a tone or a glyph binding — the
 // unseen marker is its own element, and removing it changes nothing about how
 // loud the row reads.
+// ─── S15·U3 — the WRITE surface, on the same rows ────────────────────────────
+//
+// Create a node, attach a session, close a node, spawn from a node — every one
+// of them completing from a phone tap path (doctrine U3: mobile is for
+// DECIDING). Each row grows ONE compact affordance (`⋯`, 36px) that opens an
+// inline sheet under it; there is no hover-only anything, no second screen, and
+// no drag.
+//
+// ⚠ **THE DAEMON OWNS EVERY REFUSAL.** The picker lists open nodes and the
+// create affordance hides on `unfiled` because those are kindnesses, not
+// adjudications: the request still goes to the engine, and a 409 renders
+// verbatim through the closed 11-reason vocabulary
+// (`nodeRefusalMessage` ← `nodeWriteFailureMessage`), inline, dismissed BY HAND
+// (U5 — nothing here auto-clears).
+//
+// ⚠ **NO OPTIMISTIC TREE EDIT (U8).** A 2xx schedules the store's throttled
+// refetch and this component changes nothing about `store.tree`. The only
+// optimism is disabling the affordance that was tapped while its round trip is
+// in flight (the gate-card precedent).
 import { computed, onMounted, ref, watch } from 'vue';
 import { useVimesStore } from '../stores/vimesStore.js';
 import { sessionTreeContainerIds, sessionTreeRows } from '../lib/sessionTreeRows.js';
@@ -27,6 +46,27 @@ import {
   type SeverityTone,
 } from '../lib/sessionSeverityDisplay.js';
 import { resolveSessionLabel } from '../lib/sessionLabel.js';
+import {
+  attachTargetsOf,
+  canCreateNodeUnder,
+  createNodeRequestFor,
+  nodeWriteFailureMessage,
+  sessionTreeActionTargets,
+  spawnPrefillFor,
+  type NodeActionTarget,
+} from '../lib/sessionTreeActions.js';
+// ⚠ `lib/killConfirm.ts` gets a SECOND CONSUMER here, deliberately. The S15
+// deletion inventory marked it "dies with SessionListView"; it does not — closing
+// a node is IRREVERSIBLE (E2 has no reopen event), which is exactly the class of
+// act that idiom exists for, and reusing the tested reducer beats either a
+// browser `confirm()` (which the house has ruled out) or a second confirm state
+// machine invented here. It outlives SessionListView.
+import {
+  initialKillConfirmState,
+  isConfirmingKill,
+  reduceKillConfirm,
+  type KillConfirmState,
+} from '../lib/killConfirm.js';
 
 const emit = defineEmits<{
   open: [appSessionId: string];
@@ -129,6 +169,178 @@ function sessionLabelOf(session: {
   });
 }
 
+// ── the write surface (S15·U3) ──────────────────────────────────────────────
+//
+// ONE sheet open at a time, keyed by the row id `sessionTreeRows` already
+// assigns. A second open sheet on a 50-row phone list would push the row that
+// matters off screen (U2), and there is no flow here that needs two.
+type SheetMode = 'menu' | 'create' | 'spawn' | 'attach';
+
+const openSheetRowId = ref<string | null>(null);
+const sheetMode = ref<SheetMode>('menu');
+const nodeNameDraft = ref('');
+const spawnCwdDraft = ref('');
+const spawnChannel = ref<'sdk' | 'pty'>('sdk');
+// The optimistic half, and the ONLY one: the affordance that fired is disabled
+// until its round trip resolves. Nothing about the tree itself moves until the
+// refetch lands.
+const writePending = ref(false);
+// The refusal, rendered inline beside the affordance that earned it and cleared
+// only by a hand (doctrine §5: no auto-clearing anything).
+const writeError = ref<string | null>(null);
+// Closing is IRREVERSIBLE (no reopen event exists), so it takes the tap-again
+// confirm — see the import comment.
+const closeConfirm = ref<KillConfirmState>(initialKillConfirmState);
+
+// Every container row's write context, resolved from the payload's own nesting
+// (lib/sessionTreeActions.ts). Recomputed with the tree, so a node that closed
+// server-side stops offering to host children on the next refresh.
+const actionTargets = computed(() =>
+  store.tree === null ? new Map<string, NodeActionTarget>() : sessionTreeActionTargets(store.tree),
+);
+
+// The attach picker's contents: effectively-open nodes, grouped by root, served
+// order. A client-side courtesy filter — the daemon still adjudicates, and a
+// node that closes underneath the picker answers 409 `node-closed`, which the
+// operator then reads in plain words.
+const attachGroups = computed(() => (store.tree === null ? [] : attachTargetsOf(store.tree)));
+
+function targetFor(rowId: string): NodeActionTarget | null {
+  return actionTargets.value.get(rowId) ?? null;
+}
+
+// The open sheet's target, or null — which is ALSO how a session row's sheet is
+// told apart from a container's: sessions have no action target (their write is
+// attach, and it targets a node from the picker, not the row it started on).
+const openTarget = computed<NodeActionTarget | null>(() =>
+  openSheetRowId.value === null ? null : targetFor(openSheetRowId.value),
+);
+
+function closeSheet(): void {
+  openSheetRowId.value = null;
+  sheetMode.value = 'menu';
+  nodeNameDraft.value = '';
+  writeError.value = null;
+  closeConfirm.value = initialKillConfirmState;
+}
+
+// Session rows open straight into the picker: attach is the only write a leaf
+// has, and a menu of one is chrome (U1).
+function toggleSheet(rowId: string, kind: 'root' | 'node' | 'session'): void {
+  if (openSheetRowId.value === rowId) {
+    closeSheet();
+    return;
+  }
+  closeSheet();
+  openSheetRowId.value = rowId;
+  sheetMode.value = kind === 'session' ? 'attach' : 'menu';
+}
+
+function startCreate(): void {
+  sheetMode.value = 'create';
+  nodeNameDraft.value = '';
+  writeError.value = null;
+}
+
+// The A8 prefill, applied each time the spawn form is opened: node directory →
+// project root directory → nothing. A null prefill leaves the box empty on
+// purpose — `unfiled` is not a place on disk, and an invented default would be
+// a lie the spawn allow-list then refuses in confusing words.
+function startSpawn(target: NodeActionTarget): void {
+  sheetMode.value = 'spawn';
+  spawnCwdDraft.value = spawnPrefillFor(target) ?? '';
+  writeError.value = null;
+}
+
+// Every write lands here: the daemon's own answer becomes either "done" (sheet
+// closes, the refetch the store scheduled repaints the tree) or a sentence.
+function applyWriteAnswer(answer: { status: number; body: unknown }): void {
+  const message = nodeWriteFailureMessage(answer.status, answer.body);
+  if (message === null) {
+    closeSheet();
+    return;
+  }
+  writeError.value = message;
+}
+
+async function submitCreate(target: NodeActionTarget): Promise<void> {
+  const request = createNodeRequestFor(target, nodeNameDraft.value);
+  if (request === null) {
+    // Unreachable through the UI (the affordance is not drawn where this is
+    // null), and stated rather than assumed: a root that names no project can
+    // never host a node.
+    writeError.value = 'This root is not a project — nodes live under projects.';
+    return;
+  }
+  writePending.value = true;
+  try {
+    applyWriteAnswer(await store.createNode(request));
+  } finally {
+    writePending.value = false;
+  }
+}
+
+// Tap once to arm, tap again to close. The confirm state is reset by any sheet
+// change, so an armed close cannot survive being scrolled away from.
+async function tapClose(target: NodeActionTarget): Promise<void> {
+  if (target.nodeId === null) {
+    return; // roots are virtual; there is no event that could close one
+  }
+  const result = reduceKillConfirm(closeConfirm.value, { type: 'tap', appSessionId: target.nodeId });
+  closeConfirm.value = result.state;
+  if (!result.fire) {
+    return;
+  }
+  writePending.value = true;
+  try {
+    applyWriteAnswer(await store.closeNode(target.nodeId));
+  } finally {
+    writePending.value = false;
+  }
+}
+
+function closeLabel(target: NodeActionTarget): string {
+  return target.nodeId !== null && isConfirmingKill(closeConfirm.value, target.nodeId)
+    ? 'Tap again — closing cannot be undone'
+    : 'Close node';
+}
+
+async function submitAttach(nodeId: string, appSessionId: string): Promise<void> {
+  writePending.value = true;
+  try {
+    applyWriteAnswer(await store.attachSessionToNode(nodeId, appSessionId));
+  } finally {
+    writePending.value = false;
+  }
+}
+
+// The MINIMAL spawn sheet (in-mandate decision, recorded in the work order):
+// this calls the SAME `store.spawnSession` SessionListView's form calls rather
+// than extracting that form — the form dies with SessionListView next slice, and
+// extracting a component for one slice of shared life is churn.
+//
+// A refusal (cwd outside the allow-list, say) surfaces on App.vue's sticky
+// refusal banner exactly as it does from the old list — the spawn wire has no
+// per-caller refusal channel, and inventing a second refusal surface here would
+// mean two places to look. The pending flag clears either way.
+function submitSpawn(): void {
+  const trimmedCwd = spawnCwdDraft.value.trim();
+  if (trimmedCwd.length === 0 || writePending.value) {
+    return;
+  }
+  writePending.value = true;
+  store.spawnSession(spawnChannel.value, trimmedCwd, {
+    onSpawned: (appSessionId) => {
+      writePending.value = false;
+      closeSheet();
+      emit('open', appSessionId);
+    },
+    onRefused: () => {
+      writePending.value = false;
+    },
+  });
+}
+
 onMounted(() => {
   // Through the store's throttle, like every other tree trigger (a subscribed
   // stream's TREE_AFFECTING_TYPES event, a WS reconnect) — mounting the home
@@ -183,10 +395,10 @@ onMounted(() => {
                A project's virtual root, or the singleton `unfiled` — which the
                payload already puts LAST and which reads quiet, because it is a
                statement about what nothing has claimed rather than a place. -->
-          <li v-if="row.kind === 'root' && row.root !== null">
+          <li v-if="row.kind === 'root' && row.root !== null" class="flex items-stretch">
             <button
               type="button"
-              class="flex min-h-[36px] w-full items-center gap-2 px-3 py-1 text-left active:bg-panel-sunken"
+              class="flex min-h-[36px] min-w-0 flex-1 items-center gap-2 py-1 pl-3 text-left active:bg-panel-sunken"
               :aria-expanded="row.expandable ? row.expanded : undefined"
               @click="row.expandable ? toggleExpansion(row.id) : undefined"
             >
@@ -216,16 +428,28 @@ onMounted(() => {
                 }}</span>
               </span>
             </button>
+            <!-- S15·U3 — the write affordance. One compact, always-visible,
+                 36px-tall target per row (never hover-only: the phone has no
+                 hover, and U3 says the phone must be able to DECIDE). It opens
+                 the sheet below; it never writes anything itself. -->
+            <button
+              type="button"
+              class="min-h-[36px] w-9 shrink-0 font-mono text-xs text-ink-dim active:bg-panel-sunken"
+              :aria-expanded="openSheetRowId === row.id"
+              :aria-label="`Actions for ${row.root.name}`"
+              title="Actions"
+              @click="toggleSheet(row.id, 'root')"
+            >⋯</button>
           </li>
 
           <!-- ── NODE ───────────────────────────────────────────────────────
                A closed node is DIMMED, never hidden: closing a node says
                nothing about the sessions still running under it, and the rollup
                counts PROCESSES for exactly that reason. -->
-          <li v-else-if="row.kind === 'node' && row.node !== null">
+          <li v-else-if="row.kind === 'node' && row.node !== null" class="flex items-stretch">
             <button
               type="button"
-              class="flex min-h-[36px] w-full items-center gap-2 px-3 py-1 text-left active:bg-panel-sunken"
+              class="flex min-h-[36px] min-w-0 flex-1 items-center gap-2 py-1 pl-3 text-left active:bg-panel-sunken"
               :style="indentStyle(row.depth)"
               :aria-expanded="row.expandable ? row.expanded : undefined"
               @click="row.expandable ? toggleExpansion(row.id) : undefined"
@@ -258,16 +482,24 @@ onMounted(() => {
                 }}</span>
               </span>
             </button>
+            <button
+              type="button"
+              class="min-h-[36px] w-9 shrink-0 font-mono text-xs text-ink-dim active:bg-panel-sunken"
+              :aria-expanded="openSheetRowId === row.id"
+              :aria-label="`Actions for ${row.node.name}`"
+              title="Actions"
+              @click="toggleSheet(row.id, 'node')"
+            >⋯</button>
           </li>
 
           <!-- ── SESSION ────────────────────────────────────────────────────
                A leaf. Tapping it opens its stream — the existing route, through
                the existing emit, so the panel shell's truncate-then-push policy
                applies here exactly as it does from the old list. -->
-          <li v-else-if="row.kind === 'session' && row.session !== null">
+          <li v-else-if="row.kind === 'session' && row.session !== null" class="flex items-stretch">
             <button
               type="button"
-              class="flex min-h-[36px] w-full items-center gap-2 px-3 py-1 text-left active:bg-panel-sunken"
+              class="flex min-h-[36px] min-w-0 flex-1 items-center gap-2 py-1 pl-3 text-left active:bg-panel-sunken"
               :style="indentStyle(row.depth)"
               @click="emit('open', row.session.appSessionId)"
             >
@@ -297,6 +529,185 @@ onMounted(() => {
                    everywhere, which an ad-hoc slice could never promise. -->
               <span class="shrink-0 font-mono text-[10px] text-ink-dim">{{ row.session.shortId }}</span>
             </button>
+            <!-- A leaf's one write is ATTACH, so its sheet opens straight into
+                 the picker (a menu of one is chrome, U1). -->
+            <button
+              type="button"
+              class="min-h-[36px] w-9 shrink-0 font-mono text-xs text-ink-dim active:bg-panel-sunken"
+              :aria-expanded="openSheetRowId === row.id"
+              :aria-label="`Attach ${row.session.shortId} to a node`"
+              title="Attach to a node"
+              @click="toggleSheet(row.id, 'session')"
+            >⋯</button>
+          </li>
+
+          <!-- ── THE ACTION SHEET (S15·U3) ──────────────────────────────────
+               Inline, directly under the row it belongs to, one at a time. It
+               is a list item rather than a floating layer because a phone frame
+               has no room for an overlay that hides the estate behind it, and
+               because the flow it serves is "decide from this row" (U3). -->
+          <li
+            v-if="openSheetRowId === row.id"
+            class="border-y border-line bg-panel-sunken px-3 py-2"
+          >
+            <!-- Container rows (project roots and nodes): create / spawn /
+                 close, plus their inline forms. -->
+            <div v-if="openTarget !== null" class="flex flex-col gap-2">
+              <div class="flex flex-wrap items-stretch gap-2">
+                <!-- ⚠ NOT DRAWN ON `unfiled` (and not on a closed node): the
+                     derivation refuses it because no projectId exists to name —
+                     see canCreateNodeUnder/createNodeRequestFor. -->
+                <button
+                  v-if="canCreateNodeUnder(openTarget)"
+                  type="button"
+                  class="min-h-[36px] rounded-md border border-line px-3 text-xs text-accent active:bg-panel"
+                  :class="sheetMode === 'create' ? 'border-accent' : ''"
+                  @click="startCreate()"
+                >
+                  New node
+                </button>
+                <!-- Spawn is offered everywhere a row can name a place to start
+                     from — including `unfiled`, which simply arrives with an
+                     empty cwd rather than an invented one (A8). -->
+                <button
+                  type="button"
+                  class="min-h-[36px] rounded-md border border-line px-3 text-xs text-accent active:bg-panel"
+                  :class="sheetMode === 'spawn' ? 'border-accent' : ''"
+                  @click="startSpawn(openTarget)"
+                >
+                  Spawn session
+                </button>
+                <!-- Close: node rows only (a virtual root has no closure), and
+                     only while open. Tap-again confirm, because there is NO
+                     REOPEN EVENT in the engine — this is one-way. -->
+                <button
+                  v-if="openTarget.kind === 'node' && !openTarget.effectivelyClosed"
+                  type="button"
+                  class="min-h-[36px] rounded-md px-3 text-xs disabled:opacity-50"
+                  :class="
+                    openTarget.nodeId !== null && isConfirmingKill(closeConfirm, openTarget.nodeId)
+                      ? 'bg-accent font-semibold text-accent-fg'
+                      : 'border border-line text-ink-dim active:bg-panel'
+                  "
+                  :disabled="writePending"
+                  @click="tapClose(openTarget)"
+                >
+                  {{ closeLabel(openTarget) }}
+                </button>
+              </div>
+
+              <!-- Create: ONE field. `directory` is deferred (WO), and the
+                   engine calls a label-only group an ordinary shape. -->
+              <form
+                v-if="sheetMode === 'create'"
+                class="flex flex-col gap-2"
+                @submit.prevent="submitCreate(openTarget)"
+              >
+                <label
+                  class="font-mono text-[10px] uppercase text-ink-dim"
+                  :for="`node-name-${row.id}`"
+                >New node under {{ openTarget.label }}</label>
+                <input
+                  :id="`node-name-${row.id}`"
+                  v-model="nodeNameDraft"
+                  type="text"
+                  placeholder="slice 15"
+                  class="min-h-[36px] rounded-md border border-line bg-panel px-2 text-sm"
+                />
+                <button
+                  type="submit"
+                  class="min-h-[36px] rounded-md bg-accent px-3 text-sm font-semibold text-accent-fg active:bg-accent/90 disabled:opacity-50"
+                  :disabled="writePending || nodeNameDraft.trim().length === 0"
+                >
+                  {{ writePending ? 'Creating…' : 'Create node' }}
+                </button>
+              </form>
+
+              <!-- Spawn: the MINIMAL sheet (see submitSpawn's comment) — the
+                   same store action the old list's form calls, with the A8
+                   prefill already in the box. -->
+              <form
+                v-else-if="sheetMode === 'spawn'"
+                class="flex flex-col gap-2"
+                @submit.prevent="submitSpawn()"
+              >
+                <label
+                  class="font-mono text-[10px] uppercase text-ink-dim"
+                  :for="`spawn-cwd-${row.id}`"
+                >Spawn · cwd</label>
+                <input
+                  :id="`spawn-cwd-${row.id}`"
+                  v-model="spawnCwdDraft"
+                  type="text"
+                  placeholder="/home/wes/projects/…"
+                  class="min-h-[36px] rounded-md border border-line bg-panel px-2 text-sm"
+                />
+                <div class="flex items-center gap-4 text-xs">
+                  <label class="flex items-center gap-1">
+                    <input v-model="spawnChannel" type="radio" value="sdk" />
+                    SDK
+                  </label>
+                  <label class="flex items-center gap-1">
+                    <input v-model="spawnChannel" type="radio" value="pty" />
+                    PTY
+                  </label>
+                </div>
+                <button
+                  type="submit"
+                  class="min-h-[36px] rounded-md bg-accent px-3 text-sm font-semibold text-accent-fg active:bg-accent/90 disabled:opacity-50"
+                  :disabled="writePending || spawnCwdDraft.trim().length === 0"
+                >
+                  {{ writePending ? 'Spawning…' : 'Spawn session' }}
+                </button>
+              </form>
+            </div>
+
+            <!-- Session rows: the attach picker. Open nodes only, grouped by
+                 root, SERVED order (attachTargetsOf) — a courtesy filter, never
+                 an adjudication. -->
+            <div
+              v-else-if="row.kind === 'session' && row.session !== null"
+              class="flex flex-col gap-2"
+            >
+              <p class="font-mono text-[10px] uppercase text-ink-dim">
+                Attach {{ row.session.shortId }} to a node
+              </p>
+              <!-- A9-shaped honesty: an estate with no open node says so in a
+                   sentence that names the next action, rather than rendering an
+                   empty list. -->
+              <p v-if="attachGroups.length === 0" class="text-xs text-ink-dim">
+                No open nodes yet — create one from a project row first.
+              </p>
+              <div v-for="group in attachGroups" :key="group.rootId" class="flex flex-col">
+                <p class="font-mono text-[10px] uppercase text-ink-dim">{{ group.rootName }}</p>
+                <button
+                  v-for="attachNode in group.nodes"
+                  :key="attachNode.nodeId"
+                  type="button"
+                  class="min-h-[36px] truncate rounded-md px-2 text-left text-sm text-ink active:bg-panel disabled:opacity-50"
+                  :style="indentStyle(attachNode.depth)"
+                  :disabled="writePending"
+                  @click="submitAttach(attachNode.nodeId, row.session.appSessionId)"
+                >
+                  {{ attachNode.name }}
+                </button>
+              </div>
+            </div>
+
+            <!-- The refusal, inline, in the engine's own vocabulary, cleared
+                 only by a hand (U5 / doctrine §5 — never a toast, never a
+                 timer). It sits under the affordance that earned it. -->
+            <div v-if="writeError !== null" class="mt-2 flex items-start gap-2">
+              <span class="shrink-0 font-mono text-[10px] uppercase text-warn">refused</span>
+              <p class="min-w-0 flex-1 text-xs text-warn">{{ writeError }}</p>
+              <button
+                type="button"
+                class="min-h-[36px] shrink-0 font-mono text-[10px] uppercase text-ink-dim active:text-ink"
+                @click="writeError = null"
+              >
+                Dismiss
+              </button>
+            </div>
           </li>
         </template>
       </ul>
