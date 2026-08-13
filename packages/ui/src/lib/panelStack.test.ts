@@ -33,6 +33,8 @@ const PORTED_SINGLE_PANEL_HASHES: readonly string[] = [
   '#/',
   '#/meters',
   '#/meters?anything=1',
+  '#/sessions', // S15·U2: the session list's explicit path
+
   '#nonsense',
   '#/unknown/route',
   '#/files',
@@ -89,6 +91,11 @@ describe('parsePanelStack of an ordinary hash is exactly [parseRoute(hash)]', ()
 // shape, which route.ts intentionally collapses to null — we do not fight it).
 
 const ROUND_TRIPPABLE_ROUTES: readonly Route[] = [
+  // S15·U2: home is `{ view: 'tree' }` now (it is the route that builds to the
+  // empty string, i.e. the empty-segment case a multi-panel hash has to survive);
+  // the session list moved to its own explicit `#/sessions` path and round-trips
+  // from there. Both are listed so neither half of the cutover loses coverage.
+  { view: 'tree' },
   { view: 'sessionList', expandMeters: false },
   { view: 'sessionList', expandMeters: true },
   { view: 'stream', appSessionId: 'abc' },
@@ -113,7 +120,7 @@ describe('multi-panel stacks survive a round trip', () => {
     { view: 'editor', path: '/tmp/a.ts', line: 42, returnToParam: null },
   ];
   const threePanel: PanelStack = [
-    { view: 'sessionList', expandMeters: false }, // a home panel builds to '' — the empty-segment case
+    { view: 'tree' }, // a home panel builds to '' — the empty-segment case (S15·U2: home is the tree)
     { view: 'git' },
     { view: 'stream', appSessionId: 'a b/c' },
   ];
@@ -160,12 +167,12 @@ describe('the `#/stack/` marker is reserved and unambiguous', () => {
     ]);
   });
 
-  it('`#/stack` WITHOUT a trailing slash is the sessionList fallback, exactly as today', () => {
+  it('`#/stack` WITHOUT a trailing slash is the route fallback, exactly as today', () => {
     // No marker (the prefix is `/stack/`, with the slash), so it flows through
-    // parseRoute like any unrecognized hash → a length-1 fallback stack.
-    expect(parsePanelStack('#/stack')).toEqual([
-      { view: 'sessionList', expandMeters: false },
-    ]);
+    // parseRoute like any unrecognized hash → a length-1 fallback stack. WHICH
+    // view that fallback is changed in S15·U2 (sessionList → tree); that this
+    // hash gets the fallback at all is the property under test and is unchanged.
+    expect(parsePanelStack('#/stack')).toEqual([{ view: 'tree' }]);
   });
 });
 
@@ -205,10 +212,9 @@ describe('parsePanelStack is total — nothing throws, every stack is non-empty'
 
   it('a malformed `#/stack/%` segment degrades to the raw segment, then the fallback', () => {
     // decodePanelSegment('%') can't decode, so it hands parseRoute the raw '%',
-    // which is an unrecognized path → the sessionList fallback. No URIError.
-    expect(parsePanelStack('#/stack/%')).toEqual([
-      { view: 'sessionList', expandMeters: false },
-    ]);
+    // which is an unrecognized path → the route fallback (the tree, S15·U2). No
+    // URIError.
+    expect(parsePanelStack('#/stack/%')).toEqual([{ view: 'tree' }]);
   });
 });
 
@@ -217,20 +223,28 @@ describe('parsePanelStack is total — nothing throws, every stack is non-empty'
 describe('buildPanelStackHash of an empty stack', () => {
   it("is '' (home) — defined for totality, never a throw, and it round-trips", () => {
     expect(buildPanelStackHash([])).toBe('');
-    // '' parses back to the sessionList fallback — a length-1 stack, so the
+    // '' parses back to the home/fallback route — a length-1 stack, so the
     // degenerate empty input recovers into a valid one.
-    expect(parsePanelStack(buildPanelStackHash([]))).toEqual([
-      { view: 'sessionList', expandMeters: false },
-    ]);
+    expect(parsePanelStack(buildPanelStackHash([]))).toEqual([{ view: 'tree' }]);
   });
 });
 
 // ── ASSERTION 7: the home / empty edge ──────────────────────────────────────
 
 describe('the home panel is the empty string, both directions', () => {
-  it("[sessionList,false] builds to '' and '' parses to [sessionList,false]", () => {
-    expect(buildPanelStackHash([{ view: 'sessionList', expandMeters: false }])).toBe('');
-    expect(parsePanelStack('')).toEqual([{ view: 'sessionList', expandMeters: false }]);
+  it("[tree] builds to '' and '' parses to [tree] (S15·U2: the home route)", () => {
+    expect(buildPanelStackHash([{ view: 'tree' }])).toBe('');
+    expect(parsePanelStack('')).toEqual([{ view: 'tree' }]);
+  });
+
+  it("the session list is no longer the empty-hash panel — it builds to '#/sessions'", () => {
+    // The other half of the cutover, pinned here too: a stack whose only panel
+    // is the old list must NOT emit the home hash, or a reload would land on
+    // the tree instead of the panel that was open.
+    expect(buildPanelStackHash([{ view: 'sessionList', expandMeters: false }])).toBe('#/sessions');
+    expect(parsePanelStack('#/sessions')).toEqual([
+      { view: 'sessionList', expandMeters: false },
+    ]);
   });
 });
 

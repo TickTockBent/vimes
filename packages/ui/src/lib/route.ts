@@ -22,7 +22,28 @@
 //
 // TOTALITY (I8). `parseRoute` never throws, for any input: empty, malformed,
 // unknown, hostile, or 10 KB long. Everything unrecognized lands on the same
-// SessionListView fallback the app has always shown.
+// total fallback — which is the TREE as of S15·U2 (see the cutover note below).
+//
+// ⚠ **THE HOME CUTOVER (S15·U2, slice-15.md F1).** Home used to mean
+// SessionListView: the empty hash, `#/`, and every unrecognized hash resolved to
+// it, and `buildHash` emitted `''` for it. Home is now `{ view: 'tree' }` and
+// those three inputs resolve THERE. Two consequences that are easy to miss:
+//
+//   1. `sessionList` gained an EXPLICIT path, `#/sessions` (F1's escape hatch —
+//      the tree is the youngest surface in the app and the old list stays
+//      reachable for exactly one slice while the tree survives real use). So
+//      `buildHash({view:'sessionList',expandMeters:false})` is `'#/sessions'`
+//      now, NOT `''` — otherwise the route would build to a hash that parses
+//      back as the tree, and the round-trip law above would be a lie.
+//   2. `#/meters` is UNTOUCHED: still sessionList, still `expandMeters: true`,
+//      still the deep-link target of the threshold-notification push. The slice-5
+//      meters strip stays in SessionListView this slice.
+//
+// The tree route carries NO `?root=` parameter, deliberately (A7's
+// explicitly-rejected branch): scoping the tree is client expansion state, and a
+// scope param would be a SECOND source of record for the same fact. `#/?root=x`
+// therefore parses as a plain `tree`, exactly as `#/` does — the parameter is not
+// rejected with an error, it is simply not a thing this codec knows.
 //
 // EVERY QUIRK BELOW IS DELIBERATE. This module was written against a
 // characterization table taken from App.vue BEFORE it was touched; where the old
@@ -42,7 +63,8 @@ export type RouteView =
   | 'cost'
   | 'tasks'
   | 'stream'
-  | 'sessionList';
+  | 'sessionList'
+  | 'tree';
 
 // `#/files?path=…` — the CM6 editor on one file.
 export interface EditorRoute {
@@ -87,12 +109,20 @@ export interface StreamRoute {
   appSessionId: string;
 }
 
-// Everything else. `expandMeters` is why this is not just a view name: `#/meters`
-// is the deep-link target of the threshold-notification push and arrives with the
-// meters strip already open, while `#/` shows the same view collapsed.
+// `#/sessions` and `#/meters` — the pre-tree session list (F1's escape hatch).
+// `expandMeters` is why this is not just a view name: `#/meters` is the deep-link
+// target of the threshold-notification push and arrives with the meters strip
+// already open, while `#/sessions` shows the same view collapsed.
 export interface SessionListRoute {
   view: 'sessionList';
   expandMeters: boolean;
+}
+
+// `''` / `#/` / anything unrecognized — the session tree, the home surface
+// (S15·U2). It has NO props: what the operator has expanded is component state,
+// not addressable state (see the cutover note at the top of this file).
+export interface TreeRoute {
+  view: 'tree';
 }
 
 export type Route =
@@ -104,7 +134,8 @@ export type Route =
   | CostRoute
   | TasksRoute
   | StreamRoute
-  | SessionListRoute;
+  | SessionListRoute
+  | TreeRoute;
 
 // ── parsing ─────────────────────────────────────────────────────────────────
 
@@ -239,10 +270,26 @@ const ROUTE_RULES: readonly RouteRule[] = [
     },
   },
   {
-    // The total fallback: this rule matches everything, which is what makes
-    // `parseRoute` total.
+    // The session list, now at TWO EXPLICIT PATHS and no longer the fallback
+    // (S15·U2). `#/meters` is unchanged, byte for byte, including the prop it
+    // sets; `#/sessions` is the new plain door. Anything else falls through to
+    // the tree below — which is the whole cutover, expressed as one rule losing
+    // its `match: () => always`.
     view: 'sessionList',
-    match: ({ routePath }) => ({ view: 'sessionList', expandMeters: routePath === '/meters' }),
+    match: ({ routePath }) => {
+      if (routePath === '/meters') {
+        return { view: 'sessionList', expandMeters: true };
+      }
+      return routePath === '/sessions' ? { view: 'sessionList', expandMeters: false } : null;
+    },
+  },
+  {
+    // The total fallback: this rule matches everything, which is what makes
+    // `parseRoute` total. It is the TREE as of S15·U2 — home, and the landing
+    // place of every hash nothing above claimed. No params are read here, on
+    // purpose (`#/?root=x` is a plain tree — see the cutover note at the top).
+    view: 'tree',
+    match: () => ({ view: 'tree' }),
   },
 ];
 
@@ -262,8 +309,8 @@ export function parseRoute(hash: string): Route {
   }
   // Unreachable — the last rule matches everything. Present because the compiler
   // cannot know that, and a silent `undefined` would be worse than a redundant
-  // literal.
-  return { view: 'sessionList', expandMeters: false };
+  // literal. It is the same home the fallback rule produces, deliberately.
+  return { view: 'tree' };
 }
 
 // ── building ────────────────────────────────────────────────────────────────
@@ -311,8 +358,15 @@ export function buildHash(route: Route): string {
     case 'stream':
       return `#/session/${encodeURIComponent(route.appSessionId)}`;
     case 'sessionList':
+      // BOTH forms are explicit paths since the cutover. `''` no longer belongs
+      // to this view — it belongs to the tree below — so the collapsed form
+      // emits `#/sessions`; emitting `''` here would build a hash that parses
+      // back as a DIFFERENT view, which is the one thing a codec may not do.
+      return route.expandMeters ? '#/meters' : '#/sessions';
+    case 'tree':
       // Home is the EMPTY string, not '#/': assigning '' to location.hash clears
-      // the fragment, which is what "go home" has always produced.
-      return route.expandMeters ? '#/meters' : '';
+      // the fragment, which is what "go home" has always produced. The view that
+      // word names changed in S15·U2; the emitted bytes did not.
+      return '';
   }
 }

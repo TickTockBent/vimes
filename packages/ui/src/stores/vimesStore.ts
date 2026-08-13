@@ -32,6 +32,11 @@ import {
   type SpawnPendingState,
 } from '../lib/refusalRecovery.js';
 import { daemonApiVersionMismatch, daemonSupportsCapability } from '../lib/apiFloor.js';
+import { SESSIONS_AFFECTING_TYPES, TREE_AFFECTING_TYPES } from '../lib/sessionTreeRefresh.js';
+// D87: payload-contract types come from the engine that serves them, type-only.
+// `TreeResponse` is rendered verbatim by TreeView (U8) — the store holds it, it
+// does not reshape it.
+import type { TreeResponse } from '@vimes/core';
 
 // The single shared WS connection (private-docs/slice-1.md step-3 scope): one socket
 // multiplexes every subscribed stream; per-stream lastSeq is tracked so a
@@ -60,7 +65,13 @@ const TASKS_STREAM = 'tasks';
 // any path would work identically against the current daemon.
 const WS_PATH = '/ws';
 
-import { SESSIONS_AFFECTING_TYPES } from '../lib/sessionTreeRefresh.js';
+// S15·U2 — the tree read model rides the SAME 1s throttle POLICY the sessions
+// refresh has always used ("an event moved a read model, refetch it, at most
+// once a second"), but keeps its OWN window: a tree refetch must not reset the
+// sessions window or vice versa, or one read model's traffic would silently
+// starve the other's. Deliberately spelled as a reference to the sessions
+// constant rather than a second `1000` — one policy, one number, two windows.
+const TREE_REFRESH_THROTTLE_MS = SESSIONS_REFRESH_THROTTLE_MS;
 
 interface StreamState {
   lastSeq: number;
@@ -86,6 +97,28 @@ export const useVimesStore = defineStore('vimes', () => {
   // The last registry read FAILED (transport, a non-2xx, or a body that is not a
   // registry). Distinct from "not loaded yet" so the picker can say which.
   const projectsUnreachable = ref(false);
+  // ── the session tree (S15·U2) — GET /api/tree, held VERBATIM ───────────────
+  //
+  // The whole forest, as `treeOf` composed it: declared root order, declared
+  // sibling order, precomputed severities, rollups, estate-scoped short ids.
+  // Nothing here reshapes it and nothing here sorts it (U8) — the client's only
+  // contribution is which containers are expanded, which is view state and never
+  // leaves the view.
+  //
+  // THREE STATES, DELIBERATELY DISTINCT (the fetchProjects idiom, doctrine §5):
+  //   • `tree` null + `treeLoaded` false → we have not successfully looked yet;
+  //   • `tree` non-null + `treeError` true → LAST-KNOWN data plus a staleness
+  //     signal, which is what a failing refresh must look like — never a
+  //     spinner over an erased readout, never a fabricated empty forest;
+  //   • `tree` non-null + `treeError` false → the forest, as of the last fetch.
+  const tree = ref<TreeResponse | null>(null);
+  // True once ONE fetch has succeeded. Never goes back to false: "we have seen
+  // the estate" is a fact about this tab's history, not about the last request.
+  const treeLoaded = ref(false);
+  // The last tree fetch FAILED (transport, a non-2xx, or a 200 whose body is not
+  // a forest). Boolean rather than an error object on purpose — mirrors
+  // `projectsUnreachable`, and the view's honest sentence does not vary by cause.
+  const treeError = ref(false);
   const connectionStatus = ref<ConnectionStatus>('connecting');
   const catchingUp = ref(false);
   const lastRefusal = ref<{ refusedOp: string; reason: string } | null>(null);
@@ -285,6 +318,10 @@ export const useVimesStore = defineStore('vimes', () => {
 
   let sessionsRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   let lastSessionsRefreshAt = 0;
+  // The tree's own throttle window — same policy, separate state (see
+  // TREE_REFRESH_THROTTLE_MS).
+  let treeRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  let lastTreeRefreshAt = 0;
 
   function wsUrl(): string {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -314,6 +351,62 @@ export const useVimesStore = defineStore('vimes', () => {
     // Same reasoning for the usage meters (slice 5 step 3): they ride the
     // sessions refresh cadence rather than owning a polling loop of their own.
     void fetchDerivedUsage();
+  }
+
+  // ── the session tree (S15·U2) ─────────────────────────────────────────────
+  //
+  // GET /api/tree, NO PARAMETERS. The route accepts `?root=` (S14-A10), and this
+  // client deliberately never sends it: the client holds the WHOLE forest and
+  // scoping is expand/collapse state in the view. A server round-trip per scope
+  // change would make the same fact (which branch am I looking at) exist in two
+  // places — the URL and the component — and the day they disagree is the day a
+  // collapsed branch hides a live gate.
+  //
+  // ⚠ **A FAILED FETCH KEEPS THE LAST-KNOWN PAYLOAD** (doctrine §5, A9). The
+  // ONLY thing a failure changes is `treeError`; `tree` itself is never cleared,
+  // because a stale estate rendered with a staleness notice is strictly more
+  // useful than an empty screen that claims the estate is gone. `treeLoaded`
+  // likewise never regresses.
+  async function refreshTree(): Promise<void> {
+    lastTreeRefreshAt = Date.now();
+    try {
+      const response = await fetch('/api/tree', { credentials: 'same-origin' });
+      if (!response.ok) {
+        treeError.value = true;
+        return;
+      }
+      const parsed = (await response.json()) as { roots?: unknown };
+      if (!Array.isArray(parsed.roots)) {
+        // A 200 whose body is not a forest is a failure to READ the forest, not
+        // an empty one — the same distinction fetchProjects draws.
+        treeError.value = true;
+        return;
+      }
+      tree.value = parsed as TreeResponse;
+      treeLoaded.value = true;
+      treeError.value = false;
+    } catch {
+      // Transient network hiccup. The previous forest stays on screen with the
+      // staleness treatment; the next event/reconnect/mount retries.
+      treeError.value = true;
+    }
+  }
+
+  // The throttled door every tree trigger goes through — a subscribed stream's
+  // TREE_AFFECTING_TYPES event, a WS reconnect, and TreeView's own mount. Same
+  // shape as scheduleSessionsRefresh, over the tree's own window.
+  function scheduleTreeRefresh(): void {
+    const elapsed = Date.now() - lastTreeRefreshAt;
+    if (elapsed >= TREE_REFRESH_THROTTLE_MS) {
+      void refreshTree();
+      return;
+    }
+    if (treeRefreshTimer === null) {
+      treeRefreshTimer = setTimeout(() => {
+        treeRefreshTimer = null;
+        void refreshTree();
+      }, TREE_REFRESH_THROTTLE_MS - elapsed);
+    }
   }
 
   // ── the project registry (S8·2, D42/D61) ──────────────────────────────────
@@ -1002,6 +1095,15 @@ export const useVimesStore = defineStore('vimes', () => {
         if (SESSIONS_AFFECTING_TYPES.has(envelope.event.type)) {
           scheduleSessionsRefresh();
         }
+        // S15·U2 — the tree's superset (lib/sessionTreeRefresh.ts): everything
+        // that moves the sessions projection PLUS the node events and the
+        // project-registry lifecycle that reshape the forest itself. Checked
+        // SEPARATELY rather than folded into the test above, so the sessions
+        // cadence is byte-identical to what it has always been — the two read
+        // models refetch independently even though one set contains the other.
+        if (TREE_AFFECTING_TYPES.has(envelope.event.type)) {
+          scheduleTreeRefresh();
+        }
         // The task board's live channel (step 9). Stream-local rather than
         // type-listed — see TASKS_STREAM. This is what makes a card move WITHOUT
         // an optimistic local edit: a transition the machine accepted becomes a
@@ -1164,6 +1266,10 @@ export const useVimesStore = defineStore('vimes', () => {
         sendEnvelope({ op: 'term_subscribe', terminalId, offset: terminalOffset });
       }
       void refreshSessions();
+      // The home surface is the tree now: a reconnect may have missed events
+      // entirely (the gap the per-stream lastSeq replay covers only for streams
+      // this tab subscribes to), so the forest is re-read on every open.
+      scheduleTreeRefresh();
     });
 
     socketInstance.addEventListener('message', (messageEvent) => {
@@ -1630,6 +1736,12 @@ export const useVimesStore = defineStore('vimes', () => {
     detachTerminal,
     setTerminalResilient,
     killTerminal,
+    // The session tree (S15·U2) — the home surface's read model
+    tree,
+    treeLoaded,
+    treeError,
+    refreshTree,
+    scheduleTreeRefresh,
     // Cache observability (slice 4 step 4)
     cacheObservability,
     fetchCacheObservability,

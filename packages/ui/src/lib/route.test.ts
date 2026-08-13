@@ -22,29 +22,45 @@ const TEN_KILOBYTE_SESSION_ID = 'a'.repeat(10_000);
 // ── ASSERTION 1: the route table ────────────────────────────────────────────
 
 const ROUTE_TABLE: readonly RouteCase[] = [
-  // ── the SessionListView fallback: everything unrecognized lands here ───────
-  { hash: '', expected: { view: 'sessionList', expandMeters: false }, label: "'' (no hash at all)" },
-  { hash: '#', expected: { view: 'sessionList', expandMeters: false } },
-  { hash: '#/', expected: { view: 'sessionList', expandMeters: false } },
-  { hash: '#nonsense', expected: { view: 'sessionList', expandMeters: false } },
-  { hash: '#/unknown/route', expected: { view: 'sessionList', expandMeters: false } },
+  // ── the TREE fallback: home, and everything unrecognized (S15·U2, A7) ──────
+  // Every hash in this block resolved to `sessionList` before the cutover. The
+  // shape of the block is unchanged on purpose — these are the SAME strings
+  // phase 1 pinned, re-pointed at the view that now claims them, so the cases
+  // that are load-bearing for a REASON (the quirks below) keep testing the
+  // quirk and not the view name.
+  { hash: '', expected: { view: 'tree' }, label: "'' (no hash at all)" },
+  { hash: '#', expected: { view: 'tree' } },
+  { hash: '#/', expected: { view: 'tree' } },
+  { hash: '#nonsense', expected: { view: 'tree' } },
+  { hash: '#/unknown/route', expected: { view: 'tree' } },
   // QUIRK: params with no path are simply ignored — routePath is ''.
-  { hash: '#?path=/x', expected: { view: 'sessionList', expandMeters: false } },
+  { hash: '#?path=/x', expected: { view: 'tree' } },
+  // A7's explicitly-rejected branch: the tree route has NO `?root=` param, so a
+  // hash that carries one is a plain tree. Scoping is expansion state.
+  { hash: '#/?root=x', expected: { view: 'tree' } },
+  { hash: '#?root=project:abc', expected: { view: 'tree' } },
   // QUIRK: `/session/` with nothing after it is NOT a session route.
-  { hash: '#/session/', expected: { view: 'sessionList', expandMeters: false } },
+  { hash: '#/session/', expected: { view: 'tree' } },
   // QUIRK: route paths are matched exactly — a trailing slash is a different path.
-  { hash: '#/files/', expected: { view: 'sessionList', expandMeters: false } },
-  { hash: '#/files/sub', expected: { view: 'sessionList', expandMeters: false } },
-  { hash: '#/meters/', expected: { view: 'sessionList', expandMeters: false } },
+  { hash: '#/files/', expected: { view: 'tree' } },
+  { hash: '#/files/sub', expected: { view: 'tree' } },
+  { hash: '#/meters/', expected: { view: 'tree' } },
+  { hash: '#/sessions/', expected: { view: 'tree' } },
   // QUIRK: and matching is case-sensitive.
-  { hash: '#/METERS', expected: { view: 'sessionList', expandMeters: false } },
-  { hash: '#/Search', expected: { view: 'sessionList', expandMeters: false } },
+  { hash: '#/METERS', expected: { view: 'tree' } },
+  { hash: '#/Search', expected: { view: 'tree' } },
+  { hash: '#/Sessions', expected: { view: 'tree' } },
 
   // ── the SAME view, a different prop: this is why Route carries props ───────
+  // Both of these are the SURVIVING session list (F1's escape hatch): `#/meters`
+  // exactly as it has always been, `#/sessions` as its new explicit plain door.
+  { hash: '#/sessions', expected: { view: 'sessionList', expandMeters: false } },
+  { hash: '#/sessions?anything=1', expected: { view: 'sessionList', expandMeters: false } },
   { hash: '#/meters', expected: { view: 'sessionList', expandMeters: true } },
   { hash: '#/meters?anything=1', expected: { view: 'sessionList', expandMeters: true } },
   // QUIRK: the leading '#' is optional. location.hash always supplies one.
   { hash: '/meters', expected: { view: 'sessionList', expandMeters: true }, label: "'/meters' (no leading #)" },
+  { hash: '/sessions', expected: { view: 'sessionList', expandMeters: false }, label: "'/sessions' (no leading #)" },
 
   // ── EditorView: `/files` WITH a `path` param ──────────────────────────────
   {
@@ -237,6 +253,7 @@ const ROUND_TRIP_ROUTES: readonly Route[] = [
   { view: 'stream', appSessionId: TEN_KILOBYTE_SESSION_ID },
   { view: 'sessionList', expandMeters: false },
   { view: 'sessionList', expandMeters: true },
+  { view: 'tree' },
 ];
 
 describe('parseRoute(buildHash(route)) === route', () => {
@@ -280,6 +297,10 @@ describe('precedence — the old v-if chain, now data', () => {
       'tasks',
       'stream',
       'sessionList',
+      // S15·U2: the tree took the last slot — the total fallback — and the
+      // session list moved up one, from "claims everything left over" to two
+      // explicit paths. Everything above them is untouched.
+      'tree',
     ]);
   });
 
@@ -293,7 +314,7 @@ describe('precedence — the old v-if chain, now data', () => {
   it('the session route loses to every panel route above it', () => {
     // A session id may SPELL a panel route; the panel rules are keyed on the
     // whole routePath, so they never claim `/session/<id>`.
-    for (const panelName of ['files', 'search', 'terminal', 'git', 'cost', 'tasks', 'meters']) {
+    for (const panelName of ['files', 'search', 'terminal', 'git', 'cost', 'tasks', 'meters', 'sessions']) {
       expect(parseRoute(`#/session/${panelName}`)).toEqual({
         view: 'stream',
         appSessionId: panelName,
@@ -301,26 +322,64 @@ describe('precedence — the old v-if chain, now data', () => {
     }
   });
 
-  it('the session list is last and claims everything left over', () => {
-    expect(ROUTE_PRECEDENCE[ROUTE_PRECEDENCE.length - 1]).toBe('sessionList');
-    expect(parseRoute('#/definitely-not-a-route').view).toBe('sessionList');
+  it('the TREE is last and claims everything left over (S15·U2 — the cutover)', () => {
+    expect(ROUTE_PRECEDENCE[ROUTE_PRECEDENCE.length - 1]).toBe('tree');
+    expect(parseRoute('#/definitely-not-a-route').view).toBe('tree');
+  });
+
+  it('home — the empty hash and `#/` — is the tree (A7)', () => {
+    // The cutover itself, as one assertion. Sabotage target: make the fallback
+    // rule produce `sessionList` again and exactly this reddens.
+    expect(parseRoute('')).toEqual({ view: 'tree' });
+    expect(parseRoute('#')).toEqual({ view: 'tree' });
+    expect(parseRoute('#/')).toEqual({ view: 'tree' });
+  });
+
+  it('the session list survives, reachable at `#/sessions` (A7 — F1\'s escape hatch)', () => {
+    // Sabotage target: strip the `/sessions` matcher and exactly this reddens
+    // (the hash falls through to the tree fallback).
+    expect(parseRoute('#/sessions')).toEqual({ view: 'sessionList', expandMeters: false });
+  });
+
+  it('`#/meters` is UNCHANGED by the cutover — sessionList with expandMeters', () => {
+    // The threshold-notification push deep-links here; the cutover must not have
+    // moved it. Same view, same prop, same string as before S15.
+    expect(parseRoute('#/meters')).toEqual({ view: 'sessionList', expandMeters: true });
+  });
+
+  it('the tree route rejects `?root=` by not knowing it (A7, decided not accidental)', () => {
+    // Scoping the tree is client expansion state (slice-15 §1). A scope param
+    // would be a second source of record for the same fact, so the codec parses
+    // `#/?root=x` as a PLAIN tree — identical to `#/`, params and all.
+    expect(parseRoute('#/?root=x')).toEqual(parseRoute('#/'));
+    expect(parseRoute('#/?root=project:abc')).toEqual({ view: 'tree' });
+    // …and it does not survive a build either: there is nothing to serialize.
+    expect(buildHash(parseRoute('#/?root=x'))).toBe('');
   });
 });
 
 // ── ASSERTION 4: route → (view, props) is not 1:1 ───────────────────────────
 
-describe("'#/' and '#/meters' are the same view with a different prop", () => {
+describe("'#/sessions' and '#/meters' are the same view with a different prop", () => {
+  // The pairing that proves route → view is not 1:1 outlived the cutover — only
+  // the collapsed form's PATH moved (`#/` → `#/sessions`), because `#/` is home
+  // and home is the tree now.
   it('both resolve to sessionList, differing only in expandMeters', () => {
-    const home = parseRoute('#/');
+    const plainList = parseRoute('#/sessions');
     const meters = parseRoute('#/meters');
-    expect(home).toEqual({ view: 'sessionList', expandMeters: false });
+    expect(plainList).toEqual({ view: 'sessionList', expandMeters: false });
     expect(meters).toEqual({ view: 'sessionList', expandMeters: true });
-    expect(home.view).toBe(meters.view);
+    expect(plainList.view).toBe(meters.view);
   });
 
   it('and build back to different hashes', () => {
-    expect(buildHash({ view: 'sessionList', expandMeters: false })).toBe('');
+    expect(buildHash({ view: 'sessionList', expandMeters: false })).toBe('#/sessions');
     expect(buildHash({ view: 'sessionList', expandMeters: true })).toBe('#/meters');
+  });
+
+  it("home is the empty string, and it is the TREE's — not the list's — any more", () => {
+    expect(buildHash({ view: 'tree' })).toBe('');
+    expect(parseRoute('')).toEqual({ view: 'tree' });
   });
 });
 
@@ -388,7 +447,20 @@ describe('buildHash reproduces what App.vue\'s navigate* builders emitted', () =
   // builders and the parser disagreeing is the bug this pairing exists to catch,
   // so every one is also parsed back.
   const BUILDER_CASES: readonly { builderCall: string; route: Route; hash: string }[] = [
-    { builderCall: 'navigateHome()', route: { view: 'sessionList', expandMeters: false }, hash: '' },
+    // navigateHome() emitted '' then and emits '' now — the bytes are pinned,
+    // the VIEW behind them is the tree since S15·U2. The old list's own hash is
+    // asserted right below it, so both halves of the cutover are in this table.
+    { builderCall: 'navigateHome()', route: { view: 'tree' }, hash: '' },
+    {
+      builderCall: 'the session list, now at its explicit path',
+      route: { view: 'sessionList', expandMeters: false },
+      hash: '#/sessions',
+    },
+    {
+      builderCall: 'the meters deep link, unchanged',
+      route: { view: 'sessionList', expandMeters: true },
+      hash: '#/meters',
+    },
     {
       builderCall: "navigateToSession('abc')",
       route: { view: 'stream', appSessionId: 'abc' },

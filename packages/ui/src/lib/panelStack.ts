@@ -30,8 +30,9 @@ export type PanelStack = readonly Route[];
 
 // The reserved marker for a multi-panel hash. `#/stack/` can NEVER collide with a
 // single-panel URL: there is no `/stack` rule in route.ts's ROUTE_RULES (a
-// `#/stack/...` URL parses to the sessionList fallback TODAY, so reserving it is
-// purely additive — nothing real changes), and no `buildHash` output starts with
+// `#/stack/...` URL parses to route.ts's total fallback — the session list when
+// this was written, the TREE since S15·U2 — so reserving it is purely additive:
+// nothing real changes either way), and no `buildHash` output starts with
 // it (asserted in the test). Detection strips the optional leading '#' first,
 // exactly as route.ts's splitHash does, so `/stack/...` (no '#') is recognized too.
 const STACK_HASH_PREFIX = '#/stack/';
@@ -40,7 +41,7 @@ const STACK_PATH_PREFIX = '/stack/';
 // decodeURIComponent THROWS on a malformed escape ('%', '%zz'). Totality (I8)
 // forbids a throw, so a malformed panel segment degrades to its raw, undecoded
 // form — the SAME posture route.ts takes in decodeSessionSegment. A junk segment
-// then simply parseRoutes to the sessionList fallback; it never crashes a parse.
+// then simply parseRoutes to route.ts's total fallback; it never crashes a parse.
 function decodePanelSegment(segment: string): string {
   try {
     return decodeURIComponent(segment);
@@ -68,7 +69,7 @@ export function parsePanelStack(hash: string): PanelStack {
   // cannot be mistaken for the '/' that joins panels — splitting is unambiguous.
   // `String.split` on any string (even '') yields at least one element, so the
   // result is ALWAYS length >= 1 — never an empty stack, even for a bare
-  // `#/stack/` (which yields one empty segment → one sessionList fallback).
+  // `#/stack/` (which yields one empty segment → one fallback panel).
   const encodedPanels = withoutLeadingHash.slice(STACK_PATH_PREFIX.length).split('/');
   return encodedPanels.map((segment) => parseRoute(decodePanelSegment(segment)));
 }
@@ -78,7 +79,7 @@ export function buildPanelStackHash(stack: PanelStack): string {
   // An empty stack should never occur — every parse yields length >= 1, and no
   // caller produces one — but a total builder must still answer. '' is home: the
   // safest possible "nothing", and it round-trips (parsePanelStack('') is the
-  // sessionList fallback), so a stray empty stack degrades gracefully, not into a
+  // home route), so a stray empty stack degrades gracefully, not into a
   // throw.
   if (stack.length === 0) {
     return '';

@@ -18,6 +18,7 @@
 // So a static component import creates no static edge into those lazy chunks —
 // the build-manifest gate stays green (verified).
 import { computed } from 'vue';
+import TreeView from '../views/TreeView.vue';
 import SessionListView from '../views/SessionListView.vue';
 import StreamView from '../views/StreamView.vue';
 import FileTreeView from '../views/FileTreeView.vue';
@@ -104,6 +105,17 @@ const sessionListRoute = computed(() =>
       :app-session-id="streamRoute.appSessionId"
       :back-kind="backKind"
       @back="emit('back', index)"
+    />
+    <!-- S15·U2 — the home cutover (F1). TreeView takes the slot SessionListView
+         held: the phone's home frame AND the desktop sidebar's stack[0], the
+         SAME component in both layouts, because the swap is a route→component
+         mapping change and nothing more. SessionListView keeps its branch below,
+         now reached at `#/sessions`; it dies next slice, after the human gate.
+         The tree raises only `open` — the other emits belong to the nav strip
+         that still lives in the old list. -->
+    <TreeView
+      v-else-if="route.view === 'tree'"
+      @open="(appSessionId) => emit('open', index, appSessionId)"
     />
     <SessionListView
       v-else-if="sessionListRoute"

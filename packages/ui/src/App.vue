@@ -57,12 +57,14 @@ const store = useVimesStore();
 // wording — because writing the FULL stack would make a phone's URL multi-panel,
 // breaking the hard byte-identical requirement. The window is what a user sees
 // and would bookmark/share, so mirroring it is also the honest URL.
-// showSidebar (D39 #3): at desktop width the session list — which is ALREADY the
+// showSidebar (D39 #3): at desktop width the home surface — which is ALREADY the
 // root of every stack (stack[0], D40) — renders as fixed left-hand chrome (a
-// sidebar) instead of as a panel column. This is NOT a second list: it is the
-// SAME stack[0], rendered by the SAME PanelHost/SessionListView, just laid out as
-// a sidebar rather than windowed into the flex row. So nav, meters, new-session
-// and D40 all come for free with nothing to drift (the whole point of D39 #3).
+// sidebar) instead of as a panel column. This is NOT a second surface: it is the
+// SAME stack[0], rendered by the SAME PanelHost, just laid out as a sidebar
+// rather than windowed into the flex row. So D40 and everything the home view
+// carries come for free with nothing to drift (the whole point of D39 #3). Since
+// S15·U2 that home view is TreeView; the mechanism did not have to change to
+// carry it, which is the design working as intended.
 // Below desktop width showSidebar is false and the phone/tablet path is untouched.
 const { panelCount, showSidebar } = useLayoutMode();
 
@@ -73,19 +75,28 @@ const { panelCount, showSidebar } = useLayoutMode();
 // affordance differs.
 const backKind = computed<'back' | 'close'>(() => (showSidebar.value ? 'close' : 'back'));
 
-// The session list is home — the bottom of every navigation stack. A deep-link
-// or reload lands on just the visible window (e.g. `#/session/x` → [stream]); we
-// synthesize the list root beneath it so "back" always eventually reaches home,
-// matching today's `navigateHome` from any view. A window that already starts at
-// the session list (home, or `#/meters`, or a `#/stack/` beginning with it) is
-// left untouched. Only ever PREPENDS — never reshapes the visible window, so the
+// The TREE is home — the bottom of every navigation stack (S15·U2, F1; it was
+// the session list until the cutover). A deep-link or reload lands on just the
+// visible window (e.g. `#/session/x` → [stream]); we synthesize the home root
+// beneath it so "back" always eventually reaches home, matching today's
+// `navigateHome` from any view. A window that already starts at home is left
+// untouched. Only ever PREPENDS — never reshapes the visible window, so the
 // mirrored hash and the N=1 byte-identity are unaffected.
+//
+// ⚠ THIS IS THE ONE PLACE THE APP NAMES A NAVIGATION TARGET BY VIEW rather than
+// by parsing a hash, which is why the cutover had to be made here as well as in
+// route.ts. Everything else that "goes home" — closePanelAt's floor, the empty
+// mirrored hash, `initialHashFor`'s default — goes home by producing the EMPTY
+// HASH and letting parseRoute say what that means, so those needed no edit.
+// A consequence worth naming: `#/sessions` and `#/meters` now seed as
+// [tree, sessionList], so backing out of the old list lands on the tree instead
+// of flooring on the list itself.
 function seedStackFromHash(hashValue: string): PanelStack {
   const parsedWindow = parsePanelStack(hashValue);
-  if (parsedWindow[0]!.view === 'sessionList') {
+  if (parsedWindow[0]!.view === 'tree') {
     return parsedWindow;
   }
-  return [{ view: 'sessionList', expandMeters: false }, ...parsedWindow];
+  return [{ view: 'tree' }, ...parsedWindow];
 }
 
 const panelStack = ref<PanelStack>(seedStackFromHash(window.location.hash));
@@ -278,7 +289,8 @@ const visiblePanels = computed(() => {
 
 // ── the desktop sidebar split (D39 #3) ───────────────────────────────────────
 //
-// When showSidebar is true the sidebar renders stack[0] (the session list) and
+// When showSidebar is true the sidebar renders stack[0] (the home surface — the
+// tree since S15·U2) and
 // the CONTENT area renders the panels AFTER the root — stack.slice(1) — windowed
 // to the trailing (panelCount - 1), because the sidebar consumes one of the N
 // layout slots (desktop panelCount 3 → sidebar + up to 2 content columns). Each
@@ -287,8 +299,8 @@ const visiblePanels = computed(() => {
 // windowed range differs; the +1 restores the index the leading slice(1) drops.
 // (This computed is only READ in the showSidebar template arm; the v-else arm
 // still uses visiblePanels verbatim, so the phone path is untouched.)
-// The sidebar always renders the stack ROOT — stack[0], the session list. The
-// stack is never empty (seedStackFromHash prepends the list root, popPanel floors
+// The sidebar always renders the stack ROOT — stack[0], home. The
+// stack is never empty (seedStackFromHash prepends the home root, popPanel floors
 // at length 1), so the root is always present; the assertion just gives the
 // template a plain Route rather than Route | undefined.
 const sidebarRoute = computed<Route>(() => panelStack.value[0]!);
@@ -313,7 +325,7 @@ const contentPanels = computed(() => {
 //     byte-identity guarantee (D40) rests on it — do not reshape it.
 //   • Sidebar → mirror only the CONTENT window (the same routes contentPanels
 //     shows): stack.slice(1) trailing (panelCount - 1). seedStackFromHash re-adds
-//     the list root on reseed, so this round-trips; and one desktop stream mirrors
+//     the home root on reseed, so this round-trips; and one desktop stream mirrors
 //     to `#/session/x` — the SAME hash a phone produces for that state, so URLs
 //     stay portable across devices. Empty content → buildPanelStackHash([]) → ''
 //     → home.
@@ -669,26 +681,27 @@ function toggleSidebarCollapsed(): void {
       Loading projects…
     </div>
 
-    <!-- DESKTOP (D39 #3): the session list becomes ambient LEFT-HAND CHROME. This
-         is not a new list — it is stack[0] (already the stack root, D40) rendered
-         as a fixed-width sidebar via the SAME PanelHost/SessionListView instead of
+    <!-- DESKTOP (D39 #3): the home surface becomes ambient LEFT-HAND CHROME. This
+         is not a second copy — it is stack[0] (already the stack root, D40) rendered
+         as a fixed-width sidebar via the SAME PanelHost instead of
          as a windowed panel column. To its right, the CONTENT window (stack.slice(1)
-         trailing panelCount-1). Meters / new-session / nav ride along inside
-         SessionListView for free, so there is nothing to drift. -->
+         trailing panelCount-1). Whatever the home view carries rides along inside
+         it for free, so there is nothing to drift. -->
     <div v-else-if="showSidebar" class="flex min-h-0 flex-1">
       <!-- The sidebar column: fixed width, its own scroll, a right divider. It is
            CHROME, so it takes NO focus ring (:focused=false) and no @mousedown. It
            carries the SAME nav/@open handlers a content panel does (a click in the
-           list opens FROM index 0 → openPanelFrom truncates to [list] then pushes),
-           plus onPanelClick so an in-app hash link inside it pushes a panel rather
-           than hard-navigating the browser. -->
+           home view opens FROM index 0 → openPanelFrom truncates to [home] then
+           pushes), plus onPanelClick so an in-app hash link inside it pushes a
+           panel rather than hard-navigating the browser. -->
       <div
         v-if="!sidebarCollapsed"
         class="flex w-80 shrink-0 flex-col overflow-hidden border-r border-line"
         @click="onPanelClick($event, 0)"
       >
-        <!-- The session list scrolls on its OWN (SessionListView is h-full +
-             overflow-y-auto); this wrapper gives it the bounded height. The unit
+        <!-- The home view scrolls on its OWN (TreeView, like SessionListView
+             before it, is h-full + its own scroll frame); this wrapper gives it
+             the bounded height. The unit
              6b·1 frame structure is intact: an overflow-hidden column with the
              PanelHost in a min-h-0 flex-1 region. The theme-picker foot (added in
              6b·2) has MOVED to the persistent top bar (unit 6b·3a) so it is
