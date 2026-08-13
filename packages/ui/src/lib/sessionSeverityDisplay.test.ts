@@ -32,6 +32,7 @@ function baseSession(overrides: Partial<TreeSession> = {}): TreeSession {
     custody: 'host',
     severity: 'working',
     overlays: {},
+    createdAt: '2026-08-12T09:00:00.000Z',
     ...overrides,
   };
 }

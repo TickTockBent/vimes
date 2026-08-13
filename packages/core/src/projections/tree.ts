@@ -124,6 +124,11 @@ export interface TreeSession {
   readonly custody: SessionRecord['custody'];
   readonly severity: AttentionSeverity;
   readonly overlays: TreeOverlays;
+  // Copied verbatim from `SessionRecord.createdAt` — no derivation (S15-F3).
+  // The identity ladder's bottom rung renders this beside the 8-char
+  // distinguisher for nameless sessions; without it two hex strings sit
+  // side by side with nothing to tell them apart.
+  readonly createdAt: string;
 }
 
 /**
@@ -469,6 +474,7 @@ function buildSession(context: BuildContext, appSessionId: string): TreeSession 
       context.severityBySessionId.get(appSessionId) ??
       sessionSeverityOf(session.liveness, session.needsAttention),
     overlays: NO_OVERLAYS,
+    createdAt: session.createdAt,
   };
 }
 

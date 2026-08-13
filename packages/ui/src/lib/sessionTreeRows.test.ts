@@ -22,6 +22,7 @@ function session(appSessionId: string, overrides: Partial<TreeSession> = {}): Tr
     custody: 'host',
     severity: 'working',
     overlays: {},
+    createdAt: '2026-08-12T09:00:00.000Z',
     ...overrides,
   };
 }

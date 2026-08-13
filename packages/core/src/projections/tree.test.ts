@@ -896,7 +896,8 @@ describe('S14-F2 — root and node order are DURABLE across a canonicalJson roun
 
 describe('the leaf and the root carry what the contract says they carry', () => {
   it('a leaf carries the identity fields separately and a precomputed severity', () => {
-    const tree = treeFromFixture();
+    const { projects, nodes, sessions } = foldFixture();
+    const tree = treeOf(projects, nodes, sessions);
     const alfa = everyTreeNode(rootById(tree, projectRootId(PROJECT_VIMES))).find(
       (node) => node.nodeId === NODE_ALFA,
     )!;
@@ -916,7 +917,19 @@ describe('the leaf and the root carry what the contract says they carry', () => 
       custody: 'host',
       severity: 'working',
       overlays: {},
+      createdAt: sessions.sessions[SESSION_ATTACHED_FIRST]!.createdAt,
     });
+  });
+
+  // S15-F3: `createdAt` is a copy, not a derivation — the leaf's value is
+  // byte-identical to the source `SessionRecord`'s, for every session in the
+  // fixture, not just the one exact-equality check above happens to cover.
+  it('the leaf createdAt is a verbatim pass-through of the source record createdAt', () => {
+    const { projects, nodes, sessions } = foldFixture();
+    const tree = treeOf(projects, nodes, sessions);
+    for (const leaf of everySessionInTree(tree)) {
+      expect(leaf.createdAt).toBe(sessions.sessions[leaf.appSessionId]!.createdAt);
+    }
   });
 
   it('a project root carries its display name and its directory; unfiled carries neither', () => {
