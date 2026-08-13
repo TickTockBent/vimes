@@ -59,6 +59,28 @@ const SESSIONS_REFRESH_THROTTLE_MS = 1000;
 // way an out-of-date type list would.
 const TASKS_STREAM = 'tasks';
 
+// The tree's live channel (S15·F4, U3b — closing the S15·U3 finding below at
+// `createNode`). The daemon's `NodeWriter` is the ONE writer of `node_created`
+// / `node_closed` / `session_attached_to_node` (packages/daemon/src/app.ts:709,
+// where it is constructed with `emit: (events) => router.emit(events)`), and
+// every event it emits carries `stream: NODES_STREAM` from the event
+// factories in packages/core/src/events.ts:406 (`export const NODES_STREAM =
+// 'nodes'`), used at packages/daemon/src/nodeWriter.ts's `nodeCreated` /
+// `nodeClosed` / `sessionAttachedToNode` call sites. The literal below MUST
+// match that constant's value exactly — there is no shared import across the
+// daemon/UI boundary here, so this is a hand-verified string match, same as
+// `TASKS_STREAM` above.
+//
+// Stream-local rather than type-listed, exactly as `TASKS_STREAM` is: all
+// three node event types live on this one stream (events.ts:2102's own
+// comment says so), so "an event arrived on 'nodes'" is a complete trigger
+// condition. This constant only marks the stream as one this client keeps
+// live; the existing `TREE_AFFECTING_TYPES` check in `applyServerEnvelope`
+// (S15·U2) already fires the throttled tree refresh for these three types on
+// ANY subscribed stream — subscribing 'nodes' is what makes that check
+// reachable for events other than the acting tab's own optimistic refresh.
+const NODES_STREAM = 'nodes';
+
 // The wsHub upgrade handler (packages/daemon/src/app.ts) does not filter by
 // path at all — confirmed by packages/daemon/src/wsHub.test.ts connecting to
 // a bare `ws://host:port` with no path. `/ws` is used here for clarity only;
@@ -425,14 +447,15 @@ export const useVimesStore = defineStore('vimes', () => {
   // echo of the request. This is `declareProject`'s idiom (2xx → `fetchProjects`)
   // applied to the tree.
   //
-  // ⚠ **WHY THE EXPLICIT REFRESH EXISTS AT ALL.** `TREE_AFFECTING_TYPES` lists
-  // the three node events, and the daemon does emit them (`router.emit`), but
-  // this client subscribes only to session streams and `'tasks'` — never the
-  // `'nodes'` stream — so a node event reaches no browser today. Without the call
-  // below, an operator would create a node and watch nothing happen. Reported as
-  // a finding (S15·U3 checkpoint) rather than closed here: making node events
-  // PUSH to every client is a `subscribe('nodes')` decision about the whole
-  // client, not a side effect of the write surface.
+  // ⚠ **WHY THE EXPLICIT REFRESH EXISTS ANYWAY.** `TREE_AFFECTING_TYPES` lists
+  // the three node events, and since S15·F4 (U3b) the client DOES subscribe
+  // `NODES_STREAM` (see `init`) — so a node event now reaches every connected
+  // client's throttled `scheduleTreeRefresh` on its own. The explicit call
+  // below is NOT redundant with that: it exists for the acting tab's own
+  // request/response latency (the 2xx can beat the WS event or land on a tab
+  // that raced the subscribe), the same "2xx → throttled refetch" idiom every
+  // other write surface here uses, so the actor never depends on the wire
+  // round-trip for its own action to render.
   async function createNode(input: {
     projectId: string;
     parentNodeId: string | null;
@@ -1506,6 +1529,19 @@ export const useVimesStore = defineStore('vimes', () => {
     void refreshPushState();
     void refreshSessions();
     void fetchRoots();
+    // S15·F4 (U3b): unlike `TASKS_STREAM`, which a view (`TaskBoardView`)
+    // subscribes on its own mount via `watchTasks`, `NODES_STREAM` is
+    // subscribed HERE — once, unconditionally, at the one call site every
+    // client reaches regardless of which view is open (App.vue's mount) —
+    // because node events must reach every connected tab/phone, not only one
+    // that happens to have the tree mounted. `subscribe` only registers the
+    // stream in `subscribedStreams` and sends the op if a socket is already
+    // open (it is not, yet, here); the socket doesn't exist until `connect()`
+    // below, so this relies on the SAME generic resubscribe-on-open loop
+    // (`subscribedStreams` iterated in `connect`'s 'open' handler) that every
+    // other stream — session and `'tasks'` alike — already goes through. No
+    // bespoke wiring, no second code path.
+    subscribe(NODES_STREAM);
     connect();
   }
 
