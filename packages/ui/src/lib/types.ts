@@ -1,7 +1,9 @@
 // Minimal hand-duplicated shapes mirroring packages/core/src/schemas.ts and
-// events.ts. @vimes/core is not a sanctioned dependency of this package (see
-// checkpoint), so the wire/projection shapes this client actually reads are
-// re-declared narrowly here rather than imported.
+// events.ts. These narrow hand-mirrors remain the idiom for these shapes and
+// stay put (D87 rider 2 — no blanket migration). @vimes/core is sanctioned
+// ONLY as type-only imports of served payload-contract types (the tree
+// payload family, AttentionSeverity) per D87; core internals, folds,
+// schemas, projections, and runtime values stay banned.
 
 export type Liveness = 'spawning' | 'running' | 'dormant' | 'interrupted' | 'dead';
 // 'rate-limited' and 'brake' are reserved (rule 0.5): no setter emits them

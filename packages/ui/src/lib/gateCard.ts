@@ -1,8 +1,9 @@
 import type { EventRecord } from './types.js';
 
 // D68: hand-duplicated mirror of core's gateQuestionOptionSchema/gateQuestionSchema
-// (@vimes/core is not a sanctioned dependency here — see types.ts header). An
-// AskUserQuestion gate carries 1–4 of these; a real permission gate carries none.
+// (hand-mirror kept per D87 — only payload-contract type imports are
+// sanctioned; see types.ts header). An AskUserQuestion gate carries 1–4 of
+// these; a real permission gate carries none.
 export interface GateQuestionOption {
   label: string;
   description?: string;

@@ -14,7 +14,8 @@
 //
 // Mirrors packages/core/src/schemas.ts `sessionRecordSchema.pendingCorrectionAt`
 // (D5/D30) — same narrow-mirroring idiom as every other lib/ module in this
-// package (@vimes/core is not a sanctioned dependency, see types.ts header).
+// package (hand-mirror kept per D87 — only payload-contract type imports
+// are sanctioned; see types.ts header).
 
 import type { SessionRecord } from './types.js';
 

@@ -32,6 +32,7 @@
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4",
+    "@vimes/core": "*",
     "@vitejs/plugin-vue": "^6",
     "@vue/test-utils": "^2",
     "happy-dom": "^20",
