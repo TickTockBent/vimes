@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { TreeNode, TreeResponse, TreeRoot, TreeSession } from '@vimes/core';
-import { sessionTreeContainerIds, sessionTreeRows } from './sessionTreeRows.js';
+import type { ProjectView } from './projectContext.js';
+import {
+  sessionTreeContainerIds,
+  sessionTreeForeignRootHref,
+  sessionTreeRows,
+  sessionTreeScopedRootId,
+} from './sessionTreeRows.js';
 
 // Fixture builders keep every test focused on ORDER, not on filling out every
 // field of a large payload shape by hand — same idiom as
@@ -57,6 +63,16 @@ function root(rootId: string, overrides: Partial<TreeRoot> = {}): TreeRoot {
 
 function tree(roots: readonly TreeRoot[]): TreeResponse {
   return { orderVersion: 1, roots };
+}
+
+function projectView(projectId: string, overrides: Partial<ProjectView> = {}): ProjectView {
+  return {
+    projectId,
+    root: `/home/wes/projects/${projectId}`,
+    archived: false,
+    pathSegment: projectId,
+    ...overrides,
+  };
 }
 
 function rowIds(rows: ReturnType<typeof sessionTreeRows>): string[] {
@@ -243,8 +259,177 @@ describe('sessionTreeRows', () => {
   });
 });
 
+// ── S15·U7 / D90 — the scope gate ───────────────────────────────────────────
+//
+// A three-root estate: the tab's own project, a sibling project, and `unfiled`
+// — each with something under it, so "flattened" can never be confused with
+// "empty". Every scoping test below reads this same forest, the way a real tab
+// does: ONE payload, `GET /api/tree` unparameterized, gated only at render.
+const SCOPED_ROOT_ID = 'project:vimes';
+const SIBLING_ROOT_ID = 'project:johnny';
+
+function scopedEstate(): TreeResponse {
+  const ownSession = session('sess-own');
+  const ownNode = node('node-own', { sessions: [ownSession] });
+  const ownRoot = root(SCOPED_ROOT_ID, { name: 'vimes', nodes: [ownNode] });
+  // The sibling is deliberately LOUD: D90's whole cross-project attention
+  // channel is this rollup surviving the flattening.
+  const siblingSession = session('sess-sibling', { severity: 'gate_fired' });
+  const siblingNode = node('node-sibling', { sessions: [siblingSession] });
+  const siblingRoot = root(SIBLING_ROOT_ID, {
+    name: 'johnny',
+    nodes: [siblingNode],
+    rollup: { worst: 'gate_fired', processCount: 1 },
+  });
+  const unfiledRoot = root('unfiled', { sessions: [session('sess-unfiled')] });
+  return tree([ownRoot, siblingRoot, unfiledRoot]);
+}
+
+// Every container in the fixture, so "expanded" means expanded and a flattened
+// foreign root cannot be mistaken for a collapsed one.
+const EVERY_CONTAINER_ID = new Set([
+  SCOPED_ROOT_ID,
+  'node-own',
+  SIBLING_ROOT_ID,
+  'node-sibling',
+  'unfiled',
+]);
+
+describe('sessionTreeRows — D90 project scoping', () => {
+  it('the scoped root nests in full; every other root flattens to ONE foreign row with no sessions', () => {
+    const rows = sessionTreeRows(scopedEstate(), EVERY_CONTAINER_ID, SCOPED_ROOT_ID);
+
+    // The sibling's node and session rows are ABSENT — not dimmed, not
+    // collapsed-but-present: absent. The unfiled session likewise.
+    expect(rowIds(rows)).toEqual([
+      SCOPED_ROOT_ID,
+      'node-own',
+      'sess-own',
+      SIBLING_ROOT_ID,
+      'unfiled',
+    ]);
+
+    const scopedRow = rows.find((r) => r.id === SCOPED_ROOT_ID);
+    expect(scopedRow?.foreign).toBe(false);
+    expect(scopedRow?.expandable).toBe(true);
+    expect(scopedRow?.expanded).toBe(true);
+
+    const siblingRow = rows.find((r) => r.id === SIBLING_ROOT_ID);
+    expect(siblingRow?.foreign).toBe(true);
+    expect(siblingRow?.expandable).toBe(false);
+    expect(siblingRow?.expanded).toBe(false);
+    // U5 / D90: the rollup rides the same payload and stays reachable off the
+    // flattened row, so a gate under johnny still reads loud on johnny's row.
+    expect(siblingRow?.root?.rollup.worst).toBe('gate_fired');
+    expect(siblingRow?.root?.rollup.processCount).toBe(1);
+
+    // Nothing below depth 0 belongs to a foreign root: every non-root row is
+    // marked non-foreign, by construction.
+    expect(rows.filter((r) => r.foreign).map((r) => r.kind)).toEqual(['root', 'root']);
+  });
+
+  it('`unfiled` is foreign like any sibling — one row, no sessions (D90 accepted consequence)', () => {
+    const rows = sessionTreeRows(scopedEstate(), EVERY_CONTAINER_ID, SCOPED_ROOT_ID);
+
+    const unfiledRow = rows.find((r) => r.id === 'unfiled');
+    expect(unfiledRow?.kind).toBe('root');
+    expect(unfiledRow?.foreign).toBe(true);
+    expect(unfiledRow?.expandable).toBe(false);
+    expect(rows.some((r) => r.id === 'sess-unfiled')).toBe(false);
+  });
+
+  it('a foreign root CANNOT be expanded by the expansion set — the scope wins over stale ids', () => {
+    // The exact race this guards: the first tree payload can land before the
+    // registry resolves the segment, so the view may have seeded an expansion
+    // set from the UNSCOPED walk. Those ids must be inert once a scope exists.
+    const rows = sessionTreeRows(scopedEstate(), EVERY_CONTAINER_ID, SCOPED_ROOT_ID);
+
+    for (const foreignId of [SIBLING_ROOT_ID, 'unfiled']) {
+      const foreignRow = rows.find((r) => r.id === foreignId);
+      expect(foreignRow?.expanded).toBe(false);
+      expect(foreignRow?.expandable).toBe(false);
+    }
+  });
+
+  it('a scope naming a root the payload does not contain flattens EVERYTHING rather than inventing a home', () => {
+    const rows = sessionTreeRows(scopedEstate(), EVERY_CONTAINER_ID, 'project:not-in-payload');
+
+    expect(rowIds(rows)).toEqual([SCOPED_ROOT_ID, SIBLING_ROOT_ID, 'unfiled']);
+    expect(rows.every((r) => r.foreign)).toBe(true);
+  });
+
+  it('NO SCOPE is the pre-U7 full tree, byte for byte (D90 leaves the unscoped tab alone)', () => {
+    const payload = scopedEstate();
+
+    const unscoped = sessionTreeRows(payload, EVERY_CONTAINER_ID);
+    const explicitlyNullScope = sessionTreeRows(payload, EVERY_CONTAINER_ID, null);
+
+    // Byte-equality of the two call forms: passing the scope parameter as null
+    // may never become a different code path from omitting it.
+    expect(JSON.stringify(explicitlyNullScope)).toBe(JSON.stringify(unscoped));
+
+    // …and that shared output is the WHOLE forest, every root expanded, which
+    // is what the tree did before this unit. Stated as the literal walk so a
+    // scoping rule that leaked into the unscoped path reddens here.
+    expect(rowIds(unscoped)).toEqual([
+      SCOPED_ROOT_ID,
+      'node-own',
+      'sess-own',
+      SIBLING_ROOT_ID,
+      'node-sibling',
+      'sess-sibling',
+      'unfiled',
+      'sess-unfiled',
+    ]);
+    expect(unscoped.some((r) => r.foreign)).toBe(false);
+  });
+});
+
+describe('sessionTreeScopedRootId', () => {
+  it('turns the resolved project record into the root id the payload uses', () => {
+    // Binding assertion: the id this builds is the id the tree payload uses for
+    // that project — the mirrored `project:` grammar, checked against a fixture
+    // root rather than against itself.
+    const scopedRootId = sessionTreeScopedRootId(projectView('vimes'));
+    expect(scopedRootId).toBe(SCOPED_ROOT_ID);
+    expect(scopedEstate().roots[0]?.rootId).toBe(scopedRootId);
+  });
+
+  it('no project → no scope', () => {
+    expect(sessionTreeScopedRootId(null)).toBeNull();
+  });
+});
+
+describe('sessionTreeForeignRootHref', () => {
+  const registry = [
+    projectView('johnny', { pathSegment: 'infrastructure/johnny' }),
+    projectView('archived-one', { archived: true }),
+    projectView('is-a-root', { pathSegment: '' }),
+    projectView('outside-the-fence', { pathSegment: null }),
+  ];
+
+  it('an addressable sibling links to its OWN tab, in ProjectPickerView URL shape, verbatim', () => {
+    expect(sessionTreeForeignRootHref('project:johnny', registry)).toBe('/infrastructure/johnny/');
+  });
+
+  it('unfiled has no tab, so it gets no link', () => {
+    expect(sessionTreeForeignRootHref('unfiled', registry)).toBeNull();
+  });
+
+  it('archived, root-itself, and outside-the-fence projects render without navigation', () => {
+    expect(sessionTreeForeignRootHref('project:archived-one', registry)).toBeNull();
+    expect(sessionTreeForeignRootHref('project:is-a-root', registry)).toBeNull();
+    expect(sessionTreeForeignRootHref('project:outside-the-fence', registry)).toBeNull();
+  });
+
+  it('a root whose project is not in the registry gets no link (never a guessed URL)', () => {
+    expect(sessionTreeForeignRootHref('project:unknown', registry)).toBeNull();
+    expect(sessionTreeForeignRootHref('project:johnny', [])).toBeNull();
+  });
+});
+
 describe('sessionTreeContainerIds', () => {
-  it('returns every root + node id, served order, no session ids', () => {
+  it('unscoped: returns every root + node id, served order, no session ids', () => {
     const leafSession = session('sess-a');
     const innerNode = node('node-inner', { sessions: [leafSession] });
     const outerNode = node('node-outer', { nodes: [innerNode] });
@@ -261,8 +446,64 @@ describe('sessionTreeContainerIds', () => {
     expect(ids).toEqual(['project:p', 'node-outer', 'node-inner']);
   });
 
-  it('an all-empty payload yields no container ids', () => {
+  it('unscoped: an all-empty payload yields no container ids', () => {
     const payload = tree([root('unfiled')]);
     expect(sessionTreeContainerIds(payload)).toEqual([]);
+  });
+
+  // ── S15·U7 / D90 — expansion init, scoped ─────────────────────────────────
+  //
+  // This list IS the expansion default. Under a scope it must open the tab's
+  // own project once (its whole subtree, as expand-all behaved within one
+  // root) and must never name a foreign container — a foreign id in the seeded
+  // set would be a latent instruction to open a sibling estate.
+  it('scoped: only the scoped root and its own nodes — no foreign root id, no foreign node id', () => {
+    const ids = sessionTreeContainerIds(scopedEstate(), SCOPED_ROOT_ID);
+
+    expect(ids).toEqual([SCOPED_ROOT_ID, 'node-own']);
+    expect(ids).not.toContain(SIBLING_ROOT_ID);
+    expect(ids).not.toContain('node-sibling');
+    expect(ids).not.toContain('unfiled');
+  });
+
+  it('scoped: the whole subtree of the scoped root opens, at every depth', () => {
+    const deepLeaf = session('sess-deep');
+    const innerNode = node('node-inner', { sessions: [deepLeaf] });
+    const outerNode = node('node-outer', { nodes: [innerNode] });
+    const ownRoot = root(SCOPED_ROOT_ID, { nodes: [outerNode] });
+    const siblingRoot = root(SIBLING_ROOT_ID, { nodes: [node('node-sibling', { sessions: [session('s')] })] });
+    const payload = tree([ownRoot, siblingRoot]);
+
+    const ids = sessionTreeContainerIds(payload, SCOPED_ROOT_ID);
+    expect(ids).toEqual([SCOPED_ROOT_ID, 'node-outer', 'node-inner']);
+
+    // And that seeded set really does render the scoped estate fully open,
+    // while the sibling stays one row — the two halves of the unit, joined.
+    const rows = sessionTreeRows(payload, new Set(ids), SCOPED_ROOT_ID);
+    expect(rowIds(rows)).toEqual([
+      SCOPED_ROOT_ID,
+      'node-outer',
+      'node-inner',
+      'sess-deep',
+      SIBLING_ROOT_ID,
+    ]);
+  });
+
+  it('scoped: a scope naming no root in the payload yields no ids at all', () => {
+    expect(sessionTreeContainerIds(scopedEstate(), 'project:not-in-payload')).toEqual([]);
+  });
+
+  it('no scope: the container list is unchanged from the unscoped call, byte for byte', () => {
+    const payload = scopedEstate();
+    expect(JSON.stringify(sessionTreeContainerIds(payload, null))).toBe(
+      JSON.stringify(sessionTreeContainerIds(payload)),
+    );
+    expect(sessionTreeContainerIds(payload)).toEqual([
+      SCOPED_ROOT_ID,
+      'node-own',
+      SIBLING_ROOT_ID,
+      'node-sibling',
+      'unfiled',
+    ]);
   });
 });

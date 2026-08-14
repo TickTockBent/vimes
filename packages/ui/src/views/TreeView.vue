@@ -37,9 +37,29 @@
 // refetch and this component changes nothing about `store.tree`. The only
 // optimism is disabling the affordance that was tapped while its round trip is
 // in flight (the gate-card precedent).
+// ─── S15·U7 — the SCOPE gate (D90, closing S15-F8) ───────────────────────────
+//
+// One project per tab. This view renders the tab's own project in full and
+// every other root — siblings and `unfiled` — as a single row that carries its
+// rollup and nothing else: no sessions, no chevron, no `⋯`. A sibling row that
+// is URL-addressable is a REAL `<a href="/<segment>/">`, so tapping it is a
+// full navigation to that project's own tab, exactly as ProjectPickerView's
+// rows are (and NOT a panel push — `panelLinkClick` only ever intercepts `#/`
+// hrefs, so this needs no opt-out).
+//
+// ⚠ **THE SCOPE IS READ, NEVER RE-DERIVED.** App.vue resolves
+// `location.pathname` → `store.currentProject` once per document
+// (`parseProjectPath`/`resolveProject`, D61); this file asks the store. And the
+// FETCH IS UNCHANGED: `GET /api/tree` stays parameterless and the whole forest
+// still arrives — that is what lets a sibling's gate read loud from here.
 import { computed, onMounted, ref, watch } from 'vue';
 import { useVimesStore } from '../stores/vimesStore.js';
-import { sessionTreeContainerIds, sessionTreeRows } from '../lib/sessionTreeRows.js';
+import {
+  sessionTreeContainerIds,
+  sessionTreeForeignRootHref,
+  sessionTreeRows,
+  sessionTreeScopedRootId,
+} from '../lib/sessionTreeRows.js';
 import {
   rollupWorstDisplay,
   sessionRowTreatment,
@@ -83,6 +103,20 @@ const store = useVimesStore();
 // when empty).
 const UNFILED_ROOT_ID = 'unfiled';
 
+// The root id this tab is scoped to (`project:<projectId>`), or null for an
+// unscoped tab — a bare host, an unresolved segment, or a `/#/session/x` deep
+// link, all of which keep the pre-U7 full tree (D90 left the landing surface
+// unpriced, and this view must not invent a policy for it).
+const scopedRootId = computed(() => sessionTreeScopedRootId(store.currentProject));
+
+// Has the registry read SETTLED? `currentProject` is null both before the
+// registry lands and when there genuinely is no scope, and those two must not
+// be confused: seeding the expansion default from the "not yet" null would open
+// every sibling estate. A FAILED read counts as settled (App.vue's own rule for
+// the same fork) — an unreadable registry means no scope is knowable, and the
+// honest fallback is the unscoped tree, not a permanently collapsed one.
+const scopeSettled = computed(() => store.projectsLoaded || store.projectsUnreachable);
+
 // ── expansion state (ephemeral, per tab) ────────────────────────────────────
 //
 // IN-MANDATE, RECORDED: default FULLY EXPANDED, and nothing is persisted this
@@ -90,21 +124,27 @@ const UNFILED_ROOT_ID = 'unfiled';
 // see; a tree that remembers a collapse across reloads can hide a gate that
 // fired while the tab was closed. Both are decisions worth revisiting with real
 // data, and neither is worth a storage key before then.
+//
+// S15·U7 narrows the DEFAULT, not the rule: under a scope it is the scoped
+// root's whole subtree that opens (`sessionTreeContainerIds(payload, scope)`
+// never names a foreign container), and a foreign row cannot be opened by hand
+// either, because `sessionTreeRows` refuses to expand one.
 const expandedIds = ref<ReadonlySet<string>>(new Set<string>());
-// Whether the expand-all default has been applied. It runs ONCE, on the first
-// payload — a later refresh must not re-expand branches the operator collapsed,
-// and TREE_AFFECTING_TYPES makes refreshes frequent enough that re-applying it
-// would fight the operator's hands mid-scroll.
+// Whether the expansion default has been applied. It runs ONCE, on the first
+// payload that arrives with the scope settled — a later refresh must not
+// re-expand branches the operator collapsed, and TREE_AFFECTING_TYPES makes
+// refreshes frequent enough that re-applying it would fight the operator's
+// hands mid-scroll.
 let expansionInitialized = false;
 
 watch(
-  () => store.tree,
-  (payload) => {
-    if (payload === null || expansionInitialized) {
+  [() => store.tree, scopeSettled],
+  ([payload, settled]) => {
+    if (payload === null || !settled || expansionInitialized) {
       return;
     }
     expansionInitialized = true;
-    expandedIds.value = new Set(sessionTreeContainerIds(payload));
+    expandedIds.value = new Set(sessionTreeContainerIds(payload, scopedRootId.value));
   },
   { immediate: true },
 );
@@ -122,8 +162,16 @@ function toggleExpansion(containerId: string): void {
 }
 
 const rows = computed(() =>
-  store.tree === null ? [] : sessionTreeRows(store.tree, expandedIds.value),
+  store.tree === null ? [] : sessionTreeRows(store.tree, expandedIds.value, scopedRootId.value),
 );
+
+// A foreign root's link to its own tab, or null when it is not URL-addressable
+// (`unfiled`, an archived record, a project that IS a configured root or sits
+// under none). The registry the store already holds is the only source; a
+// missing segment renders as no navigation rather than a guessed URL.
+function foreignHref(rootId: string): string | null {
+  return sessionTreeForeignRootHref(rootId, store.projects);
+}
 
 // ── presentation maps (tokens only — ui-doctrine §3) ────────────────────────
 //
@@ -391,11 +439,76 @@ onMounted(() => {
 
       <ul>
         <template v-for="row in rows" :key="row.id">
+          <!-- ── FOREIGN ROOT (S15·U7 / D90) ────────────────────────────────
+               A sibling project, or `unfiled`, in a tab that belongs to some
+               OTHER project. ONE row: no sessions under it, no chevron, and no
+               `⋯` — there is nothing here to write to, because writing happens
+               in the project's own tab.
+
+               ⚠ THE ROLLUP STAYS HONEST (U5). The glyph and count come off the
+               same payload and the same mapping the scoped root uses, so a
+               `gate_fired` under johnny reads exactly as loud on johnny's row
+               as it would inside johnny's tree. Flattening hides SESSIONS, not
+               severity — that is the whole cross-project attention channel D90
+               left in place.
+
+               The name is `ink-dim` because this row is context, not this
+               tab's estate; the severity glyph keeps its own tone, so the
+               dimming can never mute a gate (the two channels stay apart). -->
+          <li
+            v-if="row.kind === 'root' && row.foreign && row.root !== null"
+            class="flex items-stretch"
+          >
+            <!-- A REAL `<a>` when the project is URL-addressable: tapping it is
+                 a full navigation to that project's own tab (D42's one project
+                 per tab), never a panel push — `panelLinkClick` intercepts only
+                 `#/` hrefs, so this falls through to the browser by itself.
+                 When there is no segment to link to (`unfiled`, an archived or
+                 unaddressable record) the row renders as a plain `div`: inert,
+                 still legible, still loud if its rollup says so. -->
+            <component
+              :is="foreignHref(row.id) === null ? 'div' : 'a'"
+              :href="foreignHref(row.id) ?? undefined"
+              class="flex min-h-[36px] min-w-0 flex-1 items-center gap-2 px-3 py-1 text-left"
+              :class="foreignHref(row.id) === null ? '' : 'active:bg-panel-sunken'"
+              :title="
+                foreignHref(row.id) === null
+                  ? undefined
+                  : `Open ${row.root.name} in its own tab`
+              "
+            >
+              <!-- Alignment only, deliberately EMPTY: a foreign row has no
+                   chevron because it has nothing to expand. -->
+              <span class="w-3 shrink-0" aria-hidden="true"></span>
+              <span class="min-w-0 flex-1 truncate font-mono text-sm text-ink-dim">{{
+                row.root.name
+              }}</span>
+              <!-- The second channel for "this one goes somewhere" (U7): a
+                   word, not colour alone. Absent on rows that cannot navigate,
+                   so the affordance never lies about what a tap will do. -->
+              <span
+                v-if="foreignHref(row.id) !== null"
+                class="shrink-0 font-mono text-[10px] uppercase text-ink-dim"
+              >open ›</span>
+              <span class="flex shrink-0 items-baseline gap-1 font-mono text-xs tabular-nums">
+                <span
+                  :class="TONE_TEXT_CLASS[rollupWorstDisplay(row.root.rollup.worst).tone]"
+                  :title="row.root.rollup.worst ?? 'no processes'"
+                >{{ rollupWorstDisplay(row.root.rollup.worst).glyph }}</span>
+                <span class="text-ink-dim" :title="`${row.root.rollup.processCount} processes`">{{
+                  row.root.rollup.processCount
+                }}</span>
+              </span>
+            </component>
+          </li>
+
           <!-- ── ROOT ───────────────────────────────────────────────────────
                A project's virtual root, or the singleton `unfiled` — which the
                payload already puts LAST and which reads quiet, because it is a
-               statement about what nothing has claimed rather than a place. -->
-          <li v-if="row.kind === 'root' && row.root !== null" class="flex items-stretch">
+               statement about what nothing has claimed rather than a place.
+               In a scoped tab this is the tab's OWN project and nothing else
+               (D90); in an unscoped one it is every root, as before. -->
+          <li v-else-if="row.kind === 'root' && row.root !== null" class="flex items-stretch">
             <button
               type="button"
               class="flex min-h-[36px] min-w-0 flex-1 items-center gap-2 py-1 pl-3 text-left active:bg-panel-sunken"
