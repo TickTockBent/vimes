@@ -73,12 +73,19 @@ function severityOfAttentionReason(reason: AttentionReason): AttentionSeverity {
       return 'gate_fired';
     case 'question':
       return 'waiting_input';
-    // ⚠ A FINISHED RUN IS A DECISION, NOT AN ERROR (§3b). `completed` raises
-    // attention because somebody has to acknowledge the result and say what
-    // happens next — that is the same shape of ask as a question, and pricing it
-    // at `error` would make every successful run shout.
+    // ⚠ COMPLETION IS A TERMINAL FACT, NOT AN ASK (D88, superseding §3b's
+    // original "somebody has to acknowledge the result" pricing). Attention
+    // marks work asking for input; a session that finished has nothing left
+    // to ask — pricing it at `waiting_input` made a 17-day-quiet, already-
+    // delivered session read identically to one genuinely blocked on a human
+    // (S15-F6). The ask-shaped residue of a finished run, when there is one,
+    // belongs to the deliverable/next-step, not to the session's own row.
+    // `run_completed` still SETS `needsAttention{reason:'completed'}`
+    // (deliberately unchanged, D88) — the completion push notification and
+    // the `run_completed` row in the stream remain the completion evidence;
+    // only the PRICE moves here, in this pure join, with zero migration.
     case 'completed':
-      return 'waiting_input';
+      return 'idle';
     case 'stale':
       return 'error';
     case 'quarantined':

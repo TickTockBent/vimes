@@ -38,8 +38,10 @@ const EVERY_ATTENTION_REASON: readonly AttentionReason[] = [
 const SEVERITY_BY_ATTENTION_REASON: Readonly<Record<AttentionReason, AttentionSeverity>> = {
   gate: 'gate_fired',
   question: 'waiting_input',
-  // A finished run awaiting acknowledgment is a decision, not an error.
-  completed: 'waiting_input',
+  // D88: completion is a terminal fact, not an ask — the session has nothing
+  // left to ask for, so it prices at idle (was waiting_input under §3b,
+  // superseded by S15-F6's finding that the old pricing read as noise).
+  completed: 'idle',
   stale: 'error',
   quarantined: 'error',
   // Reserved, no emitter — ranked AT reservation (E2-b pin 1). Loud beats quiet.
