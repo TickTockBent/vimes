@@ -287,6 +287,70 @@ propagation. Lesson attached to [[grep-hits-are-not-endorsements]]'s
 family: asserting a set's membership is not asserting the plumbing behind
 it.
 
+**S15-F5 (2026-08-14, HUMAN GATE, SIGNED + CLOSED same day — ⟨Wes⟩ "Zap
+that bug" → fix unit U5 `3abc41f`, deployed; ⟨Wes⟩ live-confirmed "every
+tested session opens as expected").** During ⟨Wes⟩'s gate walk, sessions opened from the tree
+rendered a BLANK body on first open, then "healed" on later opens —
+looking exactly like replay lag. The full evidence chain exonerates every
+data layer: daemon replay is instant and complete (tcpdump on loopback
+during the live clicks: full 150KB replay pushed <3ms after the subscribe
+ack, zero backpressure closes, no tunnel errors), client→daemon ops land
+(`seen` events in the log from the same clicks), the UI's own
+`parseServerEnvelope` drops nothing (133/133 against the real bytes), and
+every lib derivation is total over every PREFIX of every one of the 47
+production streams (7,156 prefixes, 0 throws — replay arrives
+incrementally, so prefixes are the honest test). The break is
+PRESENTATION: with a "blank" panel open, merely opening devtools makes
+the missing text POP into view as the tiles re-lay out (⟨Wes⟩, observed
+live). Content is in the DOM; a layout/paint state that any reflow
+(resize, remount) repairs is hiding it. Symptom profile: first-open with
+async replay fill = blank; re-open from filled store = fine; tiny streams
+(2949f798, 5 messages) = fine. Suspect territory is the S15·U2 panel-tile
+rewiring around the tree home (StreamView's own scroller idiom
+`min-h-0 flex-1 overflow-y-auto` predates S15 and its follow logic reads
+correct).
+
+**MECHANISM PINNED (2026-08-14, ⟨Wes⟩'s inspector probe: blank `<main>`
+has normal geometry, `scrollHeight`=`clientHeight`, `innerText:""` — the
+event list renders EMPTY, it is not hidden).** The chain:
+`PanelHost.vue` renders `StreamView` with **no `:key`** (the EditorView
+branch one `v-if` above carries `:key="editorRoute.path"` — the idiom
+exists in-file and StreamView missed it), and App.vue keys PanelHosts by
+`trueIndex`. `openPanelFrom` replaces a stack slot's route in ONE update
+(truncate+push), so opening session B while a stream panel occupies that
+slot REUSES the mounted StreamView with a swapped `appSessionId` prop —
+and `onMounted` (the ONLY site of `store.subscribe` + `markSeen`) never
+re-runs. B's stream is never subscribed; no replay is ever requested; the
+events computed reads an empty store entry reactively forever. Every
+observation maps: fresh mounts work (page-load remembered panels, first
+push at a new index); opening devtools narrows the viewport, flips the
+desktop-stack↔phone layout arm, REMOUNTS the views → subscribe fires →
+the "missing" text pops in "as the tiles adjust"; "healing" is
+`subscribedStreams` accumulating per page-session (once any mount
+subscribed a stream, its events persist in the store and later
+reuse-opens render instantly — and reconnect resubscribes replay them
+all, so heals arrive in batches); the phone arm was mostly immune because
+back-pops unmount panels (two renders → real remounts). LATENT SINCE THE
+D39–D41 DESKTOP STACK; surfaced hard by S15 because driving from the
+persistent tree replaces the adjacent panel constantly. The daemon, the
+tunnel, the WS protocol, the parser, and every lib derivation were
+exonerated by direct evidence before the client was opened.
+
+**Proposed resolution (fix unit, awaiting ⟨Wes⟩ sign-off):**
+`:key="streamRoute.appSessionId"` on the StreamView branch in
+PanelHost.vue — the in-file EditorView precedent; a remount resets
+exactly the per-session state (scroll follow, seen-on-view, composer)
+that SHOULD reset when the session changes. The unit also lands the
+FIRST component-mount test (@vue/test-utils + happy-dom sit unused in
+devDependencies): mount PanelHost at stream(A), swap the route to
+stream(B), assert the store saw subscribe(B); sabotage = drop the `:key`
+→ test reddens. Same-trap audit of the sibling keyless branches
+(FileTreeView/initialDir at minimum) rides along as a REPORT, not a
+blanket fix (S14-F1 lesson). Machine-gate escape is structural: nothing
+in the gates mounts a `.vue`; this unit closes that hole with the first
+mounted assertion. Rule 0.1: the human gate HALTS here until the fix
+lands and ⟨Wes⟩ re-walks the tree flow.
+
 ## §6. Gates & kill criteria
 
 **Machine gate:** suite green ×2 (prior slices included), vue-tsc green,
