@@ -2851,3 +2851,40 @@ distinctly.) The completion push notification stays — it, plus the
 **D83 is untouched:** seen still never reads as handled, for the reasons
 D83 holds — this decision quiets `completed`, it does not make viewing an
 acknowledgment.
+
+## D90 — The home tree gates by the tab's project; sibling estates are rows, not trees — DECIDED 2026-08-14
+
+*(⟨Wes⟩, at the slice-15 human gate, via finding S15-F8 — the walk found
+the vimes tab rendering every project's sessions, expand-all, unsorted:
+"we don't need the whole tree of everything I've ever worked on in every
+project… if I had other projects running with attention flags I'd never
+see them.")*
+
+**The model, reaffirmed:** one project per tab (D42). The home tree in a
+project-scoped tab shows: **this project's estate in full** (nodes,
+sessions, the working tree as built in S15) — and **every other root —
+sibling projects and unfiled — as a single row with NO sessions**,
+wearing its attention rollup glyph. A sibling row that is URL-addressable
+navigates to that project's own tab; the human opens it there. Cross-
+project attention reaches the operator through the row glyph plus the
+existing push alerts; **recorded as direction, not built:** a scoped tab
+whose OWN project raises attention while backgrounded may flash/badge its
+browser tab.
+
+**Mechanics pinned:** the client KEEPS fetching the whole forest
+(`GET /api/tree`, no parameters) — the sibling rollups ride the same
+payload, one fetch mode, and the S15·U2 single-source argument stands:
+the scope fact lives in the URL, its rendering in the view. The daemon's
+`?root=` filter stays shipped-unconsumed. A tab with NO project scope
+(bare host) keeps the full tree until the landing surface is priced —
+that question is not this decision.
+
+**Consequence, accepted knowingly:** unfiled sessions are unreachable
+from any scoped tab (row + glyph only; unfiled has no tab). They remain
+reachable via `#/sessions` while it lives; slice-16's deletion skeleton
+MUST price unfiled's new home before the list dies.
+
+**Also dissolved by this decision:** most of the walk's sorting
+complaint (a scoped tree renders one project's served order, a far
+smaller room); S15-F7's stale mirrors drop behind unfiled's collapsed
+row (the conclude-mirror verb stays wanted, unhurried).

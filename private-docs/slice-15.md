@@ -381,6 +381,24 @@ session). Fix unit U6; the pure join means the whole debt quiets on
 deploy with zero migration; walk resumes at step 2 after the core
 deploy + restart.**
 
+**S15-F8 (2026-08-14, HUMAN GATE, SIGNED same day → D90 — the tree
+ignores the tab's project scope).** The walk found the vimes tab
+rendering the ENTIRE forest — every project's sessions, expand-all-once,
+served order across projects — so vimes+johnny ran the estate off the
+screen and a third project's attention glyph could scroll out of sight
+entirely. Root cause is an orchestrator gap: the S15·U2 fetch comment
+recorded "scoping is expand/collapse state in the view" as the design,
+but no unit ever implemented the scoping half — the skeleton never
+priced it, and the daemon's `?root=` filter (S14-A10) sits consumed by
+nobody. ⟨Wes⟩'s ruling (verbatim intent): one project per tab; the tree
+shows THIS project's estate in full, other roots as rows-without-
+sessions wearing their rollup glyphs; the human opens that project's own
+tab to look inside. Full decision + accepted consequences (unfiled
+unreachable from scoped tabs until slice-16 prices its home) in D90.
+Fix unit U7 (client-only; the whole-forest fetch stays). Walk findings
+tally: F5 (blank panels), F6 (completed pricing), F8 (scope) — three
+structural catches in one gate walk; the gate is earning its keep.
+
 ## §6. Gates & kill criteria
 
 **Machine gate:** suite green ×2 (prior slices included), vue-tsc green,

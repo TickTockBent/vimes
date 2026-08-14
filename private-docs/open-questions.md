@@ -29,7 +29,7 @@ records in decisions.md; the notable refinements Wes added over the leans:*
 
 ---
 
-## D73 — What should the CLI version pin MEAN? *(trigger: fired — the pin has drifted three times in five days and the warning now carries no information; Wes raised it 2026-08-11. UPDATE 2026-08-12: FOUR bumps in six days — observed 2.1.228 at both slice-13 deploys, pin still 2.1.224; both boots warned, both warnings carried no information. DATUM #5 same day: the slice-14 deploy boot warned identically — three consecutive uninformative warnings. DATUM #6 (2026-08-13, S15 deploy): identical again — expected=2.1.224 observed=2.1.231. Four in a row. The lean below unchanged and strengthening.)*
+## D73 — What should the CLI version pin MEAN? *(trigger: fired — the pin has drifted three times in five days and the warning now carries no information; Wes raised it 2026-08-11. UPDATE 2026-08-12: FOUR bumps in six days — observed 2.1.228 at both slice-13 deploys, pin still 2.1.224; both boots warned, both warnings carried no information. DATUM #5 same day: the slice-14 deploy boot warned identically — three consecutive uninformative warnings. DATUM #6 (2026-08-13, S15 deploy): identical again — expected=2.1.224 observed=2.1.231. Four in a row. DATUM #7 (2026-08-14, U6 deploy): expected=2.1.224 observed=2.1.232. Five in a row; the observed version has now moved four times against one unmoved pin. The lean below unchanged and strengthening.)*
 
 **The observation that opened it (Wes, 2026-08-11):** *"maybe we pin just the
 major version and leave the minors?"* — after the pin missed twice in a row
@@ -519,3 +519,22 @@ pattern). Cross-refs: D88, D59 (task_commented's emitter question is the
 same "who may write on a task" family), extension-model.md §5 threat
 framing (an attention-raising extension is an interrupt-the-human
 capability — it belongs in the permission model).
+
+## D91 — Session naming: the sea of "You are a worker session that…"
+
+*(Raised ⟨Wes⟩ 2026-08-14 at the slice-15 human gate: dispatched workers
+all open with the same briefing prefix, so the tree renders dozens of
+identical labels.)*
+
+**Trigger:** slice-16 skeleton (the deletion map already carries
+`renameSession` as an orphaned store action needing a ruling — same
+family, decide together).
+
+**Lean, three prongs:** (i) NAME AT CREATION — the dispatch path already
+carries a name slot on spawn; workers get named from their task title
+going forward (daemon-side, small). (ii) DERIVATION FALLBACK for history —
+`resolveSessionLabel` learns to skip briefing boilerplate and find the
+first distinguishing line (client lib, tested). (iii) RENAME AFFORDANCE —
+`renameSession` exists store-side today and dies with sessionList unless
+rehomed; the tree's ⋯ sheet is its natural landing. No naming work is
+scheduled inside slice 15.

@@ -48,3 +48,17 @@ refresh, so the gauge keeps data without the view.
 **Test blast radius:** route.test.ts (fallback table, ROUTE_PRECEDENCE,
 round-trips, navigateHome), panelStack.test.ts (empty-hash identity case),
 the two dying lib test files, meterAlerts.test.ts pins '/#/meters'.
+
+## Post-D90 addition (2026-08-14): unfiled's home — SEVENTH decision for the skeleton
+
+D90 (tree gated by tab scope) knowingly made unfiled sessions unreachable
+from every scoped tab — reachable today only through `#/sessions`, which
+this map deletes. The skeleton must price unfiled's home BEFORE the list
+dies. **⟨Wes⟩'s lean, same day:** don't assume core UI owns this — "we
+could easily build an extension that handles nonscoped sessions" — i.e.
+unfiled triage may be the extension model's first real UI tenant
+(principle #15; same neighborhood as D89's attention-mechanism edge and
+D75's surface placement). Core's floor if the extension route is chosen:
+the data stays served (unfiled root + rollup in `GET /api/tree`), and
+SOME reachable surface must exist before deletion — even if that surface
+is "the picker at bare `/` still shows the full forest" as the interim.
