@@ -1,0 +1,2245 @@
+# Calibration — the measurement record
+
+Pinned budgets and bands, probe and spike results, and the measurement methods
+that produced them. **Bands are pinned with their assumptions** (workload
+profile, device, network condition), never as bare numbers, and never
+unreviewed (Gate-D).
+
+## Status
+
+**No bands pinned yet** — the harness is pending (slice 0). Until `--report`
+mode runs and Wes prices the results, every ⟨tune⟩ number is a placeholder and
+every budget assertion is PREVIEW, never FAIL-able.
+
+## Scenario profiles (measurement instruments)
+
+The six profiles from spec §7. Findings are relational — variants run
+side-by-side through multiple profiles, never one alone. CI runs every scenario
+twice; byte-identical event logs and final projections required.
+
+| Profile | Script / policy | What it proves |
+|---|---|---|
+| happy-path-desktop | spawn, converse, tool calls, complete, seen, cleared | baseline projections (regression instrument, not an experience claim) |
+| flaky-mobile | subscribe, drop mid-stream, gate fires offline, short-gap and very-long-gap returns; backpressure drop | I2 one-path replay; notification event emitted while offline |
+| concurrent-clash | two clients, one session; resume mid-run; explicit fork; simultaneous clear-attention | I11, I3, I5 single-transition |
+| cold-restart | host dies mid-run, 3 live sessions, one needing attention; restart | I5 attention survives; I3/I4 on resume; I6 snapshot+tail ≡ from-empty |
+| hostile-input | truncated/interleaved JSONL, unknown event types, absurd counts; path-traversal uploads; unauth + forged-JWT probes (HTTP, WS upgrade, PTY) | I8, I14 |
+| budget-wall | meters approach caps; threshold crossing; requireHeadroom refusal; deferUntilReset on injected clock | I10; notification events |
+
+## Harness observations (`scenarios --report`, 2026-07-13 — PREVIEW, nothing pinned)
+
+First slice-0 report run. **Assumptions:** in-process harness (MemoryEventStore,
+no network, no real processes), synthetic profile workloads, seed epoch fixed —
+these are shape/regression baselines, not experience measurements; the §8
+latency targets need slice-1 live probes.
+
+| profile | events | streams | replay-window | quarantines | raw-bytes | snapshot-bytes |
+|---|---|---|---|---|---|---|
+| happy-path-desktop | 12 | 1 | 12 | 0 | 0 | 792 |
+| flaky-mobile | 309 | 1 | 309 | 0 | 0 | 847 |
+| concurrent-clash | 9 | 2 | 8 | 0 | 0 | 842 |
+| cold-restart | 18¹ | 4¹ | 8 | 0 | 0 | 1317¹ |
+| hostile-input | 14 | 1 | 14 | 3 | 60 | 943 |
+| budget-wall | 14 | 4 | 5 | 0 | 0 | 1298 |
+
+(`replay-window` = largest single-stream event count; `raw-bytes` = FakePty
+byte-channel total, exercised-never-parsed per rule 0.8; `snapshot-bytes` = sum
+of the three mid-log projection snapshots. ¹ cold-restart re-observed same day
+after D13 added the spawning-at-crash session to the profile — was 14/3/838.)
+
+**Re-measured 2026-07-21** (`scenarios --report`, after the budget-wall rebuild).
+The 2026-07-13 row above is retained as the slice-0 baseline; this is the current
+reading. Snapshot-bytes drifted on every profile as projections gained fields
+across slices 1–5 — expected, and the reason these were never pinned.
+
+| profile | events | streams | replay-window | quarantines | raw-bytes | snapshot-bytes |
+|---|---|---|---|---|---|---|
+| happy-path-desktop | 12 | 1 | 12 | 0 | 0 | 847 |
+| flaky-mobile | 309 | 1 | 309 | 0 | 0 | 902 |
+| concurrent-clash | 9 | 2 | 8 | 0 | 0 | 897 |
+| cold-restart | 18 | 4 | 8 | 0 | 0 | 1414 |
+| hostile-input | 14 | 1 | 14 | 3 | 60 | 998 |
+| **budget-wall** | **91** | **4** | **83** | **0** | **0** | **4589** |
+
+budget-wall's jump (14 → 91 events, 1298 → 4589 snapshot-bytes) is the rebuild:
+it now drives the real slice-5 path instead of hand-emitting four events. **The
+size increase IS the finding's remedy** — the old profile was small because it
+did nothing.
+
+### 2026-07-14 — first real gate round-trip (smoke S5/S6, live daemon)
+
+Real SDK session on Dongfu through the deployed daemon + Access + browser:
+spawn → converse (thinking/tool_use/tool_result turn) → Write-gate fired →
+answered ALLOW from the UI → file created. Event-log evidence (session
+17293cfd): `gate_fired` seq 29 → `notification_trigger` seq 30 (**adjacent —
+the I5 batch rule holding in production**) → `attention_cleared` seq 31 with
+cause `gate_answered`. Also observed: one turn = several assistant messages
+each with an identical usage snapshot (→ D17); default spawned model
+`claude-opus-4-8-1m`; gate prompt payload carried just the tool name
+("Write") — canUseTool `title` apparently absent; enrichment candidate.
+
+### 2026-07-19 — Slice-2 step-0a hooks spike (CLI 2.1.215 — box auto-updated from 2.1.207 mid-slice)
+
+**Q1 — injection is MERGE, both channels.** Surface: SDK `Options.settings`
+(file path or object, "flag settings" tier) + `settingSources`; CLI
+`--settings` + `--setting-sources`. A per-session settings file's hooks fire
+ALONGSIDE the project's own `.claude/settings.json` hooks for the same event
+(verified SessionStart + Stop, PTY and SDK). **D14's project-tier promise
+holds under injection.**
+
+**Q2 — D7 correlation complete and deterministic.** Hook payload `session_id`
+=== transcript filename === SDK-reported id, every run; the relay URL's
+embedded appSessionId token survives untouched; PTY hook subprocesses also
+carry `CLAUDE_CODE_SESSION_ID` in env (second confirmation channel — note:
+D10's lean said `CLAUDE_SESSION_ID`, observed truth is `CLAUDE_CODE_`
+prefix). Hook contract: JSON payload on stdin, bash execution, `CLAUDE*` env
+present. Spawn→first-POST latency ~470–550 ms both channels.
+
+**Q3 — golden payload fixtures** captured for SessionStart / Stop /
+SessionEnd / PreToolUse (sanitized, `fixtures/hooks/`, stamped 2.1.215).
+`StopFailure` unobtainable at spike budget — fixture gap noted for slice 5.
+
+**Q4 —** SessionEnd fires on TUI `/exit` with `reason: "prompt_input_exit"`
+(distinguishable — D10's adoption trigger is real); a project's OWN settings
+hooks fire for uninjected sessions (the foreign-session adoption path works).
+
+**Version-drift rider:** the box auto-updated the CLI 2.1.207→2.1.215 during
+the slice. Fresh-transcript field check: ADDITIVE only (new top-level
+`requestId` on assistant records); tail/mapper unaffected; full fixture
+re-stamp deferred to the next release gate. This is live evidence for the
+ATA runtime-lockfile item (tracker) — the platform updates under us without
+asking.
+
+Burn: 5 tiny invocations, low thousands of tokens. Process baseline clean.
+
+### 2026-07-20 — S9/S10 + hooks live-confirmation (second smoke session)
+
+**Hooks channel LIVE in production** (first real confirmation): session
+58070f4d received `hook_session_start` (payload `session_id` present +
+`appSessionId` stamped by the 4601 ingress) and 11× `hook_pre_tool_use`.
+**D7 correlation held live** — exactly ONE `claude_session_mapped` on the
+stream despite both SDK-init and hook paths firing (principle 9 dedupe
+boundary working). The two synthetically-tested fragile surfaces (settings
+hooks-block shape, relay contract) are now real-world validated.
+
+**S9 PASS** — airplane-mode gap mid-stream, session resumed on return via
+lastSeq replay.
+
+**S10 — I3 (no fork) PASS on disk; I11 refusal harness-owned.** Two phone
+tabs on one session; resume fired in tab A → dormant→spawning→running
+(seq 92→95), tab B reflected the resumed state (pillar 2 — viewport, not
+owner; it never fired its own resume). `transition_rejected: 0` (no
+concurrent attempt occurred), `claude_session_mapped: 1`, and ON DISK a
+single transcript (`75e6…a.jsonl`, appended in place) — I3 single-chain
+verified, the artifact the slice-1 exit gate wanted. I11's concurrent-resume
+REFUSAL was not exercised: the UI withdraws the resume affordance the instant
+a session leaves dormant, and human click-timing can't hit the sub-second
+spawn window, so the registry refusal has a UI guard in front of it in normal
+use. I11 stays proven by the concurrent-clash harness profile (its proper
+home for a sub-second race). Note for the on-device checkpoint / slice-2
+retro: consider whether a deliberate "force concurrent resume" affordance is
+worth building purely for manual I11 demonstration — likely not (harness
+owns it).
+
+### 2026-07-20 — slice-3 dogfooding finds (during the push checkpoint session)
+
+- **PASS (real-world spawn allowlist):** spawning a session with a cwd outside
+  `VIMES_PROJECT_ROOTS` returns a red `cwd-outside-project-roots` refusal with
+  a dismiss button — the path-discipline / spawn-allowlist boundary
+  (slice-2 step 2) confirmed live, not just in the harness.
+- **BUG (queued, not yet fixed — UI state, slice-2 surface):** after a spawn
+  refusal, the spawn button stays in "Spawning…" forever. Cause (high
+  confidence): the spawn affordance sets a local pending flag on click and
+  clears it on `{op:'spawned'}`, but the `{op:'refused', refusedOp:'spawn'}`
+  path never resets it. Fix bundles into the next UI deploy (post-measurement,
+  with slice-3 + roots-widening). Any refused op that a button optimistically
+  "pended" needs the same reset — audit the store's refused handler for other
+  stuck-affordance cases while fixing.
+
+### 2026-07-20 — push pipeline, on-device (Gate-D measurement, DAEMON-SIDE pinned-able)
+
+First real gate-to-push measurement, live daemon + Access + Android PWA.
+Gate `15e2faf1` (a Bash/awk gate): `gate_fired` and `notification_trigger`
+at the SAME ms (15:53:09.372Z — I5 batch rule live), `push_sent` accepted by
+the push service at 15:53:09.478Z. **Daemon-side latency gate→push-accepted
+= 106 ms** — the ⟨tune 10s⟩ "gate-to-push-delivered" intent has ~100×
+headroom on our side; total gate-to-buzz is dominated by push-service/OS
+delivery, not the daemon. **Pipeline proven end-to-end** (Wes saw the bell).
+**Dead-subscription prune confirmed live:** a stale sub returned 410 Gone and
+was auto-pruned before the live send succeeded (subscriptions 2→1). Push
+subscription persistence + suppression path exercised without incident.
+
+**OBSERVED (Wes, 2026-07-20): LOCKED phone, gate-to-buzz "basically instant,
+same second easily" (sub-1 s).** This is the spike's flagged worst case
+(Android background-delivery throttling on a dozing device) and it delivered
+effectively immediately. **Slice-2 kill criterion (push unreliable on
+Android → halt) is NOT triggered — the pillar-5 promise lands.** Gate-D
+pin-readiness: the ⟨tune 10s gate-to-push-delivered⟩ and ⟨tune 60s
+gate-noticed⟩ intents both have enormous margin; **push latency is deliberately UNPINNED (D20):** the real invariant is
+qualitative — delivery must not silently fail (confirmed) — not a defended
+millisecond band. No FAIL-able assertion on gate-to-buzz. Assumptions of the
+observation: single Android device, GitHub-IdP Access session valid, home
+tunnel, screen-locked.
+
+### 2026-07-20 — queued findings (slice-3 resume)
+
+- **[RESOLVED 2026-07-20]** **Test-infra flakiness (rule 0.4 — to harden):**
+  `packages/daemon/src/auth.test.ts` I14 matrix (real servers + JWKS crypto +
+  WS upgrades) timed out at the default 5000 ms under CPU contention — observed
+  3/3 timeout failures during a full-gate run while an agent + the live daemon
+  competed; passed 6/6 in isolation. Fixed: `vi.setConfig({ testTimeout:
+  30_000, hookTimeout: 30_000 })` at the top of auth.test.ts. Green across
+  several full-gate runs since (491, then 501 tests).
+- **Protocol gap (gate_response refusal correlation):** the `refused`
+  envelope carries no `requestId`, so a refused `gate_response` can only be
+  recovered UI-side by clearing the WHOLE `answeringRequestIds` set (agent's
+  flagged choice). Safe for the minimal one-gate-at-a-time page; imprecise
+  once many gates are concurrently pending (a refusal on one re-enables all).
+  Precise fix needs `requestId` on the refused envelope (daemon protocol
+  addition) — queued for the slice where concurrent gates become real
+  (6/7). Accepted as-is for now.
+- **[NEW 2026-07-20] CLI runtime drift — expected=2.1.215 observed=2.1.216
+  (rule 0.7, Wes's awareness).** The box auto-updated the Claude Code CLI again
+  (2.1.207→2.1.215 earlier, now 2.1.215→2.1.216) during the polish-pass deploy.
+  The daemon boots and runs fine — the version pin
+  (`VIMES_EXPECTED_CLI_VERSION`) emits a non-fatal drift warning, doing exactly
+  its job: surfacing a new Anthropic surface for a human glance rather than
+  silently trusting it. **Deliberately NOT bumped unreviewed** — under rule 0.7
+  we classify CLI behavior by observation, and blessing 2.1.216 (does it change
+  hook/JSONL/transcript shape?) is Wes's call. Hook golden fixtures are stamped
+  2.1.215 and still pass. Action for Wes: eyeball 2.1.216's release notes /
+  spot-check a session, then bump the pin in `/etc/vimes/env` to clear the
+  warning (or pin the CLI version to stop auto-updates mid-work).
+
+### 2026-07-20 — slice-3 live smoke (desktop, deployed build)
+
+- **#1 editor: PASS** — edited gate-test.txt (dongfu) in CM6, saved (87→125 B,
+  mtime confirmed); mtime-precondition write path works live.
+- **#2 search: PASS** — searched 'gate', all instances found (real ripgrep).
+- **#3 terminal: PASS (desktop + mobile), after two fixes.** (a) ref-timing
+  deadlock fixed; (b) mobile-corruption fixed — pty now spawns at the client's
+  fitted viewport size (was hardcoded 80 cols → Claude rendered wide → phone
+  wrapped it into garbage). Field-verified 2026-07-20: Claude Code's TUI
+  reflows clean and full-width on the phone, visibly MORE legible than the
+  code-server comparison shot (no activity-bar/tab-strip chrome tax — the box
+  border runs edge to edge). Validates the "real estate to content" candidate
+  principle (design-directions). Original failure notes retained below.
+  Original root cause: `TerminalView.vue`
+  ref-timing deadlock — the xterm mount `<div ref>` is behind `v-else`
+  (renders only when `started`), but `start()` null-checks the ref and
+  silently returns BEFORE setting `started`, so the element never exists →
+  click does nothing, no console error. Fix: set started + `nextTick` before
+  mount; make failure paths show a visible error, not silence. Bundled: add
+  the missing `GET /api/files/roots` endpoint (step-2 gap) so terminal/tree
+  offer the configured `~/projects` roots, not just session cwds.
+- **#4 NOT a VIMES bug.** Session cwd was correctly `.../infrastructure/vimes`
+  (event log confirms); the AGENT chose the absolute path
+  `/home/ticktockbent/desktop-test.md` (gate card surfaced it verbatim, then
+  approved). Likely driven by the ambient `~/CLAUDE.md` framing `~` as the
+  top-level "cockpit" — VIMES sessions load CLAUDE.md up the whole tree and
+  agent writes are gated by permission cards, NOT confined to VIMES roots (by
+  design — the agent is a full Claude session; §3 scoping is Claude's job).
+  **UX finding [RESOLVED 2026-07-20, commit ef758d6]:** the Write/Edit gate card
+  showed `Write: {"file_path":"...","content":"..."}` truncated at 160 chars —
+  the path was hard to scan and easy to approve unread. Fixed: the gate now
+  headlines the tool name + a structured target (`file_path`/`command`/`pattern`
+  pulled from the SDK tool INPUT via pure `extractGateTarget`, rule 0.8 — never
+  the prompt string) in a monospace `break-all` line above the prompt. Not a bug
+  (the gate always worked); a safety-ergonomics improvement, now shipped.
+  Cleanup: a stray `/home/ticktockbent/desktop-test.md` ("PASS") exists — Wes to
+  remove at will.
+
+### 2026-07-20 — slice-4 spikes (read-only, against real data; front-loaded per rule 0.6)
+
+**Spike G — git porcelain surfaces (fragile-adapter verify-row).** System
+`git version 2.43.0` present (like ripgrep — no npm dep needed). Confirmed
+stable + machine-parseable on this repo:
+- `git status --porcelain=v2 -z --branch` → `# branch.oid <sha>`, `# branch.head
+  <name>`, then `1/2/u/?` entry lines. NUL-delimited with `-z`.
+- `git diff --no-color [--staged] -- <path>` → standard unified hunks
+  (`@@ -a,b +c,d @@`), parseable per-hunk.
+- `git worktree list --porcelain` → `worktree <path>` / `HEAD <sha>` / `branch
+  <ref>` records.
+- `git for-each-ref --format='%(refname:short) %(objectname:short)
+  %(upstream:short)' refs/heads/` → clean branch list.
+Conclusion: shell out to system git behind a single `GitAdapter` parse module
+(rule 0.6). Pin/observe the git version like the CLI pin (2.43.0). No lib.
+
+**Spike C — cache-observability data (rule 0.7 verify-row).** 57 real
+`usage_block` events already in the deployed `events.db`. A live sample's usage
+object:
+```
+cache_creation: { ephemeral_1h_input_tokens: 2909, ephemeral_5m_input_tokens: 0 }
+cache_creation_input_tokens: 2909
+cache_read_input_tokens: 39044
+input_tokens: 2, output_tokens: 2
+service_tier: "standard"
+```
+Findings: (1) **observed TTL tier** is directly classifiable from
+`cache_creation.ephemeral_1h/5m_input_tokens` — this sample is **1h-tier**
+(1h>0, 5m==0), matching the spec's "1h TTL observed on subscription main
+conversations." Classifier: `1h>0&&5m==0→'1h'`, `5m>0&&1h==0→'5m'`,
+`both>0→'mixed'`, `both==0→'none'`. (2) **Cache hit rate** =
+`cache_read / (cache_read + cache_creation_input + input)` — this sample ≈ 93%
+warm (39044 read vs 2911 new). (3) **`service_tier`** ("standard") is the
+billing-bucket observation signal (rule 0.7) — pairs with session interactivity
+to answer "5h window vs $100 automation bucket" (the dongfu question).
+Conclusion: NO new event capture needed — a pure projection over existing
+`usage_block` events delivers the whole cache-observability surface. The classifier
+is a pure fn unit-tested over these real samples.
+
+### 2026-07-21 — slice-4 exit-gate test: FINDING (git panel could not reach any repo)
+
+**Found by Wes in the first live exit-gate attempt, from Vimes itself.** The git
+panel's picker offered only `effectiveRoots` — the configured
+`VIMES_PROJECT_ROOTS` (`~/projects`, D21) plus live-session cwds. But
+`~/projects` is a **container of repos, not a repo**: the real repos sit one or
+more levels down (`~/projects/infrastructure/vimes`, `…/games/dongfu`). With no
+live sessions the dropdown had exactly one entry, it wasn't a repo, and the
+daemon (correctly) answered `not-a-repo` — so the entire diff surface was
+unreachable and the kill criterion could not even be evaluated.
+
+**Class of error worth remembering:** this is the SAME gap the terminal hit
+(fixed there 2026-07-20 with a free-text cwd field + `decideStartCwd`, because
+`~/projects` is not a shell-worthy cwd either). The lesson was not carried
+across surfaces — when a surface takes a "root", ask whether the configured
+roots are actually *usable targets* for it, or merely containers of them.
+
+**Fix (same day):** (1) `GET /api/git/repos` — depth-bounded (≤3 below each
+root) discovery walker: a directory containing a `.git` entry of ANY type (the
+worktree/submodule `.git`-FILE case included) is a repo; no descent into a found
+repo; `node_modules`/`.git`/dot-dirs skipped; only `isDirectory()` entries
+descended so symlinks cannot cycle; unreadable dirs skipped, never thrown; every
+returned path re-verified through `resolveWithinRoots`; added to the I14 auth
+matrix. (2) The panel now picks from DISCOVERED REPOS (one tap on mobile) with a
+free-text path field as the escape hatch (pillar 7), last-used repo remembered.
+603 tests green. Gate test re-armed.
+
+### 2026-07-21 — slice-4 exit-gate test, 2nd finding: repo-relative paths resolved against the wrong base
+
+**Found by Wes, second live gate attempt.** With the repo picker fixed he loaded
+`~/projects/content/vesh` and tapped its modified `manuscript/chapter-01.md` —
+and the daemon tried to read `~/projects/manuscript/chapter-01.md` (ENOENT): the
+repo's own `content/vesh/` prefix was dropped.
+
+**Mechanism:** `git status --porcelain=v2` emits **repo-relative** paths; the UI
+hands them straight back; `resolvePathParam` passed them to `resolveWithinRoots`,
+whose `resolve()` anchors a relative path on the daemon cwd / allowlist root —
+NOT the repo root. Hit `/api/git/diff`, `/api/git/stage` and `/api/git/unstage`
+alike. **Orchestrator's design error:** the step-1 spec said "every request path
+goes through `resolveWithinRoots`" but never said a repo-relative path must FIRST
+be anchored to the resolved repo root. The rule to carry forward: when a surface
+accepts paths from an external tool, pin down *what they are relative to* — the
+wall tells you a path is safe, never what it means.
+
+**Fix (same session):** `resolvePathParam` takes the verified repo toplevel;
+absolute → as-is, relative → `join(verifiedRepoRoot, path)`; the result still
+passes the unchanged `resolveWithinRoots` wall, so a repo-relative traversal
+(`../../../etc/passwd`) still 403s before any git subprocess. Six regression
+tests use a repo NESTED below the allowlisted root (`<root>/content/vesh`) so the
+bug cannot return. 609 tests green.
+
+### 2026-07-21 — observed: PTY shell UX when the daemon restarts under it (validated, no action)
+
+Wes deliberately left a vimes terminal open across a `systemctl restart` to
+observe the failure mode. **Result: clean degradation.** The shell stopped
+responding, a red error bar reported an invalid/unknown shell, the existing
+scrollback REMAINED READABLE, and backing out to the terminals list worked
+normally. No hang, no lost buffer, no stuck view. Process death (as opposed to a
+WS reconnect, which D23 already covers) therefore has an acceptable UX today —
+no polish item filed. Relevant to the hot-reload design direction: the cost of a
+daemon restart is a dead shell with intact scrollback, not a broken client.
+
+### 2026-07-21 — FINDING: no `Cache-Control` on static files (stale assets survive deploys)
+
+**Found while chasing "the new icon is still a blue square."** Replacing the
+placeholder icon and deploying did NOT change what the phone showed — and
+critically, **not even at the asset's direct URL**, which ruled out the PWA
+install cache and pointed upstream.
+
+**Mechanism:** the daemon's static handler (`app.ts`) sets **only
+`content-type`** — no `Cache-Control`, no `ETag`, no `Last-Modified`. With no
+cache directives, three independent caches each hold the old bytes:
+1. **Cloudflare** edge-caches `.png` (and other static extensions) by extension
+   under the Standard cache level, regardless of origin headers.
+2. The **service worker** precaches by EXACT URL — a replaced file at a stable
+   name keeps its old precache entry until the new SW activates.
+3. **Android** bakes the manifest icon into a generated WebAPK it refreshes on
+   its own schedule (~daily), so even uninstall/reinstall can reuse it.
+A stable filename is therefore served stale by all three, indefinitely.
+
+**Immediate fix (icons only, no daemon restart):** icon filenames now carry an
+`ICON_VERSION` (`icon-512.v2.png`, `scripts/make-icons.mjs`), referenced from
+the manifest + index.html. Changing the URL defeats all three caches at once,
+and the changed manifest is also what prompts Android to regenerate the WebAPK.
+
+**The larger exposure — QUEUED, needs a daemon change (restart):** Vite
+content-hashes JS/CSS, so those are safe. But **`index.html`, `sw.js` and
+`manifest.webmanifest` are unhashed AND uncached-headered** — Cloudflare may
+serve a STALE APP SHELL after a deploy, which would present as "my deploy didn't
+land" with no obvious cause. Fix: set `Cache-Control` in the static handler —
+`no-cache` (revalidate) for `index.html` / `sw.js` / `manifest.webmanifest`,
+long-lived `immutable` for content-hashed `/assets/*`. Schedule with the next
+daemon-touching work; it is a correctness/operability fix, not a tuning knob.
+
+### 2026-07-21 — SPIKE U1 (slice 5): the usage endpoint is ALIVE — kill criterion NOT triggered
+
+Read-only probe, run at Wes's instruction. **Method (rule 0.7 — observed truth,
+never documentation):** extracted endpoint strings from the installed CLI bundle
+(`~/.local/share/claude/versions/2.1.216`), found a function literally named
+**`fetchUtilization`** issuing `GET /api/oauth/usage`, base
+`https://api.anthropic.com` (58 occurrences; `api-staging` also present). Then
+called it directly with the OAuth bearer from `~/.claude/.credentials.json`
+(mode 600, `claudeAiOauth.accessToken`).
+
+**Result: HTTP 200 with a rich, structured body.** Golden fixture pinned at
+`fixtures/usage/oauth-usage-2026-07-21.json` (CLI 2.1.216, plan `max` /
+`default_claude_max_5x`). **The slice-5 kill criterion is NOT triggered** — the
+authoritative source exists, so meters can be truthful.
+
+**The response carries TWO surfaces; consume the second.**
+1. Flat legacy fields: `five_hour`, `seven_day` (each `{utilization, resets_at,
+   limit_dollars, used_dollars, remaining_dollars}`), plus many null buckets.
+2. **`limits[]` — already NORMALIZED**, and the right adapter target:
+   `{kind, group, percent, severity, resets_at, scope, is_active}`. Observed:
+
+   | kind | group | percent | resets_at | scope | is_active |
+   |---|---|---|---|---|---|
+   | `session` | session | 29 | 2026-07-21T15:19:59Z | — | false |
+   | `weekly_all` | weekly | 52 | 2026-07-23T16:59:59Z | — | false |
+   | `weekly_scoped` | weekly | 64 | 2026-07-23T16:59:59Z | `model.display_name: "Fable"` | **true** |
+
+   This maps 1:1 onto the spec's presumed meter set: 5-hour rolling window =
+   `session`; weekly all-models cap = `weekly_all`; weekly model-family cap =
+   `weekly_scoped` (+ `scope.model`). `is_active` marks the currently-BINDING
+   limit — a gift for "can I afford to start this?".
+
+**Design consequences for slice-5 step 1 (must be decided before building):**
+- **PERCENT ONLY.** `limit_dollars`/`used_dollars`/`remaining_dollars` are all
+  null and `limits[]` carries `percent`, never token or dollar absolutes. The
+  reserved `MeterRecord {used, limit}` (§5) assumes absolutes. Either store
+  `used = percent, limit = 100`, or widen the record with an explicit
+  `percent`/`unit` field. **Lean: widen** — collapsing a percentage into
+  `used/limit` invents precision the source never gave us, and pillar 4 says
+  meters must not lie.
+- `severity` (`normal` | …) is a server-side judgement we get for free — prefer
+  it over inventing our own ⟨tune 80%⟩ threshold where present.
+- No overage on this plan: `extra_usage.is_enabled: false`, `spend.enabled:
+  false`, `can_purchase_credits: false`, `spend.used = $0.00`.
+
+**Rule-0.6 goldmine — the schema visibly churns.** The body carries obviously
+internal/unreleased codenamed buckets, all null: `seven_day_cowork`,
+`seven_day_omelette`, `tangelo`, `iguana_necktie`, `omelette_promotional`,
+`nimbus_quill`, `cinder_cove`, `amber_ladder`. This is direct evidence for the
+fragile-adapter posture: **consume `limits[]`, tolerate and IGNORE unknown
+top-level keys, never enumerate buckets.** The fixture retains the codenames
+deliberately as that evidence.
+
+**D24 (billing bucket) — strong lean, not yet a decision.**
+`seven_day_oauth_apps` is **null** — that is the bucket that would plausibly
+carry non-interactive / third-party-app usage — while `session` and `weekly_all`
+are both populated and moving. The lean: VIMES-spawned SDK work consumes the
+SAME 5-hour/weekly buckets as interactive use, i.e. Wes's dongfu runs did NOT
+draw on a separate automation credit. **This is a null-based inference and must
+not be promoted to a decision on its own** (a null can mean "no usage", "not on
+this plan", or "not populated"). Confirm by correlation: sample the endpoint
+before/after a known headless run and observe WHICH meter moves. That
+correlation is the D24-settling experiment; it belongs in slice-5 step 2.
+
+**Adapter constraint (operational).** The OAuth access token expires (observed
+~6 h validity) and the CLI owns refreshing it. A daemon adapter reading the same
+credentials file will eventually present a stale token and get 401 → it must
+degrade to **stale**, never crash and never silently show old numbers as
+current. This is the staleness path, exercised by a real failure mode.
+
+**Second endpoint, for the record:** `/api/claude_code/policy_limits` also
+returns 200 but is policy/compliance flags (`restrictions`,
+`compliance_taints`, `defaults`) — **not** usage. Noted so nobody chases it.
+
+### 2026-07-21 — SPIKE U2 (slice 5): OTel direct ingest works, and carries the interactivity signal
+
+**Method:** confirmed the CLI honors the full `OTEL_*` env set + 
+`CLAUDE_CODE_ENABLE_TELEMETRY` (bundle strings), then ran a minimal
+`claude -p` (haiku, to spare the binding Fable weekly cap) under `env -i` with a
+clean environment, exporting OTLP/HTTP JSON to a throwaway local listener.
+**Direct ingest confirmed — no collector process.** Fixture (identity redacted):
+`fixtures/usage/otlp-metrics-2026-07-21.json`.
+
+**Two streams arrive:** `POST /v1/metrics` and `POST /v1/logs`.
+Metrics observed (all `sum`):
+
+| metric | unit | notes |
+|---|---|---|
+| `claude_code.token.usage` | tokens | 4 points, split by `type`: `input` / `output` / `cacheRead` / `cacheCreation` |
+| `claude_code.cost.usage` | **USD** | a real cost figure ($0.050549 for the test call) — MORE than JSONL gives |
+| `claude_code.session.count` | — | with `start_type` |
+| `claude_code.active_time.total` | s | wall-clock attention |
+
+**Attribute keys are the contract:** `model`, `query_source` (`main` — so
+subagent attribution is available), and — the prize — **`terminal.type`:
+`interactive` | `non-interactive`**. That is exactly the interactivity signal
+`usage_block` lacks and that D24 needs. Resource attributes carry
+`service.version` (= CLI version), a free drift signal.
+`/v1/logs` additionally streams session events (`hook_execution_start`,
+`permission_mode_changed`, `plugin_loaded`, `hook_registered`).
+
+**PII caveat (matters if VIMES ever ships to anyone else):** every data point
+carries `user.email`, `user.id`, `user.account_uuid`, `user.account_id`,
+`organization.id`, `session.id`. On Wes's own box this is his own data; a
+product-ized VIMES ingesting this is handling identity, not just numbers. The
+fixture redacts them.
+
+### 2026-07-21 — SPIKE U3 (slice 5): JSONL accounting is ATTRIBUTION, not headroom — the finding that reshapes the slice
+
+Folded the `usage_block` events already in `events.db` with D17 dedupe.
+
+**1. D17 is load-bearing, empirically.** 57 `usage_block` events → **30 counted,
+27 duplicate `message.id`s skipped (47%)**. Naive summation would have inflated
+every number by nearly 2×. The slice-4 cache projection's dedupe is validated
+against real data, not just reasoning. (16 events carry NO `messageId` —
+harness/PTY paths — and therefore cannot be deduped: a residual, bounded risk.)
+
+**2. THE HEADLINE — local sources are account-BLIND.** The endpoint reports the
+5-hour window at 29–35% consumed. Over that same 5 hours, VIMES's JSONL holds
+**ZERO `usage_block` events** (its whole span is 2026-07-14 → 2026-07-20).
+Reason: VIMES only sees sessions it HOSTS, while the limits are **account-wide**
+— every Claude Code invocation anywhere (other terminals, other machines, the
+web, and this very orchestrator session) draws on the same window.
+
+**This inverts the spec's assumption.** §3.6 calls JSONL accounting
+"bulletproof" — it is, but only for *attribution*: "what did VIMES-hosted work
+consume." It can never answer *"how much headroom do I have?"* And OTel shares
+the same blindness (it only covers sessions VIMES spawns with the env set).
+**Only the `/api/oauth/usage` endpoint is account-wide.**
+
+Consequences, binding on slice-5 design:
+- **Source precedence is not a preference, it is a type distinction.** Headroom
+  comes from the ENDPOINT ONLY. Local sources supply attribution, burn rate and
+  cost. A local source must NEVER be allowed to impersonate a headroom number.
+- **The kill criterion sharpens:** if the endpoint dies, JSONL/OTel cannot
+  substitute. The honest degradation is headroom → **unknown** while attribution
+  keeps working — which is exactly what the `fresh | stale | unknown` staleness
+  model already prescribes. Meters that lie are worse than meters that don't
+  exist (pillar 4).
+
+### 2026-07-21 — D24 correlation experiment: no separate automation bucket
+
+Ran a KNOWN non-interactive session (`claude -p`; OTel independently labelled it
+`terminal.type: non-interactive`) between two endpoint probes.
+
+| meter | before | after |
+|---|---|---|
+| `session` (5-hour) | 29% | **35%** |
+| `weekly_all` | 52% | 52% |
+| `weekly_scoped` (Fable) | 64% | 64% |
+| `seven_day_oauth_apps` | null | **still null** |
+
+**Honest confound:** the orchestrator's own session was consuming the same
+window between probes, so the **+6 magnitude is NOT attributable to the test run
+alone**. The *direction* is what carries evidence: a non-interactive run
+produced **no new bucket** and left `seven_day_oauth_apps` null while the
+standard session window moved.
+
+**Reading (recommended for ratification, not unilaterally decided — rule 0):**
+Claude Code usage, interactive or headless, consumes the **standard 5-hour and
+weekly windows**; there is no separate automation credit on this plan
+(`extra_usage.is_enabled: false`, `can_purchase_credits: false`). The bucket's
+NAME (`oauth_apps`) suggests it covers **third-party OAuth applications** — which
+first-party Claude Code, `-p` or not, is not. **This answers Wes's standing
+dongfu question: those runs burned the 5-hour/weekly windows, not a $100
+automation bucket.** Promote D24 to a decision on his sign-off.
+
+### 2026-07-21 — Unit A shipped: window identity tolerates resets_at jitter; tolerance + OR both signed off
+
+Fix for the 33-notification bug (`7e696c4`). `firedAlertIsStillBinding` no longer
+string-compares `resetsAt`; it calls `sameWindowIdentity`, which absorbs
+sub-second jitter with a tolerance band while treating a null↔non-null transition
+(a real rollover, where the endpoint DROPS the field) as a hard change never
+covered by tolerance.
+
+**Tolerance signed off: `WINDOW_IDENTITY_TOLERANCE_MS_PREVIEW = 60_000`
+(⟨tune PREVIEW⟩, unpinned).** Chosen against measured reality, not guessed. Worst
+intra-window `resets_at` spread across all 325 live samples — **1.877 s**
+(session, 20:40 window), which straddles a whole-second boundary, so
+truncate-to-seconds and a 1 s band BOTH still re-fire. 60 s sits ~32× above the
+worst observed jitter and ~1/300 of the shortest real window (5 h), i.e. in the
+middle of the four-order-of-magnitude gap between source noise (~2 s) and a
+genuine window change (5 h / 7 d) rather than just above the noise we happened to
+sample. Stated limit: a meter whose real window advanced by < 60 s would not
+re-arm; no such meter exists in VIMES, and adding one revisits the band.
+
+**Signed off: keep the OR — `resetsAt`-changed may re-arm ALONE; no
+corroboration required.** The defect was a comparison bug, not a fusion bug —
+signal 1 announced "changed" when nothing had; with tolerance it announces change
+only on a >60 s move or an appear/disappear. Requiring AND-corroboration would
+instead reintroduce the step-4a hazard: the percent-drop signal *abstains* when
+no drop sits in bounded history (normal for a weekly meter), and if abstention
+counted as "same window" under an AND, an alert fired last week would stay binding
+**forever** and the new window's crossing would never fire — a **silent** false
+negative (emits no event, invisible in the log). Trading 33 loud false positives
+for an undetectable false negative is the wrong direction for a system built on
+"a meter that lies is worse than no meter". A correctly-scoped AND is a no-op on
+every live case (both real rollovers carried both signals), so it buys nothing now
+and adds a failure mode later.
+
+**Verified by the orchestrator independently** (the fix was committed by a forked
+sibling session — see the process note): full ci-gate green, 844 tests / 66 files,
+6/6 profiles byte-identical; and an INDEPENDENT sabotage — reverting
+`sameWindowIdentity` to `!==` — reproduced the exact production signature ("got
+33") and reddened 11 tests, while the genuine-rollover cases (vanish / reappear /
+percent-drop) stayed green. The tolerance measurement was re-run from the live DB
+and matched (1.877 s worst).
+
+**Deferred, not lost:** the agent's note that if `MeterHistorySample` carried
+`resetsAt` per sample, window identity would become a property of the history and
+the two re-arm signals could collapse into one detector (principle 9). A
+future-slice cleanup, recorded so it is not rediscovered.
+
+### 2026-07-21 — DEPLOYED LIVE: Unit A + Unit B carried by one restart; the spurious stream has stopped
+
+Both queued fixes are live on `the host`. Unit A (`7e696c4`, jitter) + Unit B
+(`62111e0`, push delivery — urgency/TTL caller-decides + `meter_push_outcome`)
+shipped in **one** `systemctl restart vimes.service` (new MainPID 3482633,
+`auth=configured`, no CLI drift warning, pin 2.1.216). Pre-flight ran both halves
+— zero daemon child processes (no pty terminals, no spawned sessions to lose) —
+and the `/proc` ancestry check confirmed the orchestrator's shell is **not** a
+daemon descendant, so the restart could not self-kill (the lesson from the same
+day's process failure, applied).
+
+**Running code proven, not assumed.** The restart booted from a dist built during
+verification; because the sabotage-restore rewrote source *after* that build, a
+clean `typecheck` rebuild from HEAD was run and every `dist/*.js` hash came back
+**byte-identical** — the daemon is provably running exactly HEAD, not a stale or
+coincidental build.
+
+**Observed evidence the fix holds (rule 0.7):** the last `meter_alert` in
+`events.db` is seq 357 at **20:38:44Z** — the tail of the 33, firing on the
+5-minute poll cadence (…20:28, 20:33, 20:38) right up to the 20:40 window reset.
+Since the reset and the deploy: **zero** `meter_alert` events, including now with
+`meter_sample` rows flowing again at pct 66/68 (weekly Fable, the binding meter).
+`meter_push_outcome` count is 0 — correct: it emits only when an alert fires under
+the new code, and none has yet.
+
+**Still owed, and it cannot be forced now:** the definitive live proof —
+*one 80% crossing produces exactly ONE alert carrying `urgency:'high'` + a
+reset-bounded TTL + a `meter_push_outcome` trail* — needs an actual crossing.
+Usage sits at ~66–68%, nowhere near 80%, and manufacturing one means burning to
+80% on purpose again. This is the D28 in-flight validation: it will confirm itself
+on the next real crossing, now instrumented to leave a delivery trail when it does.
+
+### 2026-07-21 — FINDING (test-strength, resolved): the cost-ingester "non-fatal" test was VACUOUS at the daemon layer
+
+Wiring step-1's ingester into the daemon (`a5d8de9`) shipped with a test named
+*"non-fatal — a corpus that throws never rejects"*. It passed — but an
+orchestrator sabotage (re-throw from the daemon's `ingestCostOnce` catch) changed
+nothing: **7/7 still green.** The catch was never reached. `scanCostCorpus`
+swallows a throwing `listDirectory` itself (`costCorpus.ts`, "an unreadable
+directory is skipped, never fatal"), so the test's throwing corpus was absorbed by
+the SCANNER; the daemon's guard — which really protects a **ledger-db write
+failure** during `upsertUsageRows`/`setWatermark`, a path the scanner does NOT
+swallow — was untested. The test's name claimed a guarantee it did not exercise:
+the same "correct by coincidence" shape as the day's other five, caught the same
+way (sabotage a guard, watch nothing fail).
+
+**Decision (Wes): strengthen before commit** (over commit-now-queue-it). A
+`costLedgerStore?` injection seam was added to `DaemonDeps`; the old test was
+renamed to what it actually proves (*scanner* resilience) and a new test injects a
+store whose `upsertUsageRows` throws. Now load-bearing and proven so: re-throwing
+from the daemon's catch fails **exactly** that one test and no other. The code was
+correct throughout — this was a test that lied about why it was green, fixed so it
+can't.
+
+**General lesson banked:** a test whose subject is a guard must be validated by
+breaking the guard, not by trusting a green tick — a passing test can be measuring
+a different guard upstream. "Green" is not "green for the reason on the label".
+
+### 2026-07-21 — PROCESS FAILURE: a forked session ran a duplicate agent, and I killed the wrong process
+
+**What happened.** Wes works remotely, and a session **fork** left two live
+sessions sharing one id (`ffb57f73…`) and one in-memory cron. At the 16:40 reset
+the cron fired in BOTH, so two Unit A agents ran concurrently in one working tree
+— the exact "never two work-agents in parallel" rule the whole workflow forbids.
+Symptoms the agent reported: its checkpoint file pre-existing, `budgetWall.ts`
+changing under it mid-run, a transient `__probe.test.ts` appearing and vanishing.
+
+**My compounding error.** Told "kill it", I killed PID 3358181 without walking
+`/proc` ancestry first — and it was the session I was talking to Wes THROUGH. I
+had run that exact ancestry check before every daemon restart today specifically
+to avoid self-kill, and did not reach for it when it mattered most. The process
+had started at 16:15:20, one minute before Wes said "arrived at home and opened
+you up here" — I had the evidence to identify it and read it as a stale duplicate.
+
+**Two lessons, both general:**
+1. **A session-only timer in a forked session is not unique.** "Did my scheduled
+   thing survive?" and "is my scheduled thing the ONLY one?" are different
+   questions; I asked only the first. A forked session inherits the cron, so
+   fan-out on fire is the default, not the exception.
+2. **Before killing ANY process, run the same `/proc` ancestry check used before a
+   daemon restart.** The self-kill hazard is not specific to `systemctl restart`;
+   it applies to any `kill`. I had the tool and skipped it.
+
+**Outcome.** The tree survived — the sibling agents were solving the same problem
+from the same evidence and one deliberately backed out its duplicate; the survivor
+committed a fix that the orchestrator then verified from scratch (above). But that
+is luck bounding the blast radius, not process. Recorded so the fork case is
+handled by check, not by luck, next time.
+
+### 2026-07-21 — the usage endpoint DOES rate-limit (429), and the honest-degradation path proved itself under a REAL failure
+
+**Self-inflicted, which makes it better evidence.** The orchestrator started a
+95%-ceiling watcher polling `GET /api/oauth/usage` **every 30 seconds** (~120
+req/h) on top of the daemon's 12/h. **429s began 2 minutes later** and persisted:
+
+```
+18:16:39  ok  200
+18:18:15  http-error 429   ← watcher started ~18:16
+18:18:44  http-error 429
+18:23:44  http-error 429   … continuing
+```
+
+**The endpoint's rate-limit surface, now observed rather than assumed:**
+- Body: `{"error":{"type":"rate_limit_error","message":"Rate limited. Please try again later."}}`
+- **`retry-after` header IS present on a 429** — value observed as `0` — while
+  **200 responses carry no rate-limit headers at all**. Earlier today three
+  back-to-back 200s showed no headers and no throttling, which was read as "no
+  rate limiting visible". Correct as far as it went, and wrong as a conclusion:
+  **the limit was simply never approached.** Absence of a rate-limit header is
+  not absence of a rate limit.
+- Rough ceiling: sustained ~2 req/min tripped it; the daemon's 1-per-5-min never
+  has.
+
+**This vindicates the debounce, and indicts its author.** The forced-refresh
+debounce was written this afternoon with the rationale *"the endpoint is
+unofficial and returns no rate-limit headers, so restraint is
+endpoint-citizenship"* — and then the orchestrator stood up a 30-second poller
+against the same endpoint an hour later. **The rule was right; the person who
+wrote it broke it.** Automation gets a debounce and a human with a shell does
+not, which is precisely backwards.
+
+**⭐ The slice invariant held under an unplanned production failure — which no
+test had yet done.** With the source returning 429:
+- The poller emitted **no samples** rather than a placeholder (`limitsParsed: 0`).
+- Meters aged out and **rendered stale**, showing no percentage figure.
+- Forced refresh reported honestly: *"Refresh failed: the usage endpoint returned
+  an error (HTTP 429). Ages below are unchanged."* — the real status code
+  surfaced, ages preserved and growing, **no fabricated `observedAt`**.
+
+Every one of those behaviors was designed against a hypothetical and had only
+ever been exercised by injected failures. **This is the first time the whole
+degradation path ran end-to-end against a real upstream failure, in front of the
+user, and it behaved exactly as specified.** Wes's report — *"showing stale …
+Refresh failed … Ages below are unchanged"* — is the assertion text, observed.
+
+**The observation log paid for itself on day one.** The 429 body produced a
+**new fingerprint (`f6412f5aa41a82ee`)**, so the first sighting was captured
+whole, giving a complete forensic record of a failure nobody planned. That is
+exactly the rule-0.6 drift-detection case it was built for, and it arrived within
+hours.
+
+**Actions:** watcher killed. **Any future endpoint watcher must poll the LOCAL
+event log, not the endpoint** — the daemon already polls, and its results are in
+`events.db` and `usage-observations.jsonl` for free. The earlier alert-watcher did
+exactly this and cost nothing; the ceiling watcher hit the network because it was
+written in a hurry. Also worth considering for the adapter: honour `retry-after`
+and back off after a 429 rather than continuing the fixed cadence into a wall.
+
+### 2026-07-21 — C2 Fable-1h: cell CLOSED exact; plus `--model` is a REQUEST, and one case where JSONL's tier split is NOT what Anthropic bills
+
+**The gap is closed.** One `claude-fable-5` session forced onto the 1h tier
+(verified `ephemeral_1h_input_tokens` 17,668 / `ephemeral_5m` 0, across a cold
+turn plus a `--resume` turn exercising 17,321 cache-read tokens):
+
+```
+table $0.371021   vs   OTel claude_code.cost.usage $0.371021
+delta $0.000000   rel err 0.000000%   (exact in integer micro-dollars)
+```
+
+Solving OTel for the single unknown gives an **implied 1h write rate of
+$20.00000000/MTok = exactly 2.00000000× base**. The 1h write is 95.24% of that
+session's dollars, so the rate is pinned to ±0.0003%. Published Fable row
+re-verified live and unchanged ($10 / $12.50 / $20 / $1 / $50) — and, unlike
+Sonnet 5, **matched by actual billing**. **$1,282 of the $2,893 corpus comes off
+analogy.**
+
+**Finding A — `--model` is a REQUEST, not a fact.** Three `--model
+claude-fable-5` runs did not run Fable: a `type: "system"`, `subtype:
+"model_refusal_fallback"` record shows Fable's safeguards flagging the message
+and **switching to Opus 4.8 mid-session** — triggered even by *"What is 2 plus
+2?"*. So no session-level model attribute can be trusted for pricing; **price per
+assistant message from `message.model`.** Our JSONL path already does, and OTel's
+`model` attribute splits correctly too, so this confirms binding rule 10 rather
+than breaking it. (Workaround that made Fable run: `--disable-slash-commands
+--disallowed-tools "WebSearch WebFetch Task Agent"`, implicating this box's
+skill/agent listing in the system prompt as the trigger.)
+
+**⚠ Finding B — rule-0.1: a fallback-retry message is BILLED at the 5m rate while
+JSONL labels it 1h.** The three Opus-fallback sessions priced **+6.27% / +23.44%
+/ +46.87% HIGH**. Per-message decomposition resolves it exactly: the
+refusal-retry message bills at **1.25× base despite reporting
+`ephemeral_1h_input_tokens` with `ephemeral_5m: 0`**; every later message bills
+at 2.00×. Repricing only that message reconciles all three to 0.0000%.
+
+**This is the first observed case where the JSONL tier split is not what
+Anthropic bills** — and it matters because the entire dollar half of slice 5b
+prices from that split. It is bounded (one message, in sessions that hit a model
+refusal) and one-directional (we over-price), but it is a real ceiling on
+"validated to the micro-dollar".
+
+**Mechanism is confounded and the agent said so** rather than coding a rule: the
+refusal hit turn 1 in all three sessions, so "the retry message" and "the first
+turn of a fallback session" are not yet distinguishable. **A ~$0.10 run
+provoking a refusal on turn 2 disambiguates, and should happen before any rule is
+written.** Queued, not urgent — a dollars-only ledger that over-prices refusal
+sessions by <1% of corpus volume is still worth shipping, with the caveat
+recorded.
+
+**Note the shape:** OTel *token* points matched deduped JSONL exactly in all four
+buckets. Only *cost* diverged. Tokens are ground truth; the tier→price mapping is
+the fragile part.
+
+**Cost of the exercise: $1.110255** — $0.371 on the measurement and $0.739 burned
+on the three refusal-fallback runs before the cause was found. Over the ~$0.50
+guide, and it bought Finding B.
+
+### 2026-07-21 — FINDING (SHIPPED, live): `resets_at` sub-second jitter re-arms the alert every poll
+
+**Wes, in production:** *"I just got a second push notification 'Rolling window
+at 88%'."* The log shows **five `meter_alert` events, all `thresholdPercent: 80`,
+same meter, same window**, at 18:08:14, 18:08:44, 18:13:44, 18:14:16, 18:16:39.
+Edge-triggering — the property the whole alert design rests on — **does not hold
+against the real endpoint.**
+
+**Root cause, visible in the payloads:**
+
+```
+resetsAt  2026-07-21T20:39:59.374302+00:00
+resetsAt  2026-07-21T20:39:59.418056+00:00
+resetsAt  2026-07-21T20:39:59.375408+00:00
+resetsAt  2026-07-21T20:39:59.900385+00:00
+resetsAt  2026-07-21T20:39:59.746564+00:00
+```
+
+**The endpoint recomputes `resets_at` on every request with sub-second jitter.**
+`firedAlertIsStillBinding` compares it by **string equality** — so every poll
+looks like a new window, the fired alert is re-armed, and the threshold fires
+again. Percent rose monotonically throughout (81→82→87→87→88), so the
+percent-drop signal correctly reported *same window* and was **overruled by
+jitter in the other signal**, because the two are OR'd for re-arming.
+
+**This is the morning's bounded-history finding wearing different clothes — and
+this one SHIPPED.** That one re-alerted every ~5h20m and was caught in
+verification. This one re-alerts **every 5 minutes** and reached the user's
+phone. Same family: *a reset signal firing when no reset occurred.* We hardened
+one branch and left the other reading raw strings.
+
+**Two failures of process, both worth naming:**
+1. **Every test uses clean fixed ISO literals for `resetsAt`.** The unit tests,
+   and the rebuilt `budget-wall` profile, all construct timelines by hand. **No
+   test ever fed the alert path a value that differs only in its microseconds** —
+   so the suite could not fail on this, exactly like `budget-wall` could not fail
+   before it was rebuilt. A fixture that is tidier than production is a fixture
+   that tests something other than production.
+2. **The evidence was on screen hours earlier and went unread.** The 15:20
+   rollover dump printed `15:19:59.779964`, `15:19:59.801817`,
+   `15:20:00.814087` — three different `resets_at` for one window — and the
+   orchestrator read those lines while confirming a *different* property. Data
+   was gathered, displayed, and not looked at for what else it showed.
+
+**Fix direction (a NEW agent, not a patch — rule 0.1):** compare window identity
+with **tolerance**, not string equality. Truncate to whole seconds, or treat
+`resetsAt` values within a small ⟨tune⟩ window as the same window. Prefer the
+narrowest change that makes the property hold, and — binding this time —
+**every alert-path test must use jittered `resetsAt` values**, because the clean
+ones demonstrably prove nothing. Add a live-shaped fixture derived from these
+five real payloads.
+
+**Also revealed:** the re-arm signals are OR'd, so **the noisier signal wins**.
+Worth revisiting whether `resetsAt`-changed should be able to re-arm *alone*, or
+should require corroboration from the percent-drop signal it is meant to back up.
+The step-4a agent flagged the OR as a coverage gap in its own report ("disabling
+only the resetsAt signal leaves the profile green") and it turned out to be a
+design gap too.
+
+### 2026-07-21 — the 80% alert FIRED correctly, and a delivery FINDING: pushes are sent at default urgency
+
+**The alert path works.** First real threshold crossing, unprompted, on a live
+account under deliberate load:
+
+```
+18:08:14.185Z   meter_sample   endpoint:session  81%
+18:08:14.400Z   meter_alert    threshold=80  observed=81  disposition=notify
+                               resetsAt 2026-07-21T20:39:59Z
+```
+
+**215 ms** observation → alert. Exactly one alert, on the binding meter, carrying
+the window identity. The two prior samples at 78% (18:03:44 scheduled, and
+**18:04:15 — an off-cadence FORCED REFRESH, i.e. Wes pressing the button**) both
+polled for real and correctly produced nothing. Edge-triggering, freshness, and
+the forced-refresh path all validated in anger rather than in a test.
+
+**⚠ FINDING — the notification did not arrive until Wes OPENED the app.** His
+report: *"I did get the push but only once I opened vimes."* An alert that only
+lands when you are already looking at the app is not an alert; pillar 5's whole
+premise is reaching the human who is NOT looking.
+
+**Not the service worker.** `packages/ui/src/sw.ts` handles `push` correctly —
+`showNotification` inside `event.waitUntil`, textbook.
+
+**Leading hypothesis: default FCM priority plus Android Doze.**
+`createWebPushSender` calls `webpush.sendNotification` with **no `urgency` and no
+`TTL`** — web-push therefore defaults to `urgency: normal`, which maps to FCM
+*normal* priority. **Normal-priority FCM messages are deferred while the device
+is dozing** and delivered at the next maintenance window or when the app is
+opened — precisely the observed behavior. `urgency: 'high'` maps to FCM high
+priority and wakes the device.
+
+**Consistent with the counter-evidence:** earlier one-off buzzes DID arrive with
+the app closed (the one Wes screenshotted mid-meeting). Those went out while he
+was actively using the phone — awake, no Doze to defer them. Same code path, same
+default urgency, different device state. **The bug was invisible for exactly as
+long as the phone happened to be awake** — the fourth "correct by coincidence"
+shape of the day, in a fifth place.
+
+**Not yet proven**, and worth stating: confirming Doze needs device-side evidence
+(FCM diagnostics or a controlled test with the phone locked and idle). The fix is
+cheap and correct regardless of which deferral mechanism is responsible.
+
+**Proposed remedy (needs sign-off; a daemon change, so it rides a restart):**
+1. **`urgency: 'high'` on time-sensitive sends** — threshold alerts and attention
+   gates. NOT on everything: high urgency wakes the radio and costs battery, so
+   it belongs on "the human is needed now" and nowhere else. That distinction is
+   pillar 5 expressed in a header.
+2. **A bounded `TTL`.** Default is four weeks. **A threshold alert that cannot be
+   delivered before its window resets should EXPIRE, not arrive late** — a "you
+   crossed 80%" push landing after the reset is a stale number wearing a
+   notification, which is the exact failure the slice forbids everywhere else.
+   Natural TTL: seconds until `resetsAt`.
+3. **Event the outcome.** Meter alerts deliberately emit no
+   `push_sent`/`push_failed` (those payloads are session-scoped and a meter
+   belongs to no session) — which is why, when it mattered, **we could not tell
+   from the log whether the push was even attempted.** The daemon logged nothing
+   either. That silence turned a five-minute diagnosis into an inference.
+   Needs a non-session-scoped delivery-outcome event.
+
+### 2026-07-21 — PINNED (Gate-D sign-off, Wes): the slice-5b price table
+
+Calibrated by C2 (all 11 buckets reconciled to $0.000000), assembled by the
+orchestrator from the part-4 appendix + the C2 corrections, **signed off by Wes**,
+now pinned. **$/MTok, corpus-period 2026-07-21 prices**, cache tiers derived from
+base input by the confirmed multipliers **5m ×1.25 / 1h ×2.00 / read ×0.10**;
+output independent (5× input on every current model).
+
+| model | base input | output | 5m write | 1h write | cache read | status |
+|---|---|---|---|---|---|---|
+| `claude-opus-4-8` | 15.00 | 75.00 | 18.75 | 30.00 | 1.50 | ✅ validated (C2, frac 0.801) |
+| `claude-sonnet-5` | 3.00 | 15.00 | 3.75 | 6.00 | 0.30 | ✅ validated — BILLED standard, not the documented $2/$10 intro |
+| `claude-haiku-4-5` | 1.00 | 5.00 | 1.25 | 2.00 | 0.10 | ✅ validated (C2, exact fixture) |
+| `claude-fable-5` | 10.00 | 50.00 | 12.50 | 20.00 | 1.00 | ✅ validated (C2 + Fable-1h closed exact) |
+| `claude-sonnet-4-6` | 3.00 | 15.00 | 3.75 | 6.00 | 0.30 | ⚠️ UNVALIDATED — retired 2026-06-30, $23.57 by analogy only |
+
+**Assumptions pinned WITH the numbers (never bare):**
+- **Restated at current prices, labelled.** The whole ledger prices at the
+  validated 2026-07-21 snapshot; historical price changes (`opus-4-8` launched
+  $5/$25; `sonnet-5` intro/standard) are NOT re-priced per-date — only the current
+  rates are billing-validated. Every figure carries "at 2026-07-21 prices"; the
+  table schema is effective-DATED (rule 0.5) so a future validated historical row
+  can drop in without a rewrite.
+- **Sonnet-5 is the live trap** (rule 0.7): price what billing charges ($3/$15),
+  not what the docs/`claude-api` skill say ($2/$10). The "+50% on 2026-09-01"
+  tripwire inverts — the risk is NOW.
+- **`sonnet-4-6` unvalidated** — priced by same-family analogy, must surface as
+  such, not as a confirmed figure.
+- **Riders carried:** Finding B (refusal-retry billed 5m while JSONL says 1h,
+  <1% corpus, over-prices — a ~$0.10 turn-2-refusal run disambiguates before any
+  rule); absent price-modifiers (speed/service_tier/inference_geo) are ASSERTED
+  against the validated set {standard, absent}, never defaulted (rule 8) — an
+  out-of-set value flags the row, never silently prices standard.
+
+### 2026-07-21 — FINDING (rule 0.1, OPEN — awaiting Wes): the subagent-tree edge was dropped by Step 1; the real tree is FLAT
+
+Step 3 (tree + rollups) is correct and reconciles the live corpus EXACTLY (0
+violations, grand total $7,007.06 === independent flat priced sum === Σ of both
+attribution groupings — proof the tree neither double-counts nor drops). **But on
+the real corpus every one of 587 agents lands at depth 1** — the observed
+attributed/session-root fraction is **0/100, not the survey's 46/54**.
+
+**Root cause is upstream in Step 1, not Step 3.** The agent→agent parent edge lives
+only on `toolUseResult.agentId`, which appears on `type:user` tool-result records
+that carry **no `message.usage`** (verified: 305 such records, 0 with usage). Step 1
+ingests usage-bearing rows only, so the join key is dropped before the store —
+`toolUseResultAgentId` is null on all 20,323 stored rows (I re-verified against the
+db), even though `costCorpus.ts` extracts it and the schema has the column. Step 3's
+parent map is correct (synthetic tests exercise real edges + depth-3 nesting and
+reconcile through both hops); it simply has no edge data to consume and correctly
+degrades to the honest session-root fallback (`parentResolved=false`).
+
+**Consequence:** cost rolls up correctly to project→session→agent-TYPE, but the
+subagent NESTING ("which agent spawned which") is empty until the edge is persisted.
+Dollars are unaffected and exact.
+
+**Decision needed (queued for Wes, NOT decided solo — night-shift rail):** persist
+the parent edge in Step 1 — as edge-only rows, a side table, or by enriching the
+usage row from its spawning record — then the tree nests automatically (Step 3
+already consumes it). Re-ingestion required. **Recommendation:** a small side table
+`cost_agent_edges(childAgentId, parentAgentId, sessionId)` harvested from the
+type:user records during the same walk — keeps usage rows unchanged, is idempotent,
+and Step 3 reads it as the parent map. Sign-off + shape are Wes's call.
+
+### 2026-07-22 — SIGNED OFF (Wes): build the parent-edge fix (side table), + confirming spike
+
+Wes: "go ahead with the parent edge fix." The recommended **`cost_agent_edges`
+side table** is the chosen shape. Building it as two sequential units: (1) pure
+core — `buildCostTree`/`buildCostLedgerReadModel` accept an injected
+`parentEdges` list and union it into the parent map; (2) daemon — harvest edges
+in the walk, persist to the side table, thread through `currentCostLedger`, and
+strengthen the exit gate with a REALISTIC no-usage edge record.
+
+**Confirming spike (`scratchpad/edge-spike.mjs`, read-only over the live 692-file
+corpus, 90,670 lines):**
+- **All 309 edge-bearing records are `type:user` with ZERO `message.usage`** —
+  exactly the records `parseUsageRecord` drops. `usageRowsWithToolUseResultAgentId
+  = 0` confirms the row-derived path recovers *nothing* on real data (the tree is
+  provably flat, matching the finding above).
+- **Direction confirmed against real records:** the record's own `agentId` is the
+  PARENT, `toolUseResult.agentId` is the CHILD. 241 edge records carry
+  `agentId:null` (spawned by the session root → a top-level subagent); 68 carry a
+  non-null parent (a subagent spawning a sub-subagent).
+- **289 distinct edges** by (sessionId, childAgentId); **287 point at a real
+  usage-bearing agent node** (of 602 such nodes). Deduped first-wins, **48 child
+  nodes gain a non-null parent → genuine depth-≥2 nesting**; the rest confirm
+  session-root spawns (no visible tree change, `parentResolved` stays false under
+  the existing null-parent semantics — deliberately NOT changed by this fix).
+- **Accepted limitation (honest):** edges for already-PRUNED transcripts cannot be
+  re-harvested; those sessions stay flat (`parentResolved=false`). Dollars remain
+  exact and unaffected either way. Backfill on the live box needs a one-time
+  re-scan of on-disk files — handled by a schema-version-triggered reset of
+  `cost_ingest_files` ONLY (usage rows are preserved: max-wins is idempotent and
+  pruned rows must never be dropped).
+
+### 2026-07-21 — FINDING (rule 0.1, SIGNED OFF): `inference_geo` is the sentinel `"not_available"`, not absent
+
+Step 2's work order pinned the validated price-modifier set as `{null,'standard'}`
+for speed / service_tier / inference_geo, and asserted the corpus carried "zero
+geo". **The live ledger falsified that:** all 20,264 rows carry
+`inference_geo: "not_available"` — not null, not `standard`. It is the CLI's
+sentinel for "no geographic routing applied", i.e. the geo field's spelling of
+*base* (there is no geo premium to charge), and C2's exact reconciliation
+necessarily priced these same rows at base. speed (`standard`/null) and
+service_tier (`standard`) matched the pinned set as-is.
+
+**Decision (Wes): admit `"not_available"` to the geo validated set as a no-op**
+(base price). A genuinely routed geo (`us`, `eu`, …) still **flags** — those really
+would change the price. The set stays PER-FIELD so the guard is as tight as observed
+truth allows. Rule 0.7 in the flesh again: the spec's declared set was wrong, the
+data is right. **General note banked:** a price modifier's "no premium" state may be
+a *sentinel string*, not `null` — assert against the observed value set, never
+against an assumed one.
+
+### 2026-07-21 — SPIKE C2 (widening): PASS, after a rule-0.1 finding that the DOCUMENTED Sonnet-5 price is wrong
+
+Experiment, not analysis: a local OTLP receiver plus 13 `claude -p` runs → 9
+sessions → **11 (session, model) buckets**, ~$1.38 spent. Models haiku-4-5,
+sonnet-5, opus-4-8 each at 5m-only, 1h-only **and** within-session mixed, plus
+fable-5 at 5m. 404,952 cache-read tokens; one subagent spawn.
+
+**Both cache tiers were provoked deliberately, not caught by luck.** The 2.1.216
+bundle honours `FORCE_PROMPT_CACHING_5M=1` and `ENABLE_PROMPT_CACHING_1H=1`.
+Absent those, the tier is a function of `querySource` against an allowlist
+(`repl_main_thread*`, `sdk`, `auto_mode`, `memdir_relevance`) — **subagents are
+not on it**, which mechanically explains the corpus's ~47% 5m-Opus mix. That
+allowlist is **remote-config driven, so our 1h/5m mix is server-steerable** —
+a rule-0.6 surface, logged as such.
+
+**⚠ THE FINDING — the documented Sonnet-5 price is 33% low, right now.**
+Uncorrected, **every Sonnet-5 bucket came back at exactly −33.3333%** (= 2/3)
+across all five price categories. Anthropic's published pricing — and the
+in-environment `claude-api` skill — record Sonnet 5 on **introductory
+$2/$10 through 2026-08-31**. Anthropic's own `claude_code.cost.usage` **bills it
+at standard $3 / $3.75 / $6 / $0.30 / $15 today, inside that window.**
+
+An exact 1.5× on every category simultaneously is a price-row error, not noise.
+**This is rule 0.7 in the flesh: the documentation is the wrong source, the
+billing signal is the right one.** It is also precisely why C2 exists — the
+prior art's price table was rejected as an *unverifiable fiction*, and this is
+what unverified would have shipped.
+
+Consequences: the part-4 appendix understates Sonnet 5 by 33% (**$74.78 →
+~$112.17**, corpus total **~$2,930.45**), and its "silent +50% inflation on
+2026-09-01" tripwire **inverts — the danger is NOW, not September.**
+
+**With the corrected row: all 11 buckets reconcile to $0.000000.**
+p50 = p95 = max |rel err| = **0.000000%**; aggregate $1.375741 vs $1.375741.
+Residuals are 0–2.8×10⁻¹⁷ — float dust; integer micro-dollars would be exactly
+zero.
+
+**Tier correlation: absent, and the test was shown to HAVE POWER.** The
+1h-fraction spans 0.000 / 0.149 / 0.665 / 0.801 / 1.000 with zero residual at
+every point, so a correlation coefficient there would be computed on rounding
+noise — the agent declined to dress that up as a measurement, and instead
+**sabotaged it**: pricing all cache-creation at 5m drives p95 to **31.4%**, max
+**35.4%**, and **r = −0.942 monotone in the 1h fraction.** The check fails with
+exactly the predicted signature, so **5m ×1.25 and 1h ×2.00 are confirmed against
+first-party billing.** (Same discipline as the budget-wall rebuild: a check that
+has never been observed failing is not yet a check.)
+
+**Also established:** OTel token points match deduped JSONL exactly on all 11
+buckets including resumed and mixed-model sessions; `query_source` splits cost
+cleanly (parent $0.0115724 / subagent $0.0199971, each reproduced independently,
+**zero `message.id` overlap** — binding rule 3 holds on data the code has never
+seen); and the CLI's own `total_cost_usd` agrees with OTel throughout, a free
+third source.
+
+**One usage row carried NO `speed` field** — so the ledger must treat *absent* ≠
+*standard* and **assert** rather than `?? 'standard'`.
+
+**Could not test, stated plainly:** `claude-sonnet-4-6` (retired from the
+workload; its $23.57 is unvalidated) and — the biggest open cell —
+**`claude-fable-5` at the 1h tier, which covers $1,282 of the $2,893 corpus and
+is currently validated only by analogy.** One ~$0.50 run closes it. It was
+skipped to spare the weekly cap.
+
+**The lesson to carry:** n=1 looked perfect while the table was 33% wrong on a
+different model. **This table's failure mode is per-row and silent, so MODEL
+COVERAGE — not sample size — is the control.**
+
+### 2026-07-21 — CORRECTION (same day): the terminal result was mis-framed, and the orchestrator's own check was broken
+
+Two corrections to the entry below, both raised within the hour.
+
+**1. A terminal is a PASSTHROUGH, so not recording it is the design working.**
+Wes, on reading the entry: *"I wouldn't expect vimes to record activity performed
+through a terminal shell. It's a passthrough, isn't it?"* He is right, and
+**rule 0.8 says so explicitly** — PTY bytes are relayed verbatim and never parsed
+for meaning. Calling the terminal result a "hole" or a "blind spot" overstated
+it: VIMES declines to know what happens in a terminal *on purpose*. The entry
+below is retained (the observation is accurate and the ingestion consequence
+stands) but its framing as a defect is **withdrawn**. The correct statement is a
+boundary, not a gap: *the event log describes what VIMES hosts as sessions; a
+terminal is deliberately opaque to it, and a ledger therefore cannot be built on
+the event log.*
+
+**2. VIMES sessions DO track usage — and the check that "cleared" slice 4
+earlier was reading a field that does not exist.** Wes ran the right test
+(opened a session, had it do the same work → `~/pty-gate2.md`): session
+`d2419e0f` (`channel: sdk`, cwd `~/projects`, 17:43:57Z) recorded **3
+`usage_block` events**. Expectation confirmed.
+
+But inspecting that session exposed a methodology failure of my own. The
+`usage_block` payload is `{ appSessionId, usage: {…} }` — tokens are **nested
+under `usage`**, and my earlier D17 safety check read `p.outputTokens`, **a
+field that has never existed**. Every value it compared was `undefined`, so
+"0 of 11 repeated ids differ" was **trivially true and evidentially worthless**.
+
+**Redone correctly:** 60 `usage_block` events; **44 carry a `messageId`, 16 do
+not** (matching U3's undedupable residual exactly); 16 unique ids; 12 repeated;
+and **0 with differing `output_tokens`.** The conclusion stands — **slice 4's
+keep-first dedupe is genuinely safe** — but it now rests on a measurement that
+could have failed.
+
+**This is the fourth "correct by coincidence" of the day, and the first one that
+was mine.** The 5-hour meter, `budget-wall`, and D17's dedupe rule were all right
+for reasons that had nothing to do with why we believed them. So was this check.
+The lesson generalises past code: **a verification that cannot fail is worth
+exactly as much as a test that cannot fail** — and the tell is the same in both
+cases, an all-clear that arrives without ever having been at risk. Concretely:
+when a check returns a clean zero, confirm the field it read actually exists
+before believing it.
+
+### 2026-07-21 — FINDING (framing WITHDRAWN above; observation stands): work done in a VIMES **terminal** is not recorded in the event log
+
+Wes ran the closing half of the spawn-path check on request: opened a vimes
+terminal shell and had Sonnet write a file. The result answered a bigger question
+than the one asked.
+
+**What happened.** `~/projects/pty-gate.md` was created (3,465 bytes, real work).
+The CLI wrote a transcript with **3 usage rows** (`claude-sonnet-5`,
+17:40:11Z–17:40:28Z), full token detail, exactly as every other spawn path does.
+
+**What VIMES recorded: nothing.** In that window the event log contains
+**`meter_sample` events and nothing else** — no `session_created`, no `message`,
+no `usage_block`. Session count did not move (still 8, newest from the previous
+day). And `type LIKE '%terminal%'` returns **zero rows: terminals are not evented
+at all.**
+
+**This is a DIFFERENT and larger hole than the PTY-session question.** A
+PTY-*channel session* at least exists as a session and gets a stream. A raw
+**terminal** produces no session, so there is nothing to attribute to — the work
+is not under-counted, it is entirely absent. The tokens were spent, the account
+window moved, and VIMES's own log has no trace.
+
+**It is the accounting face of a hazard already documented for deploys.**
+CLAUDE.md records that terminals are daemon children **invisible to the liveness
+projection**, which is why a deploy pre-flight must check `/api/terminals`
+separately. Same blind spot, second consequence: what is invisible to liveness is
+equally invisible to attribution. **One structural gap, two symptoms, discovered
+months apart** — worth noting as a pattern, because a third symptom probably
+exists somewhere.
+
+**Consequences:**
+1. **Vindicates the slice-5b ingestion decision emphatically.** A ledger built on
+   the event log would miss **100%** of terminal work, not merely the
+   pre-deployment history. Transcripts are the only source that sees everything.
+2. **Slice 4's cache observability and slice 5's attribution are blind to
+   terminal work** — correct for what they claim (they describe *sessions*), but
+   worth stating plainly rather than discovering later.
+3. **Not a regression and not a slice-5b blocker** — the ledger reads
+   transcripts, which captured this perfectly. Recorded as a known boundary of
+   the live event log.
+
+**PTY-channel sessions remain unproven** — this test exercised the terminal path,
+not the PTY-session path. Closing that one still needs a session created with
+`channel: 'pty'` doing fresh work.
+
+### 2026-07-21 — spawn-path check: 3 of 4 paths confirmed; the tailer's attach-at-head is the ledger's real constraint
+
+Run because a spawn path that writes no usage rows would be a silent hole in
+slice 5b's attribution, independent of C1. **D15's premise turns out not to
+apply to the CLI as it stands today.**
+
+| path | transcript written? | usage rows? | verdict |
+|---|---|---|---|
+| `claude -p`, **inherited** `CLAUDE*` env | yes | 1 row, full token detail | ✅ visible |
+| `claude -p`, **scrubbed** env (the VIMES PTY condition) | yes | 1 row, full token detail | ✅ visible |
+| SDK-hosted (VIMES) | yes | `usage_block` on **all 7** SDK sessions | ✅ visible |
+| PTY-hosted session (VIMES) | yes | **0** `usage_block` — but see below | ⚠️ **unproven, NOT disproven** |
+
+**D15 is stale, in our favour.** That decision recorded that inherited `CLAUDE*`
+env *suppresses* transcripts, and VIMES scrubs env on the PTY channel on that
+basis. Tested directly today from a shell carrying **9 inherited `CLAUDE*`
+vars**: the transcript was written anyway, with usage. The suppression behavior
+either changed with a CLI version or was narrower than recorded. **The env
+scrubbing is now belt-and-braces rather than load-bearing** — harmless, worth
+keeping, no longer the thing standing between us and a blind spot.
+
+**The PTY zero is CORRECT behavior, not a defect — and I nearly filed it as
+one.** The single PTY-channel session shows 0 `usage_block` against a transcript
+holding **449 usage-carrying records**, which reads exactly like a tailer that
+ignores usage on PTY sessions. It is not:
+
+```
+VIMES attached (session_created):   2026-07-19T23:25:51Z
+transcript's LAST usage row:        2026-07-18T21:59:51Z
+```
+
+**Every usage row in that transcript predates the attach by over a day.** The
+tailer subscribes at current head — so emitting nothing was right. We simply
+have **no positive evidence** that a PTY session produces `usage_block`, because
+no PTY session has done fresh work under observation. Closing it needs one live
+PTY session doing real work, which is cheap the next time a vimes terminal is
+open.
+
+**The finding that actually matters, and it decides a slice-5b design
+question.** Attach-at-head means **VIMES's event log contains only work done
+after VIMES was watching** — 5 message events from a 1,260-line transcript, and
+none of its 449 usage rows. A cost ledger built on the event log would therefore
+hold no history at all before its own deployment, and would silently miss any
+work done while the daemon was down.
+
+> **Therefore: slice 5b's ingestion reads TRANSCRIPTS directly, not the event
+> log.** The event log is the right source for *live* state (it is authoritative
+> about what VIMES did) and the wrong source for *accounting* (it is a record of
+> what VIMES witnessed). Those are different questions, and the retrospective
+> corpus — the entire reason this ledger can ship with history — lives only in
+> the transcripts.
+
+**Method note.** Three separate times today an alarming reading turned out to be
+benign or vice-versa, and the discriminator was always the same: *check what the
+code could have seen before judging what it did.* Here the tell was a timestamp
+comparison that took one query.
+
+### 2026-07-21 — SPIKE C1 (slice 5b): KILL CRITERION FIRED — share-of-window is not estimable; 5b ships dollars-only
+
+Read-only analysis over 60 session-meter samples (13:07–17:13 Z, one clean
+rollover), 19,341 globally max-deduped messages from 655 transcripts (320 MB,
+recursive incl. `subagents/workflows/wf_*/`, `<synthetic>` excluded).
+
+**The decisive observation, verified independently by the orchestrator:**
+
+```
+13:47:37Z   session  46%
+13:52:37Z   session  56%     (+10 points in five minutes)
+```
+
+**Zero transcript records exist anywhere on the box in that interval** —
+confirmed by scanning every `.jsonl` on disk for timestamps in the range, not by
+sampling. **No non-negative weighting of input / output / cache-create /
+cache-read / message-count produces ten points from zero units.** Every candidate
+measure fails this interval identically. Δpercent is therefore **provably not a
+function of any locally-visible token quantity.**
+
+**Supporting evidence.** Six clean multi-point segments give implied
+input-equivalents per percentage point of **392K, 0, 311K, 294K, 159K, 146K** —
+a **2.7× spread excluding the anomaly, unbounded with it**. Raw token totals are
+the WORST predictor (cv 0.56), which makes the 96–97%-cache-read finding
+quantitatively load-bearing; the best measures (non-cache-read cv 0.25,
+output-only cv 0.12) are 8 measures fitted on 5 segments — probable overfit — and
+fail the anomaly anyway.
+
+**Two alternative explanations were tested and REJECTED:**
+- *Model mix* — segment A2b is 100% `claude-opus-4-8` and its ratio is half
+  A1's, same window, one hour apart. Restricting to Opus makes the mixed segment
+  worse, not better.
+- *A steady unseen background burn* — fitting `pct = a·tokens + b·minutes` over
+  the clean window returns **b = −0.057 pts/min, the wrong sign**. Whatever
+  inflates Δpercent is **bursty**, not constant. A 0–15 min lag scan does not
+  remove the step.
+
+**The confound could NOT be resolved, and the spike says so.** Implied ratios are
+a *lower* bound, so either **(a)** unobserved work exists and roughly **46% of
+today's account burn was invisible to the full local corpus** (VIMES sees less
+still), or **(b)** the exchange rate genuinely moved ≥2.7× in four hours with no
+trend, no time-of-day pattern, no model correlation, plus one infinite-rate
+interval no multiplicative model can produce. **Bursty hidden burn and a jumpy
+exchange rate are observationally identical in this data.**
+
+**⚠ CONFOUND RESOLVED SAME DAY — by Wes, not by analysis.** On reading the
+result he said:
+
+> *"Well I do use the chat interface as well which leaves no transcripts here,
+> which is probably making our data dirty and it all comes out of the same usage
+> pool."*
+
+**Hypothesis (a) is confirmed and (b) is unnecessary.** The +10-points-in-five-
+minutes interval was real account burn from **claude.ai**, which draws on the
+same account-wide windows and leaves **no local artifact of any kind**. The
+exchange rate may well be perfectly stable — we simply cannot see the numerator.
+
+**This is a better answer than "the rate moves," and it strengthens the cut
+rather than weakening it.** A moving rate might be trackable with enough
+sampling; a *structurally invisible source of consumption* cannot be, by any
+amount of local observation. And the controlled quiet-period experiment the
+spike proposed is now known to be impractical rather than merely expensive: it
+would require Wes to stop using the chat interface for a full five-hour window,
+twice — abstaining from a tool he uses daily to measure a number we have already
+decided not to ship.
+
+**No amount of analysis could have produced this.** The data was genuinely
+ambiguous between the two hypotheses; one sentence of user testimony settled it.
+Worth remembering the next time a spike returns "cannot distinguish" — the
+cheapest remaining experiment may be **asking the human what they were doing.**
+
+**The verdict stood before this and stands after — both branches were fatal in the same way.**
+(a) means the quantity is structurally unseeable from here; (b) means there is no
+constant to converge on. Wes's compute-fluctuation hypothesis is therefore
+neither confirmed nor refuted, and **did not need to be** for the kill criterion
+to fire.
+
+**The weekly meter — the one Wes's actual question needs — is far worse.**
+`weekly_all` moved **6 integer points** across the entire observation (±17% from
+quantization alone, effectively n=1); `weekly_scoped` moved 2. **No weekly band is
+estimable from this data at all**, which matters because "this task costs 8% of
+my weekly" was the ask.
+
+**Side finding worth keeping:** the 5-hour limit may not be a pure token budget.
+Message count fares no better (cv 0.45), and a `max()` over several sub-budgets
+would produce exactly this regime-switching behavior.
+
+**The one result that would most change this** (the spike's own stated threat to
+itself): if some spawn path writes NO transcript, the residual is our blind spot
+rather than the account's. D15 says inherited `CLAUDE*` env suppresses
+transcripts and that VIMES's PTY channel scrubs env specifically to prevent this.
+Cheap to verify — drive a known workload through each spawn path (SDK-hosted, PTY
+terminal, `claude -p`) and confirm each leaves usage rows. **Worth doing for the
+LEDGER regardless of C1**, because a spawn path that writes no transcript is a
+silent hole in slice 5b's attribution, not just in this spike.
+
+**What would make C1 answerable later** (not more sampling — a controlled
+experiment): one 5-hour window with no Claude use from any other surface (web,
+mobile, other hosts) and a single known workload through VIMES, repeated twice.
+~2 days of discipline. Plus ≥20 weekly integer points across a weekly rollover
+before any weekly figure is ever quoted.
+
+### 2026-07-21 — human gate, first half: VIMES displaced the official portal
+
+Unprompted, on the deployed build, hours after the meters UI shipped. Wes:
+
+> *"Just the fact that I can hit vimes and refresh to see the window is huge.
+> Normally I would have to log in to anthropic's portal and go through
+> options→usage — This is far better."*
+
+**The first time VIMES beat the first-party tool at something.** Worth recording
+as a design signal, not just a compliment: the slice's whole premise is that
+"can I afford to start this?" should be answerable from the home screen (pillar
+4), and the evidence that it works is a human reaching for it *instead of* the
+authoritative source.
+
+**Why the refresh button turned out to be load-bearing.** Anthropic's portal is
+current by construction; VIMES polls on a ⟨tune 5 min⟩ cadence. Without a way to
+force a poll, "better than the portal" would have been FALSE precisely when it
+matters most — in the moments before committing to expensive work, which is
+exactly when a five-minute-old number is worth least. Wes proposed the button as
+a small idea ("a refresh button or a 'last fetched' timestamp or both"); it is
+what makes the comparison honest, and it only works because forced refresh polls
+for real rather than re-serving the last sample.
+
+**Explicitly NOT the exit gate.** This validates that the meters are USEFUL and
+reachable. It says nothing about whether they are CORRECT, which is what the
+human half of the gate actually measures (meters matching `/usage` within
+⟨tune 5% PREVIEW⟩ across real use, including window rollovers). A meter that is
+pleasant to reach and wrong is worse than the portal, not better — it fails more
+comfortably. The accuracy half still wants elapsed time.
+
+### 2026-07-21 — D27 groundwork: three parallel read-only surveys of the real corpus
+
+Run as productive load during a deliberate usage burn. Three agents, independent
+partitions, corroborating where they overlap. Full reports in the session
+scratchpad (`d27-part1-vimes.md`, `d27-part2-projects.md`,
+`d27-part3-attribution.md`).
+
+**⚠ MITIGATED SAME DAY — `cleanupPeriodDays: 365`.** On Wes's instruction
+("can you extend the cleanup window to 180+ days"), `~/.claude/settings.json`
+now sets `cleanupPeriodDays: 365` (was unset, so the CLI default prune was
+running). Backup at `~/.claude/settings.json.bak-20260721-122402`; one-line
+diff, JSON re-validated. Sizing: 313 MB for ~40 days → ~2.9 GB for a year,
+against 646 GB free — disk is not the constraint, which is why a year rather
+than the 180 asked for.
+
+**This buys time; it does not undo anything.** Transcripts already pruned are
+gone for good (the January–February projects below stay empty), and the setting
+protects only what exists from here. The ledger still needs its own store — a
+setting can be changed back, a retention default can move (rule 0.6), and 365
+days is still a horizon. Copying usage rows out remains the requirement; the
+deadline just moved from weeks to months.
+
+**⚠ THE ORIGINAL FINDING — the corpus was SLIDING and being eaten.** Oldest surviving
+session transcript is ~29–40 days old; `~/.claude/settings.json` sets no
+`cleanupPeriodDays`, so the CLI's default prune is running. Corroborating
+evidence: **29 of 46 project directories hold `memory/` and
+`sessions-index.json` sidecars dated January–February 2026 with ZERO
+transcripts** — those projects' transcripts have already been deleted.
+**Consequence: "the ledger ships with retrospective history on day one" is true
+for about one month, and only if the ledger COPIES usage rows into its own store
+before retention reaches them.** That is a requirement, not a nicety, and it is
+the strongest argument for starting a minimal capture ahead of the full slice.
+
+**Scale and skew.** 16–17 projects with transcripts; 59 parent sessions; 593
+subagent transcripts; ~2.5B tokens outside VIMES plus ~478M inside. Top 2
+projects are 60% of tokens, top 6 are 96%; **top 5 sessions are 76%**. Deduped,
+the whole corpus is ~16K rows — **the design problem is SKEW, not scale**; cost
+is in the parse (~275 MB), not the query.
+
+**Token mix — the shape that invalidates a naive UI.** cache_read **96–97%**,
+cache_create ~3%, output ~0.65%, base input ~0.15%. A typical record shows
+`input_tokens: 2`. An input/output-only readout displays a number roughly four
+orders of magnitude too small.
+
+**Subagents are 47–55% of all tokens** (79% in dongfu, 72% protocol-omega, 69%
+content-death). **A parent-only ledger reports half the cost, and is most wrong
+on exactly the orchestration-heavy work VIMES exists to run.**
+
+**Nesting is real, and the path does NOT encode it.** 321 subagent transcripts
+sit flat under `subagents/`, **272 more under `subagents/workflows/wf_*/`**.
+Worse, within a session the agent→agent edge is **not in the directory at all** —
+one session shows depth 1/2/3 at 129/44/4. It is recoverable from
+`toolUseResult.agentId` for only **46%** of agents; `Workflow`-spawned agents
+record it solely in a sibling `journal.jsonl`. **The ledger needs a tree and a
+join key, not a two-level directory walk.** (Trap: the spawn tool is named
+`Agent` now, `Task` in older records, `Workflow` for fan-outs — grepping only
+`Task` concludes "no nesting" and is wrong.)
+
+**Double-counting: one premise holds, two new ones bite.**
+- **Parent↔subagent `message.id` overlap is exactly ZERO** across all sessions
+  and 580 agent files — subagent results land in the parent as `tool_result`
+  rows carrying no `usage`. Parent + child summing is safe. Cross-project id
+  collisions are also zero, so dedupe may be global.
+- **`subagent_type: 'fork'` copies the spawner's usage rows** into the fork's own
+  file.
+- **Forked/compacted sessions copy the whole ancestor prefix** — 394 message ids
+  appear in more than one session file, inflating a project rollup **+6–13%**.
+- **`usage.iterations[]` is already rolled into the top-level fields** — summing
+  it double-counts.
+
+**The most decision-useful axis nobody asked for: `attributionSkill`.** Session
+records carry it (`book-genesis`, `software-orchestration`), and
+`attributionAgent` is present on 569/580 subagent files (general-purpose,
+workflow-subagent, fork, Explore, …). **Cost-per-skill and cost-per-agent-type
+are directly derivable** — which is much closer to Wes's actual question ("the
+last similar task cost 8% usage") than cost-per-session is.
+
+**Reliable:** timestamps (43,197 usage rows, 0 missing, 0 non-monotonic,
+uniform ISO-8601 Z); `sessionId` in-record matching its directory (0 mismatches
+across 593 files); zero malformed lines in 72,465; zero records with usage but no
+`message.id` on the JSONL path. **Pricing must be per-message** — 31 files mix
+models within one agent.
+
+**`isSidechain` is the subagent flag, not a third category:** 47,442 `true`
+records, **every one in a subagent transcript, none in any session transcript**.
+Orchestrator note: my earlier "0 sidechain records anywhere" was a **glob
+artifact** — `*/*.jsonl` does not reach `<session>/subagents/`. Recount: 580
+files contain them. Second counting error of the day from the same root cause
+(a glob that silently under-reaches), after the 641-vs-59 session miscount.
+**Both were caught by agents refusing to accept a stated number.**
+
+### 2026-07-21 — FINDING: D17's dedupe rule is UNDER-SPECIFIED — "skip the repeat" silently undercounts output up to 6.5×
+
+Raised by the D27 rollup agent, verified independently by the orchestrator
+against both raw transcripts and the live event log. **Slice 4 is NOT broken —
+but it is correct by coincidence, and D27 would have inherited the defect.**
+
+**The observation.** Repeated `message.id` records are **not identical copies.**
+The transcript writes one record per content block carrying a *partial* usage
+snapshot, then a final record with the settled figure. Independent check over 40
+subagent transcripts: **1276 message ids repeated; 1123 of them have DIFFERING
+`output_tokens`.** Every observed sequence is monotonically non-decreasing, and
+the settled record is identifiable by a **populated `usage.iterations`**:
+
+```
+msg_011Cd2qYY7Q8… output_tokens: [5, 5, 455]      iterations: [F, F, T]
+msg_011Cd2qZ1bPD… output_tokens: [2, 2, 2, 2, 349] iterations: [F, F, F, F, T]
+```
+
+Keep-first reads **5** where the truth is **455**.
+
+**Measured consequence** (D27 agent, VIMES project, output tokens): no-dedupe
+4,516,046 / keep-first 1,268,909 / **keep-max 2,829,180**. Keep-first undercounts
+output **2.23× project-wide**, and the error lands almost entirely on subagents
+(283K → 1,852K, a **6.5× correction**).
+
+**Why slice 4 is nevertheless correct today.** The shipped
+`cacheObservability` projection uses keep-first ("a repeat messageId refreshes
+tier/serviceTier but never re-adds tokens"). Checked against the LIVE event log:
+57 `usage_block` events, 14 unique messageIds, 11 repeated, and **0 of the 11
+have differing `outputTokens`.** The daemon tails SDK-hosted *parent* sessions,
+whose transcripts happen to repeat the FINAL usage on every block; the partial-
+snapshot shape appears in *subagent* transcripts, which the daemon does not read.
+**No regression, no patch needed — and no license to leave the rule as written.**
+
+**The corrected rule, binding on D27 and on any future JSONL consumer:**
+**dedupe by `message.id` taking the ELEMENTWISE MAX, never first-wins.**
+(Equivalently: prefer the record with a populated `usage.iterations`. Max is the
+safer primitive — it does not depend on that field continuing to exist, rule
+0.6.) D17's lean is updated accordingly.
+
+**The pattern this makes three-for-three today.** The 5-hour meter's reset
+detection was right only because the history bound happened to approximate the
+window. `budget-wall` passed only because it tested nothing. D17's dedupe is
+right only because the daemon happens not to read the shape that breaks it.
+**Every one of them was correct-by-coincidence, and in every case the coincidence
+was invisible from inside the passing test.** The general defense is the one that
+found all three: check the claim against data the code has never seen, not
+against the data it was written for.
+
+### 2026-07-21 — FINDING: slice-5's machine exit gate is GREEN AND VACUOUS
+
+Ran the machine half of the slice-5 exit gate on request. `budget-wall` passes,
+double-run byte-identical, as it has all day. **It proves nothing about slice 5.**
+
+**What the gate says:** *"the `budget-wall` scenario profile runs green against
+the live adapters in replay (meter reads, threshold crossing, staleness
+degradation)."*
+
+**What `budget-wall` actually exercises** — checked symbol by symbol against the
+profile source:
+
+| slice-5 machinery | used by budget-wall? |
+|---|---|
+| `usageEndpoint` / `parseUsageResponse` | no |
+| `evaluateMeterAlerts` / `meterAlert` | no |
+| `evaluateHeadroomGate` | no |
+| `meterFreshness` | no |
+| `burnRatePercentPerHour` / `projectedExhaustion` | no |
+
+It is the **slice-0 stub**, untouched by the slice it is supposed to gate. It
+emits `used`/`limit` absolutes in `tokens` from `source: 'jsonl'` — the exact
+shape D26 established the endpoint never provides — carries the deprecated
+stored `stale: false` flag, and uses its own local `checkHeadroomGate` stub
+rather than core's `evaluateHeadroomGate`. Its "threshold crossing" is a
+hand-emitted event, not a decision any production code path would make.
+
+**So the profile passing is not evidence.** A gate that cannot fail when the
+thing it gates is broken is not a gate. Rule 0.1: this halts the machine half
+rather than being quietly recorded as passed.
+
+**Second defect found in the same pass: two events for one fact (principle 9).**
+`meter_threshold_crossed` (slice-0 reserved) and `meter_alert` (slice 5) both
+mean "a meter crossed a line". `meter_threshold_crossed` has **exactly one
+producer in the entire codebase — the `budget-wall` profile itself**; nothing in
+the daemon or core emits it. `meter_alert` is the real one, and it carries the
+window identity and reserved disposition that suppression and slice-7 brakes
+need.
+
+**Proposed remedy (needs sign-off, not to be self-applied):**
+1. Rebuild `budget-wall` to drive the REAL path end to end in replay:
+   `parseUsageResponse` over the golden fixture → `meter_sample` events → the
+   meters projection → the pure derivations → `evaluateMeterAlerts` producing a
+   real `meter_alert` → an injected-clock jump proving staleness degradation
+   (`displayPercent`/headroom go unknown, and NO alert fires on a stale
+   reading) → `evaluateHeadroomGate` refusing. Determinism is preserved: the
+   fixture is a file and the clock is already injected, so double-run
+   byte-identity survives.
+2. Deprecate `meter_threshold_crossed` — retain the schema so historical events
+   validate (as `stale` was retained), remove the producer, and state
+   `meter_alert` as the single source of record.
+
+**Note on instrument comparability:** scenario profiles are measurement
+instruments, and rewriting one loses continuity with prior runs. Accepted here
+because slice 5's own assertions name `budget-wall` as the instrument that must
+grow into this — and because an instrument measuring nothing has no continuity
+worth preserving.
+
+### 2026-07-21 — operational: CLI pin bumped 2.1.215 → 2.1.216 (Wes's call, rule 0.7)
+
+The box auto-updated 2.1.215 → 2.1.216 and the daemon had been warning on every
+boot. **Wes blessed the new surface**; `VIMES_EXPECTED_CLI_VERSION` in
+`/etc/vimes/env` bumped (backup at `/etc/vimes/env.bak-20260721`, perms preserved
+`root:root 600`), daemon restarted, boot line now clean with no drift warning.
+
+**Honest caveat recorded at the time:** 2.1.216 had NOT been exercised through a
+VIMES-hosted session when the pin was bumped — the day's work ran in code-server.
+The pin is warn-only so nothing is gated on it, but silencing it removed the only
+automatic signal that the CLI surface moved. First place to look if session
+spawning misbehaves.
+
+### 2026-07-21 — observed LIVE: a real 5-hour window rollover, and `resets_at` DISAPPEARS at zero
+
+First genuine window reset captured by the deployed step-4b stack (rule 0.7 —
+observed, and this one could not have been learned from the U1 fixture, which was
+a single point in time).
+
+```
+15:16:27Z  endpoint:session  percent=71  resetsAt=2026-07-21T15:20:00Z
+15:21:27Z  endpoint:session  percent= 0  resetsAt=(absent)
+```
+
+**The new fact: at rollover the endpoint drops `resets_at` for that limit.** A
+window sitting at 0% reports no reset time — reasonably, since there is nothing
+pending to reset. So `percent: 0` + `resetsAt: null` is a NORMAL steady state for
+a freshly-rolled window, not a degraded or malformed one. Consumers must not read
+a missing `resets_at` as an error or as "unknown window".
+
+**Both reset signals fired, independently and correctly** — the validation the
+step-4a fix wanted and could not get from a test alone: the percentage DROPPED
+(71 → 0), and `resetsAt` CHANGED (timestamp → null). Either alone would have
+re-armed; together they agree. The bounded-history fix shipped two hours earlier
+met a real rollover and behaved.
+
+**The fingerprint did NOT churn** (`ddf8f5b9c6602417` across all 7 observations
+spanning the reset). Correct: the key remains present and only its value changed,
+and the fingerprint covers the sorted set of key PATHS, not values — so ordinary
+movement, including a 71→0 reset, raises no drift alarm. Both halves of that
+design were exercised on the detector's first day.
+
+**Zero `meter_alert` events**, correct — the peak was 71 against an ⟨tune 80%
+PREVIEW⟩ line, so nothing should have fired. The alert path remains unproven
+against a REAL crossing; that still wants a window that actually reaches 80.
+
+**Rider for the D27 correlation spike (C1):** this rollover is a clean natural
+experiment and the observation log has it. Between 14:32 and 15:16 the session
+window climbed 64 → 71 (7 points) with VIMES hosting a known set of work — the
+first real paired (Δpercent, Σtokens) sample for pinning tokens-per-percent.
+Snapshot it before the log rotates.
+
+### 2026-07-21 — FINDING (step 4a, caught at orchestrator verification): weekly meters would re-alert every ~5h20m forever
+
+Caught by an orchestrator probe against the step-4a agent's reported-green
+`evaluateMeterAlerts`, before any daemon wiring existed. **ci-gate was fully
+green (728 tests) with this defect present** — it is not a regression, it is an
+uncovered interaction.
+
+**Reproduction** (probe kept as `_orchVerify.test.ts` until folded into the real
+suite): a `weekly-cap` meter, `resetsAt` unchanged, `percent` only ever rising —
+i.e. the window demonstrably has NOT rolled over. Fire the 80% alert, advance six
+hours, evaluate again → **the alert fires a second time.**
+
+**Root cause.** `currentWindowStartIso` infers the window's start from the
+bounded sample history (`METER_HISTORY_LIMIT = 64`). When no reset occurred
+inside the retained span, `samplesSinceLastReset` returns *everything it has*, so
+the inferred "window start" is simply the oldest retained sample — **a sliding
+value that tracks the buffer, not the window.** At the 5-minute default poll
+interval 64 samples ≈ 5h20m, which happens to approximate the 5-hour window, so
+`endpoint:session` looks correct **by coincidence**. For `weekly_all` /
+`weekly_scoped` the real window is 7 days and the inference is wrong by two
+orders of magnitude.
+
+**Consequence.** Any alert older than the retained span falls before the apparent
+window start, is read as re-armed, and re-fires; the replacement alert then ages
+out of the buffer 5h20m later and the cycle repeats. **A weekly meter parked
+above threshold would buzz the phone roughly every five hours, indefinitely** —
+precisely the pillar-5 noise the multi-threshold rule was carefully designed to
+avoid. The care went into the wrong branch.
+
+**The transferable lesson: absence of evidence of a reset was read as evidence of
+a reset.** Running off the end of a bounded buffer is, in that code path,
+indistinguishable from a genuine rollover — and the code chose the alarming
+interpretation. This is the same family as the D25 rule (specifying a value's
+security property says nothing about its semantics): here, specifying that
+history is *bounded* said nothing about what the boundary MEANS to a reader of
+that history. **Bounded retention must degrade to `unknown`, never to
+"something changed".** That is the slice invariant applied to a buffer edge, and
+it is the general form worth carrying: every place VIMES truncates, the truncation
+edge needs an explicit meaning, or a consumer will invent an alarming one.
+
+**Fix direction (a new agent, not a patch — rule 0.1):** the percent-drop signal
+may only re-arm on **positive evidence** of a drop, i.e. when
+`samplesSinceLastReset` actually located a reset boundary *inside* the retained
+history. When the returned segment begins at the very first retained sample there
+is no observed reset and that signal must **abstain**, leaving `resetsAt`
+(which for weekly meters is the reliable signal, and does change on rollover) to
+decide alone.
+
+### 2026-07-21 — FINDING: meter freshness is BINARY, and the fresh band is wider than the poll interval
+
+**Observed by Wes on the deployed build:** the meters strip read `59%` for the
+5-hour window while a live probe of the endpoint returned `60%`. His words:
+*"it's actually stale data with no way to detect that."*
+
+**The numbers.** `DEFAULT_USAGE_POLL_INTERVAL_MS = 300_000` (5 min, daemon
+`config.ts`; no `VIMES_USAGE_POLL_MS` override in `/etc/vimes/env`, so the
+default is live). `METER_STALE_AFTER_MS_PREVIEW = 10 * 60 * 1000` (10 min, UI
+`meterDisplay.ts`).
+
+**Two distinct defects, one root cause.**
+
+1. **Age is invisible inside the fresh band.** `displayPercent` is correctly
+   nulled when a reading goes stale — the invariant holds literally — but
+   `fresh` is a *binary*. A reading three seconds old and a reading nine minutes
+   old render identically, as a bare confident number. The user cannot tell
+   which they are looking at, which is exactly what Wes hit.
+2. **The stale threshold is 2× the poll interval, so one missed poll still reads
+   fresh.** A silently failing poller — and per U1 the *normal* daily failure is
+   a 401 at ~6h token roll, which by design emits nothing — leaves a
+   confident-looking number on screen for up to 10 minutes before anything marks
+   it.
+
+**Root cause: two independent ⟨tune⟩ constants that are only meaningful
+relative to each other**, held in two packages, with nothing forcing the
+relationship. That is the one-source-of-record rule (principle 9) violated on a
+*derived relationship* rather than on a fact — a shape worth recognising again.
+
+**The invariant needs sharpening, not just the code.** "A stale observation never
+renders as a current number" was satisfied while the screen still misled. The
+stronger form, adopted here: **a reading's AGE is always visible; freshness is a
+gradient the user can see, not a binary the code decides for them.** Under
+pillar 4 a meter that hides how old it is overstates its own precision, which is
+the same failure as overstating its units (D26).
+
+**Fix, split across the two remaining slice-5 units:**
+- `staleAfterMs` is **derived from the poll interval by the daemon** and served
+  in the derived read model — one number, one owner, relationship enforced.
+- The UI shows a **continuously updating age** against `observedAt` (never
+  against the browser's own fetch time — that would read "3 seconds ago" while
+  the underlying reading is hours old and 401-blocked, the precise failure this
+  slice exists to prevent).
+- A **forced-refresh** route so the user can close the gap on demand, debounced,
+  because the endpoint is unofficial and exposes no rate-limit headers.
+
+**Not a cost concern (probed 2026-07-21):** three back-to-back calls to
+`GET /api/oauth/usage` returned 200 with byte-identical percentages
+(`session=60 weekly_all=54 weekly_scoped=64`) and **no rate-limit headers of any
+kind**. It is an OAuth account-metadata read, not an inference call — a forced
+poll consumes no window. The debounce exists for endpoint-citizenship (rule
+0.6), not for usage.
+
+### 2026-07-21 — observed: the cost hierarchy already exists on disk, retroactively (feeds D27)
+
+Prompted by Wes's ask for a per-project / per-session / per-subagent cost
+readout. Read-only survey of `~/.claude/projects`, rule 0.7 — observed, not
+documented.
+
+**Layout.** Project → session → subagents, with the parent link encoded in the
+path:
+
+```
+~/.claude/projects/<project-slug>/
+    <sessionId>.jsonl                          ← the session's own thread
+    <sessionId>/subagents/agent-<agentId>.jsonl ← its subagents
+```
+
+**Volume (CORRECTED 2026-07-21 — see the correction note below): 652 transcripts
+in total, of which 593 are SUBAGENT transcripts and 59 are top-level sessions.**
+
+> **Correction.** This entry originally read "641 session transcripts; 584
+> subagent transcripts", which double-counted: 641 was the output of
+> `find -name '*.jsonl'`, which **recurses into `subagents/`** and is therefore
+> the TOTAL, not the session count. The orchestrator wrote the total in the
+> sessions slot. Caught by the D27 pricing agent, which counted independently and
+> refused to accept the stated figure. Live recount: 652 total / 593 subagent /
+> 59 session (grown from 641/584/57 by the same day's work).
+>
+> **The correction sharpens the design point rather than weakening it:**
+> subagent transcripts outnumber sessions roughly **10 to 1**. A ledger that
+> models sessions and treats subagents as a detail has the proportions exactly
+> backwards.
+
+Subagent transcripts are durable — the `/tmp/claude-*/…/tasks/
+<agentId>.output` path a running session sees is a **symlink** into the
+`subagents/` directory above, not ephemeral scratch as first assumed.
+
+**Per-message content (sampled):** `usage` with cache tiers split out
+(`cache_creation.ephemeral_5m_input_tokens` / `ephemeral_1h_input_tokens`,
+`cache_read_input_tokens`, `input_tokens`, `output_tokens`), `model` per message,
+and `message.id` — so D17 dedupe applies unchanged and pricing can be
+model- and tier-correct.
+
+**Why it matters:** every dimension of the D27 ask (project, session, subagent,
+history) is derivable from data **already on disk for work already done**. A cost
+ledger would ship with retrospective history on day one rather than beginning to
+accumulate from its ship date.
+
+**What is NOT there:** dollars. JSONL carries tokens only; USD comes from OTel
+(`claude_code.cost.usage`, U2) which covers only sessions VIMES spawns with the
+env set, and only going forward. Hence D27's price-table-validated-against-OTel
+approach. Also absent: any statement of window SIZE — consistent with D26,
+nothing on disk says how many tokens a 5-hour window holds, which is why
+percent-of-window can only ever be estimated by correlation (D27 spike C1).
+
+**Caution for whoever builds this:** `isSidechain` is `false` on all 2726
+records sampled in the main transcripts, and a naive `*/*.jsonl` glob **misses
+every subagent file** (they sit one level deeper). Both are easy ways to conclude
+"subagent cost is invisible" and be wrong.
+
+### 2026-07-21 — prior-art mining: usage/cost monitoring across the three decomposed repos
+
+Read-only re-read of the decomposition series against one question: *how did
+Jinn / agent-teams-ai / Codor solve usage and cost monitoring, and is any of it
+better than what VIMES is building?* Full carry-over rows in
+[decomposition/README.md](decomposition/README.md).
+
+**Headline: this is the thinnest territory in the series** — roughly 12 lines of
+substantive findings across ~355 lines of analysis. All three treat cost as a
+bolt-on.
+
+**Nothing beats VIMES observationally.** None of the three found the
+account-wide usage endpoint (U1); none used OTel (U2); none had a first-party
+USD figure; none pre-flighted work against remaining headroom. **All three were
+structurally account-blind and none of them knew it** — Jinn sums its own
+transcripts, ATA reads its own streams, Codor tracks its own runs, and each
+presents "what my platform spent" as a budget. That is U3's finding applied
+backwards, and it is why slice 5's source-precedence-as-a-TYPE-DISTINCTION rule
+is the thing all three violate.
+
+**Three things worth taking** (tracker rows updated):
+1. **Codor's brake semantics** — work is *held*, not failed; release is one tap
+   from the phone; the spend meter is always-on and never-blocking so the brake
+   is never the first you hear of it. *"Operators kill, software doesn't."*
+   Strictly better than slice 5's threshold *notification*. Wes's call
+   (2026-07-21): ship the notification as scoped, **reserve the brake vocabulary
+   now** (rule 0.5) so slice 7 upgrades it without a migration.
+2. **ATA's auto-resume staleness matrix** — never stack timers; sanity-cap
+   parsed reset times; past-due resets fall back to a buffered delay; at fire
+   time re-check the flag, that the session is alive, and that it has not
+   advanced past the run that hit the limit. Needed verbatim by
+   `deferUntilReset`. **U1 improves the trigger:** they schedule reactively off a
+   rate-limit event (i.e. only after hitting the wall); `limits[].resets_at`
+   lets VIMES schedule *before* it.
+3. **Per-spawner budget scope** — appears independently in all three (Jinn
+   monthly-per-employee, ATA meters, Codor `budgets` table). Triple
+   corroboration, the bar that promoted hooks and reviewer-close. Cheap to
+   reserve alongside the meter schema, expensive after meters ship.
+
+**The one prior-art verdict that U1/U2 overturned.** jinn §2.2 judged StopFailure
+"more sanctioned than the unofficial `/usage` endpoint probe (D8)" — written
+before U1 ran. StopFailure is official but **session-scoped**; the endpoint is
+unofficial but **account-wide and alive**. They answer different questions and
+principle 9 already forbids treating them as substitutes. Likewise jinn's
+dollar-estimation "skip" was reasoned as *"notional on subscription"* — true of a
+hardcoded table, false of OTel's first-party USD figure (see D27).
+
+**Still unclaimed:** `billing_error` in the StopFailure reason enum (jinn §2.1
+lists it; only `rate_limit` is routed). A distinct attention reason from
+rate-limiting, and nothing in slice 5 or the tracker mentions it.
+
+## Budget table (`--report`)
+
+Design-intent targets from spec §8, listed so nothing gets pinned from memory.
+All ⟨tune⟩; proposal at pin time is ±25% around observed, floors as well as
+ceilings ("too fast" = a path skipped fails like "too slow").
+
+| Measure | Design intent | Observed (profile) | Proposed band | Pinned? |
+|---|---|---|---|---|
+| reconnect-to-caught-up (mobile, tunnel) | < 2 s | — | — | no — harness pending |
+| gate-to-push-delivered | < 10 s | — | — | no |
+| cold-start-to-usable-session-list | < 5 s (log-size-independent via snapshots) | — | — | no |
+| WS bufferedAmount drop threshold | ⟨tune⟩ | — | — | no |
+| PTY reconnect ring buffer | 2 MB | — | — | no |
+| JSONL tail latency (append→event) | < 300 ms | — | — | no |
+| watchdog stale threshold | 5 min | — | — | no |
+| meter staleness tolerance | 60 s | — | — | no |
+| search first-results (house repo size) | < 1 s | — | — | no |
+| initial mobile JS payload (gzipped, excl. lazy CM6/xterm) | < 300 KB | — | — | no |
+| measured-quantity tolerance | ±10% relative | — | — | no |
+
+Deterministic CI check, **no calibration needed** (lands slice 3): build
+manifest shows CM6 and xterm in separate lazy chunks; entry chunk imports
+neither.
+
+## Spike results
+
+### 2026-07-13 — Node 24 native-module coverage (finding F, slice 0 setup) ✅
+
+**Method:** installed Node 24.18.0 via nvm on the dev box (Ubuntu 24.04);
+`npm install node-pty better-sqlite3` in a clean scratch project;
+loaded both, spawned a real PTY (`bash -c 'echo pty-ok'`, output captured via
+`onData`), opened an in-memory better-sqlite3 DB with `journal_mode = WAL`,
+round-tripped a row. **Result:** node-pty@1.1.0 and better-sqlite3@12.11.1 both
+build (`pty.node`, `better_sqlite3.node` present) and function under Node
+24.18.0 / npm 11.16.0. **The Node 24 pin holds; no fallback to 22.**
+**Wart recorded:** npm 11's `allow-scripts` policy blocks both packages'
+native install scripts by default — repo setup and CI must approve them
+(`npm approve-scripts better-sqlite3 node-pty`) or installs silently skip the
+native build. Baked into slice 0 step 1.
+
+### 2026-07-13 — Slice-1 step-0 spikes: D4 billing bucket, SDK surface, fixture shape
+
+**Method:** Claude Code CLI 2.1.207, SDK 0.3.207, isolated scratch project.
+`/usage` TUI captured programmatically via node-pty (ANSI-stripped), readings
+around identical tiny workloads per channel, two rounds. Raw captures +
+scripts + typings citations in the spike job dir (see checkpoint).
+
+**D4 headline: on this Max account, SDK `query()` and PTY interactive burn the
+SAME meters** — 5-hour window + weekly caps. No non-interactive monthly credit
+movement on either channel (usage-credits feature present but OFF). Kill
+criterion's billing branch not triggered.
+
+| Reading | Trigger | 5h window | Week all | Week Fable |
+|---|---|---|---|---|
+| R0 | baseline (pre-spike; Wes's other work already running) | 89% | 66% | 73% |
+| R1+R2 | SDK round (cascade, see below) + PTY round | 95% | 66% | 74% |
+| R3 | SDK round, isolated (`settingSources: []`) | 96% | 67% | 74% |
+| R4 | PTY round | 96% | 67% | 74% |
+| R5 | PTY round (cascade recurred) | 97% ("USAGE CRITICAL" banner) | — | — |
+
+**Finding → D14 (settingSources inheritance):** an SDK `query()` with default
+`settingSources` inherits the user's ambient `~/.claude/settings.json` — R1's
+"reply ok" became an 8-turn, 6,351-output / 812k-cache-read cascade via Wes's
+usage-warning Stop hook (its systemd-run / file-write attempts were all
+denied — safe, but the burn was real). `settingSources: []` produced the
+clean 4-message exchange. PTY has no such knob (inherits everything, by
+design). Burn accounting: total spike burn exceeded plan solely due to this
+cascade — which is itself D4-relevant data.
+
+**Finding → D15 (PTY transcript absence):** three PTY-hosted spike sessions
+(incl. one clean, patient run, clearly billed) produced NO transcript .jsonl
+anywhere the spike could find. Unexplained; not chased at critical usage.
+Rule 0.8 makes the JSONL tail the ONLY structure source for PTY sessions —
+verify-row before the tailer is trusted (step 2 blocker).
+
+**SDK surface (typings + live tests, citations in spike notes):**
+`listSessions()`; `resume` option — **live-verified append-to-same-file, no
+fork, no new file** (I3 groundwork); `forkSession` (option + standalone fn);
+streaming input via `AsyncIterable` prompt / `Query.streamInput()`; `interrupt()`
+(streaming mode required); **`canUseTool` callback is a clean promise-based
+gate surface** ({title, displayName, requestId} — directly awaitable against
+a phone round-trip). CLI: `-n/--name` confirmed (feeds D7). Naming mismatch:
+CLI `--permission-mode manual` vs SDK type `default` — fragile-adapter note.
+
+**Fixture shape vs 2.1.207 (SDK-channel transcripts only, per D15):** additive
+except one breaking difference — real user records carry `message.content` as
+an ARRAY of blocks, fixture has a bare string. Also whole record types absent
+from fixtures (`attachment` — majority of lines in one real transcript —
+`queue-operation`, `file-history-snapshot`, …); live SDK stream types never
+appear in persisted JSONL (it's a strict subset). Action: fixture refresh
+task queued (fix user content shape, add representative new record types,
+re-stamp 2.1.207).
+
+Remaining slice-ordered queue: D7
+`claude -n` correlation + push delivery timing + iOS PWA re-auth bounce
+(slice 2); D8 usage endpoint capture (slice 5); D5 streaming-input injection
+(slice 6). Results land here dated, with method; decisions they force move to
+decisions.md.
+
+## Invariants
+
+I1–I14 are specified in spec §7 with the slice each lands in. Slice 0 brings
+I1, I2, I4, I5, I6, I8, I12, I13 under test. Exact where counted (events, seqs,
+transitions); relative-epsilon where measured (latencies, projections).
+
+### 2026-07-22 — RESOLVED + DEPLOYED LIVE: the parent-edge fix; the tree NESTS
+
+The rule-0.1 flat-tree finding (2026-07-21, above) is CLOSED. Shipped as two
+commits — `93fda90` (core: injected `parentEdges`, pure) and `70f1d38` (daemon:
+harvest → `cost_agent_edges` + v1→v2 migration + wiring + a strengthened exit
+gate) — and deployed by daemon restart at 2026-07-22T11:54:18Z.
+
+**Live, post-deploy (measured, not predicted):**
+| | before | after |
+|---|---|---|
+| `schema_version` | 1 | **2** (migration ran) |
+| `cost_usage_rows` | 20,453 | **20,697** — PRESERVED, never wiped |
+| `cost_agent_edges` | (table absent) | **291** harvested |
+| edges with a non-null parent | — | **48** |
+| agents with `parentResolved` | **0** | **48** |
+| max tree depth | 2 (flat) | **4** (2 real agent→agent hops) |
+| agents with children | 0 | 8 |
+
+Grand total $7,171.04 over 593 agents; reconciliation held (the read model did not
+throw). The spike predicted 289 edges / ~48 nestings — the live numbers (291 / 48)
+match, the delta being corpus growth between spike and deploy.
+
+**The data-safety guard held in production:** the migration cleared
+`cost_ingest_files` (forcing a 694-file re-scan that backfilled the edges) and left
+`cost_usage_rows` intact. This was the sabotage-verified property — adding
+`DELETE FROM cost_usage_rows` to the migration reddens exactly the "spend SURVIVED"
+assertion — and it behaved as tested on the real ledger.
+
+**Why the exit gate is now stronger than before:** the old fixture carried the
+parent edge on a USAGE row, which is the shape that HID this bug (real edges never
+ride usage rows). The gate now also carries a grandchild whose edge lives on a
+separate NO-USAGE `type:user` record, so a regression that stops harvesting from
+no-usage records goes red (verified: it reddens ASSERTION 8 and moves ASSERTION 5).
+
+**Known limitation, unchanged and honest:** edges for already-PRUNED transcripts
+cannot be re-harvested, so those sessions stay flat with `parentResolved=false`.
+The UI's flat-tree note is conditional (`treeIsFlat`) and now hides itself; agents
+indent by depth automatically. Dollars were never affected by any of this.
+
+### 2026-07-22 — SPIKE S1 (slice 6, D5): correction injection STEERS a live run mid-turn; kill criterion NOT triggered
+
+The blocking slice-6 spike. **Versions: SDK `0.3.207`; the binary actually
+exercised is the SDK-VENDORED CLI `2.1.207`, not the PATH `2.1.217`** (see the
+risk-register row — this divergence is itself a finding). Six runs, scripts and
+raw transcripts in `scratchpad/s1-scratch/`. Driven directly against the SDK,
+mirroring `sessionHost.spawn()`; the live daemon was never touched.
+
+**Test A — streaming-input injection: verdict (1) MID-TURN STEER.** Not merely
+queued-to-turn-boundary, and not failed. A message pushed into the live
+`AsyncMessageQueue` reached the model *inside* the turn (A1: enqueue→delivery
+3.06 s with zero `result`s emitted, so no turn boundary had occurred; A2: 1.29 s),
+was obeyed (stopped writing `step-N` files, wrote `DONE.txt`), and the run
+continued as **one** run — single `result`, `is_error:false`, one `sessionId`, one
+transcript file. Reproduced on **two models** (haiku-4.5, sonnet-5) with the
+**production message shape** (`sessionHost.deliver()`'s exact object).
+
+**The delivery boundary is the next model call — NOT preemption of a running
+tool.** A5 parked the worker in a 40 s foreground tool and pushed mid-tool:
+enqueue `12:36:19.786Z` → delivery `12:36:50.210Z` = **30.42 s**, landing exactly
+when the tool returned. **Correction latency is bounded by the remaining duration
+of the in-flight tool call — unbounded in the worst case (a long build or test
+suite).** Binding consequences for slice 6 step 6: the UI must render a correction
+as *queued → delivered*, never as instantly applied; and **the watchdog must not
+read "correction queued, not yet delivered" as stale** or it will quarantine a
+healthy corrected run.
+
+**Test B — interrupt + resume (run regardless, per the work order).**
+`interrupt()` resolved in 3 ms with receipt `{still_queued:[]}`; 38 ms later a
+synthetic `[Request interrupted by user]` record and a `result` with
+`subtype:'error_during_execution'`, `is_error:true`. **The SDK iterator then
+THREW** — an interrupt surfaces as an *exception*, not a graceful end (production
+already absorbs it at `consumeSdk`'s catch → `windDown`, but the abort verb must
+be written against a throw). Zero orphan processes across three snapshots. Work
+lost = the pending model call only (~2–3 s), nothing lost on disk.
+
+**I3 no-fork — verified STRUCTURALLY by the orchestrator, not by return values.**
+Parsing the transcripts for A1, A2, A5 and B1: each has **1 sessionId, 1 root
+(`parentUuid:null`), 0 parents with >1 child, 0 chain breaks.** Resume reused the
+same `sessionId` and appended to the same file (50,334 → 64,399 bytes, 32 → 44
+records). A fork would require a second root, a second file, or a two-child
+parent — none present on either path.
+
+**D5 recommendation (Wes's call): adopt injection; keep `interrupt()` as the
+hard-stop lever.** Steer = inject (no interrupt, no resume, no lost turn, no
+cache-cold restart, no session boundary); abort = interrupt (the only thing that
+can preempt an in-flight tool). The mechanism **already ships** — `sendMessage()`
+into a running session already lands in the SDK queue — so slice 6 step 6 is
+largely semantics, evidencing and UI (a `correction` verb, its event, the board
+affordance), not new plumbing.
+
+**Kill criterion: NOT TRIGGERED.** It fires only if corrections require killing
+runs on *both* paths; both paths work. Slice 6 proceeds.
+
+**Open, deliberately not determined (recorded so they are not mistaken for
+settled):** whether the undocumented `SDKUserMessage.priority` (`'now'|'next'|
+'later'`) changes the delivery boundary; delivery point when mid-generation with
+**no** tool call pending (all three successful injections landed at a tool
+boundary); behaviour with a **subagent (Task tool)** in flight — relevant because
+stage runners may spawn subagents; coalescing of multiple rapid injections; and
+whether anything differs when spawned **through the daemon** rather than directly.
+The long-tool latency bound rests on a **single** run (A5).
+
+**S3 note (carried):** the CLI blocks foreground `sleep N` in Bash, so a "wedged
+run" fixture cannot be built from `sleep` — S3's heartbeat calibration needs a
+different wedge.
+
+### 2026-07-22 — SPIKE S3a (slice 6): the watchdog cannot be a pure time threshold; and the machine-work tail is bounded at ~15 min
+
+Measured **read-only over the real corpus** (697 transcript files, ~80.6k
+timestamped records) rather than synthesised — months of actual work is a far
+better instrument than a handful of fabricated runs, and it cost nothing.
+Scripts: `scratchpad/s3a-gap-analysis.mjs`, `s3a-gap-refined.mjs`.
+
+**Method + the distinction that makes the number mean anything.** The watchdog's
+question is "how long can a HEALTHY run go without appending to its JSONL?"
+Gaps were taken between consecutive records in **file order** (append order is the
+truth; S1 showed timestamps are not monotonic — 810 out-of-order pairs excluded).
+A gap counts as *in flight* only when the run was working at both ends: an
+`assistant` record, or a `user` record carrying a `tool_result`. **A gap ending at
+a real human turn is idle time, not staleness** — including it would inflate the
+tail by hours (idle p99 = 226 min, max 24,982 min) and produce a uselessly large
+band. Three populations then separate:
+
+| population | count | what it is |
+|---|---|---|
+| **machine work** | 70,232 | model thinking or a tool running — **the only population a staleness band may be tuned against** |
+| **human-gated** | 28 | `AskUserQuestion` / `ExitPlanMode` — the reply returns as a `tool_result`, so it *looks* like in-flight work |
+| **resume boundary** | 3 | a dormant session resumed later; the gap is wall-clock, not a stall |
+
+**Machine-work distribution.** p50 **1.5 s** · p90 **11.3 s** · p99 **1.33 min** ·
+p99.9 **3.52 min** · p99.99 **10.00 min** · **max 14.87 min**. False-quarantine
+count by candidate threshold: >1 min → 971 · >2 → 295 · >3 → 101 ·
+**>5 min → 30 (0.043%)** · >8 → 11 · >10 → 8 · **>15 min → 0**.
+
+**⚠ The spec's ⟨tune 5 min⟩ would falsely quarantine 30 healthy gaps, and they are
+not random.** The tail is long *thinking* blocks (14.87 / 12.94 / 11.01 min) and a
+**systematic cluster of `TaskOutput` / `Agent` gaps at exactly 10.00 min** — an
+upstream subagent-poll cap. Slice 6's stage runners spawn subagents, so that
+cluster is directly load-bearing: a 5-minute band quarantines healthy subagent
+work reproducibly, not occasionally.
+
+**✅ PINNED 2026-07-22 at 15 min** (Wes: "pin the staleness band at 15 min for
+now" — Gate-D sign-off, decision record **D30**). Clears every one of 70,232
+observed healthy machine gaps; 10 min was the aggressive floor (8 false positives,
+and it still cuts the 10-minute TaskOutput cluster). **Assumptions the band
+carries:** measured on interactive/orchestrated work on this host, CLI 2.1.x, NOT
+on dispatcher stage runs — which do not exist yet and may run longer autonomous
+stretches. Wes's "for now" is recorded as intent: **provisional, expected to be
+re-priced once real stage runs produce their own distribution.** Re-measuring is
+cheap — `s3a-gap-refined.mjs` is read-only and rerunnable. The retry count
+⟨tune 3⟩ and backoff curve ⟨tune⟩ remain UNPINNED (no evidence covers retry
+behaviour yet).
+
+**⚠ THE DESIGN FINDING (not a tuning question).** Human-gated waits reach
+**599.99 min** (10 h), with 3 over 30 min — a healthy run waiting on a person.
+**No time threshold can separate them from a stall, so the watchdog must not try.**
+It must EXEMPT runs blocked on a human gate, and VIMES already owns that state
+(the `canUseTool` gate + `needsAttention`, slices 0–2) — the watchdog consults gate
+state, and only unblocked runs are eligible for staleness. Resume boundaries need
+the same exemption (a resumed session's first gap is wall-clock). This makes
+"stale" mean *unblocked, not appending, past the band* — three conditions, not one.
+
+**S3b (the synthetic wedge) is largely ANSWERED and not worth its burn.** S1's A5
+already parked a run in a foreground `python3 -c "time.sleep(40)"` and observed a
+clean 30.4 s gap on a perfectly healthy run — a wedge and a slow tool are
+**indistinguishable in the JSONL**, because the only signal is the absence of
+appends. Therefore time-plus-exemptions IS the whole design; there is no richer
+signal to find. (It also resolves the earlier blocker: the CLI blocks foreground
+`sleep`, but `python3 -c "time.sleep(N)"` runs fine — that is the mechanism for
+the watchdog scenario fixture in build step 10.)
+
+### 2026-07-22 — SPIKE S2 (slice 6, D6): the lean's PREMISE is refuted — caching is not directory-scoped
+
+D6's load-bearing claim was "prompt cache is scoped to machine+directory, so a
+worktree worker cannot reuse a sibling's cached prefix." **Not observed on this
+host.** Five serial `claude-opus-4-8` runs (P0 warm-up, A1/A2 same directory,
+B1/B2 separate fresh worktrees), priced through the shipped pipeline
+(`scanCostCorpus` → `dedupeUsageRowsGlobally` → `priceUsageRow`):
+
+- A1, in a never-used directory, **read 16,081 tokens that P0 had written in a
+  DIFFERENT directory.**
+- B2, a fresh worktree, took a **100% cache hit including a 22,297-token block
+  written elsewhere** (zero cache writes).
+- Meanwhile A2 — the second worker in the *same* directory — still wrote 3,260.
+
+Caching behaves as prefix/content-addressed, not directory-keyed. The worker's
+`cwd` is evidently not part of any cached block.
+
+**The measured A2-vs-B2 delta (−88.2%, favouring worktree) is NOT usable and must
+not be signed against.** Write tokens fall monotonically across the whole sequence
+(41,814 → 26,097 → 25,557 → 22,298 → 0) straight through the arm boundary, and
+arm B ran last: **run order is 100% confounded with arm.** The agent reported this
+rather than shipping the headline number, which is the correct call.
+
+**Two method corrections worth keeping:** the Opus-class minimum cacheable prefix
+is **4096** tokens (not ~1024 — immaterial here, Claude Code's own ~19K system
+prompt clears it); and **every cache write landed in the 1h tier, with 5m writes
+zero in all five runs**, so these workers pay ×2 base input, not ×1.25.
+
+**D6 recommendation (Wes's call): the cache argument for `shared-dir` is gone.**
+Decide D6 on the isolation axis alone — and with the cache penalty removed,
+nothing remains on the benefit side to pay for shared-dir's write races. Lean
+flips to **`worktree` default**, per-task override retained. **Limits:** one host,
+one account, one model, one task shape, 5 serial runs, order confounded; cache is
+a rule-0.6 external surface that already shifted (1h not 5m) versus the work
+order's assumptions. A dollar figure would need S2b: counterbalanced order,
+distinct content per arm, a fresh-prefix control, ≥3 replicates.
+
+**Write-race axis: untested.** All runs were serial, single-worker, read-only.
+This says nothing about concurrent workers colliding, `.git/index.lock` contention
+(a hard failure, not a slow path), or reads of mid-edit files.
+
+### 2026-07-22 — ⚠ FINDING (rule 0.1, DECIDED — see D31; does NOT halt D28): two first-party Anthropic cost signals disagree by exactly 3× on Opus
+
+Surfaced incidentally by S2 and **verified independently by the orchestrator** on
+the same five runs.
+
+| source | implied Opus-4-8 rate | 
+|---|---|
+| our PINNED table (Gate-D, 2026-07-21) | **$15 / $75** per MTok |
+| the SDK result message's `total_cost_usd` | **$5.05 / $25.24** per MTok |
+
+Ratio ours/CLI = **2.973, 2.979, 2.969, 2.770, 2.981** across the five runs
+(2.770 is the run with zero cache writes, i.e. a different token mix) — total
+**2.9711**. A systematic exact-3× is a rate-row conflict, not noise.
+
+**Why this is a conflict and not an obvious bug.** The pinned entry is marked
+`validated (C2, frac 0.801)`. C2 (2026-07-21) validated the table against
+**Anthropic's own `claude_code.cost.usage`** OTel metric — the same experiment
+that caught the documented Sonnet-5 price being 33% low and pinned the BILLED
+rate over the documented one. So we now have **two first-party Anthropic cost
+signals — the OTel cost metric and the SDK's `total_cost_usd` — disagreeing by
+exactly 3× on Opus**, one day after the pin. One of them is not what Anthropic
+bills.
+
+**Consequence, and why it halts D28.** Opus dominates the corpus, so **every
+absolute Opus dollar the live ledger shows may be 3× high** (the displayed
+~$7.2K would be ~$2.4K if the SDK figure is right). Percentages, rankings,
+reconciliation and the tree are all unaffected — this is a scalar on one model's
+rates. **D28 is the accuracy sign-off against `/usage`; validating for days
+against a possibly-3×-wrong number would burn the exact evidence D28 exists to
+produce.** D28 should therefore START by resolving this, not accumulate through it.
+
+**Rule 0.1 respected: the price table was NOT touched.**
+
+**RESOLVED SAME DAY by Wes → D31: do not chase it.** "If we chase this too much
+we'll just go into a tailspin because Anthropic could change their pricing
+silently at any time. Pin what we have observed, and we'll monitor as we go for
+changes… keep a note about this intact, and we can revisit it later if we notice
+further discrepancies." The table STANDS at $15/$75; the divergence is recorded,
+not resolved; **D28 is un-halted and proceeds** carrying this as a known, accepted
+uncertainty on absolute Opus dollars. See D31 for the reasoning and for the
+monitoring gap it exposes.
+
+**Second incidental finding (API-shape trap, worth a code comment).**
+`scanCostCorpus` emits **raw** rows — one per content block, sharing a
+`message.id` — and dedupe lives in `SqliteCostStore`'s SQL upsert, not in the
+scanner. **Any caller pricing `scanResult.rows` directly double-counts
+multi-block messages** (it inflated S2's first pass ~50%, 15 raw → 10 deduped)
+until `dedupeUsageRowsGlobally` is applied. The shipped ledger path is correct
+(it goes through the store); this is a trap for future direct callers.
+
+### 2026-07-22 — the weekly cost snapshot, and a 4th instance of the vacuous-guard pattern
+
+`scripts/cost-snapshot.mjs` + `~/.vimes/cost-history.jsonl` (Wes: "make a weekly
+cron that tracks raw session costs and writes them to a data file… it doesn't need
+to be fancy"). Reads the ledger DB read-only, aggregates per session, writes one
+JSONL line per session. Backfilled 74 sessions / 21,000 rows / $7,308.59, matching
+`buildCostLedgerReadModel` exactly.
+
+**Why it carries raw tokens + `priceTableDate` per line:** D31 leaves a known 3×
+uncertainty on the Opus rate. A file of dollars alone would be worthless the moment
+the rate is corrected; raw tokens + the table date make the whole history
+re-priceable. **Two invariants:** a line always reflects that session's ENTIRE
+history, and **lines are never removed** — so the file outlives transcript pruning
+(and ledger pruning), making the durable horizon "since we started snapshotting"
+rather than whatever retention says.
+
+**⚠ Findings established BEFORE the facts were assumed:** there is **no historical
+cost figure anywhere on disk** — 0 cost keys across 92,365 transcript records,
+`~/.claude/stats-cache.json`'s `costUSD` values are all `0`, and
+`usage-gauge.json`/`usage-state.json` carry headroom percentages, not dollars. So
+back-verification against Anthropic's own number is impossible retroactively; the
+snapshot records OUR figures. Also: retention is 365 days but was set 2026-07-21,
+so the corpus actually spans 2026-06-12 → now, NOT a year.
+
+**PROCESS FINDING (4th instance of the vacuous-guard pattern).** The first
+implementation used a windowed `--since-days` query and then REPLACED each
+session's whole line with the window-only aggregate — silently truncating any
+session that straddled the cutoff. It destroyed 3,139 rows and $926.41, and it
+would have compounded weekly, hitting long-running (i.e. expensive) sessions
+hardest. **The agent's idempotency check passed** because it compared LINE COUNT
+(74 → 74) while the contents were being hollowed out. The orchestrator caught it
+only by summing the dollars independently. Root cause was the ORCHESTRATOR's work
+order, which specified windowed processing to mirror "last week's worth" — windowing
+a derived aggregate truncates anything crossing the boundary, and at 21k rows it
+bought nothing. Fixed by always recomputing every session from full history.
+**The lesson, sharper than the earlier three: verify the property that MATTERS, not
+an adjacent one that happens to be easy to count.**
