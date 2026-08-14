@@ -100,8 +100,17 @@ const sessionListRoute = computed(() =>
     />
     <CostLedgerView v-else-if="route.view === 'cost'" :back-kind="backKind" @back="emit('back', index)" />
     <TaskBoardView v-else-if="route.view === 'tasks'" :back-kind="backKind" @back="emit('back', index)" />
+    <!-- S15-F5: the `:key` is LOAD-BEARING, not hygiene. `openPanelFrom`
+         replaces a slot's route in one update, so without it Vue reuses the
+         mounted StreamView with a swapped appSessionId, `onMounted` (the only
+         site of store.subscribe + markSeen) never re-runs, and B's stream is
+         never subscribed — a permanently blank panel. Keying forces a remount,
+         which also resets exactly the per-session state that SHOULD reset on a
+         session switch: scroll follow, seen-on-view, the composer draft. Same
+         idiom as EditorView's :key="editorRoute.path" above. -->
     <StreamView
       v-else-if="streamRoute"
+      :key="streamRoute.appSessionId"
       :app-session-id="streamRoute.appSessionId"
       :back-kind="backKind"
       @back="emit('back', index)"

@@ -1,4 +1,5 @@
 import { defineConfig } from 'vitest/config';
+import vue from '@vitejs/plugin-vue';
 
 // ─── Root vitest config: the suite is `packages/*/src`, and ONLY that ─────────
 //
@@ -37,7 +38,22 @@ import { defineConfig } from 'vitest/config';
 //
 // `exclude` restates vitest's defaults because supplying `include` does not
 // change them, and a future CLI `--exclude` would override them wholesale.
+
+// ─── The `.vue` transform (S15·U5, 2026-08-14) ───────────────────────────────
+//
+// Added so the suite can MOUNT a component. Until S15-F5 nothing in any gate
+// mounted a `.vue`, so this config needed no plugins — and that hole is exactly
+// what let a missing `:key` on PanelHost's StreamView branch ship (a keyless
+// in-place route swap reused the mounted view, so `onMounted`/subscribe never
+// re-ran; see private-docs/slice-15.md S15-F5). `@vitejs/plugin-vue` is the same
+// plugin `packages/ui/vite.config.ts` builds with; it touches ONLY `.vue` files,
+// so every pre-existing pure-TS test transforms exactly as before.
+//
+// Per-file `// @vitest-environment happy-dom` pragmas stay the DOM mechanism —
+// the suite is overwhelmingly headless and pure, and a global DOM environment
+// would slow all of it down to serve a handful of mount tests.
 export default defineConfig({
+  plugins: [vue()],
   test: {
     include: ['packages/*/src/**/*.{test,spec}.?(c|m)[jt]s?(x)'],
     exclude: ['**/node_modules/**', '**/dist/**'],
