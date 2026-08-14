@@ -351,6 +351,36 @@ in the gates mounts a `.vue`; this unit closes that hole with the first
 mounted assertion. Rule 0.1: the human gate HALTS here until the fix
 lands and ⟨Wes⟩ re-walks the tree flow.
 
+**S15-F6 (2026-08-14, HUMAN GATE step 2, OPEN — ⟨Wes⟩ FAIL verdict,
+design fork awaiting the call).** ⟨Wes⟩ opened the first `?`-wearing
+session in the tree (f35a77dd, a plan session that delivered its plan
+2026-07-28) and ruled: "the session needed no attention but was emitting
+an attention signal." The machine is faithful to §3b as signed:
+`run_completed` set `needsAttention{reason:'completed'}`, `completed`
+ranks `waiting_input` ("a finished run is a decision — somebody has to
+acknowledge the result"), seen never clears it (D83), and nothing ever
+acknowledged it — so it has shouted `?` for 17 days, alongside ~40
+siblings. The human gate's verdict is that this PRICING, lived in, reads
+as noise: `?` semantically claims "waiting on your input" and a delivered
+plan is not. Fork (no code until signed): **(a) debt-sweep only** — keep
+§3b, one-time evented `attention_cleared` backfill for pre-tree history;
+future completions still demand manual acknowledgment forever (the exact
+experience just failed). **(b) reprice `completed` → idle** — §3b
+amendment + severity-order version bump; the fold is pure so ALL debt
+quiets instantly with zero migration; loss: the tree no longer
+distinguishes finished-unreviewed from idle (push notification + the
+run_completed row in the stream remain the completion evidence). **(c)
+`seen` clears `completed` (only)** — viewing the result IS receiving it;
+CONTRADICTS SIGNED D83, so it is a true flag if chosen. Orchestrator
+lean: (b), with (c) as the runner-up if ⟨Wes⟩ wants "opened it = done
+with it" semantics. Gate walk HALTED at step 2 per rule 0.1.
+**SIGNED same day → D88 (option (b), grounded deeper by ⟨Wes⟩: attention
+marks work asking for input; completion is a terminal fact; the
+ask-shaped residue of a finished run belongs to the deliverable, not the
+session). Fix unit U6; the pure join means the whole debt quiets on
+deploy with zero migration; walk resumes at step 2 after the core
+deploy + restart.**
+
 ## §6. Gates & kill criteria
 
 **Machine gate:** suite green ×2 (prior slices included), vue-tsc green,

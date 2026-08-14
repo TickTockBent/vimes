@@ -2817,3 +2817,37 @@ non-test alike. The policy guard (`coreImportPolicy.test.ts`) encodes the
 distinction. Found by that very guard reddening on its first run against
 real code — the guard catching a case the decision hadn't priced is the
 system working; the answer here was to price it, not to weaken the guard.
+
+## D88 — `completed` is a terminal fact, not an ask: it prices `idle` in the severity join — DECIDED 2026-08-14
+
+*(⟨Wes⟩, at the slice-15 human gate, via finding S15-F6 — the gate's step-2
+FAIL on f35a77dd, a July plan session that had shouted `?` for 17 days
+after delivering its plan.)*
+
+**The ruling, in the operator's own semantics:** `?` means "problem needs
+human input"; `!` means "blocking issue, please resolve." A session that
+did its job and needs nothing more is not the thing that needs attention —
+"the session is DONE. It arguably shouldn't ever be picked back up."
+Attention belongs to work asking for input, never to lifecycle milestones.
+Times DO exist when a delivered result demands a human's next move — but
+the vehicle for that ask is the deliverable/next-step (a future task- or
+node-level mechanism), not the finished session's row.
+
+**The change:** in `sessionSeverityOf`'s attention half (§3b, S14·U2),
+`completed` → `idle` (was `waiting_input`). The severity join is pure, so
+the entire 17-day attention debt (~40 sessions) quiets instantly on
+deploy with ZERO migration — no backfill events, the projection simply
+recomputes. This supersedes §3b's original completed-pricing rationale
+("somebody has to acknowledge the result"), which the human gate ruled
+noise when lived in.
+
+**Deliberately unchanged:** `run_completed` still SETS
+`needsAttention{reason:'completed'}` — the record that a run finished
+un-acknowledged remains observed truth; only its PRICE moves. (Open
+question if it ever matters: should completion set attention at all?
+Trigger: any consumer that needs to surface finished-unreviewed
+distinctly.) The completion push notification stays — it, plus the
+`run_completed` row in the stream, is the completion evidence channel.
+**D83 is untouched:** seen still never reads as handled, for the reasons
+D83 holds — this decision quiets `completed`, it does not make viewing an
+acknowledgment.

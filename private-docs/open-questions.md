@@ -489,3 +489,33 @@ door.
 ## D66 — Extension boundary tiers — ✅ DECIDED 2026-08-06 → decisions.md D66
 
 ## D67 — Extension trust model — ✅ DECIDED 2026-08-06 → decisions.md D67
+
+## D89 — Attention as a MECHANISM: entity-agnostic, extension-callable?
+
+*(Raised ⟨Wes⟩ 2026-08-14, in the wake of D88 — same conversation.)*
+
+D88 ruled that a finished session carries no attention, and that the
+ask-shaped residue of a delivered result ("go read the plan", "task moved
+to next stage") belongs to the deliverable/next-step, not the session.
+That immediately raises: does the TASK need an attention flag? ⟨Wes⟩'s
+instinct: we are deliberately unopinionated about task-stage semantics —
+that is extension territory — so maybe **attention stops being a
+session-only fact and becomes a mechanism: an edge an extension can call**
+(raise/clear attention on an entity) **and a vocabulary it can extend.**
+
+**Trigger:** the first extension-model slice that prices the public API
+surface (principle #15: the public API IS the extension API) — or the
+first concrete consumer that wants a human's eye on a non-session entity.
+Per 0.5's rider, the mechanism waits for its first consumer; no
+speculative machinery.
+
+**Lean:** attention generalizes to (subject: session|node|task, reason,
+raisedBy) with raise/clear as public API verbs. The ENGINE keeps pricing:
+`sessionSeverityOf`'s successor stays the ONE severity join (principle
+#9) — extensions may raise attention, never mint severities. Core reasons
+stay a closed vocabulary; extension reasons arrive namespaced and price
+at a signed default until re-priced (the E2-b reserve-at-reservation
+pattern). Cross-refs: D88, D59 (task_commented's emitter question is the
+same "who may write on a task" family), extension-model.md §5 threat
+framing (an attention-raising extension is an interrupt-the-human
+capability — it belongs in the permission model).
