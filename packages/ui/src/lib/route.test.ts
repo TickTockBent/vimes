@@ -23,11 +23,12 @@ const TEN_KILOBYTE_SESSION_ID = 'a'.repeat(10_000);
 
 const ROUTE_TABLE: readonly RouteCase[] = [
   // ── the TREE fallback: home, and everything unrecognized (S15·U2, A7) ──────
-  // Every hash in this block resolved to `sessionList` before the cutover. The
-  // shape of the block is unchanged on purpose — these are the SAME strings
-  // phase 1 pinned, re-pointed at the view that now claims them, so the cases
-  // that are load-bearing for a REASON (the quirks below) keep testing the
-  // quirk and not the view name.
+  // Every hash in this block resolved to the session list before the S15·U2
+  // cutover, and that view is gone entirely since S16·U5. The shape of the
+  // block is unchanged on purpose — these are the SAME strings phase 1 pinned,
+  // re-pointed at the view that now claims them, so the cases that are
+  // load-bearing for a REASON (the quirks below) keep testing the quirk and not
+  // the view name.
   { hash: '', expected: { view: 'tree' }, label: "'' (no hash at all)" },
   { hash: '#', expected: { view: 'tree' } },
   { hash: '#/', expected: { view: 'tree' } },
@@ -51,16 +52,23 @@ const ROUTE_TABLE: readonly RouteCase[] = [
   { hash: '#/Search', expected: { view: 'tree' } },
   { hash: '#/Sessions', expected: { view: 'tree' } },
 
-  // ── the SAME view, a different prop: this is why Route carries props ───────
-  // Both of these are the SURVIVING session list (F1's escape hatch): `#/meters`
-  // exactly as it has always been, `#/sessions` as its new explicit plain door.
-  { hash: '#/sessions', expected: { view: 'sessionList', expandMeters: false } },
-  { hash: '#/sessions?anything=1', expected: { view: 'sessionList', expandMeters: false } },
-  { hash: '#/meters', expected: { view: 'sessionList', expandMeters: true } },
-  { hash: '#/meters?anything=1', expected: { view: 'sessionList', expandMeters: true } },
+  // ── THE DEAD HASHES (S16·U5, S16-A2) ──────────────────────────────────────
+  // `#/sessions` and `#/meters` named the session list until S16·U5 deleted the
+  // view. They are RE-PINNED here rather than removed, and they are re-pinned in
+  // the fallback block on purpose: the URLs are real, they are in bookmarks and
+  // in every push notification sent before the retarget (decision 2), and what
+  // they must do now is land somewhere that works. They fall through to the
+  // tree — no redirect, no error, no special case — exactly like `#/nonsense`
+  // two blocks up. The `?anything=1` and no-leading-`#` variants are kept from
+  // the old block so the fall-through is proven for the same input shapes the
+  // live route was proven for.
+  { hash: '#/sessions', expected: { view: 'tree' } },
+  { hash: '#/sessions?anything=1', expected: { view: 'tree' } },
+  { hash: '#/meters', expected: { view: 'tree' } },
+  { hash: '#/meters?anything=1', expected: { view: 'tree' } },
   // QUIRK: the leading '#' is optional. location.hash always supplies one.
-  { hash: '/meters', expected: { view: 'sessionList', expandMeters: true }, label: "'/meters' (no leading #)" },
-  { hash: '/sessions', expected: { view: 'sessionList', expandMeters: false }, label: "'/sessions' (no leading #)" },
+  { hash: '/meters', expected: { view: 'tree' }, label: "'/meters' (no leading #)" },
+  { hash: '/sessions', expected: { view: 'tree' }, label: "'/sessions' (no leading #)" },
 
   // ── EditorView: `/files` WITH a `path` param ──────────────────────────────
   {
@@ -251,8 +259,10 @@ const ROUND_TRIP_ROUTES: readonly Route[] = [
   { view: 'stream', appSessionId: '%' },
   { view: 'stream', appSessionId: '日本' },
   { view: 'stream', appSessionId: TEN_KILOBYTE_SESSION_ID },
-  { view: 'sessionList', expandMeters: false },
-  { view: 'sessionList', expandMeters: true },
+  // S16·U5: the two sessionList rows are gone with the view. The "exercises
+  // every view" case below is what keeps this list honest either way — it
+  // compares the views covered here against ROUTE_PRECEDENCE, so deleting a
+  // view without deleting its row (or the reverse) reddens immediately.
   { view: 'tree' },
 ];
 
@@ -296,10 +306,12 @@ describe('precedence — the old v-if chain, now data', () => {
       'cost',
       'tasks',
       'stream',
-      'sessionList',
-      // S15·U2: the tree took the last slot — the total fallback — and the
-      // session list moved up one, from "claims everything left over" to two
-      // explicit paths. Everything above them is untouched.
+      // S15·U2 gave the tree the last slot — the total fallback — and pushed the
+      // session list up one, from "claims everything left over" to two explicit
+      // paths. S16·U5 deleted that entry outright, so the tree's slot is now
+      // directly below `stream`. Everything above is untouched, and has been
+      // through both changes: the precedence of the panel routes is the part of
+      // this list that is a contract, and it never moved.
       'tree',
     ]);
   });
@@ -313,7 +325,10 @@ describe('precedence — the old v-if chain, now data', () => {
 
   it('the session route loses to every panel route above it', () => {
     // A session id may SPELL a panel route; the panel rules are keyed on the
-    // whole routePath, so they never claim `/session/<id>`.
+    // whole routePath, so they never claim `/session/<id>`. `meters`/`sessions`
+    // stay in this list after S16·U5 deleted their rules: an id that spells a
+    // DEAD hash must parse as that id too, and the whole point of the loop is
+    // that no rule above ever looks at a path SUFFIX.
     for (const panelName of ['files', 'search', 'terminal', 'git', 'cost', 'tasks', 'meters', 'sessions']) {
       expect(parseRoute(`#/session/${panelName}`)).toEqual({
         view: 'stream',
@@ -329,22 +344,34 @@ describe('precedence — the old v-if chain, now data', () => {
 
   it('home — the empty hash and `#/` — is the tree (A7)', () => {
     // The cutover itself, as one assertion. Sabotage target: make the fallback
-    // rule produce `sessionList` again and exactly this reddens.
+    // rule produce anything other than the tree and exactly this reddens.
     expect(parseRoute('')).toEqual({ view: 'tree' });
     expect(parseRoute('#')).toEqual({ view: 'tree' });
     expect(parseRoute('#/')).toEqual({ view: 'tree' });
   });
 
-  it('the session list survives, reachable at `#/sessions` (A7 — F1\'s escape hatch)', () => {
-    // Sabotage target: strip the `/sessions` matcher and exactly this reddens
-    // (the hash falls through to the tree fallback).
-    expect(parseRoute('#/sessions')).toEqual({ view: 'sessionList', expandMeters: false });
+  // ⚠ THE TWO DEAD HASHES, RE-PINNED (S16·U5, S16-A2). These two cases used to
+  // assert that the session list SURVIVED at `#/sessions` (F1's escape hatch)
+  // and that `#/meters` was unchanged by the cutover. The view is deleted, so
+  // the claim inverts: the hashes must now DEGRADE, and degrade the same way
+  // every unknown hash does. Kept as their own named cases rather than folded
+  // silently into the fallback table because "this URL used to mean something
+  // and now lands on home" is the fact a reader of this file will come looking
+  // for. Sabotage target: give `parseRoute` a `/sessions` arm again and exactly
+  // these reddens.
+  it('`#/sessions` is DEAD and falls through to the tree (the deletion, as one assertion)', () => {
+    expect(parseRoute('#/sessions')).toEqual({ view: 'tree' });
+    // Indistinguishable from any other unclaimed hash — no redirect, no marker,
+    // no memory of what it used to be.
+    expect(parseRoute('#/sessions')).toEqual(parseRoute('#/definitely-not-a-route'));
   });
 
-  it('`#/meters` is UNCHANGED by the cutover — sessionList with expandMeters', () => {
-    // The threshold-notification push deep-links here; the cutover must not have
-    // moved it. Same view, same prop, same string as before S15.
-    expect(parseRoute('#/meters')).toEqual({ view: 'sessionList', expandMeters: true });
+  it('`#/meters` is DEAD too — an old push-notification deep link still opens home', () => {
+    // The threshold-notification push deep-linked here until decision 2
+    // retargeted it, so notifications already delivered still carry this hash.
+    // Landing on the tree is the graceful answer; throwing or blanking is not.
+    expect(parseRoute('#/meters')).toEqual({ view: 'tree' });
+    expect(parseRoute('#/meters')).toEqual(parseRoute(''));
   });
 
   it('the tree route rejects `?root=` by not knowing it (A7, decided not accidental)', () => {
@@ -360,24 +387,36 @@ describe('precedence — the old v-if chain, now data', () => {
 
 // ── ASSERTION 4: route → (view, props) is not 1:1 ───────────────────────────
 
-describe("'#/sessions' and '#/meters' are the same view with a different prop", () => {
-  // The pairing that proves route → view is not 1:1 outlived the cutover — only
-  // the collapsed form's PATH moved (`#/` → `#/sessions`), because `#/` is home
-  // and home is the tree now.
-  it('both resolve to sessionList, differing only in expandMeters', () => {
-    const plainList = parseRoute('#/sessions');
-    const meters = parseRoute('#/meters');
-    expect(plainList).toEqual({ view: 'sessionList', expandMeters: false });
-    expect(meters).toEqual({ view: 'sessionList', expandMeters: true });
-    expect(plainList.view).toBe(meters.view);
+describe('one view, two hashes: a route names a view AND its props', () => {
+  // ⚠ RE-ANCHORED (S16·U5). This describe used to carry the sessionList pair —
+  // `#/sessions` and `#/meters`, one view differing only in `expandMeters` —
+  // as its proof that route → view is not 1:1. Both hashes and the view died
+  // in the deletion, and the claim they were proving did NOT: it is why `Route`
+  // is a discriminated union of shapes rather than a bare view name, and
+  // dropping the assertion with the view would leave that design undefended.
+  // The file tree is the surviving instance of the same shape — one view, one
+  // optional prop, two hashes that must not collapse to each other.
+  it('`#/files` and `#/files?dir=…` are ONE view differing only in a prop', () => {
+    const bareTree = parseRoute('#/files');
+    const seededTree = parseRoute('#/files?dir=/tmp/a');
+    expect(bareTree).toEqual({ view: 'fileTree', initialDir: null });
+    expect(seededTree).toEqual({ view: 'fileTree', initialDir: '/tmp/a' });
+    expect(bareTree.view).toBe(seededTree.view);
   });
 
   it('and build back to different hashes', () => {
-    expect(buildHash({ view: 'sessionList', expandMeters: false })).toBe('#/sessions');
-    expect(buildHash({ view: 'sessionList', expandMeters: true })).toBe('#/meters');
+    expect(buildHash({ view: 'fileTree', initialDir: null })).toBe('#/files');
+    expect(buildHash({ view: 'fileTree', initialDir: '/tmp/a' })).toBe('#/files?dir=%2Ftmp%2Fa');
   });
 
-  it("home is the empty string, and it is the TREE's — not the list's — any more", () => {
+  // …and the harder half of the same point: the SAME path, two DIFFERENT views,
+  // separated by a prop's presence. A model keyed on the path alone loses this.
+  it('`#/files?path=…` is a different VIEW off the same path', () => {
+    expect(parseRoute('#/files?path=/tmp/a.ts').view).toBe('editor');
+    expect(parseRoute('#/files?dir=/tmp/a').view).toBe('fileTree');
+  });
+
+  it("home is the empty string, and it is the TREE's — the only view that owns it", () => {
     expect(buildHash({ view: 'tree' })).toBe('');
     expect(parseRoute('')).toEqual({ view: 'tree' });
   });
@@ -403,7 +442,12 @@ describe('parseRoute is total — nothing throws, everything resolves', () => {
     '#/session/%',
     '#/session/%zz',
     '#/session/%E6%97',
-    '#/meters?%',
+    // Was `'#/meters?%'` until S16·U5. The property under test is splitHash +
+    // URLSearchParams leniency on a malformed escape in the QUERY, and with the
+    // `/meters` rule deleted that string took the identical code path as any
+    // other unclaimed path — so the case is re-spelled on a path that is
+    // unclaimed on purpose rather than by history.
+    '#/unclaimed?%',
     '#'.repeat(1000),
     '?'.repeat(1000),
     `#/session/${'a'.repeat(10_000)}`,
@@ -448,19 +492,11 @@ describe('buildHash reproduces what App.vue\'s navigate* builders emitted', () =
   // so every one is also parsed back.
   const BUILDER_CASES: readonly { builderCall: string; route: Route; hash: string }[] = [
     // navigateHome() emitted '' then and emits '' now — the bytes are pinned,
-    // the VIEW behind them is the tree since S15·U2. The old list's own hash is
-    // asserted right below it, so both halves of the cutover are in this table.
+    // the VIEW behind them is the tree since S15·U2. The two sessionList rows
+    // that sat here (`#/sessions`, `#/meters`) went with the view in S16·U5:
+    // there is no longer a route shape that builds either string, which is
+    // exactly why nothing can round-trip through them.
     { builderCall: 'navigateHome()', route: { view: 'tree' }, hash: '' },
-    {
-      builderCall: 'the session list, now at its explicit path',
-      route: { view: 'sessionList', expandMeters: false },
-      hash: '#/sessions',
-    },
-    {
-      builderCall: 'the meters deep link, unchanged',
-      route: { view: 'sessionList', expandMeters: true },
-      hash: '#/meters',
-    },
     {
       builderCall: "navigateToSession('abc')",
       route: { view: 'stream', appSessionId: 'abc' },

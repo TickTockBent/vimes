@@ -11,9 +11,12 @@
 //
 // TWO THINGS THAT LOOK LIKE DETAILS AND ARE NOT:
 //
-//   1. **A route names a view AND its props.** Route → view is NOT 1:1: `#/` and
-//      `#/meters` render the SAME SessionListView and differ only in
-//      `expandMeters`. A model keyed on a view name alone loses that silently.
+//   1. **A route names a view AND its props.** Route → view is NOT 1:1: `#/files`
+//      and `#/files?dir=/a/b` are the same view holding different state, and
+//      `#/files?path=/a/b` is a DIFFERENT view off the same path. A model keyed
+//      on a view name alone loses that silently. (The example this line carried
+//      until S16·U5 was `#/` vs `#/meters` — one view, one `expandMeters` prop —
+//      and it died with the session list; the point it made did not.)
 //   2. **Precedence is data, not template order.** It used to live in the order
 //      of App.vue's `v-if` / `v-else-if` chain, where a reordering during an
 //      unrelated edit would change behaviour with nothing to catch it. It is now
@@ -24,20 +27,25 @@
 // unknown, hostile, or 10 KB long. Everything unrecognized lands on the same
 // total fallback — which is the TREE as of S15·U2 (see the cutover note below).
 //
-// ⚠ **THE HOME CUTOVER (S15·U2, slice-15.md F1).** Home used to mean
-// SessionListView: the empty hash, `#/`, and every unrecognized hash resolved to
-// it, and `buildHash` emitted `''` for it. Home is now `{ view: 'tree' }` and
-// those three inputs resolve THERE. Two consequences that are easy to miss:
+// ⚠ **THE HOME CUTOVER (S15·U2, slice-15.md F1), COMPLETED IN S16·U5.** Home
+// used to mean the session list: the empty hash, `#/`, and every unrecognized
+// hash resolved to it. S15·U2 moved home to `{ view: 'tree' }` and gave the old
+// list two explicit paths — `#/sessions` (F1's escape hatch) and `#/meters` (the
+// threshold-notification deep link) — for exactly one slice, while the tree
+// survived real use. It did, and S16·U5 deleted the view.
 //
-//   1. `sessionList` gained an EXPLICIT path, `#/sessions` (F1's escape hatch —
-//      the tree is the youngest surface in the app and the old list stays
-//      reachable for exactly one slice while the tree survives real use). So
-//      `buildHash({view:'sessionList',expandMeters:false})` is `'#/sessions'`
-//      now, NOT `''` — otherwise the route would build to a hash that parses
-//      back as the tree, and the round-trip law above would be a lie.
-//   2. `#/meters` is UNTOUCHED: still sessionList, still `expandMeters: true`,
-//      still the deep-link target of the threshold-notification push. The slice-5
-//      meters strip stays in SessionListView this slice.
+// So the `sessionList` VIEW, its `expandMeters` prop, and BOTH hashes are gone
+// from this codec. What that means for a URL still in the wild — a bookmark, an
+// old push notification, a remembered panel layout — is the one behaviour worth
+// stating outright:
+//
+//   • `#/sessions` and `#/meters` are no longer RECOGNIZED, so they fall through
+//     to the total fallback below and render the tree. That is deletion of a
+//     match arm, not new logic: nothing rejects them, nothing errors, they are
+//     simply hashes this codec no longer knows, exactly like `#/nonsense`.
+//   • Nothing BUILDS them any more, so the round-trip law is unaffected: a hash
+//     this module cannot emit has no round trip to break. (The daemon's
+//     threshold notification was retargeted in the same slice — decision 2.)
 //
 // The tree route carries NO `?root=` parameter, deliberately (A7's
 // explicitly-rejected branch): scoping the tree is client expansion state, and a
@@ -63,7 +71,6 @@ export type RouteView =
   | 'cost'
   | 'tasks'
   | 'stream'
-  | 'sessionList'
   | 'tree';
 
 // `#/files?path=…` — the CM6 editor on one file.
@@ -109,15 +116,6 @@ export interface StreamRoute {
   appSessionId: string;
 }
 
-// `#/sessions` and `#/meters` — the pre-tree session list (F1's escape hatch).
-// `expandMeters` is why this is not just a view name: `#/meters` is the deep-link
-// target of the threshold-notification push and arrives with the meters strip
-// already open, while `#/sessions` shows the same view collapsed.
-export interface SessionListRoute {
-  view: 'sessionList';
-  expandMeters: boolean;
-}
-
 // `''` / `#/` / anything unrecognized — the session tree, the home surface
 // (S15·U2). It has NO props: what the operator has expanded is component state,
 // not addressable state (see the cutover note at the top of this file).
@@ -134,7 +132,6 @@ export type Route =
   | CostRoute
   | TasksRoute
   | StreamRoute
-  | SessionListRoute
   | TreeRoute;
 
 // ── parsing ─────────────────────────────────────────────────────────────────
@@ -199,8 +196,8 @@ interface RouteRule {
 //
 //   • the editor before the file tree — both answer to `/files`, and the editor
 //     claims it whenever a `path` param is present; and
-//   • the session route below every panel route, and the session list below
-//     everything, as the total fallback.
+//   • the session route below every panel route, and the TREE below everything,
+//     as the total fallback.
 //
 // Swapping any two entries reddens route.test.ts (both the precedence assertion
 // and the overlap cases). That is the point: this list is the contract.
@@ -257,7 +254,7 @@ const ROUTE_RULES: readonly RouteRule[] = [
       const sessionSegment = sessionMatch?.[1];
       // QUIRK, PRESERVED: `(.+)` is greedy and crosses slashes, so
       // `#/session/a/b` is the session 'a/b'. And `#/session/` (nothing after the
-      // slash) does not match at all — it falls through to the session list.
+      // slash) does not match at all — it falls through to the tree.
       if (sessionSegment === undefined || sessionSegment === '') {
         return null;
       }
@@ -269,20 +266,11 @@ const ROUTE_RULES: readonly RouteRule[] = [
       return appSessionId === '' ? null : { view: 'stream', appSessionId };
     },
   },
-  {
-    // The session list, now at TWO EXPLICIT PATHS and no longer the fallback
-    // (S15·U2). `#/meters` is unchanged, byte for byte, including the prop it
-    // sets; `#/sessions` is the new plain door. Anything else falls through to
-    // the tree below — which is the whole cutover, expressed as one rule losing
-    // its `match: () => always`.
-    view: 'sessionList',
-    match: ({ routePath }) => {
-      if (routePath === '/meters') {
-        return { view: 'sessionList', expandMeters: true };
-      }
-      return routePath === '/sessions' ? { view: 'sessionList', expandMeters: false } : null;
-    },
-  },
+  // ⚠ S16·U5 removed the session list's rule from exactly here — the last entry
+  // before the fallback. Its two paths (`/sessions`, `/meters`) now match no rule
+  // at all, so they reach the fallback below and resolve to the tree. Deleting a
+  // match arm IS the whole change: no dead-hash table, no redirect list, no
+  // special case for a URL that used to mean something. Do not add one.
   {
     // The total fallback: this rule matches everything, which is what makes
     // `parseRoute` total. It is the TREE as of S15·U2 — home, and the landing
@@ -357,12 +345,6 @@ export function buildHash(route: Route): string {
       return '#/tasks';
     case 'stream':
       return `#/session/${encodeURIComponent(route.appSessionId)}`;
-    case 'sessionList':
-      // BOTH forms are explicit paths since the cutover. `''` no longer belongs
-      // to this view — it belongs to the tree below — so the collapsed form
-      // emits `#/sessions`; emitting `''` here would build a hash that parses
-      // back as a DIFFERENT view, which is the one thing a codec may not do.
-      return route.expandMeters ? '#/meters' : '#/sessions';
     case 'tree':
       // Home is the EMPTY string, not '#/': assigning '' to location.hash clears
       // the fragment, which is what "go home" has always produced. The view that

@@ -19,13 +19,15 @@
 // OUT of this unit, on purpose: archived projects (and un-archive), metadata
 // editing, descriptions. The registry serves the archived flag and this view
 // filters on it; the doors come when they have a decision behind them.
-import { computed, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import { useVimesStore } from '../stores/vimesStore.js';
 import {
   describeDeclareResponse,
   projectDisplayName,
   type ProjectView,
 } from '../lib/projectContext.js';
+import { resolveSessionLabel } from '../lib/sessionLabel.js';
+import { severityDisplayOf, type SeverityTone } from '../lib/sessionSeverityDisplay.js';
 
 const props = defineProps<{
   // The URL segment that brought us here and named NO declared project, or null
@@ -117,6 +119,110 @@ async function submitDeclare(): Promise<void> {
     declareInFlight.value = false;
   }
 }
+
+// ─── S16·U5 — UNFILED'S FLOOR (slice-16 decision 7, D90's accepted consequence)
+//
+// ⚠ **READ THIS BEFORE EXTENDING IT. THE SMALLNESS IS THE DESIGN.**
+//
+// D90 ruled that a project tab's tree gates on THAT tab's project, and signed
+// off on the consequence: a session that belongs to no declared project — an
+// `unfiled` one — is served by the daemon and visible in NO project tab. Left
+// alone that is a session going dark, which is the exact failure the whole
+// attention system exists to prevent. So D90's consequence carries a FLOOR, and
+// this block is it: the data is already served, and there is now one reachable
+// surface in the app where an unfiled session can be SEEN.
+//
+// A floor is not a feature. Three things this deliberately is NOT, each one an
+// omission rather than an oversight:
+//
+//   • **No links.** An unfiled session has no project tab to open into — that is
+//     the whole reason it is unfiled — and inventing a destination for it here
+//     would be inventing a scope the estate does not have.
+//   • **No actions.** No file, no attach, no rename, no kill. TRIAGE IS
+//     EXTENSION-ERA (the deletion map's seventh decision, ⟨Wes⟩'s lean): the
+//     right home for "do something about this session" is the tree's own write
+//     surface under a real filing decision, not a second write path grown on the
+//     picker where nobody would look for it.
+//   • **No empty state.** An empty `unfiled` renders NOTHING — not "no unfiled
+//     sessions", not a zero count. This whole section is an INTERIM, and
+//     chrome that announces an interim's own emptiness is chrome that has to be
+//     deleted twice.
+//
+// A read-only listing is the entire feature. If it ever needs to be more than
+// that, that is a decision to take, not a gap to fill in passing.
+//
+// The `unfiled` root's id, mirrored from `packages/core/src/projections/tree.ts`
+// (`UNFILED_ROOT_ID`) rather than imported — the same narrow-mirroring posture
+// TreeView.vue takes toward the same constant, and required here besides: no
+// `.vue` file may import from `@vimes/core` at all (D87 rider 2's tightening,
+// enforced by lib/coreImportPolicy.test.ts). The authority is core; keep the two
+// in step. Presentation only — never to reorder or filter, which the payload
+// already decided (unfiled comes LAST, and it comes even when empty).
+const UNFILED_ROOT_ID = 'unfiled';
+
+// The tree is read VERBATIM off the store, exactly as TreeView reads it: this
+// view holds no copy, sorts nothing, and derives no shape of its own. `find`
+// rather than an index, because "unfiled comes last" is the payload's declared
+// ordering and not this view's assumption to bake in.
+const unfiledRoot = computed(
+  () => store.tree?.roots.find((root) => root.rootId === UNFILED_ROOT_ID) ?? null,
+);
+
+// The sessions that landed on `unfiled` by derivation rather than attachment,
+// in the payload's own order. Empty (or a tree we have not read yet) renders
+// nothing at all — see the omission list above.
+const unfiledSessions = computed(() => unfiledRoot.value?.sessions ?? []);
+
+// The root's rollup covers its WHOLE estate, so this is the honest "how much is
+// out here" number even though only the root's own leaves are listed below.
+const unfiledProcessCount = computed(() => unfiledRoot.value?.rollup.processCount ?? 0);
+
+// The identity ladder (lib/sessionLabel.ts — the ONE answer to "what is this
+// session called?"), threaded exactly as TreeView threads it. `shortId` comes
+// off the payload (estate-scoped, D79) and renders separately at the row's end;
+// it is NOT the ladder's bottom rung.
+function sessionLabelOf(session: {
+  appSessionId: string;
+  name: string | null;
+  derivedTitle: string | null;
+  createdAt: string;
+}): string {
+  return resolveSessionLabel(
+    {
+      sessionId: session.appSessionId,
+      name: session.name,
+      derivedTitle: session.derivedTitle,
+      earliestActivityAt: session.createdAt,
+    },
+    // S15-F10: `getTimezoneOffset()` returns minutes the viewer is BEHIND UTC
+    // (positive = west); the ladder wants minutes EAST of UTC, hence the
+    // negation. This is the view boundary — the ambient clock is allowed here,
+    // never inside lib/sessionLabel.ts.
+    -new Date().getTimezoneOffset(),
+  );
+}
+
+// The tone family → utility class half of the severity mapping (ui-doctrine §3).
+// `lib/sessionSeverityDisplay.ts` owns the severity → (tone, glyph) translation
+// and must never learn a colour; each view owns this half, which is why the same
+// four-row map also appears in TreeView.vue. That is the doctrine's shape, not
+// drift: the SEVERITY table has exactly one home, the palette has exactly one
+// home (the tokens), and this is the join between them.
+const TONE_TEXT_CLASS: Readonly<Record<SeverityTone, string>> = {
+  crit: 'text-crit',
+  warn: 'text-warn',
+  accent: 'text-accent',
+  dim: 'text-ink-dim',
+};
+
+onMounted(() => {
+  // Through the store's THROTTLE, not `refreshTree` directly — the same door
+  // TreeView's own mount uses, and for the same reason: mounting a surface must
+  // not be a way to bypass the tree's cadence. The picker and the app are
+  // mutually exclusive surfaces (App.vue renders one or the other), so this is
+  // never a second mount racing TreeView's.
+  store.scheduleTreeRefresh();
+});
 </script>
 
 <template>
@@ -231,5 +337,51 @@ async function submitDeclare(): Promise<void> {
         </div>
       </li>
     </ul>
+
+    <!-- ── UNFILED'S FLOOR (S16·U5, decision 7 / D90) ─────────────────────────
+         READ-ONLY, ON PURPOSE. No `<a>`, no `<button>`, no handler anywhere in
+         this section — see the long comment in the script block for why each of
+         those is an omission rather than an oversight. It renders only when
+         there is something to render: an empty `unfiled` produces no heading,
+         no count and no empty-state line, because this whole section is an
+         interim and interim chrome that announces its own emptiness has to be
+         deleted twice. -->
+    <section v-if="unfiledSessions.length > 0" class="flex flex-col gap-2">
+      <header class="flex items-baseline gap-2">
+        <h2 class="text-sm font-semibold text-ink">Unfiled</h2>
+        <!-- Both numbers, because they are different facts: how many sessions
+             are listed below, and what the root's rollup says is running under
+             it. A single number would have to pick one and would read as the
+             other. -->
+        <span class="font-mono text-xs text-ink-dim">
+          {{ unfiledSessions.length }} · {{ unfiledProcessCount }} live
+        </span>
+      </header>
+      <p class="text-sm text-ink-dim">
+        Sessions under no declared project. They are not in any project's tree — declare the
+        directory they work in and new sessions there land in it.
+      </p>
+      <ul class="flex flex-col gap-1">
+        <li
+          v-for="session in unfiledSessions"
+          :key="session.appSessionId"
+          class="flex min-h-[44px] items-center gap-2 rounded-md border border-dashed border-line px-3 py-2"
+        >
+          <!-- The severity glyph, through the ONE mapping (lib/
+               sessionSeverityDisplay.ts). `title` carries the raw severity so
+               the glyph is never the only channel. -->
+          <span
+            class="shrink-0 font-mono text-xs"
+            :class="TONE_TEXT_CLASS[severityDisplayOf(session.severity).tone]"
+            :title="session.severity"
+            >{{ severityDisplayOf(session.severity).glyph }}</span
+          >
+          <span class="min-w-0 flex-1 truncate text-sm text-ink">{{ sessionLabelOf(session) }}</span>
+          <!-- The D79 handle, estate-scoped, straight off the payload — the way
+               a human names one of these out loud. -->
+          <span class="shrink-0 font-mono text-[10px] text-ink-dim">{{ session.shortId }}</span>
+        </li>
+      </ul>
+    </section>
   </div>
 </template>

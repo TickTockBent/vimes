@@ -19,7 +19,6 @@
 // the build-manifest gate stays green (verified).
 import { computed } from 'vue';
 import TreeView from '../views/TreeView.vue';
-import SessionListView from '../views/SessionListView.vue';
 import StreamView from '../views/StreamView.vue';
 import FileTreeView from '../views/FileTreeView.vue';
 import EditorView from '../views/EditorView.vue';
@@ -33,12 +32,24 @@ import type { Route } from '../lib/route.js';
 // backKind (D41): required, always passed by App.vue — every PanelHost instance
 // in both layout arms threads it through. 'close' on a desktop content panel,
 // 'back' everywhere else (phone/tablet). Forwarded verbatim to each view that
-// owns a back button; SessionListView has none, so it does not receive it.
+// owns a back button; the home view (TreeView) has none, so it does not
+// receive it.
 const props = defineProps<{ route: Route; index: number; focused: boolean; backKind: 'back' | 'close' }>();
 
 // Every navigation intent a view can raise, each carrying THIS panel's index so
 // the shell knows which panel to open from. Optional trailing args mirror the
 // existing view emits (editor path/line/returnTo, files dir).
+//
+// ⚠ **THE PANEL-NAV INTENTS OUTLIVE THEIR OLD PRODUCER, DELIBERATELY (S16·U5).**
+// `openFiles` / `openTerminal` / `openGit` / `openCost` / `openTasks` were
+// raised by the deleted SessionListView's nav strip and by nothing else inside
+// a panel today; U4 moved those affordances to App.vue's persistent top bar,
+// which calls the handlers DIRECTLY rather than through a panel emit. They stay
+// declared here because App.vue binds all five on every PanelHost instance —
+// this list is the component's contract with the shell, not a census of who
+// currently fires it — and because the next view that needs to say "open the
+// git panel from HERE" needs the index-tagged wire, not a new one. `openSearch`
+// is the proof that the wire is live: FileTreeView's `@search` still rides it.
 const emit = defineEmits<{
   open: [index: number, appSessionId: string];
   openFiles: [index: number, dir?: string | null];
@@ -57,9 +68,6 @@ const emit = defineEmits<{
 const editorRoute = computed(() => (props.route.view === 'editor' ? props.route : null));
 const fileTreeRoute = computed(() => (props.route.view === 'fileTree' ? props.route : null));
 const streamRoute = computed(() => (props.route.view === 'stream' ? props.route : null));
-const sessionListRoute = computed(() =>
-  props.route.view === 'sessionList' ? props.route : null,
-);
 </script>
 
 <template>
@@ -115,27 +123,19 @@ const sessionListRoute = computed(() =>
       :back-kind="backKind"
       @back="emit('back', index)"
     />
-    <!-- S15·U2 — the home cutover (F1). TreeView takes the slot SessionListView
-         held: the phone's home frame AND the desktop sidebar's stack[0], the
-         SAME component in both layouts, because the swap is a route→component
-         mapping change and nothing more. SessionListView keeps its branch below,
-         now reached at `#/sessions`; it dies next slice, after the human gate.
-         The tree raises only `open` — the other emits belong to the nav strip
-         that still lives in the old list. -->
+    <!-- S15·U2 — the home cutover (F1) — COMPLETED IN S16·U5. TreeView took the
+         slot SessionListView held: the phone's home frame AND the desktop
+         sidebar's stack[0], the SAME component in both layouts, because the
+         swap is a route→component mapping change and nothing more. The old
+         list's branch (reached at `#/sessions` for exactly one slice) is now
+         gone, along with the view, the route and the hash — so `tree` is the
+         LAST branch here, and it is also the branch every unrecognized hash
+         lands on, because `parseRoute`'s total fallback is the tree. The tree
+         raises only `open`; the nav intents it does not raise are explained at
+         the emit declaration above. -->
     <TreeView
       v-else-if="route.view === 'tree'"
       @open="(appSessionId) => emit('open', index, appSessionId)"
-    />
-    <SessionListView
-      v-else-if="sessionListRoute"
-      :expand-meters="sessionListRoute.expandMeters"
-      @open="(appSessionId) => emit('open', index, appSessionId)"
-      @open-files="emit('openFiles', index)"
-      @open-search="emit('openSearch', index)"
-      @open-terminal="emit('openTerminal', index)"
-      @open-git="emit('openGit', index)"
-      @open-cost="emit('openCost', index)"
-      @open-tasks="emit('openTasks', index)"
     />
   </div>
 </template>

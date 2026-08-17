@@ -6,8 +6,6 @@ import {
   stripDispatchBoilerplate,
 } from './sessionLabel.js';
 import { sessionLabelFor, type SessionView } from './costDisplay.js';
-import { deriveSessionRow } from './sessionRow.js';
-import type { SessionRecord } from './types.js';
 
 // ─── Q3 assertion 13 — ONE ladder, and the two consumers that share it ───────
 
@@ -82,27 +80,27 @@ describe('resolveSessionLabel: the ladder', () => {
   });
 });
 
-// ⚠ ASSERTION 13. The defect this change exists to remove was two label sources
-// disagreeing about what a session is called. Both surfaces now route through
-// `resolveSessionLabel`, and this case proves it by feeding them the SAME facts
-// and demanding the SAME string — including the rung that used to differ.
-describe('the session list and the cost ledger agree, for the same session', () => {
+// ⚠ ASSERTION 13, RE-ANCHORED (S16·U5, THE DELETION). The defect this case
+// exists to remove was two label sources disagreeing about what a session is
+// called. It used to prove that THROUGH `deriveSessionRow` — the session list's
+// row model — because the list was the second caller. The list died with
+// SessionListView this slice, and `lib/sessionRow.ts` died with it, so the
+// old shape of the claim ("these two DERIVERS agree") has nothing left to
+// compare and would have to be softened or deleted.
+//
+// It is neither. The claim that actually mattered is principle 9's: there is
+// ONE answer to "what is this session called?", and every surface reaches it
+// through `resolveSessionLabel`. So the agreement is asserted DIRECTLY against
+// the ladder now — the SAME session facts, the SAME offset, and the SAME
+// expected strings, byte for byte as they read before the deletion. The
+// surviving second caller is the cost ledger's `sessionLabelFor`, which is
+// `resolveSessionLabel` fed the ledger's own field names; the tree renders the
+// ladder directly (TreeView's `sessionLabelOf`), which is what this describe
+// now models.
+describe('the cost ledger and the label ladder agree, for the same session', () => {
   const SESSION_ID = 'd85bc8f8-3b39-4a74-88b7-65caaa31deef';
   const FIRST_SEEN_AT = '2026-07-19T23:25:51.371Z';
   const CWD = '/home/ticktockbent/projects/content/death';
-
-  function listRecord(overrides: Partial<SessionRecord> = {}): SessionRecord {
-    return {
-      appSessionId: SESSION_ID,
-      channel: 'sdk',
-      cwd: CWD,
-      liveness: 'running',
-      needsAttention: null,
-      name: null,
-      createdAt: FIRST_SEEN_AT,
-      ...overrides,
-    };
-  }
 
   function ledgerSession(title: string | null): SessionView {
     return {
@@ -124,25 +122,46 @@ describe('the session list and the cost ledger agree, for the same session', () 
     ['a system-derived title', 'Look at the development plan and write next-steps.md'],
     ['neither (the fallback)', null],
   ])('%s produces one label in both views', (_label, title) => {
-    // The list sees the two fields separately; the ledger sees the daemon's
-    // already-resolved `name ?? derivedTitle`. Same ladder, same offset (0
-    // here — both sides just need to AGREE), same answer.
-    const listLabel = deriveSessionRow(
-      listRecord(title === null ? {} : { derivedTitle: title }),
+    // A non-ledger surface sees the two fields separately; the ledger sees the
+    // daemon's already-resolved `name ?? derivedTitle`. Same ladder, same
+    // offset (0 here — both sides just need to AGREE), same answer.
+    const ladderLabel = resolveSessionLabel(
+      {
+        sessionId: SESSION_ID,
+        name: null,
+        derivedTitle: title,
+        earliestActivityAt: FIRST_SEEN_AT,
+      },
       0,
-    ).label;
-    expect(sessionLabelFor(ledgerSession(title), 0)).toBe(listLabel);
+    );
+    expect(sessionLabelFor(ledgerSession(title), 0)).toBe(ladderLabel);
   });
 
-  // ⚠ THE REGRESSION PIN, both views at once. `death` is the parent directory's
-  // own label in the ledger and the row's own `cwdTail` in the list, so neither
-  // view may use it as a session identity.
-  it('NEITHER view falls back to the cwd basename', () => {
-    const row = deriveSessionRow(listRecord(), 0);
-    expect(row.cwdTail).toBe('death');
-    expect(row.label).not.toBe('death');
+  // ⚠ THE REGRESSION PIN, KEPT — its INTENT survives the deletion even though
+  // one of its two subjects did not. It used to read "NEITHER view falls back
+  // to the cwd basename", and it proved the list half through `row.cwdTail`:
+  // `death` was the parent directory's own label in the ledger AND the row's
+  // own cwd tail in the list, so neither view could use it as an identity.
+  //
+  // The ladder now has NO CWD INPUT AT ALL — `SessionLabelInputs` carries id,
+  // name, derivedTitle and earliestActivityAt, and nothing else — so the claim
+  // sharpens rather than weakens: the bottom rung answers timestamp·shortId, a
+  // directory word is not a thing it can reach for, and `CWD` is present in
+  // this describe purely as the ledger's grouping fact. The expectation string
+  // is unchanged, verbatim.
+  it('the fallback rung answers timestamp · shortId, never a directory word', () => {
     expect(sessionLabelFor(ledgerSession(null), 0)).not.toBe('death');
     expect(sessionLabelFor(ledgerSession(null), 0)).toBe('Jul 19 23:25 · d85bc8f8');
+    expect(
+      resolveSessionLabel(
+        { sessionId: SESSION_ID, name: null, derivedTitle: null, earliestActivityAt: FIRST_SEEN_AT },
+        0,
+      ),
+    ).toBe('Jul 19 23:25 · d85bc8f8');
+    // The ledger's own directory fact, stated so the pin still names what it is
+    // guarding against: this string is a REAL basename in this fixture, and no
+    // label above may equal it.
+    expect(CWD.split('/').at(-1)).toBe('death');
   });
 
   it('the ledger renders its OWN resolution, never the server-supplied label string', () => {

@@ -31,9 +31,16 @@ const PORTED_SINGLE_PANEL_HASHES: readonly string[] = [
   '', // home (no hash at all)
   '#',
   '#/',
+  // ⚠ THE DEAD HASHES (S16·U5). These three were the session list's own paths
+  // and are kept here DELIBERATELY after the view's deletion: they are the
+  // strings a remembered layout, a bookmark or an already-delivered push
+  // notification still carries, and the claim this file makes about them is now
+  // "they degrade through the stack layer exactly as they degrade through
+  // route.ts" — one panel, the tree, no throw. Removing them would delete the
+  // only coverage of the shapes real stored hashes actually have.
   '#/meters',
   '#/meters?anything=1',
-  '#/sessions', // S15·U2: the session list's explicit path
+  '#/sessions',
 
   '#nonsense',
   '#/unknown/route',
@@ -91,13 +98,13 @@ describe('parsePanelStack of an ordinary hash is exactly [parseRoute(hash)]', ()
 // shape, which route.ts intentionally collapses to null — we do not fight it).
 
 const ROUND_TRIPPABLE_ROUTES: readonly Route[] = [
-  // S15·U2: home is `{ view: 'tree' }` now (it is the route that builds to the
-  // empty string, i.e. the empty-segment case a multi-panel hash has to survive);
-  // the session list moved to its own explicit `#/sessions` path and round-trips
-  // from there. Both are listed so neither half of the cutover loses coverage.
+  // S15·U2: home is `{ view: 'tree' }` now — it is the route that builds to the
+  // empty string, i.e. the empty-segment case a multi-panel hash has to survive.
+  // S16·U5 removed the two `sessionList` shapes that sat beside it: a deleted
+  // view has no route shape to round-trip, and its two HASHES are covered
+  // instead by the degradation cases (the ported list above, and the remembered
+  // -layout describe below) — which is where a string nothing can build belongs.
   { view: 'tree' },
-  { view: 'sessionList', expandMeters: false },
-  { view: 'sessionList', expandMeters: true },
   { view: 'stream', appSessionId: 'abc' },
   { view: 'stream', appSessionId: 'a b/c' },
   { view: 'stream', appSessionId: '日本' },
@@ -232,19 +239,60 @@ describe('buildPanelStackHash of an empty stack', () => {
 // ── ASSERTION 7: the home / empty edge ──────────────────────────────────────
 
 describe('the home panel is the empty string, both directions', () => {
+  // ⚠ UNTOUCHED BY S16·U5, and verified as such: the empty-hash identity is a
+  // claim about the TREE and about `buildPanelStackHash`'s length-1 shortcut,
+  // neither of which the deletion goes near. Restated here so a reader knows it
+  // was checked rather than overlooked.
   it("[tree] builds to '' and '' parses to [tree] (S15·U2: the home route)", () => {
     expect(buildPanelStackHash([{ view: 'tree' }])).toBe('');
     expect(parsePanelStack('')).toEqual([{ view: 'tree' }]);
   });
+});
 
-  it("the session list is no longer the empty-hash panel — it builds to '#/sessions'", () => {
-    // The other half of the cutover, pinned here too: a stack whose only panel
-    // is the old list must NOT emit the home hash, or a reload would land on
-    // the tree instead of the panel that was open.
-    expect(buildPanelStackHash([{ view: 'sessionList', expandMeters: false }])).toBe('#/sessions');
-    expect(parsePanelStack('#/sessions')).toEqual([
-      { view: 'sessionList', expandMeters: false },
+// ── S16·U5: A REMEMBERED LAYOUT HOLDING A DEAD PANEL ────────────────────────
+//
+// ⚠ THE KILL CRITERION OF THE DELETION SLICE IS THAT THE REMEMBERED-PANEL
+// MECHANISM SURVIVES IT. App.vue persists the mirrored hash per project
+// (`rememberLayout`) and replays it on the next visit (`initialHashFor`), so
+// there are real stored strings out there naming `#/sessions` — inside a
+// `#/stack/` hash, beside panels that are still perfectly alive. Nothing
+// migrates or clears them.
+//
+// What must NOT happen: the dead segment throwing, swallowing the panels after
+// it, or collapsing the whole stack to home and losing the layout. What DOES
+// happen is the floor panelStack already had — an unparseable or unclaimed
+// segment resolves through `parseRoute`'s total fallback to the tree — so the
+// dead panel degrades to a home panel IN PLACE and every sibling panel is
+// untouched. That is the graceful degradation, asserted rather than assumed.
+describe('a stored multi-panel hash with a DEAD segment still parses to a working stack', () => {
+  // Built the way App.vue would have built it while the list still existed:
+  // `#/stack/` + each panel's own buildHash, encodeURIComponent'd.
+  const STORED_LAYOUT_WITH_DEAD_PANEL = '#/stack/%23%2Fsession%2Fabc/%23%2Fsessions/%23%2Fgit';
+
+  it('the dead panel becomes a home panel IN PLACE — position, length and siblings all hold', () => {
+    const stack = parsePanelStack(STORED_LAYOUT_WITH_DEAD_PANEL);
+    expect(stack).toEqual([
+      { view: 'stream', appSessionId: 'abc' },
+      { view: 'tree' },
+      { view: 'git' },
     ]);
+    // Stated separately from the deep-equal because they are the two things a
+    // careless "just drop unknown segments" fix would break: the stack does not
+    // SHORTEN, and the panels after the dead one do not SHIFT.
+    expect(stack).toHaveLength(3);
+    expect(stack[2]).toEqual({ view: 'git' });
+  });
+
+  it('a stored layout whose dead panel is the ONLY panel degrades to [home], not to nothing', () => {
+    expect(parsePanelStack('#/sessions')).toEqual([{ view: 'tree' }]);
+    expect(parsePanelStack('#/meters')).toEqual([{ view: 'tree' }]);
+  });
+
+  it('never throws, and never yields an empty stack', () => {
+    for (const storedHash of [STORED_LAYOUT_WITH_DEAD_PANEL, '#/sessions', '#/stack/%23%2Fmeters']) {
+      expect(() => parsePanelStack(storedHash)).not.toThrow();
+      expect(parsePanelStack(storedHash).length).toBeGreaterThanOrEqual(1);
+    }
   });
 });
 
