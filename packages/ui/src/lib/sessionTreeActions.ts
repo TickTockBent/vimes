@@ -219,6 +219,32 @@ export function spawnPrefillFor(target: NodeActionTarget): string | null {
   return target.rootDirectory;
 }
 
+/**
+ * The node a session spawned from this row must be ATTACHED to once it exists,
+ * or `null` when the spawn stands alone.
+ *
+ * S15-F9, signed ⟨Wes⟩: "If I click a node and 'spawn a session' I expect it to
+ * spawn attached to that node. Otherwise what's the point of that button." So a
+ * node row's spawn is TWO client proposals — the spawn, then the existing attach
+ * verb — and this is the only place that decides which rows earn the second one.
+ *
+ * A ROOT target answers `null` AND MEANS IT: a virtual root already holds
+ * sessions directly (`root.sessions` in the payload), so a spawn from a project
+ * row lands where it belongs and there is no node to name. `unfiled` answers
+ * `null` for the same reason plus a stronger one — it hosts no nodes at all (A5)
+ * and cannot spawn from the sheet in the first place — and the function stays
+ * total regardless, so any row shape that is not a node lands on "spawn only"
+ * rather than on a fabricated nodeId.
+ *
+ * ⚠ **THIS DECIDES WHICH REQUEST TO MAKE, NEVER WHAT IT ANSWERS.** The daemon
+ * still adjudicates the attach: a node that closes between the sheet opening and
+ * the spawn landing answers 409 `node-closed`, and the operator reads that
+ * verbatim through `nodeWriteFailureMessage` like every other refusal here.
+ */
+export function attachAfterSpawnNodeId(target: NodeActionTarget): string | null {
+  return target.kind === 'node' ? target.nodeId : null;
+}
+
 // ── attach session ──────────────────────────────────────────────────────────
 
 export interface AttachTargetNode {

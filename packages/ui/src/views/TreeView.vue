@@ -67,6 +67,7 @@ import {
 } from '../lib/sessionSeverityDisplay.js';
 import { resolveSessionLabel } from '../lib/sessionLabel.js';
 import {
+  attachAfterSpawnNodeId,
   attachTargetsOf,
   canCreateNodeUnder,
   createNodeRequestFor,
@@ -309,13 +310,19 @@ function startSpawn(target: NodeActionTarget): void {
 
 // Every write lands here: the daemon's own answer becomes either "done" (sheet
 // closes, the refetch the store scheduled repaints the tree) or a sentence.
-function applyWriteAnswer(answer: { status: number; body: unknown }): void {
+//
+// It answers `true` on a success purely so a CHAINED write can tell whether to
+// carry on — S15·U9's spawn→attach is the only caller that needs to know, and
+// the three single-proposal callers ignore it. The alternative was a second
+// refusal slot for the chain, and one refusal surface is the whole point (U4).
+function applyWriteAnswer(answer: { status: number; body: unknown }): boolean {
   const message = nodeWriteFailureMessage(answer.status, answer.body);
   if (message === null) {
     closeSheet();
-    return;
+    return true;
   }
   writeError.value = message;
+  return false;
 }
 
 async function submitCreate(target: NodeActionTarget): Promise<void> {
@@ -378,22 +385,68 @@ async function submitAttach(nodeId: string, appSessionId: string): Promise<void>
 // refusal banner exactly as it does from the old list — the spawn wire has no
 // per-caller refusal channel, and inventing a second refusal surface here would
 // mean two places to look. The pending flag clears either way.
-function submitSpawn(): void {
+//
+// ─── S15·U9 (F9, signed ⟨Wes⟩) — a NODE row's spawn attaches to that node ────
+//
+// "If I click a node and 'spawn a session' I expect it to spawn attached to that
+// node. Otherwise what's the point of that button." So a node row chains the
+// EXISTING attach verb after the spawn resolves: two client proposals, no new
+// wire and no daemon change, and `attachAfterSpawnNodeId` — a tested derivation,
+// not a `kind` check inlined here — decides which rows chain. A ROOT row takes
+// the pre-U9 path untouched, which is what that function's null buys.
+//
+// The node id is captured BEFORE the spawn is sent, on purpose: the sheet may be
+// closed, re-targeted or repainted by a tree refresh while the spawn is in
+// flight, and the attach must name the row the operator actually tapped rather
+// than whatever `openTarget` resolves to when the envelope lands.
+function submitSpawn(target: NodeActionTarget): void {
   const trimmedCwd = spawnCwdDraft.value.trim();
   if (trimmedCwd.length === 0 || writePending.value) {
     return;
   }
+  const attachToNodeId = attachAfterSpawnNodeId(target);
   writePending.value = true;
   store.spawnSession(spawnChannel.value, trimmedCwd, {
     onSpawned: (appSessionId) => {
-      writePending.value = false;
-      closeSheet();
-      emit('open', appSessionId);
+      if (attachToNodeId === null) {
+        writePending.value = false;
+        closeSheet();
+        emit('open', appSessionId);
+        return;
+      }
+      // `writePending` deliberately stays TRUE across the hand-off: the operator
+      // tapped one button and there is one outcome to wait for, so the sheet
+      // must not un-disable itself between the two proposals.
+      void chainAttachAfterSpawn(attachToNodeId, appSessionId);
     },
     onRefused: () => {
       writePending.value = false;
     },
   });
+}
+
+// The second half of a node row's spawn.
+async function chainAttachAfterSpawn(nodeId: string, appSessionId: string): Promise<void> {
+  try {
+    // SUCCESS → `applyWriteAnswer` closed the sheet and the stream opens, which
+    // is exactly the root-row ending; the operator cannot tell the two apart,
+    // and should not have to.
+    //
+    // ⚠ **REFUSAL → THE SHEET STAYS OPEN AND THE STREAM DOES NOT.** The session
+    // EXISTS either way: the spawn succeeded and only the attach was refused, so
+    // there is now a real, unattached session, and the tree refresh the 2xx
+    // spawn already scheduled shows it sitting at its root. That is the honest
+    // state, not an error state — and it is why nothing is retried, undone or
+    // smoothed over here. The daemon's own words go in the ONE inline refusal
+    // slot, dismissed by a hand (U4 verbatim, U5 never auto-clear); opening the
+    // stream on top of them would hide the sentence behind the panel it is
+    // about.
+    if (applyWriteAnswer(await store.attachSessionToNode(nodeId, appSessionId))) {
+      emit('open', appSessionId);
+    }
+  } finally {
+    writePending.value = false;
+  }
 }
 
 onMounted(() => {
@@ -745,11 +798,13 @@ onMounted(() => {
 
               <!-- Spawn: the MINIMAL sheet (see submitSpawn's comment) — the
                    same store action the old list's form calls, with the A8
-                   prefill already in the box. -->
+                   prefill already in the box. The TARGET goes in (S15·U9) so a
+                   node row's spawn can chain the attach; the row, not the sheet,
+                   is what decides that. -->
               <form
                 v-else-if="sheetMode === 'spawn'"
                 class="flex flex-col gap-2"
-                @submit.prevent="submitSpawn()"
+                @submit.prevent="submitSpawn(openTarget)"
               >
                 <label
                   class="font-mono text-[10px] uppercase text-ink-dim"

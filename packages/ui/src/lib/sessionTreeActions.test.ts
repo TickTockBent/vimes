@@ -7,6 +7,7 @@ import type { TreeNode, TreeResponse, TreeRoot, TreeSession } from '@vimes/core'
 // drift-proof rather than merely commented.
 import { PROJECT_ROOT_ID_PREFIX, UNFILED_ROOT_ID, projectRootId } from '@vimes/core';
 import {
+  attachAfterSpawnNodeId,
   attachTargetsOf,
   canCreateNodeUnder,
   createNodeRequestFor,
@@ -16,6 +17,7 @@ import {
   rootActionTarget,
   sessionTreeActionTargets,
   spawnPrefillFor,
+  type NodeActionTarget,
 } from './sessionTreeActions.js';
 import { nodeRefusalMessage } from './nodeRefusalMessages.js';
 
@@ -187,6 +189,36 @@ describe('spawnPrefillFor — A8, the whole payoff of E3-a', () => {
 
   it('a project root with NO declared directory also yields null rather than a fabricated path', () => {
     expect(spawnPrefillFor(rootActionTarget(root('project:p1', { directory: null })))).toBeNull();
+  });
+});
+
+describe('attachAfterSpawnNodeId — S15-F9, signed: a node row’s spawn lands ON the node', () => {
+  const projectRoot = root('project:p1', { name: 'vimes', directory: '/d' });
+
+  it('a NODE target names itself — this is the whole point of the button (⟨Wes⟩)', () => {
+    // The WO's sabotage target: returning null here must redden THIS.
+    expect(attachAfterSpawnNodeId(nodeActionTarget(projectRoot, node('n1')))).toBe('n1');
+    // Depth is irrelevant — a nested node is as attachable as a top-level one.
+    expect(attachAfterSpawnNodeId(nodeActionTarget(projectRoot, node('n-deep')))).toBe('n-deep');
+  });
+
+  it('a PROJECT ROOT target names nothing — a root holds sessions directly, so nothing is chained', () => {
+    // This null IS the "root-row spawns are unchanged" assertion: no attach
+    // request is built, so that path stays byte-for-byte the pre-U9 flow.
+    expect(attachAfterSpawnNodeId(rootActionTarget(projectRoot))).toBeNull();
+  });
+
+  it('the UNFILED root names nothing either — it hosts no nodes at all (A5)', () => {
+    const unfiledRoot = root(UNFILED_ROOT_ID, { name: 'unfiled', directory: null });
+    expect(attachAfterSpawnNodeId(rootActionTarget(unfiledRoot))).toBeNull();
+  });
+
+  it('is TOTAL: a node target with no nodeId answers null rather than inventing one', () => {
+    // Structurally impossible from `nodeActionTarget` (a TreeNode always has an
+    // id), which is exactly why it is asserted — the fn must never hand a
+    // request builder something it would then send as `/api/nodes/null/…`.
+    const malformed: NodeActionTarget = { ...rootActionTarget(projectRoot), kind: 'node' };
+    expect(attachAfterSpawnNodeId(malformed)).toBeNull();
   });
 });
 
