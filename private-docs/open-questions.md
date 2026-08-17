@@ -522,3 +522,28 @@ adopting inferred creates a rendering obligation (source-refs drawn as
 edges/rollups in the tree), not a schema one. Name that obligation when
 the bend resolves so it doesn't get lost. Cycle rejection at validation
 time carries over either way (second corroboration, after prompter).
+
+## D94 — Orchestrator placement in the tree: attachment-immune, pinned, or off-tree entirely?
+
+*(Raised by ⟨Wes⟩ at the slice-16 human gate, 2026-08-17: "Orchestrator
+should probably be immune from attachment and always sit at the top.. or
+optionally not be on the tree at all and only reachable from the
+orchestrator button." They deliberately did NOT test attaching the
+orchestrator into a node — "I didn't want to orphan the orchestrator in
+a node at this time" — so today the operation is presumed possible and
+merely inadvisable, which is the worst of the three states.)*
+
+**Trigger:** the next slice touching attach/move semantics or the
+orchestrator surface (E2-c is adjacent via worktree-session filing;
+InputLease briefings touch the orchestrator surface directly). Cheap
+enough that it could also ride any daemon unit as a rider.
+
+**Lean:** **immune + pinned at the top, NOT hidden.** Principle 9: the
+tree is the one session record, and hiding a real session from it
+re-creates exactly the two-surfaces ambiguity slice 16 just deleted. The
+orchestrator button stays as a shortcut, not the sole address.
+Enforcement belongs DAEMON-side (attach/move envelopes naming the
+orchestrator session refuse, D10-style, refusal rendered verbatim) —
+custody adjudication stays server-side per U3's doctrine; the UI may
+additionally not offer the orchestrator in pickers, but that is
+courtesy filtering, never the adjudication.

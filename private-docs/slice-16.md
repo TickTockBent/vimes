@@ -177,7 +177,82 @@ global) · U4 `e5c568b` · U5 `38e4a76` (decision 8 verified
 already-built; cold open seeds [tree] + hint) · U5b `ba8b4fb`.
 **Machine gate PASSED 2026-08-17: suite green ×2 (3493/147), ci-gate ALL
 PROFILES, live-code grep clean; U2–U5b deployed in one ci-gate run
-(UI-only, no restart). ⟨Wes⟩'s §6 human gate walk IN PROGRESS.**
+(UI-only, no restart). Human gate WALKED 2026-08-17 (§7): 8/9 clean,
+HALTED on S16-F1 (§8) pending ⟨Wes⟩'s ruling.**
+
+## §7. Human-gate walk record (⟨Wes⟩, 2026-08-17)
+
+1. Cold open → tree + hinted empty panel: **PASS**.
+2. Dispatched session arrives named, lands inside the node: **PASS**.
+3. Historical labels: ALL old sessions render timestamp·shortId; only
+   the newest (a direct prompt, not a dispatch briefing) shows prompt
+   text. **Expected a distinguishing task line → S16-F1 (§8).**
+4. Rename **PASS** (spine: `session_renamed` 17:59:39Z), attach
+   **PASS**; kill LOOKED inert from the phone but **VERIFIED WORKED on
+   the spine**: `liveness_changed cause:"killed" → dormant` at
+   17:59:21.595Z with the session's own `hook_session_end` 18 ms later
+   (the process confirming its death). The only UI signal is the
+   liveness glyph flip — a killed session stays in the tree, correctly
+   (it is still a fact). *Cosmetic note, no action this slice: kill has
+   no acknowledgment moment; note-and-proceed per the momentum
+   calibration.* Correct refusals observed: attach-to-current-node and
+   node-to-node move both refused (current design). Orchestrator
+   attach-immunity raised → **D94** (open-questions).
+5. Header chrome: **PASS** ("look good").
+6. Gauge pulldown: **PASS**.
+7. Dead bookmarks (`#/sessions`, `#/meters`): both land home silently,
+   no error: **PASS**.
+8. Unfiled reachable via bare-`/` picker: **PASS**.
+9. Boot line (D73 floor semantics): **PASS**.
+
+## §8. Findings
+
+### S16-F1 — prong (ii) is a structural no-op for its entire target population: the core title cap truncates BEFORE the `Task:` marker in every real briefing variant (2026-08-17, human gate step 3)
+
+**Observed:** every historical dispatched session renders the
+timestamp·shortId rung, never a distinguishing task line.
+
+**Evidence chain (orchestrator, spine read-only + source):**
+- The spine's historical briefings DO carry real content after a
+  `Task:` marker (events 2026-08-05 → 08-12, all three variants:
+  implement / REVIEW / PLAN — e.g. "Task: getMany(ids) — …").
+- Core caps the derived title FIRST: `deriveSessionTitle` returns
+  `singleLineText.slice(0, SESSION_TITLE_MAX_LENGTH)` with
+  `SESSION_TITLE_MAX_LENGTH = 120` (sessionIdentity.ts:26,128).
+- Measured `Task:` positions in the three real briefing preambles
+  (whitespace-collapsed): implement **178**, REVIEW **182**, PLAN
+  **160** — ALL beyond 120. The capped derivedTitle therefore NEVER
+  contains the marker, for any real dispatch, ever.
+- U2's UI stripper matches the stem, finds no `Task:` in the capped
+  input, returns null → ladder falls to the timestamp rung. That is
+  its designed drift-inert degradation — firing 100% of the time.
+
+**Why the machine gate missed it:** A1's fixture placed `Task:` within
+120 chars — shorter than every real briefing preamble. The lib test
+proved the mechanism, not the population. (Same lesson-family as
+"verify guards by breaking them": fixtures must be drawn from the real
+data shape, not a convenient one.)
+
+**Kill-criterion check:** NOT triggered — no fix candidate rewrites
+events; both are pure derivation/display.
+
+**Options for ⟨Wes⟩'s ruling:**
+- **(a) Accept the loss.** Historical dispatched sessions keep
+  timestamp·shortId (still strictly better than the boilerplate sea —
+  the suppression half of prong (ii) works). D91 prong (i) names every
+  FUTURE dispatch, so the affected population is fixed and closed. Zero
+  work; U2's stripper stays as defense-in-depth.
+- **(b) Fix in core (orchestrator LEAN).** `deriveSessionTitle` learns
+  the dispatch-boilerplate skip BEFORE capping: stem match → text after
+  first `Task:` → cap at 120. Pure derivation over the append-only
+  spine; projection replay updates history; no event rewrites. One
+  small core unit + restart. The work order must (1) check snapshot
+  staleness (the snapshots table may pin old derivedTitles — verify
+  rebuild semantics first), (2) restate that the UI stripper becomes a
+  passthrough for these inputs (kept, per defense-in-depth), (3) draw
+  its fixtures from the three REAL briefing preambles verbatim.
+
+**Status: HALTED at the gate per rule 0.1, awaiting the ruling.**
 
 ## §6. Gates & kill criteria
 
