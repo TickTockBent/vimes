@@ -399,6 +399,52 @@ Fix unit U7 (client-only; the whole-forest fetch stays). Walk findings
 tally: F5 (blank panels), F6 (completed pricing), F8 (scope) — three
 structural catches in one gate walk; the gate is earning its keep.
 
+**S15-F9 (2026-08-17, HUMAN GATE step 5, OPEN — spawn-from-node does not
+attach).** ⟨Wes⟩ spawned from the first production node: directory
+prefill PASSED (log-verified: `session_created` cwd is the project dir),
+but the session landed at the project ROOT, not under the node — no
+`session_attached_to_node` was ever proposed. As built this matches the
+U3 work order (F4/A8 priced the prefill only); the gate says the
+INTENT is bigger: spawning FROM a node should parent the session there.
+Fork: (i) UI chains the existing attach verb after the `spawned` ack —
+client-only, two honest proposals, a raced refusal renders per house
+idiom; (ii) the spawn op grows a `nodeId` — atomic but a daemon/protocol
+change. Orchestrator lean: (i) now, (ii) recorded for the day atomicity
+matters. **SIGNED 2026-08-17 ⟨Wes⟩: option (i)** — "If I click a node
+and 'spawn a session' I expect it to spawn attached to that node.
+Otherwise what's the point of that button. I could spawn an unattached
+session any other way." Fix unit U9.
+
+**S15-F10 (2026-08-17, HUMAN GATE step 5, OPEN — timestamps render UTC
+digits as if local).** The tree said "Aug 17 12:02" for a session
+spawned 08:02 EDT. `lib/sessionLabel.ts` is DELIBERATELY locale-free
+(deterministic, no Date/Intl — the right property for a tested lib) and
+renders the ISO string's UTC digits verbatim — so every timestamp the
+label ladder shows is off by the viewer's UTC offset. Fix shape, house
+style (rule 0.3 — inject at the boundary): the formatter takes an
+injected offset-minutes parameter (tests pass fixed offsets,
+deterministic), the view passes the browser's real offset. Small unit;
+sweep any other label-ladder consumers for the same verbatim rendering.
+**SIGNED 2026-08-17 ⟨Wes⟩: go.** Fix unit U8.
+
+**Walk observation, NOT a finding (2026-08-17):** the spawned session
+ANSWERED "~" when asked its current folder — but the infra is truthful
+end-to-end: `session_created` records the project cwd, and the CLI
+child's transcript landed in the cwd-keyed directory
+(`-home-ticktockbent-projects-infrastructure-vimes/`), which proves the
+process genuinely ran there. The "~" was the model's answer, not the
+process's location. Step 2's old session writing to `~` is the same
+class: session-context behavior, not estate state.
+
+**Walk notes, judgment items RULED (2026-08-17, ⟨Wes⟩):** short id on
+rows stays (F3 judged fine), the invented unseen-dot `•` stays, the
+remembered `#/sessions` panel stays — "not interested in messing with a
+UI we're about to totally revamp." For the revamp's notebook: the ⋯
+action sheet dismisses only by tapping ⋯ again — not discoverable; a
+small explicit close (an ×) would read better. The `~` observation is
+fully closed: ⟨Wes⟩ had the session run `pwd` and it reported the
+project directory — false signal confirmed.
+
 ## §6. Gates & kill criteria
 
 **Machine gate:** suite green ×2 (prior slices included), vue-tsc green,
