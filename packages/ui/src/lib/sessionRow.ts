@@ -50,7 +50,10 @@ function cwdTail(cwd: string): string {
   return segments.length > 0 ? segments[segments.length - 1]! : cwd;
 }
 
-export function deriveSessionRow(session: SessionRecord): SessionRow {
+// `utcOffsetMinutes` (positive = EAST of UTC, S15-F10) is threaded straight
+// through to the label ladder's timestamp rung — this file does no clock
+// reading of its own; SessionListView.vue supplies the viewer's real offset.
+export function deriveSessionRow(session: SessionRecord, utcOffsetMinutes: number): SessionRow {
   const style = LIVENESS_STYLE[session.liveness];
   // Default 'host' when custody is absent (projection predating the field).
   const custody: Custody = session.custody ?? 'host';
@@ -61,12 +64,15 @@ export function deriveSessionRow(session: SessionRecord): SessionRow {
     // the two views can never call the same session different things.
     // `createdAt` is this surface's "earliest observed" instant — the ledger
     // passes its earliest cost row instead; the rung is the same.
-    label: resolveSessionLabel({
-      sessionId: session.appSessionId,
-      name: session.name,
-      derivedTitle: session.derivedTitle,
-      earliestActivityAt: session.createdAt,
-    }),
+    label: resolveSessionLabel(
+      {
+        sessionId: session.appSessionId,
+        name: session.name,
+        derivedTitle: session.derivedTitle,
+        earliestActivityAt: session.createdAt,
+      },
+      utcOffsetMinutes,
+    ),
     channel: session.channel,
     cwdTail: cwdTail(session.cwd),
     liveness: session.liveness,

@@ -548,13 +548,20 @@ export function ledgerTreeRows(
  * ⚠ Deliberately does NOT read `session.cwd`. Under D37 the parent directory row
  * already renders that basename, so using it here is what made a `death` folder
  * list three more rows called `death`.
+ *
+ * `utcOffsetMinutes` (positive = EAST of UTC, S15-F10) is threaded straight
+ * through to the timestamp rung; this file reads no clock of its own —
+ * CostLedgerView.vue supplies the viewer's real offset.
  */
-export function sessionLabelFor(session: SessionView): string {
-  return resolveSessionLabel({
-    sessionId: session.sessionId,
-    name: session.title,
-    earliestActivityAt: session.earliestRowTimestamp,
-  });
+export function sessionLabelFor(session: SessionView, utcOffsetMinutes: number): string {
+  return resolveSessionLabel(
+    {
+      sessionId: session.sessionId,
+      name: session.title,
+      earliestActivityAt: session.earliestRowTimestamp,
+    },
+    utcOffsetMinutes,
+  );
 }
 
 // One option of the spend-history selector: the SAME nodes the tree shows, in the

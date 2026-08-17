@@ -130,7 +130,11 @@ function hasUnknownFor(rollup: RollupView) {
 }
 // Q3: the one shared ladder (lib/sessionLabel.ts), re-exposed for the template.
 function sessionLabel(session: SessionView) {
-  return sessionLabelFor(session);
+  // S15-F10: `getTimezoneOffset()` returns minutes the viewer is BEHIND UTC
+  // (positive = west); the ladder wants minutes EAST of UTC, hence the
+  // negation. This is the view boundary — the ambient clock is allowed here,
+  // never inside lib/sessionLabel.ts.
+  return sessionLabelFor(session, -new Date().getTimezoneOffset());
 }
 </script>
 

@@ -309,8 +309,18 @@ const sessionPartition = computed(() =>
 
 // Derive to SessionRow AFTER partitioning (partitioning needs `createdAt`,
 // which SessionRow does not carry — see the `sortedSessions` comment above).
-const visibleRows = computed(() => sessionPartition.value.visible.map((session) => deriveSessionRow(session)));
-const olderRows = computed(() => sessionPartition.value.older.map((session) => deriveSessionRow(session)));
+//
+// S15-F10: `getTimezoneOffset()` returns minutes the viewer is BEHIND UTC
+// (positive = west); the label ladder wants minutes EAST of UTC, hence the
+// negation. This is the view boundary — the ambient clock is allowed here,
+// never inside lib/sessionLabel.ts.
+const visibleRows = computed(() =>
+  sessionPartition.value.visible.map((session) => deriveSessionRow(session, -new Date().getTimezoneOffset())),
+);
+const olderRows = computed(() =>
+  // Same negation, same reason — see the comment above `visibleRows`.
+  sessionPartition.value.older.map((session) => deriveSessionRow(session, -new Date().getTimezoneOffset())),
+);
 
 // A discriminated render-list so the row template appears ONCE (Q2 fix: the
 // row markup was previously duplicated verbatim across `visibleRows` and

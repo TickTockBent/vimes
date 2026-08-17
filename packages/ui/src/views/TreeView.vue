@@ -209,12 +209,19 @@ function sessionLabelOf(session: {
   derivedTitle: string | null;
   createdAt: string;
 }): string {
-  return resolveSessionLabel({
-    sessionId: session.appSessionId,
-    name: session.name,
-    derivedTitle: session.derivedTitle,
-    earliestActivityAt: session.createdAt,
-  });
+  return resolveSessionLabel(
+    {
+      sessionId: session.appSessionId,
+      name: session.name,
+      derivedTitle: session.derivedTitle,
+      earliestActivityAt: session.createdAt,
+    },
+    // S15-F10: `getTimezoneOffset()` returns minutes the viewer is BEHIND
+    // UTC (positive = west); the ladder wants minutes EAST of UTC, hence the
+    // negation. This is the view boundary — the ambient clock is allowed
+    // here, never inside lib/sessionLabel.ts.
+    -new Date().getTimezoneOffset(),
+  );
 }
 
 // ── the write surface (S15·U3) ──────────────────────────────────────────────

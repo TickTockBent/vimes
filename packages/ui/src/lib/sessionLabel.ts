@@ -15,9 +15,26 @@
 // stage vocabulary. The authority is `packages/core/src/sessionIdentity.ts`;
 // keep the two in step, and keep this file the only copy on this side.
 //
-// Deterministic and locale-free: no `Intl`, no `toLocaleString`, no `Date`. The
-// timestamp is formatted by SLICING THE ISO STRING, so a session reads the same
-// on a phone in Sydney as on the daemon host.
+// Deterministic and locale-free: no `Intl`, no `toLocaleString`, no ambient
+// `Date`. The formatter takes an injected `utcOffsetMinutes: number`
+// (positive = EAST of UTC; EDT is -240) and does the calendar arithmetic with
+// it deterministically — a pure function of (input, offset) reads the same
+// wherever it runs.
+//
+// ⚠ **AMENDED (S15-F10, 2026-08-17): the old absolute "no Date at all" rule
+// was the right property, wrongly scoped.** It banned `Date` outright to keep
+// the file from reading the AMBIENT clock or the AMBIENT locale — but
+// applying that ban to timestamp arithmetic on the INPUT meant every label
+// rendered the ISO string's UTC digits verbatim, so a session spawned 08:02
+// EDT showed as "Aug 17 12:02" for every viewer. The property that actually
+// matters is "no ambient clock, no locale" — `new Date()` with no argument,
+// `Date.prototype.getTimezoneOffset`, and any `Intl`/`toLocaleString` call
+// stay banned INSIDE this file; `Date.UTC` / `new Date(epochMs)` used only as
+// a calendar calculator on values this file was HANDED (the parsed input
+// instant, the injected offset) are fine, because the result is still a pure
+// function of its arguments, not of when or where it runs. The caller (a
+// view, never this file) supplies the real offset via
+// `-new Date().getTimezoneOffset()`.
 
 // How many leading characters of a session id make the short id. Long enough to
 // tell two uuids apart at a glance, short enough for a phone row.
@@ -39,12 +56,25 @@ const ISO_TIMESTAMP_PREFIX_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/;
 // U+00B7 MIDDLE DOT — printable and visually quiet; never a control byte.
 const FALLBACK_LABEL_SEPARATOR = ' · ';
 
+// Zero-pads a calendar field to 2 digits, matching the original slice-the-ISO
+// digit style (`matched[3]`/`[4]`/`[5]` were always 2 characters). Never fed a
+// value outside 0-59 by this file's own callers.
+function pad2(value: number): string {
+  return value < 10 ? `0${value}` : `${value}`;
+}
+
 /**
- * `Jul 19 23:25` from an ISO instant, or null when the string is not one. Read
- * as written: the log stores UTC, and rendering it as UTC is the only reading
- * that is the same everywhere.
+ * `Jul 19 23:25` from an ISO instant, shifted by `utcOffsetMinutes` (positive
+ * = EAST of UTC; EDT is -240), or null when the string is not a recognizable
+ * instant. S15-F10: the log stores UTC, but the VIEWER is not on the UTC
+ * meridian — this renders the instant AS the viewer's local clock would read
+ * it, which is the reading that is actually useful, not merely "the same
+ * everywhere" (that was the old, wrong bar).
  */
-export function formatSessionTimestamp(isoTimestamp: string | null | undefined): string | null {
+export function formatSessionTimestamp(
+  isoTimestamp: string | null | undefined,
+  utcOffsetMinutes: number,
+): string | null {
   if (typeof isoTimestamp !== 'string') {
     return null;
   }
@@ -52,11 +82,27 @@ export function formatSessionTimestamp(isoTimestamp: string | null | undefined):
   if (matched === null) {
     return null;
   }
-  const monthAbbreviation = MONTH_ABBREVIATIONS[Number(matched[2]) - 1];
-  if (monthAbbreviation === undefined) {
+  const inputMonth = Number(matched[2]);
+  // Validated against the INPUT's own month, before any shift — an offset can
+  // legitimately roll the shifted month over (that's the whole point), but an
+  // unparseable month (13+) is a bad string regardless of offset.
+  if (MONTH_ABBREVIATIONS[inputMonth - 1] === undefined) {
     return null;
   }
-  return `${monthAbbreviation} ${matched[3]} ${matched[4]}:${matched[5]}`;
+  // Deterministic calendar arithmetic on the INPUT instant + the INJECTED
+  // offset (rule 0.3 / S15-F10 header note): `Date.UTC`/`getUTC*` are used
+  // here only as a calendar calculator on values this call was handed, never
+  // seeded from the ambient clock.
+  const inputEpochMs = Date.UTC(
+    Number(matched[1]),
+    inputMonth - 1,
+    Number(matched[3]),
+    Number(matched[4]),
+    Number(matched[5]),
+  );
+  const shifted = new Date(inputEpochMs + utcOffsetMinutes * 60_000);
+  const shiftedMonthAbbreviation = MONTH_ABBREVIATIONS[shifted.getUTCMonth()]!;
+  return `${shiftedMonthAbbreviation} ${pad2(shifted.getUTCDate())} ${pad2(shifted.getUTCHours())}:${pad2(shifted.getUTCMinutes())}`;
 }
 
 /**
@@ -72,10 +118,11 @@ export function formatSessionTimestamp(isoTimestamp: string | null | undefined):
 export function formatSessionFallbackLabel(
   sessionId: string,
   earliestActivityAt: string | null | undefined,
+  utcOffsetMinutes: number,
 ): string {
   const shortSessionId =
     sessionId.trim().length > 0 ? sessionId.slice(0, SHORT_SESSION_ID_LENGTH) : UNKNOWN_SESSION_LABEL;
-  const formattedTimestamp = formatSessionTimestamp(earliestActivityAt);
+  const formattedTimestamp = formatSessionTimestamp(earliestActivityAt, utcOffsetMinutes);
   return formattedTimestamp === null
     ? shortSessionId
     : `${formattedTimestamp}${FALLBACK_LABEL_SEPARATOR}${shortSessionId}`;
@@ -103,8 +150,13 @@ export interface SessionLabelInputs {
  * the rung carried zero information and read as "the same project listed
  * several times within a single folder". A blank value at any rung falls
  * through; the result is never blank.
+ *
+ * `utcOffsetMinutes` (positive = EAST of UTC) only matters when the ladder
+ * bottoms out at the timestamp rung — S15-F10 — but it is a required
+ * parameter, not a default, so every caller states its own reading of the
+ * viewer's offset rather than this file guessing an ambient one.
  */
-export function resolveSessionLabel(inputs: SessionLabelInputs): string {
+export function resolveSessionLabel(inputs: SessionLabelInputs, utcOffsetMinutes: number): string {
   const humanName = inputs.name;
   if (typeof humanName === 'string' && humanName.trim().length > 0) {
     return humanName.trim();
@@ -113,5 +165,5 @@ export function resolveSessionLabel(inputs: SessionLabelInputs): string {
   if (typeof derivedTitle === 'string' && derivedTitle.trim().length > 0) {
     return derivedTitle.trim();
   }
-  return formatSessionFallbackLabel(inputs.sessionId, inputs.earliestActivityAt);
+  return formatSessionFallbackLabel(inputs.sessionId, inputs.earliestActivityAt, utcOffsetMinutes);
 }

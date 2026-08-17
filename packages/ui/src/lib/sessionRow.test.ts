@@ -17,12 +17,12 @@ function makeSession(overrides: Partial<SessionRecord> = {}): SessionRecord {
 
 describe('deriveSessionRow', () => {
   it('falls back to createdAt + a short id when there is no name and no derived title', () => {
-    const row = deriveSessionRow(makeSession({ name: null, appSessionId: 'app-12345678-abcd' }));
+    const row = deriveSessionRow(makeSession({ name: null, appSessionId: 'app-12345678-abcd' }), 0);
     expect(row.label).toBe('Jan 01 00:00 · app-1234');
   });
 
   it('prefers the session name when present', () => {
-    const row = deriveSessionRow(makeSession({ name: 'dongfu build' }));
+    const row = deriveSessionRow(makeSession({ name: 'dongfu build' }), 0);
     expect(row.label).toBe('dongfu build');
   });
 
@@ -30,11 +30,11 @@ describe('deriveSessionRow', () => {
   // human-only. The auto-titler never writes `name`, so a human rename cannot be
   // overwritten — this asserts the display half of that invariant.
   it('a derived title beats the fallback, and a human name beats the derived title', () => {
-    expect(deriveSessionRow(makeSession({ name: null, derivedTitle: 'fix the ledger' })).label).toBe(
+    expect(deriveSessionRow(makeSession({ name: null, derivedTitle: 'fix the ledger' }), 0).label).toBe(
       'fix the ledger',
     );
     expect(
-      deriveSessionRow(makeSession({ name: 'dongfu build', derivedTitle: 'fix the ledger' })).label,
+      deriveSessionRow(makeSession({ name: 'dongfu build', derivedTitle: 'fix the ledger' }), 0).label,
     ).toBe('dongfu build');
   });
 
@@ -42,18 +42,18 @@ describe('deriveSessionRow', () => {
   // so a label that repeats it says nothing. This is the same defect the cost
   // ledger had, in the other view.
   it('the label never falls back to the cwd basename', () => {
-    const row = deriveSessionRow(makeSession({ name: null, cwd: '/home/wes/projects/content/death' }));
+    const row = deriveSessionRow(makeSession({ name: null, cwd: '/home/wes/projects/content/death' }), 0);
     expect(row.cwdTail).toBe('death');
     expect(row.label).not.toBe('death');
   });
 
   it('takes the last path segment as the cwd tail', () => {
-    const row = deriveSessionRow(makeSession({ cwd: '/home/wes/projects/games/dongfu' }));
+    const row = deriveSessionRow(makeSession({ cwd: '/home/wes/projects/games/dongfu' }), 0);
     expect(row.cwdTail).toBe('dongfu');
   });
 
   it('handles a trailing-slash cwd', () => {
-    const row = deriveSessionRow(makeSession({ cwd: '/home/wes/projects/games/dongfu/' }));
+    const row = deriveSessionRow(makeSession({ cwd: '/home/wes/projects/games/dongfu/' }), 0);
     expect(row.cwdTail).toBe('dongfu');
   });
 
@@ -64,31 +64,32 @@ describe('deriveSessionRow', () => {
     ['interrupted', 'bg-warn text-accent-fg'],
     ['dead', 'bg-crit text-accent-fg'],
   ] as const)('gives %s a distinct color class', (liveness, colorClass) => {
-    const row = deriveSessionRow(makeSession({ liveness }));
+    const row = deriveSessionRow(makeSession({ liveness }), 0);
     expect(row.livenessLabel).toBe(liveness);
     expect(row.livenessColorClass).toBe(colorClass);
   });
 
   it('interrupted is the warn tone (scope requirement: amber in spirit)', () => {
-    const row = deriveSessionRow(makeSession({ liveness: 'interrupted' }));
+    const row = deriveSessionRow(makeSession({ liveness: 'interrupted' }), 0);
     expect(row.livenessColorClass).toContain('bg-warn');
   });
 
   it('every liveness state gets its own color class (distinct colors requirement)', () => {
     const classes = (['spawning', 'running', 'dormant', 'interrupted', 'dead'] as const).map(
-      (liveness) => deriveSessionRow(makeSession({ liveness })).livenessColorClass,
+      (liveness) => deriveSessionRow(makeSession({ liveness }), 0).livenessColorClass,
     );
     expect(new Set(classes).size).toBe(classes.length);
   });
 
   it('hides the attention badge when needsAttention is null', () => {
-    const row = deriveSessionRow(makeSession({ needsAttention: null }));
+    const row = deriveSessionRow(makeSession({ needsAttention: null }), 0);
     expect(row.attention).toEqual({ visible: false });
   });
 
   it('shows the attention badge with its reason when needsAttention is set', () => {
     const row = deriveSessionRow(
       makeSession({ needsAttention: { reason: 'gate', since: '2026-01-01T00:01:00.000Z' } }),
+      0,
     );
     expect(row.attention).toEqual({ visible: true, reason: 'gate', label: 'needs a decision' });
   });
@@ -99,6 +100,7 @@ describe('deriveSessionRow', () => {
         liveness: 'interrupted',
         needsAttention: { reason: 'stale', since: '2026-01-01T00:01:00.000Z' },
       }),
+      0,
     );
     expect(row.livenessLabel).toBe('interrupted');
     expect(row.attention).toEqual({ visible: true, reason: 'stale', label: 'went quiet' });
@@ -106,7 +108,7 @@ describe('deriveSessionRow', () => {
 
   // D10 custody + action availability.
   it('defaults to host custody (no badge, no adopt) when custody is absent', () => {
-    const row = deriveSessionRow(makeSession({ custody: undefined }));
+    const row = deriveSessionRow(makeSession({ custody: undefined }), 0);
     expect(row.custody).toBe('host');
     expect(row.mirrored).toBe(false);
     expect(row.canAdopt).toBe(false);
@@ -114,7 +116,7 @@ describe('deriveSessionRow', () => {
   });
 
   it('a mirrored (external) session gets the mirrored flag + adopt, and is never killable', () => {
-    const row = deriveSessionRow(makeSession({ custody: 'external', liveness: 'interrupted' }));
+    const row = deriveSessionRow(makeSession({ custody: 'external', liveness: 'interrupted' }), 0);
     expect(row.mirrored).toBe(true);
     expect(row.canAdopt).toBe(true);
     expect(row.canKill).toBe(false); // we do not own the process
@@ -122,10 +124,12 @@ describe('deriveSessionRow', () => {
   });
 
   it('a host session is killable only while it has a live process (running / spawning)', () => {
-    expect(deriveSessionRow(makeSession({ custody: 'host', liveness: 'running' })).canKill).toBe(true);
-    expect(deriveSessionRow(makeSession({ custody: 'host', liveness: 'spawning' })).canKill).toBe(true);
-    expect(deriveSessionRow(makeSession({ custody: 'host', liveness: 'dormant' })).canKill).toBe(false);
-    expect(deriveSessionRow(makeSession({ custody: 'host', liveness: 'interrupted' })).canKill).toBe(false);
-    expect(deriveSessionRow(makeSession({ custody: 'host', liveness: 'dead' })).canKill).toBe(false);
+    expect(deriveSessionRow(makeSession({ custody: 'host', liveness: 'running' }), 0).canKill).toBe(true);
+    expect(deriveSessionRow(makeSession({ custody: 'host', liveness: 'spawning' }), 0).canKill).toBe(true);
+    expect(deriveSessionRow(makeSession({ custody: 'host', liveness: 'dormant' }), 0).canKill).toBe(false);
+    expect(deriveSessionRow(makeSession({ custody: 'host', liveness: 'interrupted' }), 0).canKill).toBe(
+      false,
+    );
+    expect(deriveSessionRow(makeSession({ custody: 'host', liveness: 'dead' }), 0).canKill).toBe(false);
   });
 });
