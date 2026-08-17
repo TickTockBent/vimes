@@ -11,6 +11,7 @@ import {
   type PanelStack,
 } from './lib/panelStack.js';
 import { panelLinkClick } from './lib/panelLinkClick.js';
+import { isBellActionable, isEnableTap, pushStateLabel, type PushUiState } from './lib/pushState.js';
 import { useLayoutMode } from './lib/useLayoutMode.js';
 import ThemePicker from './components/ThemePicker.vue';
 import UsageGauge from './components/UsageGauge.vue';
@@ -550,6 +551,47 @@ function toggleSidebarCollapsed(): void {
     // Persisting is best-effort; the in-memory ref still drives this session.
   }
 }
+
+// ── the top-bar app chrome (S16·U4; slice-16 §3 decisions 4/5/6) ─────────────
+//
+// SessionListView dies in U5, and it is the app-wide SOLE producer of the five
+// nav intents (Files/Terminal/Git/Cost/Tasks), the push bell and the global
+// discover trigger. They were never per-session affordances — parking them in
+// that view was an accident of the old home (decision 5) — so they come here,
+// to chrome that is present on every surface, BEFORE the deletion. Nothing new
+// is derived here: the nav intents reuse the open*Panel functions above
+// verbatim, the bell reuses lib/pushState's tested answers, and discover is the
+// store's parameterless global rescan (decision 4 as amended — a per-row
+// placement would have lied about its scope).
+//
+// SEARCH is deliberately NOT among the five: FileTreeView still emits `search`
+// (PanelHost wires it), so `openSearchPanel` keeps a producer after U5.
+
+// Narrow-screen disclosure for that group. Plain presentation state, same
+// family as sidebarCollapsed above (a `ref<boolean>` whose toggle IS the
+// logic) — deliberately NOT persisted: an overflow row is a momentary reach,
+// not a remembered layout. Inert at lg and up, where the group is always
+// inline (`lg:flex`) and the toggle itself is hidden.
+const chromeOverflowOpen = ref(false);
+
+function toggleChromeOverflow(): void {
+  chromeOverflowOpen.value = !chromeOverflowOpen.value;
+}
+
+// The bell's glyph per push state. The four states, the label and whether a tap
+// does anything are LIB answers (derivePushState via the store, pushStateLabel,
+// isBellActionable, isEnableTap) — this maps them to a mark, which is the one
+// part the view owns. Typographic, not emoji: ui-doctrine §5 bans emoji as UI
+// glyphs in engine chrome, so the dying view's 🔔/🔕/🚫 do not travel with the
+// bell. Filled ring = subscribed, hollow = one tap from it, ✕ = the dead end
+// the browser owns, — = this browser cannot. Never colour alone (U7): the glyph
+// AND pushStateLabel (title + aria-label) carry the state.
+function pushBellGlyph(state: PushUiState): string {
+  if (!isBellActionable(state)) {
+    return state === 'denied' ? '✕' : '—';
+  }
+  return isEnableTap(state) ? '○' : '◉';
+}
 </script>
 
 <template>
@@ -562,7 +604,12 @@ function toggleSidebarCollapsed(): void {
          usage gauge (unit 3b), and the picker (moved here from the sidebar foot).
          flex-none keeps it out of the frame row's bounded height, so the 100dvh
          model and the frames' own scrolling are untouched. -->
-    <header class="flex flex-none items-center gap-2 border-b border-line bg-panel px-3 py-2">
+    <!-- flex-wrap (S16·U4) is load-bearing, not tidying: it is what lets the ONE
+         app-chrome group below sit inline beside the gauge on wide screens and
+         wrap to a second header row on narrow ones (`order-last w-full`) without
+         a duplicate copy of its markup. Closed, the group is `hidden`, so a
+         narrow header wraps nothing and renders exactly as it did before. -->
+    <header class="flex flex-none flex-wrap items-center gap-2 border-b border-line bg-panel px-3 py-2">
       <!-- Sidebar-collapse toggle: desktop only (showSidebar). On tablet/mobile
            there is no ambient sidebar, so the control is hidden and the ref inert. -->
       <button
@@ -602,6 +649,132 @@ function toggleSidebarCollapsed(): void {
         {{ orchestratorBusy ? 'Opening…' : 'Orchestrator' }}
       </button>
       <span class="flex-1"></span>
+      <!-- ── THE APP-CHROME GROUP (S16·U4; decisions 4/5/6) ──────────────────
+           The five nav intents, the push bell and the global rescan, rehomed
+           from the dying SessionListView into chrome that outlives it. ONE
+           element, TWO layouts, no duplicated markup:
+             • lg and up → `lg:flex` + `lg:order-none lg:w-auto`: inline in the
+               right region, beside the UsageGauge (decision 5's "beside the
+               gauge"), always visible.
+             • below lg → `hidden` until the ⋯ toggle opens it, then
+               `order-last w-full` drops it onto its own wrapped header row.
+               lg is the safety margin, not the app's phone/tablet line (768):
+               five labelled buttons plus the gauge and the theme picker do not
+               fit a tablet header, and a clipped control is worse than a
+               disclosed one.
+           SURFACE-GATED to the app (`surface === 'app'`). These affordances only
+           ever existed inside the panel shell; on the picker there is no stack
+           for them to open a panel into, so rendering them there would invent
+           reachability the dying view never had. -->
+      <div
+        v-if="surface === 'app'"
+        id="top-bar-chrome-group"
+        class="order-last w-full flex-wrap items-center gap-1.5 lg:order-none lg:w-auto lg:flex-nowrap"
+        :class="chromeOverflowOpen ? 'flex' : 'hidden lg:flex'"
+      >
+        <!-- ⚠ INDEX SEMANTICS (in-mandate call, S16·U4). The old buttons lived
+             INSIDE a panel and emitted upward, so PanelHost supplied the
+             emitting panel's own index and the new view opened relative to it.
+             A top-bar button belongs to no panel, so there is no such index to
+             inherit — it opens relative to the FOCUSED panel (`focusedIndex`),
+             i.e. exactly where the intent would have landed had it been emitted
+             from the panel the operator last touched. openPanelFrom then
+             truncates forward of that panel, same as always; focusedIndex is
+             kept in range by applyStack/onHashChange, so it is always a valid
+             stack index. `openFilesPanel` is called with NO directory, matching
+             the dying view's bare `emit('openFiles')`. -->
+        <button
+          type="button"
+          class="min-w-0 shrink-0 truncate rounded-md border border-line px-2 py-1 text-xs text-ink-dim transition-colors hover:bg-panel-sunken hover:text-ink"
+          title="Open the file tree"
+          @click="openFilesPanel(focusedIndex)"
+        >
+          Files
+        </button>
+        <button
+          type="button"
+          class="min-w-0 shrink-0 truncate rounded-md border border-line px-2 py-1 text-xs text-ink-dim transition-colors hover:bg-panel-sunken hover:text-ink"
+          title="Open a terminal"
+          @click="openTerminalPanel(focusedIndex)"
+        >
+          Terminal
+        </button>
+        <button
+          type="button"
+          class="min-w-0 shrink-0 truncate rounded-md border border-line px-2 py-1 text-xs text-ink-dim transition-colors hover:bg-panel-sunken hover:text-ink"
+          title="Open the git panel"
+          @click="openGitPanel(focusedIndex)"
+        >
+          Git
+        </button>
+        <button
+          type="button"
+          class="min-w-0 shrink-0 truncate rounded-md border border-line px-2 py-1 text-xs text-ink-dim transition-colors hover:bg-panel-sunken hover:text-ink"
+          title="Open the cost ledger"
+          @click="openCostPanel(focusedIndex)"
+        >
+          Cost
+        </button>
+        <button
+          type="button"
+          class="min-w-0 shrink-0 truncate rounded-md border border-line px-2 py-1 text-xs text-ink-dim transition-colors hover:bg-panel-sunken hover:text-ink"
+          title="Open the task board"
+          @click="openTasksPanel(focusedIndex)"
+        >
+          Tasks
+        </button>
+        <!-- The push bell (decision 6). Enabling is ALWAYS a deliberate tap —
+             this never auto-prompts (spec §3.8), which is why the disabled rule
+             and the label are read straight off the lib and not re-decided here.
+             'on' takes the accent border/text the dying view gave it (accent =
+             interactive/highlighted, U6), and the glyph plus the lib label carry
+             the state so colour is never the only channel (U7). -->
+        <button
+          type="button"
+          class="min-w-0 shrink-0 truncate rounded-md border px-2 py-1 text-xs transition-colors disabled:opacity-50"
+          :class="
+            store.pushState === 'on'
+              ? 'border-accent text-accent hover:bg-accent/10'
+              : 'border-line text-ink-dim hover:bg-panel-sunken hover:text-ink'
+          "
+          :disabled="!isBellActionable(store.pushState)"
+          :title="pushStateLabel(store.pushState)"
+          :aria-label="pushStateLabel(store.pushState)"
+          @click="store.togglePush()"
+        >
+          <span aria-hidden="true">{{ pushBellGlyph(store.pushState) }}</span>
+          Push
+        </button>
+        <!-- Discover (decision 4, AMENDED): `store.discover()` is a
+             parameterless GLOBAL rescan (WS `discover` op), so it belongs to app
+             chrome and nowhere else. Refusals and results already surface
+             through the refusal banner and the `discovered` event — nothing new
+             is reported here. -->
+        <button
+          type="button"
+          class="min-w-0 shrink-0 truncate rounded-md border border-line px-2 py-1 text-xs text-ink-dim transition-colors hover:bg-panel-sunken hover:text-ink"
+          title="Rescan for sessions"
+          @click="store.discover()"
+        >
+          <span aria-hidden="true">↻</span>
+          Discover
+        </button>
+      </div>
+      <!-- The narrow-screen disclosure for that group. Same icon-button idiom as
+           the sidebar toggle at the far left of this bar; hidden at lg and up,
+           where the group is inline and there is nothing to disclose. -->
+      <button
+        v-if="surface === 'app'"
+        type="button"
+        class="flex h-8 w-8 flex-none items-center justify-center rounded-md text-lg text-ink-dim transition-colors hover:bg-panel-sunken hover:text-ink lg:hidden"
+        :aria-expanded="chromeOverflowOpen"
+        aria-controls="top-bar-chrome-group"
+        aria-label="More app controls"
+        title="Files, terminal, git, cost, tasks, push, rescan"
+        @click="toggleChromeOverflow()"
+      >
+        <span aria-hidden="true">⋯</span>
+      </button>
       <!-- usage gauge (unit 3b): the account-usage instrument — binding constraint
            always visible, click to expand every window. Right region so it shows in
            every layout, ahead of the theme picker. -->

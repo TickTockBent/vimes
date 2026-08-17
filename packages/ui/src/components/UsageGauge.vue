@@ -15,7 +15,12 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useVimesStore } from '../stores/vimesStore.js';
 import { buildUsageGaugeModel, type GaugeMeterVM } from '../lib/usageGauge.js';
-import type { MeterTone } from '../lib/meterDisplay.js';
+import {
+  refreshNotice,
+  usageStripModel,
+  type MeterTone,
+  type RefreshNoticeTone,
+} from '../lib/meterDisplay.js';
 
 const store = useVimesStore();
 
@@ -43,6 +48,47 @@ const model = computed(() => {
 
 const binding = computed<GaugeMeterVM | null>(() => model.value.binding);
 const hasData = computed(() => binding.value !== null);
+
+// ── the meters-strip residuals (S16·U4; slice-16 §3 decision 1) ─────────────
+//
+// The dying SessionListView strip carried three things this gauge did not: the
+// MANUAL REFRESH button (the only UI for store.refreshUsage /
+// usageRefreshInFlight / lastUsageRefresh anywhere in the app), the
+// "polling disabled" notice, and the per-meter freshness word. The first two
+// move into the PULLDOWN below — never the collapsed bar, which stays the one
+// binding readout. The third is an ACCEPTED, SIGNED LOSS: every row here
+// already shows its observation age, which is the same fact with more
+// resolution than the word.
+//
+// ⚠ WHY A SECOND MODEL. `UsageGaugeModel` does not carry `freshnessBandMissing`
+// — that fact lives on `usageStripModel`, and teaching the gauge model to
+// re-expose it would be a LIB change this unit is not allowed to make (and a
+// second authority for the same fact if it went wrong). So the notice reads the
+// SAME exported derivation the dying strip read, called the SAME way it called
+// it (the LOCAL clock, not the anchored now — usageStripModel does its own
+// server anchoring internally). Nothing is re-derived here.
+const strip = computed(() => usageStripModel(store.usageSnapshot, localNowMs.value));
+
+// True only when the daemon says it has no freshness band at all — i.e. the
+// poller is off and every reading is 'unknown' BY CONSTRUCTION. Gated on there
+// being meters to explain: with nothing observed, the honest-empty note below
+// already says everything there is to say.
+const pollingDisabled = computed(() => strip.value.freshnessBandMissing && model.value.meterCount > 0);
+
+// The refresh control's honest one-liner: throttled, failed and succeeded are
+// three different messages and never impersonate each other (refreshNotice
+// owns that distinction; this file only picks the colour).
+const refreshMessage = computed(() => refreshNotice(store.lastUsageRefresh));
+
+const REFRESH_TONE_CLASS: Readonly<Record<RefreshNoticeTone, string>> = {
+  success: 'text-ok',
+  throttled: 'text-ink-dim',
+  failed: 'text-crit',
+};
+
+function tapRefreshUsage(): void {
+  void store.refreshUsage();
+}
 
 // Semantic tone → token utility classes (the lib never touches CSS). unknown is
 // deliberately its own neutral tone — never green, so an unknown meter can never
@@ -245,6 +291,39 @@ onBeforeUnmount(() => {
       <!-- Honest empty state — never a fake gauge (pillar 4 / kill criterion). -->
       <p v-else class="px-1 py-2 font-mono text-xs text-ink-dim">
         No usage windows observed yet.
+      </p>
+
+      <!-- THE RESIDUAL FOOT (S16·U4, decision 1). Rendered in BOTH the
+           has-data and empty arms on purpose: a forced poll is most useful
+           precisely when nothing has been observed yet, which is exactly what
+           the dying strip did (its refresh button sat beside the honest-empty
+           line, not inside the meter list). Inside the pulldown, so the click
+           never reaches the document listener that would close it. -->
+      <div class="mt-2 flex items-center gap-2 border-t border-line pt-2">
+        <!-- Forced refresh. Disabled while in flight so an impatient thumb
+             cannot stack requests against an unofficial endpoint. -->
+        <button
+          type="button"
+          class="flex-none rounded-md border border-line px-2 py-1 font-mono text-[11px] text-ink-dim transition-colors hover:bg-panel-sunken hover:text-ink disabled:opacity-50"
+          :disabled="store.usageRefreshInFlight"
+          aria-label="Refresh usage meters"
+          @click="tapRefreshUsage()"
+        >
+          <span aria-hidden="true">{{ store.usageRefreshInFlight ? '⋯' : '↻' }}</span>
+          {{ store.usageRefreshInFlight ? 'Refreshing…' : 'Refresh' }}
+        </button>
+        <!-- The outcome of the LAST forced refresh, in its own tone. Absent
+             until one has been asked for — this never speaks for the poller. -->
+        <p v-if="refreshMessage !== null" class="min-w-0 text-[11px]" :class="REFRESH_TONE_CLASS[refreshMessage.tone]">
+          {{ refreshMessage.message }}
+        </p>
+      </div>
+
+      <!-- No staleness band at all: the daemon says its poller is disabled, so
+           every reading is 'unknown' by construction. Say WHY rather than let it
+           read as a transient hiccup. -->
+      <p v-if="pollingDisabled" class="mt-1 text-[11px] text-ink-dim">
+        Usage polling is disabled — freshness cannot be judged.
       </p>
     </div>
   </div>
