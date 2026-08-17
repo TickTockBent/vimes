@@ -52,6 +52,33 @@
 // (`parseProjectPath`/`resolveProject`, D61); this file asks the store. And the
 // FETCH IS UNCHANGED: `GET /api/tree` stays parameterless and the whole forest
 // still arrives — that is what lets a sibling's gate read loud from here.
+// ─── S16·U3 — a SESSION row grows a menu: attach / rename / kill ─────────────
+//
+// The leaf had exactly one write (attach), so its `⋯` opened straight into the
+// picker — "a menu of one is chrome" was true while that held. It no longer
+// does: D91 prong (iii) rehomes RENAME here and slice-16 decision 4 rehomes
+// KILL here, both orphaned by the sessionList deletion, so the leaf's sheet
+// becomes a three-item menu with the picker one tap further in. The picker
+// itself is now scoped to the tab's project (S16-A6) — same `scopedRootId` the
+// tree already gates on, resolved once, passed down.
+//
+// ⚠ **TWO REFUSAL CHANNELS, AND THEY DO NOT MIX.** Create/attach/close are
+// HTTP writes: they answer, and their answer becomes the sheet's inline
+// `writeError`. Rename and kill are FIRE-AND-FORGET WS ops (`sendEnvelope`) —
+// nothing answers them here at all; a daemon refusal arrives as a `refused`
+// envelope and surfaces on App.vue's existing `lastRefusal` strip, verbatim
+// and hand-dismissed (U4/U5, D83's discipline). Giving the WS ops a
+// sheet-local error slot would invent a second place to look for the same
+// sentence, and it would sit there empty and lying whenever the strip had the
+// real one.
+//
+// ⚠ **KILL IS OFFERED ON EVERY SESSION, INCLUDING EXTERNAL MIRRORS (D10).** A
+// session VIMES did not spawn is mirrored, the daemon never writes to it, and
+// a kill against one is REFUSED by the engine. That refusal is the doctrine
+// working, not a bug to route around: pre-filtering the verb by `custody` here
+// would be the UI adjudicating a rule the daemon owns (0.3), and it would hide
+// the one place an operator learns that custody is a real thing. Offer the
+// verb; render the engine's answer.
 import { computed, onMounted, ref, watch } from 'vue';
 import { useVimesStore } from '../stores/vimesStore.js';
 import {
@@ -230,13 +257,21 @@ function sessionLabelOf(session: {
 // ONE sheet open at a time, keyed by the row id `sessionTreeRows` already
 // assigns. A second open sheet on a 50-row phone list would push the row that
 // matters off screen (U2), and there is no flow here that needs two.
-type SheetMode = 'menu' | 'create' | 'spawn' | 'attach';
+//
+// S16·U3 adds the leaf's two modes: `'session-menu'` (the leaf's own menu, the
+// mode its sheet now opens in) and `'rename'` (the one-field form). `'menu'`
+// stays the CONTAINER menu — the two row families keep separate opening modes
+// so a stale mode from one can never render the other's affordances.
+type SheetMode = 'menu' | 'session-menu' | 'create' | 'spawn' | 'attach' | 'rename';
 
 const openSheetRowId = ref<string | null>(null);
 const sheetMode = ref<SheetMode>('menu');
 const nodeNameDraft = ref('');
 const spawnCwdDraft = ref('');
 const spawnChannel = ref<'sdk' | 'pty'>('sdk');
+// The rename box's contents (S16·U3). Seeded ONLY from the session's human
+// `name` — see `startRename`, which is where the reason lives.
+const sessionNameDraft = ref('');
 // The optimistic half, and the ONLY one: the affordance that fired is disabled
 // until its round trip resolves. Nothing about the tree itself moves until the
 // refetch lands.
@@ -247,6 +282,13 @@ const writeError = ref<string | null>(null);
 // Closing is IRREVERSIBLE (no reopen event exists), so it takes the tap-again
 // confirm — see the import comment.
 const closeConfirm = ref<KillConfirmState>(initialKillConfirmState);
+// Killing a SESSION takes the same idiom and a SEPARATE state (S16·U3). One ref
+// shared between the two verbs would let an armed "close this node" answer a
+// tap on "kill this session" — the reducer keys on the id it was armed with,
+// but the two ids live in different namespaces and nothing would stop a sheet
+// re-target from carrying an armed state across. Two refs, both reset in
+// `closeSheet`, and neither can ever be the other's confirmation.
+const sessionKillConfirm = ref<KillConfirmState>(initialKillConfirmState);
 
 // Every container row's write context, resolved from the payload's own nesting
 // (lib/sessionTreeActions.ts). Recomputed with the tree, so a node that closed
@@ -259,7 +301,15 @@ const actionTargets = computed(() =>
 // order. A client-side courtesy filter — the daemon still adjudicates, and a
 // node that closes underneath the picker answers 409 `node-closed`, which the
 // operator then reads in plain words.
-const attachGroups = computed(() => (store.tree === null ? [] : attachTargetsOf(store.tree)));
+//
+// S16·U3/A6: SCOPED to the tab's project with the SAME `scopedRootId` the tree
+// gates on — one project per tab (D42/D61) has to mean one project in the
+// picker too, or the leaf's sheet would offer to file this tab's session into a
+// project this tab cannot even show. Unscoped tabs pass null and get the
+// pre-U3 full list, byte for byte (pinned in the lib's test).
+const attachGroups = computed(() =>
+  store.tree === null ? [] : attachTargetsOf(store.tree, scopedRootId.value),
+);
 
 function targetFor(rowId: string): NodeActionTarget | null {
   return actionTargets.value.get(rowId) ?? null;
@@ -272,16 +322,23 @@ const openTarget = computed<NodeActionTarget | null>(() =>
   openSheetRowId.value === null ? null : targetFor(openSheetRowId.value),
 );
 
+// ⚠ **THE ONE RESET PATH.** Every draft, every armed confirm and every message
+// the sheet can hold is cleared HERE and only here, so nothing leaks from the
+// row that is closing into the row that is opening. Any state a future mode
+// adds belongs in this function in the same diff that adds it.
 function closeSheet(): void {
   openSheetRowId.value = null;
   sheetMode.value = 'menu';
   nodeNameDraft.value = '';
+  sessionNameDraft.value = '';
   writeError.value = null;
   closeConfirm.value = initialKillConfirmState;
+  sessionKillConfirm.value = initialKillConfirmState;
 }
 
-// Session rows open straight into the picker: attach is the only write a leaf
-// has, and a menu of one is chrome (U1).
+// S16·U3: a session row now opens its own MENU. It used to jump straight to the
+// picker because attach was the leaf's only write and a menu of one is chrome
+// (U1) — that stopped being true the moment rename and kill landed here.
 function toggleSheet(rowId: string, kind: 'root' | 'node' | 'session'): void {
   if (openSheetRowId.value === rowId) {
     closeSheet();
@@ -289,7 +346,14 @@ function toggleSheet(rowId: string, kind: 'root' | 'node' | 'session'): void {
   }
   closeSheet();
   openSheetRowId.value = rowId;
-  sheetMode.value = kind === 'session' ? 'attach' : 'menu';
+  sheetMode.value = kind === 'session' ? 'session-menu' : 'menu';
+}
+
+// The picker, one tap in from the leaf's menu. Unchanged apart from what
+// `attachGroups` now scopes.
+function startAttach(): void {
+  sheetMode.value = 'attach';
+  writeError.value = null;
 }
 
 function startCreate(): void {
@@ -374,6 +438,69 @@ async function submitAttach(nodeId: string, appSessionId: string): Promise<void>
   } finally {
     writePending.value = false;
   }
+}
+
+// ── the leaf's two WS writes: rename and kill (S16·U3) ──────────────────────
+//
+// Neither goes through `applyWriteAnswer`: these are `sendEnvelope` ops with no
+// answer to apply. See the header block — `writePending`/`writeError` belong to
+// the HTTP node writes, and the WS refusal rides App.vue's `lastRefusal` strip.
+
+/**
+ * Open the rename box.
+ *
+ * ⚠ **THE PREFILL IS THE RAW `name`, AND NOTHING ELSE.** `session.name` is the
+ * HUMAN name the payload carries (`TreeSession.name`, null when nobody has
+ * named this session) — NOT `sessionLabelOf(session)`, NOT `derivedTitle`.
+ * Prefilling a DERIVATION would let a tap on Rename → Save bake the
+ * auto-titler's guess (or S16·U2's boilerplate-stripped fragment) into the
+ * `name` field as though a person had chosen it, and the ladder would then have
+ * no rung left that means "a human decided this". An unnamed session gets an
+ * EMPTY box, on purpose: empty is the honest rendering of "no name yet".
+ */
+function startRename(session: { name: string | null }): void {
+  sheetMode.value = 'rename';
+  sessionNameDraft.value = session.name ?? '';
+  writeError.value = null;
+}
+
+// An empty name is not a name (the submit button is disabled on a blank field,
+// same discipline the create-node form takes), and the trimmed string is what
+// goes on the wire — the daemon receives what the operator can actually read.
+function submitRename(appSessionId: string): void {
+  const trimmedSessionName = sessionNameDraft.value.trim();
+  if (trimmedSessionName.length === 0) {
+    return;
+  }
+  store.renameSession(appSessionId, trimmedSessionName);
+  // Fire-and-forget: the sheet closes on the SEND, not on an outcome, because
+  // there is no outcome to wait for here. The rename lands as an event on the
+  // subscribed stream and the tree refresh repaints the row; a refusal lands on
+  // the `lastRefusal` strip, which is visible from this screen.
+  closeSheet();
+}
+
+// Tap once to arm, tap again to kill — the same tested reducer close-node uses,
+// on its own state. Killing a session ends real work, which is the class of act
+// this idiom exists for.
+//
+// D10, restated at the call site: a mirrored (external-custody) session's kill
+// is REFUSED by the daemon, and that refusal is rendered verbatim on the
+// refusal strip. This function does not check custody, and must not learn to.
+function tapKillSession(appSessionId: string): void {
+  const result = reduceKillConfirm(sessionKillConfirm.value, { type: 'tap', appSessionId });
+  sessionKillConfirm.value = result.state;
+  if (!result.fire) {
+    return;
+  }
+  store.killSession(appSessionId);
+  closeSheet();
+}
+
+function killSessionLabel(appSessionId: string): string {
+  return isConfirmingKill(sessionKillConfirm.value, appSessionId)
+    ? 'Tap again — this ends the session'
+    : 'Kill session';
 }
 
 // The MINIMAL spawn sheet (in-mandate decision, recorded in the work order):
@@ -702,14 +829,16 @@ onMounted(() => {
                    everywhere, which an ad-hoc slice could never promise. -->
               <span class="shrink-0 font-mono text-[10px] text-ink-dim">{{ row.session.shortId }}</span>
             </button>
-            <!-- A leaf's one write is ATTACH, so its sheet opens straight into
-                 the picker (a menu of one is chrome, U1). -->
+            <!-- S16·U3: the leaf has THREE writes now (attach, rename, kill),
+                 so this opens a menu like every other row's ⋯ does — the
+                 straight-to-picker shortcut, and the "attach" wording that went
+                 with it, both belonged to the one-write leaf. -->
             <button
               type="button"
               class="min-h-[36px] w-9 shrink-0 font-mono text-xs text-ink-dim active:bg-panel-sunken"
               :aria-expanded="openSheetRowId === row.id"
-              :aria-label="`Attach ${row.session.shortId} to a node`"
-              title="Attach to a node"
+              :aria-label="`Actions for ${row.session.shortId}`"
+              title="Actions"
               @click="toggleSheet(row.id, 'session')"
             >⋯</button>
           </li>
@@ -837,36 +966,113 @@ onMounted(() => {
               </form>
             </div>
 
-            <!-- Session rows: the attach picker. Open nodes only, grouped by
-                 root, SERVED order (attachTargetsOf) — a courtesy filter, never
-                 an adjudication. -->
+            <!-- Session rows (S16·U3): the leaf's own menu — attach / rename /
+                 kill — with the picker and the rename box one tap in. Same
+                 shape the container sheet above uses: the buttons stay put
+                 while a sub-form is open, and the active one wears the accent
+                 border, so the operator can always see which of the three they
+                 are in the middle of. -->
             <div
               v-else-if="row.kind === 'session' && row.session !== null"
               class="flex flex-col gap-2"
             >
-              <p class="font-mono text-[10px] uppercase text-ink-dim">
-                Attach {{ row.session.shortId }} to a node
-              </p>
-              <!-- A9-shaped honesty: an estate with no open node says so in a
-                   sentence that names the next action, rather than rendering an
-                   empty list. -->
-              <p v-if="attachGroups.length === 0" class="text-xs text-ink-dim">
-                No open nodes yet — create one from a project row first.
-              </p>
-              <div v-for="group in attachGroups" :key="group.rootId" class="flex flex-col">
-                <p class="font-mono text-[10px] uppercase text-ink-dim">{{ group.rootName }}</p>
+              <div class="flex flex-wrap items-stretch gap-2">
                 <button
-                  v-for="attachNode in group.nodes"
-                  :key="attachNode.nodeId"
                   type="button"
-                  class="min-h-[36px] truncate rounded-md px-2 text-left text-sm text-ink active:bg-panel disabled:opacity-50"
-                  :style="indentStyle(attachNode.depth)"
-                  :disabled="writePending"
-                  @click="submitAttach(attachNode.nodeId, row.session.appSessionId)"
+                  class="min-h-[36px] rounded-md border border-line px-3 text-xs text-accent active:bg-panel"
+                  :class="sheetMode === 'attach' ? 'border-accent' : ''"
+                  @click="startAttach()"
                 >
-                  {{ attachNode.name }}
+                  Attach to node
+                </button>
+                <button
+                  type="button"
+                  class="min-h-[36px] rounded-md border border-line px-3 text-xs text-accent active:bg-panel"
+                  :class="sheetMode === 'rename' ? 'border-accent' : ''"
+                  @click="startRename(row.session)"
+                >
+                  Rename
+                </button>
+                <!-- ⚠ DRAWN ON EVERY SESSION, MIRRORS INCLUDED (D10) — see the
+                     header block. The engine refuses an external-custody kill
+                     and that refusal is the answer the operator should read;
+                     hiding the verb here would be the UI adjudicating custody
+                     on the daemon's behalf. -->
+                <button
+                  type="button"
+                  class="min-h-[36px] rounded-md px-3 text-xs"
+                  :class="
+                    isConfirmingKill(sessionKillConfirm, row.session.appSessionId)
+                      ? 'bg-accent font-semibold text-accent-fg'
+                      : 'border border-line text-ink-dim active:bg-panel'
+                  "
+                  @click="tapKillSession(row.session.appSessionId)"
+                >
+                  {{ killSessionLabel(row.session.appSessionId) }}
                 </button>
               </div>
+
+              <!-- The picker: open nodes only, grouped by root, SERVED order
+                   (attachTargetsOf) — a courtesy filter, never an adjudication,
+                   and since S16·U3 narrowed to the tab's own project (A6). -->
+              <template v-if="sheetMode === 'attach'">
+                <p class="font-mono text-[10px] uppercase text-ink-dim">
+                  Attach {{ row.session.shortId }} to a node
+                </p>
+                <!-- A9-shaped honesty: an estate with no open node says so in a
+                     sentence that names the next action, rather than rendering
+                     an empty list. It now also covers the scoped case — a
+                     project with no open node of its own reads the same way,
+                     and "create one from a project row first" is still exactly
+                     the next thing to do. -->
+                <p v-if="attachGroups.length === 0" class="text-xs text-ink-dim">
+                  No open nodes yet — create one from a project row first.
+                </p>
+                <div v-for="group in attachGroups" :key="group.rootId" class="flex flex-col">
+                  <p class="font-mono text-[10px] uppercase text-ink-dim">{{ group.rootName }}</p>
+                  <button
+                    v-for="attachNode in group.nodes"
+                    :key="attachNode.nodeId"
+                    type="button"
+                    class="min-h-[36px] truncate rounded-md px-2 text-left text-sm text-ink active:bg-panel disabled:opacity-50"
+                    :style="indentStyle(attachNode.depth)"
+                    :disabled="writePending"
+                    @click="submitAttach(attachNode.nodeId, row.session.appSessionId)"
+                  >
+                    {{ attachNode.name }}
+                  </button>
+                </div>
+              </template>
+
+              <!-- Rename: ONE field, the same minimal form the create-node
+                   sheet uses. The box holds the session's HUMAN name and starts
+                   EMPTY when it has none — never the rendered label (see
+                   startRename). No pending state: the op is fire-and-forget, so
+                   there is nothing to wait on and nothing to disable. -->
+              <form
+                v-else-if="sheetMode === 'rename'"
+                class="flex flex-col gap-2"
+                @submit.prevent="submitRename(row.session.appSessionId)"
+              >
+                <label
+                  class="font-mono text-[10px] uppercase text-ink-dim"
+                  :for="`session-name-${row.id}`"
+                >Rename {{ row.session.shortId }}</label>
+                <input
+                  :id="`session-name-${row.id}`"
+                  v-model="sessionNameDraft"
+                  type="text"
+                  placeholder="slice 16 · the deletion"
+                  class="min-h-[36px] rounded-md border border-line bg-panel px-2 text-sm"
+                />
+                <button
+                  type="submit"
+                  class="min-h-[36px] rounded-md bg-accent px-3 text-sm font-semibold text-accent-fg active:bg-accent/90 disabled:opacity-50"
+                  :disabled="sessionNameDraft.trim().length === 0"
+                >
+                  Rename
+                </button>
+              </form>
             </div>
 
             <!-- The refusal, inline, in the engine's own vocabulary, cleared

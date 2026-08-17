@@ -78,10 +78,13 @@ Deltas against the 08-13 map — verified today, not assumed:
 4. **Orphaned store actions.** `spawnSession` done (S15·U3). LEAN:
    `renameSession` → ⋯ sheet (D91 prong iii); `killSession` → session
    ⋯ sheet (same sheet, kill-confirm idiom already in the file — D10
-   custody refusals render verbatim); `discover` → session ⋯ sheet on
-   external-mirror rows only; `togglePush` → decision 6; `refreshUsage`
-   → decision 1. No store action is deleted; every survivor has a
-   caller by slice end (grep-gated).
+   custody refusals render verbatim); `discover` → **U4's top-bar
+   chrome** *(AMENDED 2026-08-17 at U3 authoring, in-mandate: the
+   signed lean mis-slotted it per-session, but `store.discover()` is a
+   parameterless GLOBAL rescan — `sendEnvelope({op:'discover'})` — so a
+   per-row placement would be a lie about its scope)*; `togglePush` →
+   decision 6; `refreshUsage` → decision 1. No store action is deleted;
+   every survivor has a caller by slice end (grep-gated).
 5. **Nav intents.** LEAN: the five buttons move to top-bar app chrome
    (beside the UsageGauge) — they are app-level navigation and always
    were; parking them per-view was an accident of the old home. TreeView

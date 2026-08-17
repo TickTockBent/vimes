@@ -271,10 +271,36 @@ export interface AttachTargetGroup {
  * filtering is `effectivelyClosed`, a served field, and a root that contributes
  * no open node is omitted because a group header over nothing is chrome (U1),
  * not information.
+ *
+ * ─── S16·U3 — the SCOPE half (A6, D90's vocabulary) ─────────────────────────
+ *
+ * `scopedRootId` is the root id this tab is open on (`project:<projectId>`), or
+ * null for an unscoped tab — the SAME parameter, the same default and the same
+ * null-passthrough discipline `sessionTreeRows`/`sessionTreeContainerIds` take
+ * (`lib/sessionTreeRows.ts`), because one project per tab (D42/D61) is one rule
+ * and it must not be spelled two ways. Under a scope only the named root's
+ * group survives; a foreign project's nodes are not offered, because attaching
+ * this tab's session into a project this tab is not open on is a move nobody
+ * came here to make.
+ *
+ * ⚠ **NULL MEANS NO GATING, EXACTLY AS BEFORE.** An unscoped tab gets the
+ * pre-U3 output byte for byte (pinned by an equality test against the
+ * parameterless call) — D90 left the unscoped landing surface unpriced, and
+ * this file must not invent a policy for it.
+ *
+ * ⚠ **STILL A COURTESY FILTER, NEVER AN ADJUDICATION.** The daemon answers the
+ * attach: a foreign node reached by any other route is refused (or accepted) on
+ * its own authority, and this narrowing only decides what the picker OFFERS.
  */
-export function attachTargetsOf(tree: TreeResponse): AttachTargetGroup[] {
+export function attachTargetsOf(
+  tree: TreeResponse,
+  scopedRootId: string | null = null,
+): AttachTargetGroup[] {
   const groups: AttachTargetGroup[] = [];
   for (const root of tree.roots) {
+    if (scopedRootId !== null && root.rootId !== scopedRootId) {
+      continue;
+    }
     const openNodes: AttachTargetNode[] = [];
     pushOpenNodes(openNodes, root.nodes, 0);
     if (openNodes.length > 0) {

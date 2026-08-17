@@ -308,6 +308,72 @@ describe('attachTargetsOf', () => {
   });
 });
 
+describe('attachTargetsOf — S16-A6, the picker is scoped to the tab’s project', () => {
+  // One forest, three roots, deliberately non-lexicographic served order, so a
+  // scoping rule that reordered or re-derived anything reddens alongside the
+  // filtering it was supposed to do.
+  const scopedRoot = root('project:vimes', {
+    name: 'vimes',
+    nodes: [node('n-own', { name: 'slice 16' })],
+  });
+  const siblingRoot = root('project:johnny', {
+    name: 'johnny',
+    nodes: [node('n-sibling', { name: 'sibling work' })],
+  });
+  const unfiledRoot = root(UNFILED_ROOT_ID, { name: 'unfiled', sessions: [session('s1')] });
+  const estate = (): TreeResponse => tree([scopedRoot, siblingRoot, unfiledRoot]);
+
+  it('NO SCOPE is the pre-U3 picker, byte for byte (the unscoped tab is left alone)', () => {
+    // Byte-equality of the two call forms: passing the scope parameter as null
+    // may never become a different code path from omitting it. Same pin
+    // `sessionTreeRows.test.ts` puts on the row flattener's null passthrough.
+    const payload = estate();
+    const unscoped = attachTargetsOf(payload);
+    const explicitlyNullScope = attachTargetsOf(payload, null);
+
+    expect(JSON.stringify(explicitlyNullScope)).toBe(JSON.stringify(unscoped));
+
+    // …and that shared output is the WHOLE forest's open nodes, stated as the
+    // literal walk so a scoping rule leaking into the unscoped path reddens.
+    expect(unscoped).toEqual([
+      {
+        rootId: 'project:vimes',
+        rootName: 'vimes',
+        nodes: [{ nodeId: 'n-own', name: 'slice 16', depth: 0 }],
+      },
+      {
+        rootId: 'project:johnny',
+        rootName: 'johnny',
+        nodes: [{ nodeId: 'n-sibling', name: 'sibling work', depth: 0 }],
+      },
+    ]);
+  });
+
+  it('SCOPED: only the named root’s group survives — a sibling project is not offered', () => {
+    // The sabotage target: ignoring `scopedRootId` (answering the full set)
+    // must redden HERE while the passthrough test above stays green.
+    const groups = attachTargetsOf(estate(), 'project:vimes');
+
+    expect(groups.map((g) => g.rootId)).toEqual(['project:vimes']);
+    expect(groups[0]!.nodes).toEqual([{ nodeId: 'n-own', name: 'slice 16', depth: 0 }]);
+  });
+
+  it('SCOPED to a root with NO OPEN NODES answers an empty array (the sheet then says so)', () => {
+    // Not an error and not a fallback to the full forest: an empty array is the
+    // honest answer, and the picker's existing A9 sentence renders over it.
+    const shutRoot = root('project:shut', {
+      name: 'shut',
+      nodes: [node('n-shut', { closed: true, effectivelyClosed: true })],
+    });
+    expect(attachTargetsOf(tree([shutRoot, siblingRoot]), 'project:shut')).toEqual([]);
+    // …and a scope naming a root the payload does not carry answers the same
+    // way, rather than falling through to every other project's nodes.
+    expect(attachTargetsOf(estate(), 'project:not-in-payload')).toEqual([]);
+    // `unfiled` scoped to itself holds no nodes at all (A5) — empty, always.
+    expect(attachTargetsOf(estate(), UNFILED_ROOT_ID)).toEqual([]);
+  });
+});
+
 describe('nodeWriteFailureMessage — A5, total over what postJsonApi can answer', () => {
   it('201 (create) and 200 (close/attach) are successes: null', () => {
     expect(nodeWriteFailureMessage(201, { node: {} })).toBeNull();
