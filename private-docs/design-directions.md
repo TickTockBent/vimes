@@ -1759,3 +1759,47 @@ nodes, the renderer as the plan-level `verification_recipe` (nac decomp
 carry-over #6), repeatability panels as fan-out. The v1 mapping — one
 session per audit, attention on the deliverable, verdict at render —
 needs none of that.
+
+### Addendum: "VIMES as skill executor" — the shape fork (⟨Wes⟩ prompt + orchestrator lean, 2026-08-17)
+
+*(⟨Wes⟩: "A skill executor. It's a shape we don't have right now, it
+would require a dispatch with a skill attachment or environment with a
+skill scoped into it." Orchestrator assessment: less is missing than the
+framing implies, because Claude Code already resolves skills/commands
+from the filesystem at the session's cwd — `/audit` lives in
+`audit-pipeline/.claude/commands/`, and the repo sits inside
+`VIMES_PROJECT_ROOTS` (D21). The audit's target is a URL, not a repo, so
+one cwd covers the whole client roster.)*
+
+**The fork:**
+
+- **Shape A — dispatch INTO a skill-carrying repo** (the filesystem
+  convention). Zero new protocol: cwd = the repo, prompt = the `/command`
+  invocation. VIMES never owns or delivers skill content — the 0.3
+  posture (we propose a session into an environment; the environment
+  defines what it can do). **LEAN: A, hard.**
+- **Shape B — dispatch WITH a skill attachment** (VIMES delivers the
+  skill into an arbitrary environment). Real protocol + custody work
+  (who versions the skill? what records WHICH skill text ran?). Earns
+  itself only for cross-repo application — running a skill against a
+  repo that doesn't carry it — which nothing on the table needs yet.
+
+**The rule-0.7 spike Shape A stands on (verify BEFORE building):**
+whether a dispatched headless session actually EXECUTES a `/command` in
+its prompt is documentation-shaped belief, not observed truth. One-
+session spike: dispatch a trivial `/command` into a scratch repo, watch
+what the spine records. Cheap, and it gates everything above.
+
+**Shape A leaves exactly the four gaps above unsolved** — sharper, not
+softer: q14 is where headless skill-execution lives or dies (no
+interactive `.mcp.json` trust flow); the xvfb headed-Charlotte launch is
+a concrete instance of gap 2's "declared, not assumed" runtime prep; and
+gap 3 (confidentiality vs the spine) becomes a PRECONDITION of any
+skill-executor run, not a footnote.
+
+**New prong for the adoption-time pricing:** should "run this skill with
+these args" be a STRUCTURED dispatch field (task carries command + args
+as data) rather than prose inside the briefing? Same instinct as D91's
+name-at-dispatch: facts about the dispatch should be fields, not
+sentences a derivation has to excavate later. No trigger of its own —
+rides the tenant-#1 adoption decision.
