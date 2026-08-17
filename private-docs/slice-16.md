@@ -252,7 +252,29 @@ events; both are pure derivation/display.
   passthrough for these inputs (kept, per defense-in-depth), (3) draw
   its fixtures from the three REAL briefing preambles verbatim.
 
-**Status: HALTED at the gate per rule 0.1, awaiting the ruling.**
+**RULED 2026-08-17 ⟨Wes⟩: "Fix in core 100%" — option (b). Fix unit is
+S16·U6 (NEW agent per discipline).** Orchestrator recon pinned the fix
+shape before dispatch:
+- The briefing composer is CORE's `stageInstruction.ts` — four
+  byte-stable opening variants sharing the stem, each building a
+  `Task:      ${label}` line — so the skip logic couples to the REAL
+  stems via a core test (the UI stripper's "drift risk, stated" comment
+  becomes a machine-checked invariant).
+- Snapshot staleness has a designed answer: D86 versioning
+  (`projection.ts:131` discards a version-mismatched snapshot → full
+  replay). Sessions projection bumps 1 → 2, licensed by D86's
+  "re-meant" clause: `derivedTitle` changes meaning from "capped head
+  of first message" to "the task line, for dispatch briefings". The
+  bump IS the history migration — replay re-derives every historical
+  title; no event rewrites (kill criterion still not triggered).
+- Core sees the RAW multi-line content, so it takes the `Task:` LINE's
+  remainder (exactly the label) rather than the UI's
+  everything-after-marker (which would drag `Stage:`/`Directory:`
+  along). Stem without a marker → null (consistent with the
+  wrapper-prefix treatment; ladder falls to timestamp as today).
+- UI stripper KEPT untouched as defense-in-depth (per the ruling's
+  option text); one daemon restart owed (core change + snapshot
+  discard/replay verified at the orchestrator gate).
 
 ## §6. Gates & kill criteria
 
