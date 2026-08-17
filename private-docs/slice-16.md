@@ -135,9 +135,16 @@ Deltas against the 08-13 map — verified today, not assumed:
   orchestrator naming unchanged (existing test re-read, not re-pinned).
 - A6: attach-picker scoping — picker offers only the tab's project's
   nodes (foreign roots absent; lib test).
-- A7: grep gate — zero references to SessionListView /
-  sessionListPartition / `#/sessions` outside git history; every
-  surviving store action has ≥1 non-test caller.
+- A7: grep gate — *(REFRAMED 2026-08-17 at the U5 gate, in-mandate: the
+  literal form was unsatisfiable by construction — the remembered-layout
+  degradation test REQUIRED the dead `#/sessions` string, dist/ holds
+  stale build artifacts until the next build, and historical comments
+  legitimately narrate the deletion)* — over `packages/*/src`, excluding
+  comments and test literals: zero IMPORTS, zero MOUNTS, zero live
+  references to SessionListView / sessionListPartition / sessionRow;
+  zero live `href`/navigation to `#/sessions`/`#/meters`; every
+  surviving store action has ≥1 non-test caller. Verified independently
+  at the orchestrator gate, not only by the agent.
 - Prior suites green (0.4). Final count expected > 3486.
 
 ## §5. Units (sequential; skeleton → sign-off → dispatch)
@@ -153,8 +160,21 @@ Deltas against the 08-13 map — verified today, not assumed:
 - **U5 (UI, THE DELETION):** re-anchor label test off sessionRow; delete
   view/route/partition/sessionRow; cold-open default (decision 8);
   unfiled picker row (decision 7); route re-pins (A2). vue-tsc leg.
-- Deploys: U1 = ci-gate + restart; U2–U5 ride ci-gate (UI-only, no
-  restart) — bundling per gate discipline, Wes owns awareness (D19).
+- **U5b (UI, follow-up):** U5's one STOP — TreeView's S15·U10
+  "Sessions ›" escape hatch still linked the dead route (the agent
+  correctly held the TreeView STOP constraint rather than fix it
+  in-place); U5b removes the link + rewrites two stale comments
+  (App.vue seeding note, panelStack.ts). Gate working as designed,
+  not a rule-0.1 finding: an in-slice sequencing artifact, caught
+  before deploy.
+- Deploys: U1 = ci-gate + restart (DONE 2026-08-17 12:13 — D73's first
+  clean boot); U2–U5b ride ONE ci-gate (UI-only, no restart) —
+  bundling per gate discipline, Wes owns awareness (D19).
+
+**Unit ledger (2026-08-17):** U1 `7899e41` (deployed, restart 12:13) ·
+U2 `71f27e4` · U3 `8271c60` (+ decision-4 amendment: discover is
+global) · U4 `e5c568b` · U5 `38e4a76` (decision 8 verified
+already-built; cold open seeds [tree] + hint) · U5b pending.
 
 ## §6. Gates & kill criteria
 

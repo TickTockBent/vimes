@@ -16,10 +16,12 @@
 // THE ONE INVARIANT THE WHOLE RETROFIT RESTS ON. `buildPanelStackHash([route])`
 // returns EXACTLY `buildHash(route)` — byte-identical, down to the empty string
 // for home and every `/files` quirk. So today's URLs, bookmarks, and the
-// deep-link push target (`#/meters`, `#/session/x`) are unchanged, and a hash
+// deep-link push target (`#/session/x`) are unchanged, and a hash
 // with no stack marker parses to `[parseRoute(hash)]`. Multi-panel is the ONLY
 // thing that looks new, and it hides behind a reserved marker that a
-// single-panel URL can never wear.
+// single-panel URL can never wear. (`#/sessions` and `#/meters` — cited here
+// when this was written — are dead vocabulary since S16·U5: no longer
+// recognized, they fall through to the tree fallback like any unknown hash.)
 
 import { buildHash, parseRoute, type Route } from './route.js';
 

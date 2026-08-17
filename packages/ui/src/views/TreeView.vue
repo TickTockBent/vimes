@@ -592,18 +592,6 @@ onMounted(() => {
   <div class="flex h-full flex-col overflow-hidden">
     <div class="flex flex-none items-center justify-between gap-2 border-b border-line px-3 py-2">
       <h1 class="font-mono text-[11px] font-semibold uppercase text-ink-dim">Tree</h1>
-      <!-- U10: the escape hatch stays VISIBLE. The pre-tree session list is
-           still where the meters strip, the spawn form and the panel nav live
-           this slice (F1), so the cutover must not leave them reachable only by
-           a hand-typed URL. A real `#/` link, so App.vue's panelLinkClick opens
-           it as a panel from THIS panel's index like any other in-app link. -->
-      <a
-        href="#/sessions"
-        class="font-mono text-[11px] uppercase text-ink-dim transition-colors hover:text-ink"
-        title="The pre-tree session list — meters, spawn, panel nav"
-      >
-        Sessions ›
-      </a>
     </div>
 
     <div class="min-h-0 flex-1 overflow-y-auto overscroll-contain">

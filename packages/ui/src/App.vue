@@ -89,9 +89,9 @@ const backKind = computed<'back' | 'close'>(() => (showSidebar.value ? 'close' :
 // route.ts. Everything else that "goes home" — closePanelAt's floor, the empty
 // mirrored hash, `initialHashFor`'s default — goes home by producing the EMPTY
 // HASH and letting parseRoute say what that means, so those needed no edit.
-// A consequence worth naming: `#/sessions` and `#/meters` now seed as
-// [tree, sessionList], so backing out of the old list lands on the tree instead
-// of flooring on the list itself.
+// A consequence worth naming: `#/sessions` and `#/meters` are dead vocabulary
+// since S16·U5 — the session list view they named is gone, so both hashes are
+// simply unrecognized now and parse (like any unknown hash) to the tree/home.
 function seedStackFromHash(hashValue: string): PanelStack {
   const parsedWindow = parsePanelStack(hashValue);
   if (parsedWindow[0]!.view === 'tree') {
