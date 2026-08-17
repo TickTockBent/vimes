@@ -29,19 +29,42 @@ export interface DaemonConfig {
   // Daemon data dir (per-session settings files, and later VAPID keys / caches).
   // Derived from dbPath's directory unless VIMES_DATA_DIR overrides.
   dataDir: string;
-  // Optional pinned CLI version for the PTY channel (VIMES_EXPECTED_CLI_VERSION).
-  // At boot the daemon probes the PATH `claude --version`; a mismatch OR an
-  // unpinned expectation emits runtime_drift_observed + a console warn. NEVER
-  // gates a spawn (E4).
-  expectedCliVersion: string | undefined;
-  // Optional pinned CLI version for the SDK channel (VIMES_EXPECTED_SDK_CLI_VERSION)
-  // — the Claude Code binary the Agent SDK vendors and runs for every SDK session.
-  // It is a SEPARATE pin on purpose: the vendored binary legitimately differs from
-  // the PATH one (observed 2026-07-22: 2.1.207 vs 2.1.217), so reusing
-  // expectedCliVersion here would emit permanent false drift. Unset → the SDK
-  // channel is REPORTED at boot and never asserted (rule 0.2: an unpinned channel
-  // has nothing to drift from; the value is pinned by hand after review).
-  expectedSdkCliVersion: string | undefined;
+  // ── D73 (S16·U1): the CLI version pin is a FLOOR plus a LAST-VERIFIED marker ──
+  //
+  // ⚠ **THESE FOUR REPLACE `expectedCliVersion` / `expectedSdkCliVersion`, AND THE
+  // OLD `VIMES_EXPECTED_CLI_VERSION` / `VIMES_EXPECTED_SDK_CLI_VERSION` ENV VARS ARE
+  // GONE.** The rename is the point: the SEMANTICS changed, so a stale env var left
+  // in `/etc/vimes/env` must fail VISIBLE (an unset floor, reported as unset on the
+  // boot line) rather than silently start meaning something it never meant. Reusing
+  // the old names would have made an operator's old value quietly become a floor.
+  //
+  // All four are OPTIONAL and independent. Unset floor ⇒ that channel never warns
+  // (report-only). Unset last-verified ⇒ the boot line's evidence clause is omitted.
+  // Both pins move only by deliberate re-pin at a verification spike.
+
+  // The PTY channel's floor (VIMES_CLI_VERSION_FLOOR) — the PATH `claude` the
+  // terminal escape hatch runs. At boot the daemon probes `claude --version` and
+  // warns ONLY when the observed version is BELOW this. Forward auto-updates are
+  // silent; downgrades, stale boxes and fresh clones on old CLIs warn. NEVER gates
+  // a spawn (E4) — the check is still warn-only.
+  cliVersionFloor: string | undefined;
+  // The PTY channel's last-verified marker (VIMES_CLI_VERSION_LAST_VERIFIED) — the
+  // version a verification spike actually checked fixtures against. Pure INFO: the
+  // boot line reports how far ahead of this evidence the box is running, which is
+  // the number that decides when the next spike is due. Never a warning.
+  cliVersionLastVerified: string | undefined;
+  // The SDK channel's floor (VIMES_SDK_CLI_VERSION_FLOOR) — the Claude Code binary
+  // the Agent SDK vendors and runs for every SDK session. A SEPARATE pin on
+  // purpose: the vendored binary legitimately differs from the PATH one (observed
+  // 2026-07-22: 2.1.207 vs 2.1.217), so asserting the PTY pin here would emit
+  // permanent false drift. D73 rider (a): the floor SEMANTICS land on both
+  // channels and the code treats them identically — the asymmetry is DATA, and
+  // this pin stays unset for now, which preserves the SDK channel's shipped
+  // reported-never-asserted posture (rule 0.2: pinned by hand after review).
+  sdkCliVersionFloor: string | undefined;
+  // The SDK channel's last-verified marker (VIMES_SDK_CLI_VERSION_LAST_VERIFIED).
+  // Same INFO-only role as its PTY twin, against the vendored binary.
+  sdkCliVersionLastVerified: string | undefined;
   // VAPID `subject` (a mailto: or https: URL) sent with every web-push request
   // (VIMES_PUSH_SUBJECT). The default is a placeholder — a real operator sets a
   // reachable mailto so push services can contact them. Never a secret.
@@ -363,6 +386,14 @@ function parseWorktreeIsolation(
   );
 }
 
+// D73's version pins, all four of them. Read VERBATIM and never validated here:
+// the boot check answers `unknown` for anything it cannot parse and says so out
+// loud, which is a far better failure than a daemon that refuses to start because
+// an operator typed `v2.1.224`. Absent and empty both mean UNSET.
+function optionalVersionPin(rawValue: string | undefined): string | undefined {
+  return rawValue === undefined || rawValue === '' ? undefined : rawValue;
+}
+
 function parsePositiveInteger(rawValue: string, variableName: string): number {
   const parsedValue = Number(rawValue);
   if (!Number.isInteger(parsedValue) || parsedValue < 0) {
@@ -387,14 +418,13 @@ export function loadConfigFromEnv(env: NodeJS.ProcessEnv = process.env): DaemonC
     hookPort: rawHookPort === undefined ? DEFAULT_HOOK_PORT : parsePositiveInteger(rawHookPort, 'VIMES_HOOK_PORT'),
     dbPath,
     dataDir,
-    expectedCliVersion:
-      env.VIMES_EXPECTED_CLI_VERSION === undefined || env.VIMES_EXPECTED_CLI_VERSION === ''
-        ? undefined
-        : env.VIMES_EXPECTED_CLI_VERSION,
-    expectedSdkCliVersion:
-      env.VIMES_EXPECTED_SDK_CLI_VERSION === undefined || env.VIMES_EXPECTED_SDK_CLI_VERSION === ''
-        ? undefined
-        : env.VIMES_EXPECTED_SDK_CLI_VERSION,
+    // D73's four pins. `''` reads as UNSET on every one of them, matching the
+    // shape the removed pins used: an env var present-but-empty is a var an
+    // operator cleared, not a version they chose.
+    cliVersionFloor: optionalVersionPin(env.VIMES_CLI_VERSION_FLOOR),
+    cliVersionLastVerified: optionalVersionPin(env.VIMES_CLI_VERSION_LAST_VERIFIED),
+    sdkCliVersionFloor: optionalVersionPin(env.VIMES_SDK_CLI_VERSION_FLOOR),
+    sdkCliVersionLastVerified: optionalVersionPin(env.VIMES_SDK_CLI_VERSION_LAST_VERIFIED),
     snapshotIntervalMs:
       rawSnapshotInterval === undefined
         ? DEFAULT_SNAPSHOT_INTERVAL_MS

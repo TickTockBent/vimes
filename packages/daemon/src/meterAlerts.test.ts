@@ -60,8 +60,10 @@ function buildConfig(dbPath: string, overrides: Partial<DaemonConfig> = {}): Dae
     hookPort: 0,
     dbPath,
     dataDir: dirname(dbPath),
-    expectedCliVersion: undefined,
-    expectedSdkCliVersion: undefined,
+    cliVersionFloor: undefined,
+    cliVersionLastVerified: undefined,
+    sdkCliVersionFloor: undefined,
+    sdkCliVersionLastVerified: undefined,
     snapshotIntervalMs: 60_000,
     accessTeamDomain: undefined,
     accessAud: undefined,
@@ -151,7 +153,7 @@ afterAll(() => {
 });
 
 describe('meter alert push payload', () => {
-  it('names the METER and deep-links to the meters view, not a session', () => {
+  it('names the METER and deep-links to the app root, not a session', () => {
     const payload = buildMeterAlertPushPayload(
       {
         meterId: 'endpoint:weekly_scoped:Fable',
@@ -168,7 +170,10 @@ describe('meter alert push payload', () => {
     expect(payload.title).toBe('Weekly cap (Fable) at 84%');
     expect(payload.body).toContain('Crossed 80%');
     expect(payload.body).toContain('Resets in 2h 30m');
-    expect(payload.url).toBe('/#/meters');
+    // S16-A3 re-pin: `/#/meters` died with SessionListView's meters strip; the
+    // gauge is persistent chrome, so the bare root always lands within one tap
+    // of a meter (slice-16 decision 2).
+    expect(payload.url).toBe('/');
     // Deliberately NOT the session-attention wording.
     expect(payload.body).not.toContain('Needs your attention');
   });

@@ -84,6 +84,7 @@ import { TerminalHost, type TerminalPtyFactory } from './terminalHost.js';
 import { JsonlTailer } from './tailer.js';
 import { createHookIngress, type HookIngress } from './hookIngress.js';
 import type { CliVersionProbe, PreflightProbe, SdkCliVersionProbe } from './runtimeChecks.js';
+import { reportCliVersionCheck } from './versionCompare.js';
 import type { DaemonConfig } from './config.js';
 import { PushSubscriptions } from './pushSubscriptions.js';
 import { PushPipeline } from './pushPipeline.js';
@@ -1416,62 +1417,88 @@ export function createDaemon(deps: DaemonDeps): Daemon {
         });
       });
       await hookIngress.start();
+      // The I/O half of the D73 check, shared by both channels so neither can
+      // drift into its own dialect of "older" or its own boot wording.
+      const emitAndReportCliVersion = (channelInput: {
+        channel: 'pty' | 'sdk';
+        observedVersion: string | null;
+        floorVersion: string | undefined;
+        lastVerifiedVersion: string | undefined;
+        binaryPath?: string | null;
+      }): void => {
+        const versionReport = reportCliVersionCheck(channelInput);
+        // ⚠ `expected` NOW CARRIES THE FLOOR (or null when no floor is pinned) —
+        // the core event schema is UNCHANGED, so the field name still says
+        // "expected" while the fact behind it is D73's floor. Recorded here rather
+        // than renamed there because renaming a payload field rewrites the meaning
+        // of every `runtime_drift_observed` already in the log.
+        //
+        // Emitted whenever the observation differs from the last-verified marker,
+        // whenever the probe answered nothing, and whenever the floor check warns —
+        // deliberately WIDER than the warning, because D73 says that payload is
+        // evidence, not decoration, and the evidence stream must stay at least as
+        // rich as the equality check's was.
+        const observationDiffersFromEvidence =
+          channelInput.observedVersion !== (channelInput.lastVerifiedVersion ?? null);
+        if (
+          observationDiffersFromEvidence ||
+          channelInput.observedVersion === null ||
+          versionReport.warning !== null
+        ) {
+          router.emit([
+            runtimeDriftObserved({
+              expected: channelInput.floorVersion ?? null,
+              observed: channelInput.observedVersion,
+              channel: channelInput.channel,
+              ...(channelInput.binaryPath === undefined ? {} : { binaryPath: channelInput.binaryPath }),
+            }),
+          ]);
+        }
+        if (versionReport.warning !== null) {
+          // E4 drift is warn-only, never fatal: the event above is the durable
+          // record, and this stderr line is the half a human actually sees. The
+          // deploy procedure greps the boot output in journald for `CLI runtime
+          // drift`, which every warning carries, so it is written unconditionally
+          // rather than behind a level.
+          console.warn(versionReport.warning);
+        }
+        // The report half, owed in EVERY state including the unknown one. SEPARATE
+        // from the `vimes-daemon listening on …` line in main.ts, which the deploy
+        // procedure also greps and which nothing here touches.
+        process.stdout.write(`${versionReport.infoLine}\n`);
+      };
       // Runtime version check (E4), warn-only, never gates. Two INDEPENDENT
       // channels, each against its own pin — the PATH `claude` (PTY escape hatch)
       // and the binary the Agent SDK vendors and runs for SDK sessions (the D4
       // default). Their versions legitimately differ, so one pin is never
       // asserted against the other channel. Each check runs only when its probe
       // is injected (main.ts in prod) — integration tests never invoke a CLI.
-      let ptyObservedVersion: string | null = null;
+      //
+      // ⚠ **D73 (S16·U1) REPLACED EXACT EQUALITY WITH A FLOOR + A LAST-VERIFIED
+      // MARKER.** Every WORD of both the warning and the info line is decided by
+      // `reportCliVersionCheck` in versionCompare.ts — a pure function with unit
+      // tests over each state (rule 0.3). This block is the I/O half only: probe,
+      // ask, emit, write. No comparison happens here, on purpose; a second place
+      // that decides what "older" means is a second authority.
       if (deps.cliVersionProbe !== undefined) {
-        ptyObservedVersion = await deps.cliVersionProbe();
-        const expected = config.expectedCliVersion ?? null;
-        if (expected === null || ptyObservedVersion !== expected) {
-          router.emit([runtimeDriftObserved({ expected, observed: ptyObservedVersion, channel: 'pty' })]);
-          // E4 drift is warn-only, never fatal: the event above is the durable
-          // record, and this stderr line is the half a human actually sees. The
-          // deploy procedure checks the boot output in journald for exactly this
-          // string, so it is written unconditionally rather than behind a level.
-          console.warn(
-            `vimes-daemon: CLI runtime drift — expected=${expected ?? '(unpinned)'} observed=${ptyObservedVersion ?? '(unknown)'}`,
-          );
-        }
+        emitAndReportCliVersion({
+          channel: 'pty',
+          observedVersion: await deps.cliVersionProbe(),
+          floorVersion: config.cliVersionFloor,
+          lastVerifiedVersion: config.cliVersionLastVerified,
+        });
       }
-      let sdkObservedVersion: string | null = null;
       if (deps.sdkCliVersionProbe !== undefined) {
         const sdkObservation = await deps.sdkCliVersionProbe();
-        sdkObservedVersion = sdkObservation.version;
-        const expectedSdk = config.expectedSdkCliVersion ?? null;
-        // An UNPINNED sdk channel is reported by the boot line below and nothing
-        // else: no drift event, no warning. There is nothing to drift from, and
-        // asserting the pty pin here would emit permanent false drift (rule 0.2).
-        if (expectedSdk !== null && sdkObservedVersion !== expectedSdk) {
-          router.emit([
-            runtimeDriftObserved({
-              expected: expectedSdk,
-              observed: sdkObservedVersion,
-              channel: 'sdk',
-              binaryPath: sdkObservation.binaryPath,
-            }),
-          ]);
-          // Same warn-only contract as the pty channel above; stderr is the
-          // operator-visible half of the drift record. This one also names the
-          // resolved binary, because an SDK-channel mismatch is usually the
+        emitAndReportCliVersion({
+          channel: 'sdk',
+          observedVersion: sdkObservation.version,
+          floorVersion: config.sdkCliVersionFloor,
+          lastVerifiedVersion: config.sdkCliVersionLastVerified,
+          // Named on every SDK line: an SDK-channel surprise is usually the
           // vendored CLI moving under us rather than a deliberate pin change.
-          console.warn(
-            `vimes-daemon: SDK CLI runtime drift — expected=${expectedSdk} observed=${sdkObservedVersion ?? '(unknown)'} binary=${sdkObservation.binaryPath ?? '(unresolved)'}`,
-          );
-        }
-      }
-      // Informational boot line naming both observed channels. SEPARATE from the
-      // `vimes-daemon listening on …` line in main.ts, which the deploy procedure
-      // greps and which nothing here touches.
-      if (deps.cliVersionProbe !== undefined || deps.sdkCliVersionProbe !== undefined) {
-        const sdkPinNote =
-          config.expectedSdkCliVersion === undefined ? '(sdk unpinned)' : `(sdk pinned ${config.expectedSdkCliVersion})`;
-        process.stdout.write(
-          `vimes-daemon: claude runtime — pty=${ptyObservedVersion ?? '(unknown)'} sdk=${sdkObservedVersion ?? '(unknown)'} ${sdkPinNote}\n`,
-        );
+          binaryPath: sdkObservation.binaryPath,
+        });
       }
       // host_started + boot recovery: any session the log left running/spawning
       // with no live process becomes interrupted (§3.10, D13).

@@ -591,6 +591,20 @@ export class TaskDispatcher {
           // implementing, `report_review` for review, neither for planning). It is
           // not a branch discriminator here — it is the same fact both branches
           // already have, now travelling to the one place that needs it.
+          //
+          // D91 prong (i): the dispatched session is NAMED at birth, closing the
+          // asymmetry with `orchestratorApi.ts` (which has always named its own
+          // session). The stage rides in the name because a bare title repeated
+          // across one task's planning/implementing/review sessions would recreate
+          // the sea of identical labels D91 exists to drain.
+          //
+          // ⚠ ABSENT STAYS ABSENT, NEVER `''` — `taskRecordSchema.title` documents
+          // that an empty string is a title someone CHOSE, and an untitled task is a
+          // different fact from a task titled with nothing. Neither yields a name
+          // here: an empty name is not a name, so the key is omitted entirely and
+          // the label ladder's derivation fallback (prong ii) answers instead.
+          const dispatchedSessionName =
+            task.title === undefined || task.title === '' ? undefined : `${task.title} — ${decision.stage}`;
           const spawnOptions =
             decision.stage === 'planning'
               ? {
@@ -599,6 +613,7 @@ export class TaskDispatcher {
                   dispatched: true as const,
                   permissionMode: 'plan' as const,
                   stage: decision.stage,
+                  ...(dispatchedSessionName === undefined ? {} : { name: dispatchedSessionName }),
                 }
               : {
                   channel: 'sdk' as const,
@@ -606,6 +621,7 @@ export class TaskDispatcher {
                   dispatched: true as const,
                   permissionMode: 'auto' as const,
                   stage: decision.stage,
+                  ...(dispatchedSessionName === undefined ? {} : { name: dispatchedSessionName }),
                 };
           let spawnResult;
           try {

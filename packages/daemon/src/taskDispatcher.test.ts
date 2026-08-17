@@ -1838,6 +1838,103 @@ describe('TaskDispatcher — planning spawns in plan mode (D48) + every spawn na
   });
 });
 
+// ─── D91 prong (i) — the dispatched session is NAMED at birth (S16·U1) ────────
+//
+// The bug D91 names: `orchestratorApi.ts` has always passed a `name`, the
+// dispatcher never did, and the tree rendered a sea of identical labels derived
+// from the briefing's first line. The spawn wire already carried `name?: string`,
+// so this is a fact travelling, not a protocol change.
+//
+// The two halves worth asserting are the composition (title AND stage, because a
+// bare title repeats across one task's three stages) and the ABSENCE — an
+// untitled or empty-titled task gets NO `name` key at all, which `toEqual` cannot
+// prove on its own (it treats an explicit `undefined` as absent). Every absence
+// case below therefore reads the recorded options' OWN keys.
+
+describe('TaskDispatcher — D91: the dispatched spawn carries the task name', () => {
+  const TITLED_TASK_TITLE = 'Retarget the meter deep link';
+
+  it('composes `<title> — <stage>` for a titled task, on the non-planning branch', async () => {
+    const harness = buildHarness({ tasks: [taskRecord({ title: TITLED_TASK_TITLE, stage: 'implementing' })] });
+
+    await harness.dispatcher.dispatchTask(TASK_ID);
+
+    expect(harness.sessionHost.spawnCalls).toEqual([
+      {
+        channel: 'sdk',
+        cwd: PROJECT_ROOT,
+        dispatched: true,
+        permissionMode: 'auto',
+        stage: 'implementing',
+        name: `${TITLED_TASK_TITLE} — implementing`,
+      },
+    ]);
+  });
+
+  it('names the PLANNING branch too, and the D48 plan mode is undisturbed', async () => {
+    // Both spawnOptions branches gain the name — the planning branch is the one a
+    // single-branch edit would silently miss, and it is also the branch whose
+    // permissionMode must not move (D48).
+    const harness = buildHarness({ tasks: [taskRecord({ title: TITLED_TASK_TITLE, stage: 'planning' })] });
+
+    await harness.dispatcher.dispatchTask(TASK_ID);
+
+    expect(harness.sessionHost.spawnCalls).toEqual([
+      {
+        channel: 'sdk',
+        cwd: PROJECT_ROOT,
+        dispatched: true,
+        permissionMode: 'plan',
+        stage: 'planning',
+        name: `${TITLED_TASK_TITLE} — planning`,
+      },
+    ]);
+  });
+
+  it('carries the stage per stage, so one task does not spawn three identically-named sessions', async () => {
+    // The reason the stage is in the name at all: D91's sea of identical labels
+    // would re-form if a task's planning/implementing/review runs all read alike.
+    const composedNames: Array<string | undefined> = [];
+    for (const stage of ['planning', 'implementing', 'review'] as const) {
+      const harness = buildHarness({ tasks: [taskRecord({ title: TITLED_TASK_TITLE, stage })] });
+      await harness.dispatcher.dispatchTask(TASK_ID);
+      composedNames.push(harness.sessionHost.spawnCalls[0]!.name);
+    }
+
+    expect(composedNames).toEqual([
+      `${TITLED_TASK_TITLE} — planning`,
+      `${TITLED_TASK_TITLE} — implementing`,
+      `${TITLED_TASK_TITLE} — review`,
+    ]);
+    expect(new Set(composedNames).size).toBe(3);
+  });
+
+  it('an UNTITLED task spawns with NO name key — the derivation fallback answers instead', async () => {
+    const harness = buildHarness({ tasks: [taskRecord()] });
+
+    await harness.dispatcher.dispatchTask(TASK_ID);
+
+    const recordedOptions = harness.sessionHost.spawnCalls[0]!;
+    // The key's ABSENCE, not its value: an options object carrying `name:
+    // undefined` would satisfy `toEqual` and still put an undefined onto the wire.
+    expect(Object.keys(recordedOptions)).not.toContain('name');
+    expect('name' in recordedOptions).toBe(false);
+  });
+
+  it('an EMPTY-STRING title spawns with NO name key — an empty name is not a name', async () => {
+    // `taskRecordSchema.title`'s discipline, honoured at the dispatch site: `''` is
+    // a title someone chose, but it is not something to label a session WITH, and
+    // an empty label would be worse than the derived fallback it displaced.
+    const harness = buildHarness({ tasks: [taskRecord({ title: '' })] });
+
+    await harness.dispatcher.dispatchTask(TASK_ID);
+
+    const recordedOptions = harness.sessionHost.spawnCalls[0]!;
+    expect(Object.keys(recordedOptions)).not.toContain('name');
+    expect('name' in recordedOptions).toBe(false);
+  });
+});
+
 // ─── S7·5b-i — recordPlan: the DETERMINISTIC I10 core of native plan capture ──
 //
 // recordPlan is the STATE-OWNING half of the D48 seam. The fragile SDK adapter

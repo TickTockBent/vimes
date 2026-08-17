@@ -170,11 +170,16 @@ export function ttlSecondsUntilReset(
 // meter alert names a budget, not a session, and its deep link is the meters
 // view rather than a session stream.
 //
-// `/#/meters` is the reserved meters deep link. The client router falls through
-// to the home screen for an unrecognized hash, and the meters strip lives on the
-// home screen — so this link is correct today and stays correct when a dedicated
-// meters view lands.
-export const METER_ALERT_DEEP_LINK = '/#/meters';
+// ⚠ RETARGETED IN SLICE 16 (decision 2), FROM `/#/meters`. The old text promised
+// that hash "stays correct when a dedicated meters view lands" — false the moment
+// slice 16 deleted SessionListView, because the meters strip died with it and the
+// hash resolved to a home screen that no longer showed a meter at all.
+//
+// The bare `/` is the honest target now: the UsageGauge is PERSISTENT TOP-BAR
+// CHROME on every surface, so any landing place puts the meters one tap away. A
+// link that names no view cannot go stale when a view moves — which is the exact
+// failure this constant just had.
+export const METER_ALERT_DEEP_LINK = '/';
 
 export function buildMeterAlertPushPayload(alert: MeterAlertPayload, nowIso: string): PushPayload {
   const observedPercentText = `${Math.round(alert.observedPercent)}%`;

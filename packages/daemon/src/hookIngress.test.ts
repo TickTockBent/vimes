@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -58,8 +58,10 @@ function buildConfig(overrides: Partial<DaemonConfig> = {}): DaemonConfig {
     hookPort: 0,
     dbPath: join(temporaryDirectory, `hooks-${databaseFileCounter}.db`),
     dataDir: temporaryDirectory,
-    expectedCliVersion: undefined,
-    expectedSdkCliVersion: undefined,
+    cliVersionFloor: undefined,
+    cliVersionLastVerified: undefined,
+    sdkCliVersionFloor: undefined,
+    sdkCliVersionLastVerified: undefined,
     snapshotIntervalMs: 60_000,
     accessTeamDomain: undefined,
     accessAud: undefined,
@@ -324,7 +326,27 @@ describe('hook ingress — hostile input (rule 0.6, I8)', () => {
   });
 });
 
-describe('runtime version drift (E4, warn-only)', () => {
+// ─── D73 (S16·U1): the boot version check is a FLOOR plus a LAST-VERIFIED mark ─
+//
+// ⚠ **THIS SUITE WAS RE-PINNED, NOT EXTENDED.** It used to assert EXACT EQUALITY
+// against `expectedCliVersion`, which is gone: that guard fired on every forward
+// auto-update (five consecutive uninformative boot warnings against one unmoved
+// pin) and a guard that always fires trains its reader to ignore it. D73 replaced
+// the comparison, so the cases that pinned the old one are replaced too.
+//
+// What the daemon owes at boot, per channel, and what is asserted below:
+//   • observed BELOW the floor            → warn (the one real warning) + event
+//   • observed AT or ABOVE the floor      → SILENT; the info line carries the
+//                                           distance from evidence
+//   • observed null (the blind auto-start path, 2026-08-10) → its OWN warn,
+//                                           never a silent pass (rider (b))
+//   • observed unparseable                → same family; unparseable ≠ ok
+//   • no floor pinned                     → report-only, exactly today's SDK posture
+//
+// Both channels run the SAME code (rider (a)); the production asymmetry is DATA —
+// the SDK pins stay unset — and the unset-floor case below is what proves that
+// posture survives.
+describe('runtime version drift (E4, warn-only) — D73 floor + last-verified', () => {
   interface DriftPayload {
     expected: string | null;
     observed: string | null;
@@ -338,103 +360,283 @@ describe('runtime version drift (E4, warn-only)', () => {
       .map((record) => record.payload as DriftPayload);
   }
 
-  it('emits runtime_drift_observed on a version mismatch', async () => {
-    const daemon = await startDaemon({
-      config: buildConfig({ expectedCliVersion: '1.0.0' }),
-      cliVersionProbe: async () => '9.9.9',
+  // The pin the calibrated production floor is shaped like, and a last-verified
+  // marker sitting on it. Named rather than inlined so a case reads as "below the
+  // floor" instead of "below 2.1.224".
+  const FLOOR_VERSION = '2.1.224';
+  const LAST_VERIFIED_VERSION = '2.1.224';
+  const SDK_BINARY_PATH = '/fake/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude';
+
+  // ⚠ THE NUMERIC-COMPARISON TRAP, as data: '2.1.9' is BELOW '2.1.224' by number
+  // and ABOVE it as a string. A lexicographic comparator passes every other case
+  // in this file and fails only this one.
+  const BELOW_FLOOR_VERSION = '2.1.9';
+  const ABOVE_FLOOR_VERSION = '2.1.232';
+
+  // Every line the daemon writes to stdout starts with this; anything else that
+  // arrives while the capture is installed belongs to the test reporter and is
+  // passed straight through rather than swallowed.
+  const DAEMON_STDOUT_PREFIX = 'vimes-daemon:';
+
+  interface BootObservation {
+    daemon: Daemon;
+    // console.warn lines — the operator-visible half, and the half the journald
+    // grep contract is written against.
+    warnings: string[];
+    // process.stdout lines — the report half, owed in every state.
+    bootLines: string[];
+  }
+
+  async function bootAndCaptureOutput(overrides: Partial<DaemonDeps>): Promise<BootObservation> {
+    const warnings: string[] = [];
+    const bootLines: string[] = [];
+    const originalStdoutWrite = process.stdout.write.bind(process.stdout);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation((...parts: unknown[]) => {
+      warnings.push(parts.map((part) => String(part)).join(' '));
+    });
+    const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(((
+      chunk: string | Uint8Array,
+      ...rest: unknown[]
+    ): boolean => {
+      const text = typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8');
+      if (text.startsWith(DAEMON_STDOUT_PREFIX)) {
+        bootLines.push(text.trimEnd());
+        return true;
+      }
+      return (originalStdoutWrite as unknown as (...args: unknown[]) => boolean)(chunk, ...rest);
+    }) as unknown as typeof process.stdout.write);
+    try {
+      const daemon = await startDaemon(overrides);
+      return { daemon, warnings, bootLines };
+    } finally {
+      warnSpy.mockRestore();
+      stdoutSpy.mockRestore();
+    }
+  }
+
+  function bootLineFor(observation: BootObservation, channel: 'pty' | 'sdk'): string {
+    const line = observation.bootLines.find((candidate) => candidate.includes(`${channel} running`));
+    if (line === undefined) {
+      throw new Error(`no boot info line for the ${channel} channel in: ${observation.bootLines.join(' | ')}`);
+    }
+    return line;
+  }
+
+  // ─── The one real warning: older than the evidence ──────────────────────────
+
+  it('an observed version BELOW the floor warns, numerically — 2.1.9 is below 2.1.224', async () => {
+    const observation = await bootAndCaptureOutput({
+      config: buildConfig({ cliVersionFloor: FLOOR_VERSION, cliVersionLastVerified: LAST_VERIFIED_VERSION }),
+      cliVersionProbe: async () => BELOW_FLOOR_VERSION,
     });
     try {
-      expect(driftEvents(daemon)).toEqual([{ expected: '1.0.0', observed: '9.9.9', channel: 'pty' }]);
+      expect(observation.warnings).toHaveLength(1);
+      // The journald grep contract: the deploy procedure looks for this exact
+      // phrase, so it survives the comparison change verbatim.
+      expect(observation.warnings[0]!).toContain('CLI runtime drift');
+      expect(observation.warnings[0]!).toContain(`observed ${BELOW_FLOOR_VERSION} is BELOW the verified floor`);
+      expect(observation.warnings[0]!).toContain(FLOOR_VERSION);
+      // The payload carries THE FLOOR in `expected` — the core schema is unchanged,
+      // so the field name still says "expected" while the fact behind it is D73's.
+      expect(driftEvents(observation.daemon)).toEqual([
+        { expected: FLOOR_VERSION, observed: BELOW_FLOOR_VERSION, channel: 'pty' },
+      ]);
     } finally {
-      await daemon.stop();
+      await observation.daemon.stop();
     }
   });
 
-  it('emits runtime_drift_observed when the expectation is unpinned (expected: null)', async () => {
-    const daemon = await startDaemon({
-      config: buildConfig({ expectedCliVersion: undefined }),
-      cliVersionProbe: async () => '2.1.215',
+  // ─── The noise D73 removed: a forward auto-update is SILENT ─────────────────
+
+  it('an observed version ABOVE the floor is SILENT, and the info line counts the distance from evidence', async () => {
+    const observation = await bootAndCaptureOutput({
+      config: buildConfig({ cliVersionFloor: FLOOR_VERSION, cliVersionLastVerified: LAST_VERIFIED_VERSION }),
+      cliVersionProbe: async () => ABOVE_FLOOR_VERSION,
     });
     try {
-      expect(driftEvents(daemon)).toEqual([{ expected: null, observed: '2.1.215', channel: 'pty' }]);
+      // The whole point of the decision: this is the case that fired five times in
+      // a row under exact equality and told the operator nothing.
+      expect(observation.warnings).toEqual([]);
+      const infoLine = bootLineFor(observation, 'pty');
+      expect(infoLine).toContain(`pty running ${ABOVE_FLOOR_VERSION}`);
+      expect(infoLine).toContain(`floor ${FLOOR_VERSION}`);
+      expect(infoLine).toContain(`last verified ${LAST_VERIFIED_VERSION}`);
+      // 2.1.232 − 2.1.224 = 8, and INFO is the only class this number ever has.
+      expect(infoLine).toContain('(+8 patch releases ahead of evidence)');
+      expect(infoLine).not.toContain('CLI runtime drift');
+      // Silent to the operator is NOT silent to the log: the observation is still
+      // recorded, because that payload is evidence rather than decoration.
+      expect(driftEvents(observation.daemon)).toEqual([
+        { expected: FLOOR_VERSION, observed: ABOVE_FLOOR_VERSION, channel: 'pty' },
+      ]);
     } finally {
-      await daemon.stop();
+      await observation.daemon.stop();
     }
   });
 
-  it('emits NO drift when the observed version matches the pin', async () => {
-    const daemon = await startDaemon({
-      config: buildConfig({ expectedCliVersion: '2.1.215' }),
-      cliVersionProbe: async () => '2.1.215',
+  it('observed EXACTLY at the last-verified marker is the quiet steady state — no warn, no event, no ahead-clause', async () => {
+    const observation = await bootAndCaptureOutput({
+      config: buildConfig({ cliVersionFloor: FLOOR_VERSION, cliVersionLastVerified: LAST_VERIFIED_VERSION }),
+      cliVersionProbe: async () => LAST_VERIFIED_VERSION,
     });
     try {
-      expect(driftEvents(daemon)).toEqual([]);
+      expect(observation.warnings).toEqual([]);
+      expect(driftEvents(observation.daemon)).toEqual([]);
+      // Never "+0 patch releases ahead of evidence" — a zero is not news.
+      expect(bootLineFor(observation, 'pty')).not.toContain('ahead of evidence');
     } finally {
-      await daemon.stop();
+      await observation.daemon.stop();
+    }
+  });
+
+  it('an ahead-clause is NEVER computed across a minor boundary — 2.2.0 is not "N patches" ahead of 2.1.224', async () => {
+    const observation = await bootAndCaptureOutput({
+      config: buildConfig({ cliVersionFloor: FLOOR_VERSION, cliVersionLastVerified: LAST_VERIFIED_VERSION }),
+      cliVersionProbe: async () => '2.2.0',
+    });
+    try {
+      expect(observation.warnings).toEqual([]);
+      // A subtracted patch number here would be a fabricated statistic on a boot
+      // line. The clause is omitted instead; the raw versions still both appear.
+      expect(bootLineFor(observation, 'pty')).not.toContain('ahead of evidence');
+      expect(bootLineFor(observation, 'pty')).toContain('pty running 2.2.0');
+    } finally {
+      await observation.daemon.stop();
+    }
+  });
+
+  // ─── Rider (b): UNKNOWN IS ITS OWN STATE, never a silent pass ───────────────
+
+  it('a probe that answers NOTHING warns as UNKNOWN — the 2026-08-10 blind-auto-start hole, closed', async () => {
+    const observation = await bootAndCaptureOutput({
+      config: buildConfig({ cliVersionFloor: FLOOR_VERSION, cliVersionLastVerified: LAST_VERIFIED_VERSION }),
+      cliVersionProbe: async () => null,
+    });
+    try {
+      expect(observation.warnings).toHaveLength(1);
+      // Same grep phrase as the below-floor path, so one journald search finds both.
+      expect(observation.warnings[0]!).toContain('CLI runtime drift');
+      expect(observation.warnings[0]!).toContain('CLI version UNKNOWN, the probe answered nothing');
+      expect(observation.warnings[0]!).toContain(`floor ${FLOOR_VERSION} NOT CHECKED`);
+      expect(bootLineFor(observation, 'pty')).toContain('pty running (unknown)');
+      expect(driftEvents(observation.daemon)).toEqual([
+        { expected: FLOOR_VERSION, observed: null, channel: 'pty' },
+      ]);
+    } finally {
+      await observation.daemon.stop();
+    }
+  });
+
+  it('a version that will not PARSE warns too — unparseable is not the same as ok', async () => {
+    const observation = await bootAndCaptureOutput({
+      config: buildConfig({ cliVersionFloor: FLOOR_VERSION, cliVersionLastVerified: LAST_VERIFIED_VERSION }),
+      cliVersionProbe: async () => '2.1.x-nightly',
+    });
+    try {
+      expect(observation.warnings).toHaveLength(1);
+      expect(observation.warnings[0]!).toContain('CLI runtime drift');
+      expect(observation.warnings[0]!).toContain('CLI version UNPARSEABLE (observed "2.1.x-nightly")');
+      expect(observation.warnings[0]!).toContain(`floor ${FLOOR_VERSION} NOT CHECKED`);
+      expect(driftEvents(observation.daemon)).toEqual([
+        { expected: FLOOR_VERSION, observed: '2.1.x-nightly', channel: 'pty' },
+      ]);
+    } finally {
+      await observation.daemon.stop();
+    }
+  });
+
+  // ─── An unpinned floor is REPORT-ONLY, in every state ───────────────────────
+
+  it('NO floor pinned → never warns, not even for an unknown observation, and reports expected: null', async () => {
+    const observation = await bootAndCaptureOutput({
+      config: buildConfig({ cliVersionFloor: undefined, cliVersionLastVerified: undefined }),
+      cliVersionProbe: async () => null,
+    });
+    try {
+      // There is nothing to be below, so there is nothing to warn about. This is
+      // the branch that preserves the SDK channel's shipped posture while its pins
+      // stay unset (rule 0.2).
+      expect(observation.warnings).toEqual([]);
+      expect(bootLineFor(observation, 'pty')).toContain('floor (unset), last verified (unset)');
+      expect(driftEvents(observation.daemon)).toEqual([{ expected: null, observed: null, channel: 'pty' }]);
+    } finally {
+      await observation.daemon.stop();
     }
   });
 
   // ─── The two channels are watched independently (drift-checker fix) ─────────
   // The PATH `claude` (pty) and the SDK-vendored binary run different versions by
-  // design, so each is judged against its OWN pin and neither can raise drift for
-  // the other.
-  const SDK_BINARY_PATH = '/fake/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude';
+  // design, so each is judged against its OWN floor and neither can raise drift
+  // for the other. D73 rider (a): the SEMANTICS are shared; the PINS are not.
 
-  it('a mismatching sdk pin drifts the sdk channel ONLY, with the binary named', async () => {
-    const daemon = await startDaemon({
-      config: buildConfig({ expectedCliVersion: '2.1.217', expectedSdkCliVersion: '2.1.999' }),
-      cliVersionProbe: async () => '2.1.217',
-      sdkCliVersionProbe: async () => ({ version: '2.1.207', binaryPath: SDK_BINARY_PATH }),
+  it('an sdk observation below the SDK floor warns the sdk channel ONLY, with the binary named', async () => {
+    const observation = await bootAndCaptureOutput({
+      config: buildConfig({
+        cliVersionFloor: FLOOR_VERSION,
+        cliVersionLastVerified: LAST_VERIFIED_VERSION,
+        sdkCliVersionFloor: '2.1.207',
+        sdkCliVersionLastVerified: '2.1.207',
+      }),
+      cliVersionProbe: async () => ABOVE_FLOOR_VERSION,
+      sdkCliVersionProbe: async () => ({ version: '2.1.100', binaryPath: SDK_BINARY_PATH }),
     });
     try {
-      expect(driftEvents(daemon)).toEqual([
-        { expected: '2.1.999', observed: '2.1.207', channel: 'sdk', binaryPath: SDK_BINARY_PATH },
+      expect(observation.warnings).toHaveLength(1);
+      expect(observation.warnings[0]!).toContain('CLI runtime drift (sdk)');
+      expect(observation.warnings[0]!).toContain('observed 2.1.100 is BELOW the verified floor 2.1.207');
+      // An SDK-channel surprise is usually the vendored CLI moving under us, so the
+      // resolved path rides along.
+      expect(observation.warnings[0]!).toContain(`binary=${SDK_BINARY_PATH}`);
+      expect(driftEvents(observation.daemon)).toEqual([
+        { expected: FLOOR_VERSION, observed: ABOVE_FLOOR_VERSION, channel: 'pty' },
+        { expected: '2.1.207', observed: '2.1.100', channel: 'sdk', binaryPath: SDK_BINARY_PATH },
       ]);
     } finally {
-      await daemon.stop();
+      await observation.daemon.stop();
     }
   });
 
-  it('a mismatching pty pin drifts the pty channel ONLY while the sdk pin matches', async () => {
-    const daemon = await startDaemon({
-      config: buildConfig({ expectedCliVersion: '1.0.0', expectedSdkCliVersion: '2.1.207' }),
-      cliVersionProbe: async () => '2.1.217',
+  it('an UNPINNED sdk channel never warns, even though it sits far below the PTY floor', async () => {
+    const observation = await bootAndCaptureOutput({
+      config: buildConfig({ cliVersionFloor: FLOOR_VERSION, cliVersionLastVerified: LAST_VERIFIED_VERSION }),
+      cliVersionProbe: async () => ABOVE_FLOOR_VERSION,
       sdkCliVersionProbe: async () => ({ version: '2.1.207', binaryPath: SDK_BINARY_PATH }),
     });
     try {
-      expect(driftEvents(daemon)).toEqual([{ expected: '1.0.0', observed: '2.1.217', channel: 'pty' }]);
+      // The false-drift trap: the pty floor is NEVER asserted against the sdk
+      // channel. 2.1.207 is below 2.1.224 and says nothing, because the pin that
+      // would judge it does not exist.
+      expect(observation.warnings).toEqual([]);
+      expect(bootLineFor(observation, 'sdk')).toContain('floor (unset), last verified (unset)');
+      // ⚠ RE-PIN vs the pre-D73 suite: the unpinned sdk channel used to emit NO
+      // event at all, while the unpinned PTY channel emitted one with
+      // `expected: null`. Rider (a) dissolves that asymmetry — the code treats both
+      // channels identically, so an unpinned channel is now OBSERVED (evidence)
+      // while remaining unasserted (no warning).
+      expect(driftEvents(observation.daemon)).toEqual([
+        { expected: FLOOR_VERSION, observed: ABOVE_FLOOR_VERSION, channel: 'pty' },
+        { expected: null, observed: '2.1.207', channel: 'sdk', binaryPath: SDK_BINARY_PATH },
+      ]);
     } finally {
-      await daemon.stop();
+      await observation.daemon.stop();
     }
   });
 
-  it('an UNPINNED sdk channel emits no drift, even though it differs from the pty pin', async () => {
-    const daemon = await startDaemon({
-      config: buildConfig({ expectedCliVersion: '2.1.217', expectedSdkCliVersion: undefined }),
-      cliVersionProbe: async () => '2.1.217',
-      sdkCliVersionProbe: async () => ({ version: '2.1.207', binaryPath: SDK_BINARY_PATH }),
-    });
-    try {
-      // The false-drift trap: the pty pin is NEVER asserted against the sdk
-      // channel — an unpinned channel is reported at boot and nothing else.
-      expect(driftEvents(daemon)).toEqual([]);
-    } finally {
-      await daemon.stop();
-    }
-  });
-
-  it('an unresolvable sdk binary is reported honestly and still raises drift against a pin', async () => {
-    const daemon = await startDaemon({
-      config: buildConfig({ expectedCliVersion: '2.1.217', expectedSdkCliVersion: '2.1.207' }),
-      cliVersionProbe: async () => '2.1.217',
+  it('an unresolvable sdk binary is reported honestly and still raises the UNKNOWN warning against a floor', async () => {
+    const observation = await bootAndCaptureOutput({
+      config: buildConfig({ sdkCliVersionFloor: '2.1.207', sdkCliVersionLastVerified: '2.1.207' }),
       sdkCliVersionProbe: async () => ({ version: null, binaryPath: null }),
     });
     try {
-      expect(driftEvents(daemon)).toEqual([
+      expect(observation.warnings).toHaveLength(1);
+      expect(observation.warnings[0]!).toContain('CLI runtime drift (sdk)');
+      expect(observation.warnings[0]!).toContain('CLI version UNKNOWN, the probe answered nothing');
+      expect(observation.warnings[0]!).toContain('binary=(unresolved)');
+      expect(driftEvents(observation.daemon)).toEqual([
         { expected: '2.1.207', observed: null, channel: 'sdk', binaryPath: null },
       ]);
     } finally {
-      await daemon.stop();
+      await observation.daemon.stop();
     }
   });
 });
