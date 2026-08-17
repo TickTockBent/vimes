@@ -56,6 +56,64 @@ const ISO_TIMESTAMP_PREFIX_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/;
 // U+00B7 MIDDLE DOT — printable and visually quiet; never a control byte.
 const FALLBACK_LABEL_SEPARATOR = ' · ';
 
+// ─── D91 prong (ii): stripping dispatched-worker briefing boilerplate ────────
+//
+// `packages/core/src/tasks/stageInstruction.ts` builds four dispatch-briefing
+// variants (generic/implement, plan, review, progress), and ALL FOUR open
+// with this exact stem before diverging. Restated rather than imported —
+// `@vimes/core` is deliberately NOT a dependency of packages/ui (see this
+// file's header); same posture as costDisplay.ts's `NANO_DOLLARS_PER_CENT`.
+// ⚠ DRIFT RISK, stated rather than discovered: if the briefing stem in
+// stageInstruction.ts ever changes, this stripper goes quietly INERT — every
+// derivedTitle simply fails the stem check and falls through to the
+// timestamp fallback rung. Labels regress to the pre-D91 "sea of identical
+// boilerplate" for dispatched workers, but nothing throws and nothing is
+// visibly broken; that is an accepted failure mode, not a silent one.
+const DISPATCH_BRIEFING_STEM = 'You are a worker session that VIMES dispatched';
+
+// The generic/implement/progress variants embed the real task title after a
+// `Task:` marker (padded with spaces, e.g. `Task:      ${label}`); the
+// plan/review variants carry no such marker at all.
+const DISPATCH_TASK_MARKER = 'Task:';
+
+// Restated from core's `SESSION_TITLE_MAX_LENGTH` (packages/core/src/
+// sessionIdentity.ts) for the same reason as `DISPATCH_BRIEFING_STEM` above —
+// keep the two in step. This is the auto-titler's single-line collapse cap:
+// hitting it mid-word truncates the recovered task fragment, so a result
+// derived from a capped-length input gets a trailing `…` to say so.
+const DERIVED_TITLE_CAP_LENGTH = 120;
+
+/**
+ * Recovers the real task title out of a dispatched worker's `derivedTitle`,
+ * or reports that nothing usable survived (D91 prong ii).
+ *
+ * - Not boilerplate (does not start with the dispatch stem) → returned
+ *   UNCHANGED, byte-identical. This is the common case for orchestrator
+ *   sessions and anything else that never went through stageInstruction.ts.
+ * - Boilerplate, with a `Task:` marker → everything after the FIRST marker,
+ *   trimmed. FIRST on purpose, not last: a task legitimately titled
+ *   "Task: surf…" produces a briefing that reads `Task:      Task: surf…`,
+ *   and taking the LAST marker would eat the real title's own leading
+ *   "Task:" instead of just the briefing's label prefix.
+ * - Boilerplate, no marker (or nothing left after trimming) → null. The
+ *   plan/review/progress-without-marker variants land here; the caller falls
+ *   through to the timestamp rung exactly as an absent title does today.
+ */
+export function stripDispatchBoilerplate(derivedTitle: string): string | null {
+  if (!derivedTitle.startsWith(DISPATCH_BRIEFING_STEM)) {
+    return derivedTitle;
+  }
+  const markerIndex = derivedTitle.indexOf(DISPATCH_TASK_MARKER);
+  if (markerIndex === -1) {
+    return null;
+  }
+  const recoveredTitle = derivedTitle.slice(markerIndex + DISPATCH_TASK_MARKER.length).trim();
+  if (recoveredTitle.length === 0) {
+    return null;
+  }
+  return derivedTitle.length >= DERIVED_TITLE_CAP_LENGTH ? `${recoveredTitle}…` : recoveredTitle;
+}
+
 // Zero-pads a calendar field to 2 digits, matching the original slice-the-ISO
 // digit style (`matched[3]`/`[4]`/`[5]` were always 2 characters). Never fed a
 // value outside 0-59 by this file's own callers.
@@ -143,13 +201,24 @@ export interface SessionLabelInputs {
 }
 
 /**
- * `name` → `derivedTitle` → the distinguishing fallback.
+ * `name` → `derivedTitle (boilerplate-stripped)` → the distinguishing
+ * fallback.
  *
  * ⚠ **NO CWD-BASENAME RUNG. DO NOT ADD ONE.** The cost ledger groups by
  * directory (D37), so a session's cwd basename is its parent node's own label —
  * the rung carried zero information and read as "the same project listed
  * several times within a single folder". A blank value at any rung falls
  * through; the result is never blank.
+ *
+ * The `derivedTitle` rung passes through `stripDispatchBoilerplate` (D91
+ * prong ii, 2026-08-17) before it is accepted: a dispatched worker's title is
+ * the auto-titler's single-line collapse of its `stageInstruction.ts`
+ * briefing, and the briefing's own opening sentence crowds out (or entirely
+ * swallows) the real task title. A non-null strip result is this rung's
+ * answer as-is; a null result (no task fragment survived) falls through to
+ * the timestamp fallback exactly as an absent title does today. The `name`
+ * rung above is UNTOUCHED by this — a human-supplied name is never
+ * second-guessed (D91: named sessions bypass the fallback entirely).
  *
  * `utcOffsetMinutes` (positive = EAST of UTC) only matters when the ladder
  * bottoms out at the timestamp rung — S15-F10 — but it is a required
@@ -163,7 +232,10 @@ export function resolveSessionLabel(inputs: SessionLabelInputs, utcOffsetMinutes
   }
   const derivedTitle = inputs.derivedTitle;
   if (typeof derivedTitle === 'string' && derivedTitle.trim().length > 0) {
-    return derivedTitle.trim();
+    const strippedTitle = stripDispatchBoilerplate(derivedTitle.trim());
+    if (strippedTitle !== null) {
+      return strippedTitle;
+    }
   }
   return formatSessionFallbackLabel(inputs.sessionId, inputs.earliestActivityAt, utcOffsetMinutes);
 }

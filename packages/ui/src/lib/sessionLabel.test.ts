@@ -3,6 +3,7 @@ import {
   formatSessionFallbackLabel,
   formatSessionTimestamp,
   resolveSessionLabel,
+  stripDispatchBoilerplate,
 } from './sessionLabel.js';
 import { sessionLabelFor, type SessionView } from './costDisplay.js';
 import { deriveSessionRow } from './sessionRow.js';
@@ -146,5 +147,90 @@ describe('the session list and the cost ledger agree, for the same session', () 
 
   it('the ledger renders its OWN resolution, never the server-supplied label string', () => {
     expect(sessionLabelFor(ledgerSession(null), 0)).not.toContain('SERVER LABEL');
+  });
+});
+
+// ─── D91 prong (ii) — S16-A1: stripping dispatched-worker briefing boilerplate
+//
+// Real briefing shapes are drawn from packages/core/src/tasks/
+// stageInstruction.ts: all four dispatch variants open with the stem
+// `You are a worker session that VIMES dispatched`; the generic/implement/
+// progress variants embed the real task title after a `Task:      ` marker,
+// the plan/review variants never do.
+describe('stripDispatchBoilerplate: D91 prong (ii)', () => {
+  const DISPATCH_STEM = 'You are a worker session that VIMES dispatched';
+
+  it('stem + Task: <title> → the title, recovered and trimmed', () => {
+    const briefing = `${DISPATCH_STEM} to make progress.\n\n  Task:      Surface the drift risk  `;
+    expect(briefing.length).toBeLessThan(120);
+    expect(stripDispatchBoilerplate(briefing)).toBe('Surface the drift risk');
+  });
+
+  // ⚠ THE DOUBLED LIVE SAMPLE. A task whose OWN title begins "Task:" produces
+  // a briefing that reads `Task:      Task: surf…` — taking the LAST marker
+  // would eat the real title's own leading "Task:" instead of the briefing's
+  // label prefix, so this function takes the FIRST marker on purpose.
+  it('doubled "Task: Task: surf" shape → first-marker rule keeps the real title intact', () => {
+    const briefing = `${DISPATCH_STEM} to make progress on one task.\n\n  Task:      Task: surf`;
+    expect(stripDispatchBoilerplate(briefing)).toBe('Task: surf');
+  });
+
+  it('stem with no Task: marker (the plan/review variant shape) → null', () => {
+    const planBriefing =
+      `${DISPATCH_STEM} to PLAN one task. You are in plan mode: investigate directly ` +
+      'and produce a plan — do not implement anything yet.';
+    expect(stripDispatchBoilerplate(planBriefing)).toBeNull();
+  });
+
+  it('non-boilerplate derivedTitle → returned byte-identical (the passthrough half of S16-A1)', () => {
+    const humanShapedTitle = 'Look at the development plan and write next-steps.md';
+    expect(stripDispatchBoilerplate(humanShapedTitle)).toBe(humanShapedTitle);
+  });
+
+  it('cap-hit input (length ≥ 120, the auto-titler truncation bound) carries a trailing …', () => {
+    const capHitBriefing = `${DISPATCH_STEM} to make progress. Task:      Surface th`.padEnd(120, ' ');
+    expect(capHitBriefing).toHaveLength(120);
+    expect(stripDispatchBoilerplate(capHitBriefing)).toBe('Surface th…');
+  });
+
+  it('short input (length < 120) recovers the same title with no trailing …', () => {
+    const shortBriefing = `${DISPATCH_STEM} to make progress. Task:      Surface th`;
+    expect(shortBriefing.length).toBeLessThan(120);
+    expect(stripDispatchBoilerplate(shortBriefing)).toBe('Surface th');
+  });
+
+  it('resolveSessionLabel: a null strip result falls through to the timestamp fallback rung', () => {
+    const planBriefing =
+      `${DISPATCH_STEM} to REVIEW one task's implementation independently. You did not ` +
+      'write this code — judge it fresh against the acceptance criteria below.';
+    expect(
+      resolveSessionLabel(
+        {
+          sessionId: 'a1b2c3d4-e5f6',
+          name: null,
+          derivedTitle: planBriefing,
+          earliestActivityAt: '2026-07-19T23:25:00.000Z',
+        },
+        0,
+      ),
+    ).toBe('Jul 19 23:25 · a1b2c3d4');
+  });
+
+  // D91: named sessions bypass the fallback entirely — the `name` rung is
+  // UNTOUCHED by this change, so a boilerplate derivedTitle beside a real
+  // name must never leak through the stripper at all.
+  it('resolveSessionLabel: a named session ignores a boilerplate derivedTitle — the NAME wins', () => {
+    const boilerplateWithNoTaskMarker = `${DISPATCH_STEM} to PLAN one task.`;
+    expect(
+      resolveSessionLabel(
+        {
+          sessionId: 'a1b2c3d4-e5f6',
+          name: 'sort out the death ledger',
+          derivedTitle: boilerplateWithNoTaskMarker,
+          earliestActivityAt: '2026-07-19T23:25:00.000Z',
+        },
+        0,
+      ),
+    ).toBe('sort out the death ledger');
   });
 });
