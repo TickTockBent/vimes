@@ -29,58 +29,7 @@ records in decisions.md; the notable refinements Wes added over the leans:*
 
 ---
 
-## D73 — What should the CLI version pin MEAN? *(trigger: fired — the pin has drifted three times in five days and the warning now carries no information; Wes raised it 2026-08-11. UPDATE 2026-08-12: FOUR bumps in six days — observed 2.1.228 at both slice-13 deploys, pin still 2.1.224; both boots warned, both warnings carried no information. DATUM #5 same day: the slice-14 deploy boot warned identically — three consecutive uninformative warnings. DATUM #6 (2026-08-13, S15 deploy): identical again — expected=2.1.224 observed=2.1.231. Four in a row. DATUM #7 (2026-08-14, U6 deploy): expected=2.1.224 observed=2.1.232. Five in a row; the observed version has now moved four times against one unmoved pin. The lean below unchanged and strengthening.)*
-
-**The observation that opened it (Wes, 2026-08-11):** *"maybe we pin just the
-major version and leave the minors?"* — after the pin missed twice in a row
-(pinned 2.1.224; observed 2.1.226 at the Move-3 deploy; live 2.1.227 the next
-morning). Recent history: 2.1.207 → .215 → .217 → .220 → .224 → .226 → .227.
-
-**The diagnosis is right; the proposed remedy trades a noisy guard for a blind
-one.** Today's guard is exact equality, warn-only, never gating a spawn (E4,
-`config.ts`) — so **every forward auto-update fires it and almost none matter.**
-A guard that always fires trains its reader to ignore it, which is worse than no
-guard, because it launders the one time it matters. But major-only goes blind
-across exactly the range where Claude Code ships behaviour change: the patch
-stream is the product's release stream, and at least two patch bumps in this
-project's own history warranted verification spikes — T6 (.217→.220,
-`spike-t6-cli-2.1.220-FINDINGS.md`) and the .207→.215 auto-update that fired
-mid-slice-2 and promoted the whole version-lockfile carry-over. A `2.*` pin
-would have been silent for both.
-
-**LEAN: keep the exact observation, change the comparison — a floor plus a
-last-verified marker, replacing equality.** The two questions actually worth a
-warning are different, and neither is "did the number change":
-
-1. **"Is the CLI OLDER than what we've verified against?"** → a **floor**
-   (`MINIMUM`, warn when observed < floor). Forward auto-updates never warn; a
-   downgrade, a stale box, or a fresh clone on an old CLI does. This is herdr's
-   `min_engine_version` discipline (version-floor's 5th series appearance,
-   already a carry-over action item) applied to the surface that keeps moving.
-2. **"How far ahead of our EVIDENCE are we running?"** → a **last-verified
-   marker**: informational, never a warning — *"running 2.1.227, last verified
-   2.1.220."* That is the honest rule-0.7 statement (observed truth, and the
-   distance from the last time we checked it), and it is the number that should
-   drive whether a verify spike is due.
-
-Both are the same boot probe with a different comparison, so the lift is small.
-**Keep recording the exact observed version regardless** — `runtime_drift_observed`
-already carries it and that payload is evidence, not decoration.
-
-**Two things any answer must handle.** (a) **There are TWO pins, deliberately
-separate** (`expectedCliVersion` = PTY channel; `expectedSdkCliVersion` = the
-binary the Agent SDK vendors, legitimately different — observed 2.1.207 vs
-2.1.217 — and currently UNSET, so the SDK channel is reported and never
-asserted). Whatever semantics land must land on both, or state why not.
-(b) **The auto-start path is blind:** the 2026-08-10 post-outage boot probed
-`(unknown)` and recorded `observed:null`, so the guard was silent on the one
-path that runs unattended. A floor that treats `unknown` as "passes" would
-inherit that hole — `unknown` should be its own reported state, not a silent OK.
-
-⚠ **Behaviour-shaping change to a guard → rule 0: evidence + sign-off**, and it
-is a daemon change (restart). Whatever ships gets sabotage-verified — break the
-comparison deliberately and confirm the RIGHT test reddens, because a green test
-on a guard this small can easily be measuring the wrong comparison.
+## D73 — CLI version pin semantics — ✅ DECIDED 2026-08-17 → decisions.md D73 *(floor 2.1.224 + last-verified marker replacing equality; both pins; unknown is its own state; builds as S16·U1)*
 
 ## D84 — MOVED to decisions.md as D85 (2026-08-12): the API-version floor is bundle-declared, bundle-checked at connect; hello frame is the carrier; built as S14 U1. Candidate (a) — the gate stops shipping dist — remains an OPEN independent hardening with no trigger yet.
 
@@ -520,24 +469,7 @@ same "who may write on a task" family), extension-model.md §5 threat
 framing (an attention-raising extension is an interrupt-the-human
 capability — it belongs in the permission model).
 
-## D91 — Session naming: the sea of "You are a worker session that…"
-
-*(Raised ⟨Wes⟩ 2026-08-14 at the slice-15 human gate: dispatched workers
-all open with the same briefing prefix, so the tree renders dozens of
-identical labels.)*
-
-**Trigger:** slice-16 skeleton (the deletion map already carries
-`renameSession` as an orphaned store action needing a ruling — same
-family, decide together).
-
-**Lean, three prongs:** (i) NAME AT CREATION — the dispatch path already
-carries a name slot on spawn; workers get named from their task title
-going forward (daemon-side, small). (ii) DERIVATION FALLBACK for history —
-`resolveSessionLabel` learns to skip briefing boilerplate and find the
-first distinguishing line (client lib, tested). (iii) RENAME AFFORDANCE —
-`renameSession` exists store-side today and dies with sessionList unless
-rehomed; the tree's ⋯ sheet is its natural landing. No naming work is
-scheduled inside slice 15.
+## D91 — Session naming — ✅ DECIDED 2026-08-17 → decisions.md D91 *(three prongs as leaned: name-at-dispatch, boilerplate-skipping label fallback, rename in the tree ⋯ sheet; builds as S16·U1/U2/U3)*
 
 ## D92 — Orchestrator separation by tool grant: does the orchestrator read the repo?
 

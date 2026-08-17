@@ -2888,3 +2888,69 @@ MUST price unfiled's new home before the list dies.
 complaint (a scoped tree renders one project's served order, a far
 smaller room); S15-F7's stale mirrors drop behind unfiled's collapsed
 row (the conclude-mirror verb stays wanted, unhurried).
+
+## D73 — CLI version pin: a floor plus a last-verified marker, replacing equality — DECIDED 2026-08-17
+
+*(Moved from open-questions.md, where it ripened across seven data —
+five consecutive uninformative boot warnings against one unmoved pin
+(2.1.224 pinned; observed walked .226 → .227 → .228 → .231 → .232).
+Signed ⟨Wes⟩ 2026-08-17 at the slice-16 skeleton review, as §3.9's
+Gate-D pin. Builds as S16·U1; daemon change, restart owed.)*
+
+The exact-equality warn-only guard fired on every forward auto-update
+and almost never mattered — a guard that always fires trains its reader
+to ignore it, which launders the one time it matters. ⟨Wes⟩'s original
+instinct ("pin just the major?") diagnosed the noise correctly, but
+major-only goes blind across exactly the range where Claude Code ships
+behaviour change (T6's .217→.220 spike and the mid-slice-2 .207→.215
+auto-update were both patch bumps that warranted verification).
+
+**The ruling — same boot probe, different comparison, answering the two
+questions actually worth asking:**
+
+1. **Floor `2.1.224`** — warn only when observed < floor ("is the CLI
+   OLDER than what we've verified against?"). Forward auto-updates go
+   silent; downgrades, stale boxes, and fresh clones on old CLIs warn.
+   Herdr's `min_engine_version` discipline applied to the surface that
+   keeps moving.
+2. **Last-verified marker `2.1.224`** — the boot line reports "running
+   X, N releases ahead of evidence" as INFO, never a warning ("how far
+   ahead of our EVIDENCE are we running?"). This is the rule-0.7 honest
+   statement, and the number that decides when a verify spike is due.
+
+Both values move only by deliberate re-pin at verification spikes.
+`runtime_drift_observed` keeps recording the exact observed version —
+that payload is evidence, not decoration.
+
+**Binding riders (from the open-question record):** (a) the semantics
+land on BOTH pins — `expectedCliVersion` (PTY) and
+`expectedSdkCliVersion` (SDK-vendored, legitimately different, currently
+unset) — or the build states why not; (b) `unknown`/null observations
+(the blind auto-start path, 2026-08-10) are their OWN reported state,
+never a silent pass; (c) the guard change is sabotage-verified — break
+the comparison and confirm the RIGHT test reddens.
+
+## D91 — Session naming: name at dispatch, derive for history, rename in the tree — DECIDED 2026-08-17
+
+*(Moved from open-questions.md; raised ⟨Wes⟩ 2026-08-14 at the slice-15
+human gate — the tree rendered a sea of identical "You are a worker
+session that…" labels. Signed ⟨Wes⟩ 2026-08-17 at the slice-16 skeleton
+review, all three prongs as leaned. Builds as S16·U1/U2/U3.)*
+
+Recon collapsed the cost: the spawn wire already carries
+`name?: string` and the `rename` op is already shipped, so no protocol
+work exists anywhere in this decision.
+
+1. **NAME AT DISPATCH (S16·U1, daemon):** `taskDispatcher.ts` passes the
+   task/stage title as the spawn `name`. `orchestratorApi.ts` already
+   names its own session ("Orchestrator — …") — the asymmetry between
+   the two spawn sites was the bug.
+2. **DERIVATION FALLBACK FOR HISTORY (S16·U2, lib):**
+   `resolveSessionLabel` learns to skip known briefing boilerplate to
+   the first distinguishing line. A pure derivation over existing data —
+   NO events are rewritten (the spine is append-only); named sessions
+   bypass the fallback entirely; non-boilerplate text passes through
+   byte-identical (tested).
+3. **RENAME AFFORDANCE (S16·U3, UI):** `renameSession` (orphaned by the
+   sessionList deletion) rehomes to the tree's ⋯ sheet, wired to the
+   shipped `rename` op. Refusals render verbatim per U4.
