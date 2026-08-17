@@ -174,7 +174,10 @@ Deltas against the 08-13 map — verified today, not assumed:
 **Unit ledger (2026-08-17):** U1 `7899e41` (deployed, restart 12:13) ·
 U2 `71f27e4` · U3 `8271c60` (+ decision-4 amendment: discover is
 global) · U4 `e5c568b` · U5 `38e4a76` (decision 8 verified
-already-built; cold open seeds [tree] + hint) · U5b pending.
+already-built; cold open seeds [tree] + hint) · U5b `ba8b4fb`.
+**Machine gate PASSED 2026-08-17: suite green ×2 (3493/147), ci-gate ALL
+PROFILES, live-code grep clean; U2–U5b deployed in one ci-gate run
+(UI-only, no restart). ⟨Wes⟩'s §6 human gate walk IN PROGRESS.**
 
 ## §6. Gates & kill criteria
 

@@ -1699,3 +1699,63 @@ design: candidates when someone picks it up include prefix-stable context
 digests, warm recon agents held open for follow-ups (already practiced),
 and whatever the provider ships next for cross-request reuse. No trigger;
 noodle when idle.*
+
+## The audit pipeline — named first-tenant candidate for the extension surface (⟨Wes⟩, 2026-08-17)
+
+*(⟨Wes⟩: "an even better candidate than the book genesis stuff. It runs an
+agentic audit using a skill and outputs artifacts." Orchestrator assessment
+banked same day, ⟨Wes⟩'s word. The workload:
+`~/projects/infrastructure/audit-pipeline` — Clocktower and Associates' paid
+site audit ($2,500–3,500/run): one `/audit <url> [pages:N] [client]`
+command, 18 TodoWrite-mirrored phases driving a live site through the
+Charlotte MCP, deterministic deductive scoring, findings JSON → PDF.)*
+
+**Why it beats book-genesis as tenant #1:**
+
+1. **It has a verdict function** — the second one in the estate after
+   VIMES's own (the decomposition series' standing observation: nowhere
+   else in seventeen repos). `render_report.py` revalidates, recomputes,
+   and REFUSES to render on any disagreement; `asm_band.py --explain` is a
+   command-kind verification recipe. The exit condition is
+   machine-checkable, which is what makes the workload dispatchable
+   rather than babysat.
+2. **One run maps to one dispatched session** with a one-line work order;
+   D91's name-at-dispatch (shipped 2026-08-17) names it for free; the 18
+   phases are ready-made progress structure.
+3. **Wes-gates-every-report is D89's first real consumer:** the finished
+   session is a terminal fact (D88); the DELIVERABLE needs eyes. "PDF
+   ready for review" raised on the task/artifact is exactly the
+   entity-agnostic attention edge D89 waits on — this workload prices
+   that design instead of speculation.
+4. **It already speaks Gate-D:** the golden-run note's repeatability
+   decomposition (98A vs 89B traced to four named interpretation
+   variances, "pin in writing before the panel runs") is
+   calibrate-then-pin arrived at independently; its D-A8 items are
+   ⟨tune⟩s.
+
+**The four gaps VIMES must close first (each a trigger, not a lean):**
+
+1. **Dispatched-session tool exposure (q14, migration map).** D50 clamps
+   dispatched sessions to a closed allowlist; the audit needs ~25
+   Charlotte MCP tools + scoped Bash. The extension must DECLARE the tool
+   surface its dispatches need. This workload is the concrete forcing
+   function q14 lacked — the biggest gap and the most valuable.
+2. **Declared runtime prep.** Charlotte via project `.mcp.json` (xvfb
+   headed launch), the venv renderer — project-local and satisfied by
+   cwd-spawn today, but the extension model should treat "the project's
+   own runtime prep" as declared, not assumed.
+3. **Client confidentiality vs the spine.** The repo's rule is "client
+   data never leaves this repo"; a VIMES-dispatched run streams its
+   transcript through events.db and the WS layer. Same box,
+   localhost-bound, Access-gated — probably acceptable, but it is a
+   DELIBERATE ⟨Wes⟩ ruling to take at adoption time, never a silent
+   inheritance.
+4. **Long-run liveness bands.** An 18-phase browser run stresses watchdog
+   bands dispatched code tasks never reach. Nothing new to build;
+   calibration to do.
+
+**Far shape (parked with the rest of the orchestrator era):** phases as
+nodes, the renderer as the plan-level `verification_recipe` (nac decomp
+carry-over #6), repeatability panels as fan-out. The v1 mapping — one
+session per audit, attention on the deliverable, verdict at render —
+needs none of that.
