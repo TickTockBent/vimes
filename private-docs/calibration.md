@@ -2243,3 +2243,18 @@ a derived aggregate truncates anything crossing the boundary, and at 21k rows it
 bought nothing. Fixed by always recomputing every session from full history.
 **The lesson, sharper than the earlier three: verify the property that MATTERS, not
 an adjacent one that happens to be easy to count.**
+
+### 2026-08-17 — operational: D73 floor semantics live; first clean boot in five deploys (S16·U1)
+
+The S16·U1 deploy (restart 12:13) booted with **no drift warning for the
+first time since 2026-08-12** — and not because the CLI stopped moving:
+the observed version had bumped AGAIN (2.1.232 → 2.1.233, the fifth move
+against the old unmoved pin) and the floor correctly said nothing. The
+info line carried the honest number instead: `pty running 2.1.233, floor
+2.1.224, last verified 2.1.224 (+9 patch releases ahead of evidence)`.
+SDK channel report-only as designed (`floor (unset)`, binary path named).
+`/etc/vimes/env`: `VIMES_EXPECTED_CLI_VERSION` replaced by
+`VIMES_CLI_VERSION_FLOOR=2.1.224` + `VIMES_CLI_VERSION_LAST_VERIFIED=
+2.1.224` (both root:root 600 preserved). The +9 is now the number that
+prices the next verify spike (D73's stated purpose) — at the next CLI
+verification, both values re-pin together, deliberately.
