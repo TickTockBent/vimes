@@ -1,12 +1,17 @@
 # Slice 15 — the tree home surface
 
-**Status: MACHINE GATE CLOSED, ALL UNITS DEPLOYED (2026-08-13). ⟨Wes⟩ THE
-HUMAN GATE REMAINS: drive the tree as home from the phone — decide an
-attention item from its card, create the FIRST production node, attach a
-session, spawn from a node (directory prefill), watch another tab update
-live (U3b's nodes stream). Judgment items: F3's short id on rows, the
-invented unseen-dot `•`. On PASS → CLOSED; on FAIL → rule 0.1 + §6 kill
-criteria.** U3 `9303ee8` (write surface) + U3b `9581a82` (nodes-stream
+**Status: CLOSED 2026-08-17. Machine gate closed 2026-08-13; HUMAN GATE
+PASSED 2026-08-17 ⟨Wes⟩** — walk steps 1–6 all passed (step 2 re-run
+clean after D88), judgment items ruled (short id stays, unseen-dot
+stays, remembered panel stays), findings F5–F10 all signed: F5→U5
+`3abc41f`, F6→D88+U6 `03220fe` (core, restarted), F7 OPEN by design
+(demoted, unhurried — mirrors hide behind D90's scoping), F8→D90+U7
+`94030b4`, F9→U9 `4c40da6`, F10→U8 `f49a758`. U8+U9 deployed together
+in one ci-gate run 2026-08-17, UI-only, no restart. Final suite 3486.
+*(The original human-gate charter, for the record: drive the tree as
+home from the phone — decide an attention item from its card, create the
+FIRST production node, attach a session, spawn from a node (directory
+prefill), watch another tab update live.)* U3 `9303ee8` (write surface) + U3b `9581a82` (nodes-stream
 subscribe, closes S15-F4) landed after the paragraph below was written;
 final suite 3461; second ci-gate deploy ~12:55, no restart (UI-only). Flags F1–F5
 signed as written. Units landed, gated, committed, DEPLOYED (ci-gate ALL
@@ -399,7 +404,7 @@ Fix unit U7 (client-only; the whole-forest fetch stays). Walk findings
 tally: F5 (blank panels), F6 (completed pricing), F8 (scope) — three
 structural catches in one gate walk; the gate is earning its keep.
 
-**S15-F9 (2026-08-17, HUMAN GATE step 5, OPEN — spawn-from-node does not
+**S15-F9 (2026-08-17, HUMAN GATE step 5, CLOSED — spawn-from-node did not
 attach).** ⟨Wes⟩ spawned from the first production node: directory
 prefill PASSED (log-verified: `session_created` cwd is the project dir),
 but the session landed at the project ROOT, not under the node — no
@@ -413,10 +418,19 @@ change. Orchestrator lean: (i) now, (ii) recorded for the day atomicity
 matters. **SIGNED 2026-08-17 ⟨Wes⟩: option (i)** — "If I click a node
 and 'spawn a session' I expect it to spawn attached to that node.
 Otherwise what's the point of that button. I could spawn an unattached
-session any other way." Fix unit U9.
+session any other way." Fix unit U9. **CLOSED: U9 `4c40da6`
+(2026-08-17)** — `attachAfterSpawnNodeId` (tested lib decision) chains
+the existing attach verb after the spawned ack; the node id is captured
+before the spawn is sent; on attach refusal the sheet stays open with
+the daemon's words in the one refusal slot and the stream does not open
+(the session exists unattached — the honest state). `applyWriteAnswer`
+answers boolean so the chain can tell success from refusal; its three
+prior callers ignore it. Root-row spawns byte-identical to pre-U9.
+Noted, not touched: the sheet button still says "Spawn session" on a
+node row rather than naming the attach — revamp notebook.
 
-**S15-F10 (2026-08-17, HUMAN GATE step 5, OPEN — timestamps render UTC
-digits as if local).** The tree said "Aug 17 12:02" for a session
+**S15-F10 (2026-08-17, HUMAN GATE step 5, CLOSED — timestamps rendered
+UTC digits as if local).** The tree said "Aug 17 12:02" for a session
 spawned 08:02 EDT. `lib/sessionLabel.ts` is DELIBERATELY locale-free
 (deterministic, no Date/Intl — the right property for a tested lib) and
 renders the ISO string's UTC digits verbatim — so every timestamp the
@@ -425,7 +439,14 @@ style (rule 0.3 — inject at the boundary): the formatter takes an
 injected offset-minutes parameter (tests pass fixed offsets,
 deterministic), the view passes the browser's real offset. Small unit;
 sweep any other label-ladder consumers for the same verbatim rendering.
-**SIGNED 2026-08-17 ⟨Wes⟩: go.** Fix unit U8.
+**SIGNED 2026-08-17 ⟨Wes⟩: go.** Fix unit U8. **CLOSED: U8 `f49a758`
+(2026-08-17)** — the formatter ladder takes injected `utcOffsetMinutes`
+(positive = east of UTC; sign pinned by test vector), rollover is real
+arithmetic (midnight/month/year vectors), views pass
+`-new Date().getTimezoneOffset()` (negation pinned in comments at every
+call site); consumers threaded: TreeView, SessionListView ×2,
+CostLedgerView, `sessionRow.ts`, `costDisplay.ts`. Deployed with U9 in
+the single 2026-08-17 ci-gate run.
 
 **Walk observation, NOT a finding (2026-08-17):** the spawned session
 ANSWERED "~" when asked its current folder — but the infra is truthful

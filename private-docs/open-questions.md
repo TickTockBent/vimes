@@ -538,3 +538,55 @@ first distinguishing line (client lib, tested). (iii) RENAME AFFORDANCE —
 `renameSession` exists store-side today and dies with sessionList unless
 rehomed; the tree's ⋯ sheet is its natural landing. No naming work is
 scheduled inside slice 15.
+
+## D92 — Orchestrator separation by tool grant: does the orchestrator read the repo?
+
+*(Raised 2026-08-17 out of the nac decomposition (arcee-ai/nac, decomposition
+series #17, untracked) — the first prior-art repo sharing the
+orchestrator-cannot-execute thesis. nac enforces the separation by tool
+grant: the orchestrator session's tool list simply contains no file, exec,
+or search tool, so principle 10 is a capability fact rather than doctrine.)*
+
+The grant-enforcement half is not really in question — it is D67's
+capability model applied to the orchestrator's own session, and the grant
+should be declared in the manifest like any other. The open rider is the
+READ tool: nac says no (all discovery is dispatched to research threads),
+which keeps the orchestrator's context clean but means it cannot ground a
+work-order in the code without a round-trip.
+
+**Trigger:** the orchestrator era's first session-grant design (the manifest
+entry that says what the orchestrator session may call).
+
+**Lean:** **read yes, write/exec no.** Evidence from the current
+human-driven phase, S15·U9's work order: it could pin "no store changes —
+`attachSessionToNode` exists and its answer shape is already consumed in
+this file" only because the orchestrator read TreeView.vue first. That
+precision is what makes a work-order a contract rather than a wish; under
+no-read it degrades to whatever a research dispatch happened to report.
+The separation that keeps the orchestrator the cheap layer is staying out
+of the EDITOR, not out of the files. Sub-lean: once the code map / repo
+wiki exist, revisit whether curated surfaces suffice and raw read can
+narrow — but start with read.
+
+## D93 — Fan-out joins: inferred from source references, or declared nodes?
+
+*(Raised 2026-08-17, same decomposition. The mateclaw carry-over proposed
+`fan_out` + `collect` as first-class node kinds; nac shows the cheaper
+alternative — no join node at all. A node that names N source threads
+implicitly waits for all of them; the DAG is built from the source
+references, cycles rejected at dispatch/validation time, and best-of-N
+falls out as an emergent pattern rather than a feature.)*
+
+**Trigger:** the node-kit bend that prices fan-out/join — resolve in one
+pass rather than letting both shapes be half-true in the vocabulary.
+
+**Lean:** **inferred join.** It is materially simpler, composes with the
+checkpoint anatomy (a waiting node is just one whose sources aren't
+complete), and the inspectability argument for declared joins is already
+satisfied by the source references themselves. One rider the declared
+option would have gotten for free: the tree UI renders STRUCTURE, and an
+inferred join is structure that exists only in the dependency data — so
+adopting inferred creates a rendering obligation (source-refs drawn as
+edges/rollups in the tree), not a schema one. Name that obligation when
+the bend resolves so it doesn't get lost. Cycle rejection at validation
+time carries over either way (second corroboration, after prompter).
