@@ -256,6 +256,46 @@ production-exercised; D94 is open (parked — §3.8).
   No `.vue` files are touched, so no per-unit vue-tsc legs are OWED —
   ci-gate's vue-tsc + vite build still run as always.
 
+## §5b. Unit ledger + in-mandate judgment record (running)
+
+**U1 `da1de7c`** (2026-08-18): ref grammar lib, node-derived names
+beside legacy, `checkout_removed` schema + no-fold-by-test. 3531 →
+3585, zero changed pins. Agent self-caught a Write-tool NUL injection
+pre-census and added the missing node-pair collision test its own
+sabotage then proved load-bearing. One WO omission surfaced later:
+U1 never exported the new symbols from the core barrel.
+
+**U2 `ef5d3f9`** (2026-08-18): adapter checkout verbs + the
+CheckoutCoordinator + nodeWriter engine path. 3585 → 3640, zero
+changed pins; S14-A2 untouched; A10 verified by running. Orchestrator
+gate: suite ×1 here (×2 at slice gate), lock/compensation code read,
+independent prong-(b) sabotage reddened exactly its test. Judgment
+items, all in-mandate, recorded with rationale AT the code:
+- **Barrel exports**: U2 added U1's missing six re-export lines
+  (STOP-file deviation, additive only, reported not hidden) — the
+  alternative was daemon-side re-derivation, the §3.6 hazard itself.
+  WO-authoring miss, orchestrator's.
+- **"Live" = `liveness !== 'dead'`** for prong (a): the only reading
+  under which (a)/(b) partition the space; `{spawning,running}` would
+  let a dormant no-transcript session lose its cwd mid-life.
+- **Gate matches cwd by EXACT equality** (the literal §3.3 reading).
+  Sub-directory cwds don't block — safe BY CONSTRUCTION today:
+  worktreeRoot is outside every project root, so no spawn surface can
+  place a session below a checkout root; the coordinator's own
+  follow-up spawns at the root. Known limitation, revisit if a
+  surface ever spawns sub-cwd sessions.
+- **`checkout_removed` appended directly** (not via a writer): no
+  fold exists to protect (deferred, D86); it earns a writer when it
+  earns a fold.
+- **Checkout nodes born top-level** (`parentNodeId: null`, no
+  parameter): parenting checkouts under groups is a real decision
+  that lands with the surface that asks for it.
+- **Rule 0.7 live observation**: git 2.43 `check-ref-format` REFUSES
+  `--end-of-options` (exit 129) — its guard is the constant
+  `refs/heads/` prefix instead. Observed in a scratch repo, not
+  assumed from docs.
+- Restart owed by U2+U3, bundled (none taken yet).
+
 ## §6. Gates & kill criteria
 
 - **Machine gate:** full suite green ×2, ci-gate ALL PROFILES, A2/A5
