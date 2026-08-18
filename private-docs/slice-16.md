@@ -276,6 +276,47 @@ shape before dispatch:
   option text); one daemon restart owed (core change + snapshot
   discard/replay verified at the orchestrator gate).
 
+**FIXED 2026-08-18: U6 `454c4d0` (built through an outage — the agent
+was killed mid-unit by the provider incident, resumed in place from its
+surviving diff, and finished; the diff-as-checkpoint made the resume
+cost one assessment).** Suite 3493 → 3531, **zero changed pins** (the
+agent additionally proved passthrough by running the OLD test files
+against the NEW implementation). Stem coupling to
+`composeStageInstruction`'s four real variants is a machine-checked
+invariant; sabotage evidence three ways (stem branch, stem drift,
+version pin — the last re-run independently at the orchestrator gate).
+
+**Population correction to this finding (agent's evidence, banked as
+stated):** measured collapsed `Task:` offsets are implementing 178,
+REVIEW 182, PLAN 160 — but the generic make-progress variant is **96,
+inside the cap**. So prong (ii) was a TOTAL no-op for three variants
+and a PARTIAL one for the fourth (a ~24-char truncated label
+survived). The per-variant `markerBeyondCap` flags in the regression
+pin encode this; the finding's "entire target population" overstated
+by one variant.
+
+**Deployed + migrated 2026-08-18:** ci-gate green (one UNIDENTIFIED
+single-test failure on the first run did not reproduce across three
+subsequent full green runs — noted as a flake to watch; if it recurs
+it becomes a named finding), two restarts (second one to force a
+snapshot write for inspection). Observed truth of the migration:
+sessions snapshot **v2**, 42/50 sessions carry re-derived titles —
+real task labels ("getMany(ids) — batch fetch memories by ID",
+"AskUserQuestion: surface structured options…"). D73 aside: the CLI
+moved AGAIN (2.1.234, "+10 patch releases ahead of evidence"), boot
+silent as designed.
+
+**Loose end (STOP-file, reported not fixed):** `packages/ui/src/lib/
+sessionLabel.ts` comment claims "the plan/review variants carry no
+such marker at all" — false about the composer (all four variants emit
+the marker), true only of the capped input the UI used to see. Now
+moot in behavior (post-U6 the stripper is a passthrough for these) but
+misleading prose; ride it on the next UI unit.
+
+**Remaining for CLOSED: ⟨Wes⟩ re-verifies walk step 3** (historical
+sessions now show task lines on the phone). Steps 1–2, 4–9 stand as
+passed.
+
 ## §6. Gates & kill criteria
 
 - **Machine gate:** full suite green ×2, ci-gate ALL PROFILES, grep gate
