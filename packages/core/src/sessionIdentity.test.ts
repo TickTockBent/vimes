@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest';
+import type { TaskRecord } from './schemas.js';
+import type { StageRunnerPlan } from './tasks/stageRunner.js';
+import { composeStageInstruction } from './tasks/stageInstruction.js';
 import {
   deriveSessionTitle,
   extractMessageText,
   formatSessionFallbackLabel,
   formatSessionTimestamp,
   resolveSessionLabel,
+  DISPATCH_BRIEFING_STEM,
   HARNESS_WRAPPER_TITLE_PREFIXES,
   SESSION_TITLE_MAX_LENGTH,
 } from './sessionIdentity.js';
@@ -254,5 +258,208 @@ describe('resolveSessionLabel: the ladder, and the rung that is NOT in it', () =
     });
     expect(label).not.toBe('death');
     expect(label).toBe('Jul 19 23:25 · a1b2c3d4');
+  });
+});
+
+// ─── S16-F1: the dispatch-briefing skip (ruled ⟨Wes⟩ 2026-08-17) ─────────────
+//
+// Two halves, and the SECOND one is the lesson. The first proves the mechanism;
+// the second proves it fires on the REAL population, by composing the briefings
+// through `composeStageInstruction` itself rather than through a convenient
+// hand-written string. S16-F1 existed precisely because a fixture that placed
+// `Task:` inside 120 characters proved a mechanism that could never fire on any
+// real briefing.
+
+const DISPATCH_TASK_LABEL = 'getMany(ids) — batch the session lookups';
+const DISPATCH_PROJECT_ROOT = '/home/ticktockbent/projects/infrastructure/vimes';
+
+function dispatchedTask(overrides: Partial<TaskRecord> = {}): TaskRecord {
+  return {
+    taskId: 'task-s16-u6-000000000001',
+    projectRoot: DISPATCH_PROJECT_ROOT,
+    title: DISPATCH_TASK_LABEL,
+    stage: 'implementing',
+    manualReviewRequired: false,
+    isolation: 'worktree',
+    gates: {},
+    sessionRefs: [],
+    createdBy: 'human',
+    lastHeartbeatAt: null,
+    staleRetries: 0,
+    ...overrides,
+  };
+}
+
+const SPAWN: StageRunnerPlan = { mode: 'spawn' };
+
+// EVERY variant `composeStageInstruction` can reach, composed through the real
+// exported function. `markerBeyondCap` records the measurement that IS S16-F1:
+// where `Task:` lands in the whitespace-collapsed briefing, relative to the
+// 120-character cap the old code applied first.
+//   • implementing 178, review 182, planning 160 — all beyond the cap, so the
+//     marker was truncated away and the downstream stripper could never fire.
+//   • generic 96 — INSIDE the cap, so that variant was only half-broken: the
+//     marker survived but the label was truncated to whatever fitted in the
+//     remaining ~24 characters. Both are fixed by recognizing the shape first.
+const DISPATCH_BRIEFING_VARIANTS: readonly {
+  readonly variant: string;
+  readonly compose: (task: TaskRecord) => string;
+  readonly markerBeyondCap: boolean;
+}[] = [
+  {
+    variant: 'generic make-progress (a bare implementing task degrades to it)',
+    compose: (task) => composeStageInstruction(task, SPAWN),
+    markerBeyondCap: false,
+  },
+  {
+    variant: 'implementing, rich (a work-order section earns the fuller briefing)',
+    compose: (task) =>
+      composeStageInstruction({ ...task, scope: 'Batch the per-id lookups behind one call.' }, SPAWN),
+    markerBeyondCap: true,
+  },
+  {
+    variant: 'planning',
+    compose: (task) => composeStageInstruction({ ...task, stage: 'planning' }, SPAWN),
+    markerBeyondCap: true,
+  },
+  {
+    variant: 'review',
+    compose: (task) =>
+      composeStageInstruction(
+        {
+          ...task,
+          stage: 'review',
+          acceptanceCriteria: [{ id: 'ac1', text: 'One query, not N.' }],
+        },
+        SPAWN,
+      ),
+    markerBeyondCap: true,
+  },
+];
+
+describe('deriveSessionTitle: the dispatch briefing is titled by its TASK LINE (S16-F1)', () => {
+  // ⚠ **THE COUPLING, MACHINE-CHECKED.** `DISPATCH_BRIEFING_STEM` is restated in
+  // sessionIdentity.ts rather than imported from the task subsystem, which is
+  // exactly the drift the UI stripper could only WARN about in a comment. This
+  // test closes it: change the composer's opening sentence and this reddens
+  // rather than going quietly inert.
+  it.each(DISPATCH_BRIEFING_VARIANTS.map((v) => [v.variant, v] as const))(
+    'the %s briefing opens with the stem the derivation matches on',
+    (_variant, briefingVariant) => {
+      expect(briefingVariant.compose(dispatchedTask()).startsWith(DISPATCH_BRIEFING_STEM)).toBe(true);
+    },
+  );
+
+  it.each(DISPATCH_BRIEFING_VARIANTS.map((v) => [v.variant, v] as const))(
+    'the %s briefing derives EXACTLY the task label',
+    (_variant, briefingVariant) => {
+      expect(deriveSessionTitle(briefingVariant.compose(dispatchedTask()))).toBe(DISPATCH_TASK_LABEL);
+    },
+  );
+
+  // ⚠ THE REGRESSION PIN FOR THE FINDING ITSELF. If a future edit moves the skip
+  // back AFTER the cap, these positions are what makes it a no-op again.
+  it.each(DISPATCH_BRIEFING_VARIANTS.map((v) => [v.variant, v] as const))(
+    'the %s briefing puts Task: where the OLD cap-first order could not reach it',
+    (_variant, briefingVariant) => {
+      const collapsedBriefing = briefingVariant
+        .compose(dispatchedTask())
+        .replace(/\s+/g, ' ')
+        .trim();
+      expect(collapsedBriefing.indexOf('Task:') > SESSION_TITLE_MAX_LENGTH).toBe(
+        briefingVariant.markerBeyondCap,
+      );
+    },
+  );
+
+  // The table must actually cover four DIFFERENT briefings — a refactor that
+  // collapsed two variants onto the same text would otherwise still pass above.
+  it('covers four distinct composed briefings, not the same one four times', () => {
+    const composedBriefings = DISPATCH_BRIEFING_VARIANTS.map((v) => v.compose(dispatchedTask()));
+    expect(new Set(composedBriefings).size).toBe(4);
+  });
+
+  // ── the LINE bound (why core does not copy the UI's everything-after slice) ──
+  it('takes the Task LINE only — Stage: and Directory: never reach the title', () => {
+    const title = deriveSessionTitle(composeStageInstruction(dispatchedTask(), SPAWN))!;
+    expect(title).toBe(DISPATCH_TASK_LABEL);
+    expect(title).not.toContain('Stage:');
+    expect(title).not.toContain('Directory:');
+    expect(title).not.toContain(DISPATCH_PROJECT_ROOT);
+  });
+
+  // ── the FIRST-marker rule ────────────────────────────────────────────────────
+  it('a label that itself begins "Task:" survives whole — the FIRST marker is the briefing\'s own', () => {
+    const selfReferentialLabel = 'Task: surf the wave';
+    const briefing = composeStageInstruction(dispatchedTask({ title: selfReferentialLabel }), SPAWN);
+    expect(briefing).toContain(`  Task:      ${selfReferentialLabel}`);
+    expect(deriveSessionTitle(briefing)).toBe(selfReferentialLabel);
+  });
+
+  // ── the cap still applies, to the LABEL rather than to the boilerplate ───────
+  it(`a label longer than the bound truncates at ${SESSION_TITLE_MAX_LENGTH}`, () => {
+    const longLabel = 'q'.repeat(300);
+    const title = deriveSessionTitle(
+      composeStageInstruction(dispatchedTask({ title: longLabel }), SPAWN),
+    )!;
+    expect(title).toHaveLength(SESSION_TITLE_MAX_LENGTH);
+    expect(title).toBe('q'.repeat(SESSION_TITLE_MAX_LENGTH));
+  });
+
+  // ── boilerplate with nothing usable is a WRAPPER, not a title ────────────────
+  it.each([
+    ['no marker at all', `${DISPATCH_BRIEFING_STEM} to do something this file has never seen.`],
+    ['the stem and nothing else', DISPATCH_BRIEFING_STEM],
+    ['a marker with an empty remainder', `${DISPATCH_BRIEFING_STEM} to do a thing.\n\n  Task:      \n  Stage:     implementing`],
+  ])('a dispatch briefing with %s yields null, exactly like a harness wrapper', (_label, briefing) => {
+    expect(deriveSessionTitle(briefing)).toBeNull();
+  });
+
+  // The branch is anchored at byte 0, deliberately — see the constant's comment.
+  it('the stem must OPEN the message: a prompt that merely mentions it is an ordinary title', () => {
+    const mentionsTheStem = `Note: ${DISPATCH_BRIEFING_STEM} — but this message is not one. Task: still not one.`;
+    expect(deriveSessionTitle(mentionsTheStem)).toBe(mentionsTheStem);
+  });
+
+  // The briefing arrives as a string in the live log, but `content` is LOOSE by
+  // schema — a single text block must take the same branch.
+  it('recognizes the briefing inside a text block, not only as a bare string', () => {
+    const briefing = composeStageInstruction(dispatchedTask(), SPAWN);
+    expect(deriveSessionTitle([{ type: 'text', text: briefing }])).toBe(DISPATCH_TASK_LABEL);
+  });
+});
+
+describe('deriveSessionTitle: NON-dispatch input is byte-identical to the pre-S16·U6 behavior', () => {
+  // ⚠ **PASSTHROUGH PINS.** The dispatch branch is a new fork in front of the
+  // pipeline; every input that does not open with the stem must reach exactly
+  // the answer it reached before. Each expectation below is the OLD
+  // implementation's output, written as a literal rather than recomputed.
+  it.each([
+    ['an ordinary prompt', 'Look at the development plan and write next-steps.md', 'Look at the development plan and write next-steps.md'],
+    ['a padded multi-line prompt', '  Fix   the\n\nledger\ttitles  ', 'Fix the ledger titles'],
+    ['a slash command with real words', '/compact the docs and tell me what changed', '/compact the docs and tell me what changed'],
+    ['a bare slash command', '/compact', null],
+    ['a harness wrapper', '<command-name>/compact</command-name>', null],
+    ['a continuation summary', 'This session is being continued from a previous conversation.', null],
+    ['an empty string', '', null],
+    ['whitespace only', '   \n\t  ', null],
+    ['a tool_result block', [{ type: 'tool_result', content: 'total 120', tool_use_id: 'toolu_01' }], null],
+    ['a text block array', [{ type: 'text', text: 'Review the current codebase' }], 'Review the current codebase'],
+    ['a shape nobody recognizes', { role: 'user' }, null],
+    // A `Task:` marker WITHOUT the stem is somebody's ordinary prompt, and it
+    // keeps every byte — the marker alone never triggers the skip.
+    ['a prompt that happens to say Task:', 'Task: write the migration report', 'Task: write the migration report'],
+  ])('%s is unchanged', (_label, content, expectedTitle) => {
+    expect(deriveSessionTitle(content)).toBe(expectedTitle);
+  });
+
+  it('the long-prompt truncation is unchanged', () => {
+    expect(deriveSessionTitle('w'.repeat(400))).toBe('w'.repeat(SESSION_TITLE_MAX_LENGTH));
+  });
+
+  it('every harness wrapper prefix still yields null through the new fork', () => {
+    for (const wrapperPrefix of HARNESS_WRAPPER_TITLE_PREFIXES) {
+      expect(deriveSessionTitle(`${wrapperPrefix} whatever follows it`)).toBeNull();
+    }
   });
 });

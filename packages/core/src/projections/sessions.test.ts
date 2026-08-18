@@ -1561,6 +1561,43 @@ describe('sessions projection — derivedTitle (Q3)', () => {
     expect(booted.sessions[UNNAMED_SESSION_ID]!.derivedTitle).toBe('the title-setting prompt');
   });
 
+  // ── S16-F1: the dispatch briefing titles by its TASK LINE, at the fold ─────
+  //
+  // The unit-level proof lives in sessionIdentity.test.ts (composed through the
+  // real `composeStageInstruction`). These two pin the FOLD's half of it: the
+  // recovered label reaches the record, and the marker-less case leaves the
+  // field absent WITHOUT burning the write-once slot.
+  it('a dispatch briefing titles the session with its task line, not its opening sentence', () => {
+    const state = foldTitleLog([
+      [bornUnnamed()],
+      [
+        userSays(
+          `You are a worker session that VIMES dispatched to make progress on one task. This is real work.
+
+  Task:      Fix the cost ledger session labels
+  Stage:     implementing
+  Directory: /home/ticktockbent/projects/infrastructure/vimes — work in this directory.
+
+Do the work this stage calls for, and stay within the task's scope.`,
+        ),
+      ],
+    ]);
+    expect(state.sessions[UNNAMED_SESSION_ID]!.derivedTitle).toBe(
+      'Fix the cost ledger session labels',
+    );
+  });
+
+  it('a dispatch briefing with no Task: marker leaves the slot OPEN for the next real prompt', () => {
+    const state = foldTitleLog([
+      [bornUnnamed()],
+      [userSays('You are a worker session that VIMES dispatched to do something unrecognizable.')],
+      [userSays('the operator prompt that actually names the work')],
+    ]);
+    expect(state.sessions[UNNAMED_SESSION_ID]!.derivedTitle).toBe(
+      'the operator prompt that actually names the work',
+    );
+  });
+
   it('a PAYLOAD without derivedTitle parses, folds and serializes unchanged (I8)', () => {
     const store = makeStore();
     store.append([bornUnnamed()]);
@@ -1576,5 +1613,31 @@ describe('sessions projection — derivedTitle (Q3)', () => {
     const folded = sessionsProjection.apply(bornState, hostileRecord);
     expect(folded.sessions[UNNAMED_SESSION_ID]!.derivedTitle).toBeUndefined();
     expect(folded.sessions[UNNAMED_SESSION_ID]!.turnInFlight).toBe(true);
+  });
+});
+
+// ─── D86: the SHAPE STAMP, pinned as a literal ───────────────────────────────
+//
+// ⚠ **THE ONLY PLACE IN THIS SUITE THAT SPELLS THE VERSION AS A NUMBER.** Every
+// snapshot fixture above writes `version: sessionsProjection.version` on purpose
+// — a bump must move the fixtures with it rather than reddening two dozen
+// unrelated tests. That makes the version itself invisible to the suite, which
+// is exactly the hazard this test closes: a bump is a HISTORY MIGRATION (it
+// discards every stored snapshot and replays the whole log), and one that
+// happened by a stray keystroke would be indistinguishable from one that was
+// decided.
+//
+// So: to change this number you must also change this test, and this comment is
+// where you say why. The history so far —
+//   • 1 — the original `SessionRecord` shape; every widening through slice 15
+//     was optional and back-compatible, so it never moved.
+//   • 2 — S16-F1, ruled ⟨Wes⟩ 2026-08-17. `derivedTitle` was RE-MEANT (D86's
+//     third clause): "the capped head of the first qualifying user message"
+//     became "the task line, for a VIMES dispatch briefing". Titles are
+//     write-once, so stored snapshots would have pinned the old meaning
+//     forever; the discard-and-replay IS the migration.
+describe('sessions projection — the D86 version stamp', () => {
+  it('is 2 — bumped by S16-F1, and a bump means every snapshot is discarded and replayed', () => {
+    expect(sessionsProjection.version).toBe(2);
   });
 });

@@ -112,10 +112,31 @@ const LIVENESS_STATES_A_TURN_CAN_SURVIVE: ReadonlySet<Liveness> = new Set<Livene
 export const sessionsProjection: Projection<SessionsState> = {
   id: 'sessions',
   // D86: `SessionRecord`'s shape as of this version. Bump only when the RECORD
-  // shape changes (a field added, removed or re-meant) — every widening this
-  // record has taken so far was OPTIONAL and back-compatible with stored
-  // snapshots, which is why it is still 1.
-  version: 1,
+  // shape changes (a field added, removed or **re-meant**).
+  //
+  // ── 1 → 2 (S16-F1, ruled ⟨Wes⟩ 2026-08-17): `derivedTitle` was RE-MEANT ────
+  //
+  // Every widening this record took through version 1 was OPTIONAL and
+  // back-compatible, which is why it stayed 1 for so long. This bump is the
+  // other clause: no field was added or removed, but `derivedTitle` stopped
+  // meaning *"the capped head of the session's first qualifying user message"*
+  // and started meaning *"the task line, for a VIMES dispatch briefing"*
+  // (`deriveSessionTitle`, sessionIdentity.ts). A stored snapshot's titles were
+  // computed under the OLD meaning and are write-once — the fold above never
+  // re-derives a title it already has — so without a bump every historical
+  // dispatched session would keep its boilerplate title forever, self-healing
+  // never. That is exactly the failure D86 exists to make impossible.
+  //
+  // ⚠ **THE BUMP IS THE MIGRATION.** `bootFromSnapshot` (projection.ts) discards
+  // a version-mismatched snapshot whole and replays the entire log from
+  // `init()`, re-deriving every `derivedTitle` under the new meaning. No event
+  // is rewritten and no migration code exists — the append-only log plus a pure
+  // fold IS the migration path (I12). The cost is one full replay on the next
+  // boot after deploy.
+  //
+  // The next bump must be equally deliberate: a version PIN test in
+  // sessions.test.ts asserts this literal, so nudging it is never accidental.
+  version: 2,
 
   init(): SessionsState {
     return { sessions: {} };

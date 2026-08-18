@@ -51,6 +51,40 @@ export const HARNESS_WRAPPER_TITLE_PREFIXES: readonly string[] = [
 // harness command the operator ran, not the work the session did.
 const BARE_SLASH_COMMAND_PATTERN = /^\/[a-z][a-z-]*$/;
 
+// ── the dispatch-briefing skip (S16-F1, ruled ⟨Wes⟩ 2026-08-17) ──────────────
+//
+// ⚠ **A SECOND FRAGILE-ADAPTER BOUNDARY (rule 0.6) — but this one is OURS, and
+// that is why it is machine-checked rather than merely commented.** Every
+// briefing VIMES dispatches is composed by `tasks/stageInstruction.ts`, whose
+// four variants (implementing-rich, PLAN, REVIEW, generic make-progress) all
+// open with this exact sentence stem before diverging, then all emit a line
+// shaped `  Task:      ${label}`. The stem is RESTATED here rather than
+// imported so this module stays a leaf (nothing in the identity ladder should
+// depend on the task subsystem) — the coupling is held by a test in
+// `sessionIdentity.test.ts` that composes REAL briefings through
+// `composeStageInstruction` and asserts both halves. If the composer's opening
+// ever changes, that test reddens; it cannot go quietly inert.
+//
+// ⚠ **WHY THIS BRANCH RUNS BEFORE THE CAP, NOT AFTER (the whole of S16-F1).**
+// D91's first attempt stripped this boilerplate DOWNSTREAM, off the finished
+// `derivedTitle` — and it was a structural no-op for three of the four
+// variants, because `Task:` sits at collapsed offset 178 (implementing), 182
+// (review) and 160 (planning) while `SESSION_TITLE_MAX_LENGTH` is 120. The
+// marker was truncated away before any stripper could see it, so those sessions
+// fell to the timestamp rung. (The generic variant's marker lands at 96 — inside
+// the cap — so it degraded differently: the marker survived and the LABEL was
+// truncated to whatever fitted in the ~24 characters left.) The fix is one of
+// position: recognize the shape on the RAW text, where the marker is still
+// present AND the line structure still exists, and feed only the recovered
+// label through the ordinary pipeline.
+export const DISPATCH_BRIEFING_STEM = 'You are a worker session that VIMES dispatched';
+
+// The marker that opens the briefing's task line. Matched at its FIRST
+// occurrence: a task legitimately titled `Task: surf the wave` composes a line
+// reading `  Task:      Task: surf the wave`, and taking the LAST occurrence
+// would eat the real title's own prefix rather than the briefing's.
+const DISPATCH_TASK_MARKER = 'Task:';
+
 // C0 + C1 control characters, including the ESC that `<local-command-stdout>`
 // blocks carry (they embed ANSI SGR sequences). Replaced with a space BEFORE
 // whitespace collapse, so a label can never smuggle a control byte into a
@@ -107,13 +141,58 @@ function collapseToSingleLine(rawText: string): string {
  * title" — that is inference, and rule 0.7 says observe before declaring):
  *   • nothing left after control-stripping and trimming (the `tool_result` case);
  *   • a bare slash command;
- *   • a known harness wrapper prefix.
+ *   • a known harness wrapper prefix;
+ *   • a VIMES dispatch briefing that carries no `Task:` marker (S16-F1).
+ *
+ * A dispatch briefing that DOES carry one is titled by its task label rather
+ * than by its opening sentence — see `DISPATCH_BRIEFING_STEM` above for why the
+ * recognition happens on the raw text and before the cap.
  *
  * ⚠ Returns null, NOT `''`. An absent title and a title of nothing are different
  * facts, and the projection stores only the former (absent stays absent).
  */
 export function deriveSessionTitle(content: unknown): string | null {
-  const singleLineText = collapseToSingleLine(extractMessageText(content));
+  const rawText = extractMessageText(content);
+
+  // ── the dispatch-briefing branch (S16-F1) ──────────────────────────────────
+  //
+  // Tested on the RAW text, before any collapse: the line structure IS the
+  // information this branch needs, and the collapse destroys it. Deliberately
+  // NOT `trimStart().startsWith(...)` — the composer emits the stem at byte 0
+  // of every variant, so a leading-whitespace tolerance would only widen the
+  // shape this recognizes beyond anything observed (rule 0.7).
+  if (rawText.startsWith(DISPATCH_BRIEFING_STEM)) {
+    const markerIndex = rawText.indexOf(DISPATCH_TASK_MARKER);
+    // Boilerplate with nothing usable in it is a WRAPPER, not a title — the
+    // same treatment `HARNESS_WRAPPER_TITLE_PREFIXES` gets. The ladder falls to
+    // the distinguishing timestamp rung, which is strictly better than titling
+    // every dispatched session with the same opening sentence.
+    if (markerIndex === -1) {
+      return null;
+    }
+    const afterMarker = rawText.slice(markerIndex + DISPATCH_TASK_MARKER.length);
+    // ⚠ **THAT LINE ONLY.** The label ends at the newline; the very next lines
+    // are `  Stage:` and `  Directory:`, and an everything-after-the-marker
+    // slice would drag both into the title. A marker on the last line (no
+    // trailing newline) takes the remainder — `indexOf` returning -1 is that
+    // case, not an error.
+    const lineEndIndex = afterMarker.indexOf('\n');
+    const taskLineRemainder = lineEndIndex === -1 ? afterMarker : afterMarker.slice(0, lineEndIndex);
+    // Through the SAME pipeline as any other title: control-stripped,
+    // collapsed, capped at the display bound. A label longer than the bound
+    // truncates exactly as a human's prompt would.
+    return titleFromRawText(taskLineRemainder);
+  }
+
+  return titleFromRawText(rawText);
+}
+
+// The ordinary pipeline, extracted verbatim so both callers above share ONE
+// spelling of "what makes a title". Byte-identical to the pre-S16·U6 body of
+// `deriveSessionTitle` — the non-stem path is unchanged, and passthrough tests
+// pin that.
+function titleFromRawText(rawText: string): string | null {
+  const singleLineText = collapseToSingleLine(rawText);
   if (singleLineText.length === 0) {
     return null;
   }
