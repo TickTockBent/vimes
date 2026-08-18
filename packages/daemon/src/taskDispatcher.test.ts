@@ -15,11 +15,15 @@ import {
   canonicalJson,
   instancesProjection,
   legacyTasksViewOf,
+  nodeCreated,
+  sessionAttachedToNode,
   taskCreated,
   taskSessionAttached,
   type EventInput,
   type MeterRecord,
   type MetersState,
+  type NodeRecord,
+  type ProjectsState,
   type TaskRecord,
   type TasksState,
   type TaskStage,
@@ -30,9 +34,14 @@ import { InstanceWriter, type ProposeMoveResult } from './instanceWriter.js';
 // S12·U2 (D72 Move 3): the writer is constructed with the boot-resolved
 // declaration now; this file builds one directly in the amend case below.
 import { loadShippedWorkflow } from './shippedManifest.js';
-import type { GitRunResult, GitRunner } from './gitAdapter.js';
 import { loadConfigFromEnv } from './config.js';
-import { WorktreeManager } from './worktreeManager.js';
+import type {
+  CheckoutRefusal,
+  CreateCheckoutRequest,
+  CreateCheckoutResult,
+  InLockFollowUp,
+} from './checkoutCoordinator.js';
+import type { AttachSessionInput, AttachSessionResult } from './nodeWriter.js';
 import {
   TaskDispatcher,
   projectRootWorkingDirectory,
@@ -64,14 +73,17 @@ const EXISTING_SESSION_ID = 'cccccccc-0000-4000-8000-000000000002';
 const HOT_AUTHOR_SESSION_ID = 'cccccccc-0000-4000-8000-000000000003';
 const SECOND_HOT_AUTHOR_SESSION_ID = 'cccccccc-0000-4000-8000-000000000004';
 const FIXED_NOW = '2026-07-22T12:00:00.000Z';
-// Step 8. The worktree root a harness-built manager uses, and the derived names —
-// restated as literals so this file pins the CONTRACT rather than re-running core's
-// derivation. Nothing under this path is ever created; the git runner is a fake.
+// Step 8, re-engined by S17·U3. The checkout root the fake coordinator hands
+// back paths under, and the node-derived names — restated as literals so this
+// file pins the CONTRACT rather than re-running core's derivation. Nothing under
+// this path is ever created; no git runs anywhere in this file.
 const WORKTREE_ROOT = '/var/lib/vimes-worktrees';
-const WORKTREE_PATH = `${WORKTREE_ROOT}/task-task-dispatch-0001`;
-const WORKTREE_BRANCH = 'vimes/task-task-dispatch-0001';
-// The stepping clock's step, so `setupMs` is a known number rather than a race.
-const WORKTREE_SETUP_STEP_MS = 250;
+const CHECKOUT_NODE_ID = 'node-checkout-0001';
+const CHECKOUT_PATH = `${WORKTREE_ROOT}/node-${CHECKOUT_NODE_ID}`;
+const CHECKOUT_BRANCH = `vimes/node-${CHECKOUT_NODE_ID}`;
+// The D42 project the task's root belongs to. `PROJECT_ROOT` is its EXACT root,
+// which is the whole of the projectRoot → projectId join (§3.2).
+const PROJECT_ID = 'project-vimes-0001';
 // The meter staleness band, named by the caller (rule 0.2 — no default here).
 const STALE_AFTER_MS = 90_000;
 
@@ -96,6 +108,15 @@ class RecordingSessionHost {
     // offer — a dispatch that forgets it silently re-widens the exposure.
     stage?: TaskStage;
   }> = [];
+  // ⚠ S17·U3's ORDERING INSTRUMENT, the same shape `RecordingInstanceWriter`
+  // already uses: how many events had been emitted at the moment each spawn ran.
+  // §3.2's choreography is an ORDER claim (`node_created` BEFORE the spawn BEFORE
+  // `session_attached_to_node`), and a test that only listed the emitted types
+  // would pass for an implementation that spawned first and emitted all three
+  // afterwards.
+  readonly spawnEmittedCounts: number[] = [];
+
+  constructor(private readonly emittedCount: () => number = () => 0) {}
   // Step 7's instruments, INVERTED BY D46. `resumeCalls` used to prove a fix went
   // to the hot author; it now proves the opposite — it must stay EMPTY on every
   // path, forever.
@@ -118,6 +139,7 @@ class RecordingSessionHost {
     stage?: TaskStage;
   }): SpawnResult {
     this.spawnCalls.push(options);
+    this.spawnEmittedCounts.push(this.emittedCount());
     if (this.spawnThrows !== null) {
       throw this.spawnThrows;
     }
@@ -202,6 +224,192 @@ class RecordingInstanceWriter {
   }
 }
 
+// ─── S17·U3 — the CHECKOUT COORDINATOR seam, faked ───────────────────────────
+//
+// ⚠ **NO GIT, NO FILESYSTEM, NO REAL COORDINATOR ANYWHERE IN THIS FILE.** Before
+// this unit the isolated cases built a real `WorktreeManager` over a recording
+// FAKE git runner; the manager is gone, and what replaced it is a service with a
+// lock, a git adapter, a node writer and a compensation path of its own — all of
+// which have their OWN suite (checkoutCoordinator.test.ts). What the DISPATCHER
+// owes is narrower and is exactly what this fake instruments:
+//
+//   • it asks for a checkout with the right IDENTITY (§3.4 — projectId, no path,
+//     no base ref) and only when the flag and the task both say so;
+//   • it does the right things INSIDE the follow-up, IN ORDER (§3.2);
+//   • it maps EVERY refusal onto `worktree-failed` and spawns nothing (A11).
+//
+// The fake therefore stands in for the coordinator's OBSERVABLE contract: it
+// emits `node_created` before calling the follow-up (as the real one does), runs
+// the follow-up inside a recorded critical section, and — on a follow-up that
+// throws — records the §3.7 compensation before re-raising.
+class RecordingCheckoutCoordinator {
+  readonly createCalls: CreateCheckoutRequest[] = [];
+  // 'lock-acquired' / 'node_created' / 'spawn' / 'lock-released' / 'compensated',
+  // in the order they happened. The SPAWN marker is pushed by the harness's
+  // session-host wrapper, which is what makes "the spawn happened inside the
+  // critical section" an assertion rather than a hope.
+  readonly timeline: string[] = [];
+  private mintedCheckouts = 0;
+  private refusal: CheckoutRefusal | null = null;
+  private thrown: Error | null = null;
+  private gate: Promise<void> | null = null;
+
+  constructor(private readonly emit: (events: EventInput[]) => void) {}
+
+  refuseWith(refusal: CheckoutRefusal): void {
+    this.refusal = refusal;
+  }
+
+  throwWith(error: Error): void {
+    this.thrown = error;
+  }
+
+  parkOn(gate: Promise<void>): void {
+    this.gate = gate;
+  }
+
+  async create(
+    request: CreateCheckoutRequest,
+    inLockFollowUp?: InLockFollowUp,
+  ): Promise<CreateCheckoutResult> {
+    this.createCalls.push(request);
+    this.timeline.push('lock-acquired');
+    if (this.gate !== null) {
+      await this.gate;
+    }
+    if (this.thrown !== null) {
+      this.timeline.push('lock-released');
+      throw this.thrown;
+    }
+    if (this.refusal !== null) {
+      // A refusal happens BEFORE anything is created, so no event and no
+      // follow-up — which is what makes "a refusal spawns nothing" provable
+      // rather than merely reported.
+      this.timeline.push('lock-released');
+      return this.refusal;
+    }
+    this.mintedCheckouts += 1;
+    const nodeId = this.mintedCheckouts === 1 ? CHECKOUT_NODE_ID : `${CHECKOUT_NODE_ID}-${this.mintedCheckouts}`;
+    const checkout = {
+      nodeId,
+      path: `${WORKTREE_ROOT}/node-${nodeId}`,
+      branch: `vimes/node-${nodeId}`,
+    };
+    const node: NodeRecord = {
+      nodeId,
+      parentNodeId: null,
+      projectId: request.projectId,
+      name: checkout.branch,
+      createdAt: FIXED_NOW,
+      provenance: {
+        branch: checkout.branch,
+        baseRef: 'main',
+        resolvedCommit: '81ddf1600000000000000000000000000000000a',
+        path: checkout.path,
+      },
+      directory: checkout.path,
+      closed: false,
+      sessionIds: [],
+    };
+    // The real coordinator emits this through `nodeWriter.createCheckoutNode`
+    // BEFORE the follow-up runs — the directory exists and the session does not.
+    this.emit([
+      nodeCreated({
+        nodeId,
+        parentNodeId: null,
+        projectId: request.projectId,
+        name: checkout.branch,
+        provenance: node.provenance,
+        directory: checkout.path,
+        nodeConfig: null,
+      }),
+    ]);
+    this.timeline.push('node_created');
+    if (inLockFollowUp !== undefined) {
+      try {
+        await inLockFollowUp(checkout);
+      } catch (followUpError) {
+        // §3.7, as `InLockFollowUp` documents it: compensation runs and the throw
+        // is re-raised. The marker is what proves the dispatcher's abort really
+        // reaches the compensating path rather than leaving a tenant-less
+        // checkout behind.
+        this.timeline.push('compensated');
+        this.timeline.push('lock-released');
+        throw followUpError;
+      }
+    }
+    this.timeline.push('lock-released');
+    return { outcome: 'created', node };
+  }
+}
+
+// The nodes stream's SOLE writer, faked. It emits through the same `emit` the
+// dispatcher uses, so the ordering instrument sees one timeline — and it RECORDS,
+// so "the attach went through the writer and not through a hand-rolled emit" is
+// checkable from the call list rather than inferred from the event.
+class RecordingNodeWriter {
+  readonly attachCalls: AttachSessionInput[] = [];
+  private refusal: AttachSessionResult | null = null;
+  private thrown: Error | null = null;
+
+  constructor(private readonly emit: (events: EventInput[]) => void) {}
+
+  refuseWith(reason: AttachSessionResult): void {
+    this.refusal = reason;
+  }
+
+  throwWith(error: Error): void {
+    this.thrown = error;
+  }
+
+  attachSession(input: AttachSessionInput): AttachSessionResult {
+    this.attachCalls.push(input);
+    if (this.thrown !== null) {
+      throw this.thrown;
+    }
+    if (this.refusal !== null) {
+      return this.refusal;
+    }
+    this.emit([sessionAttachedToNode({ nodeId: input.nodeId, appSessionId: input.appSessionId })]);
+    // The real writer returns the node AS THE PROJECTION FOLDED IT; nothing in
+    // the dispatcher reads it, and a fake that invented one would be claiming a
+    // fold this file does not run.
+    return {
+      outcome: 'attached',
+      node: {
+        nodeId: input.nodeId,
+        parentNodeId: null,
+        projectId: PROJECT_ID,
+        name: CHECKOUT_BRANCH,
+        createdAt: FIXED_NOW,
+        provenance: null,
+        directory: null,
+        closed: false,
+        sessionIds: [input.appSessionId],
+      },
+    };
+  }
+}
+
+// The D42 registry the projectRoot → projectId join reads. One LIVE project whose
+// root is EXACTLY the task's, which is the only shape the join accepts.
+function projectsStateWith(
+  ...projects: Array<{ projectId: string; root: string; archived?: boolean }>
+): ProjectsState {
+  const byId: ProjectsState['projects'] = {};
+  for (const project of projects) {
+    byId[project.projectId] = {
+      projectId: project.projectId,
+      root: project.root,
+      createdAt: FIXED_NOW,
+      archived: project.archived ?? false,
+    };
+  }
+  return { projects: byId };
+}
+
+const DECLARED_PROJECTS = projectsStateWith({ projectId: PROJECT_ID, root: PROJECT_ROOT });
+
 function taskRecord(overrides: Partial<TaskRecord> = {}): TaskRecord {
   return {
     taskId: TASK_ID,
@@ -248,11 +456,15 @@ interface Harness {
   artifactStore: MemoryArtifactStore;
   instanceWriter: RecordingInstanceWriter;
   nowIsoCallCount: () => number;
-  // Step 8's instruments. `worktreeCalls` is what proves the manager was consulted;
-  // `gitCalls` is the stronger claim underneath it — that no git SUBPROCESS was
-  // reached at all, which is the assertable form of "byte-identical to before".
-  worktreeCalls: () => string[];
-  gitCalls: () => string[][];
+  // S17·U3's instruments, replacing step 8's `worktreeCalls`/`gitCalls` pair.
+  // `checkoutCreateCalls` is what proves the coordinator was (or was not)
+  // consulted, and since the coordinator is now the ONLY path to git in the whole
+  // daemon, an empty list is the same claim `gitCalls().toEqual([])` used to make:
+  // the isolation path was never entered at all.
+  checkoutCreateCalls: () => CreateCheckoutRequest[];
+  coordinator: RecordingCheckoutCoordinator;
+  nodeWriter: RecordingNodeWriter;
+  timeline: () => string[];
 }
 
 function buildHarness(options: {
@@ -261,25 +473,29 @@ function buildHarness(options: {
   nowIso?: string;
   resolveWorkingDirectory?: TaskDispatcherDeps['resolveWorkingDirectory'];
   composeStageInstruction?: TaskDispatcherDeps['composeStageInstruction'];
-  // Step 8. BOTH default to the shipped default — no manager and the flag OFF — so
-  // every case written before this step keeps exactly the behaviour it had.
+  // Step 8. BOTH default to the shipped default — no coordinator and the flag OFF
+  // — so every case written before this step keeps exactly the behaviour it had.
   worktreeIsolationEnabled?: boolean;
-  // When true the harness builds a REAL `WorktreeManager` over a RECORDING FAKE git
-  // runner, so a case can assert on the actual arg-vectors. `worktreeFailure`
-  // instead makes `git worktree list` fail, which is how the safety case gets a
-  // failed worktree without a real filesystem.
-  withWorktreeManager?: boolean;
-  worktreeFailure?: GitRunResult;
-  // S7·7c. A manager supplied WHOLE, replacing the git-backed one, so a case can
-  // hold `ensureWorktree` open on a promise it releases by hand. That is the only
-  // way to make the D54 window — the `await` between the decision and
-  // `instance_run_attached` — wide enough to assert against rather than a
-  // microtask nobody can stand inside.
-  worktreeManagerOverride?: Pick<WorktreeManager, 'ensureWorktree'>;
+  // When true the harness wires the FAKE coordinator + FAKE node writer, which is
+  // the shape app.ts wires. `coordinatorRefusal` / `coordinatorThrows` /
+  // `coordinatorGate` then bend that fake, which is how the safety cases get a
+  // failed checkout without a real filesystem and how the D54 window is held open.
+  withCheckoutCoordinator?: boolean;
+  coordinatorRefusal?: CheckoutRefusal;
+  coordinatorThrows?: Error;
+  coordinatorGate?: Promise<void>;
+  // The D42 registry the join reads. Defaults to ONE live project at exactly
+  // `PROJECT_ROOT`, which is the only shape the join accepts.
+  projects?: ProjectsState;
+  // The three isolation deps are all-or-nothing (see `TaskDispatcherDeps`); these
+  // let a case drop exactly one and prove the honest failure.
+  omitCheckoutCoordinator?: boolean;
+  omitReadProjects?: boolean;
+  omitNodeWriter?: boolean;
 } = {}): Harness {
-  const sessionHost = new RecordingSessionHost();
-  const artifactStore = new MemoryArtifactStore();
   const emitted: EventInput[] = [];
+  const sessionHost = new RecordingSessionHost(() => emitted.length);
+  const artifactStore = new MemoryArtifactStore();
   const recordingInstanceWriter = new RecordingInstanceWriter(() => emitted.length);
   const tasksById: Record<string, TaskRecord> = {};
   for (const task of options.tasks ?? [taskRecord()]) {
@@ -287,56 +503,42 @@ function buildHarness(options: {
   }
   const tasksState: TasksState = { tasks: tasksById };
   const metersState = options.meters ?? metersStateWith(meterRecord());
+  const projectsState = options.projects ?? DECLARED_PROJECTS;
   let nowIsoCallCount = 0;
 
-  // ⚠ THE FAKE GIT RUNNER. **No real git command runs in this file and NO WORKTREE
-  // IS EVER CREATED** — this suite runs inside the vimes checkout, and a dispatcher
-  // test that really created one would leave it in the repo under development.
-  // Recording the arg-vectors is also what makes "the flag off issues NO git command
-  // at all" an assertion rather than a claim.
-  const gitCalls: string[][] = [];
-  const worktreeCalls: string[] = [];
-  const recordingGitRunner: GitRunner = async (args) => {
-    gitCalls.push([...args]);
-    if (options.worktreeFailure !== undefined) {
-      return options.worktreeFailure;
-    }
-    // An empty `worktree list` means "not created yet", so the manager proceeds to
-    // `add`, which succeeds emptily.
-    return { stdout: '', stderr: '', exitCode: 0 };
+  const emit = (events: EventInput[]): void => {
+    emitted.push(...events);
   };
-  const realManager =
-    options.withWorktreeManager === true || options.worktreeFailure !== undefined
-      ? new WorktreeManager({
-          runner: recordingGitRunner,
-          worktreeRoot: WORKTREE_ROOT,
-          // A stepping clock, so `setupMs` is deterministic (rule 0.3).
-          nowMs: (() => {
-            let clockReadCount = 0;
-            return () => {
-              const currentMs = 1_000_000 + clockReadCount * WORKTREE_SETUP_STEP_MS;
-              clockReadCount += 1;
-              return currentMs;
-            };
-          })(),
-        })
-      : undefined;
-  const worktreeManager =
-    options.worktreeManagerOverride ??
-    (realManager === undefined
-      ? undefined
-      : {
-          ensureWorktree: (task: TaskRecord) => {
-            worktreeCalls.push(task.taskId);
-            return realManager.ensureWorktree(task);
-          },
-        });
+  // ⚠ **NO GIT AND NO REAL COORDINATOR — SEE THE FAKE'S HEADER.** This suite runs
+  // inside the vimes checkout; a dispatcher test that really created a checkout
+  // would leave one in the repository under development.
+  const coordinator = new RecordingCheckoutCoordinator(emit);
+  if (options.coordinatorRefusal !== undefined) {
+    coordinator.refuseWith(options.coordinatorRefusal);
+  }
+  if (options.coordinatorThrows !== undefined) {
+    coordinator.throwWith(options.coordinatorThrows);
+  }
+  if (options.coordinatorGate !== undefined) {
+    coordinator.parkOn(options.coordinatorGate);
+  }
+  const nodeWriter = new RecordingNodeWriter(emit);
+  const isolationWired =
+    options.withCheckoutCoordinator === true ||
+    options.coordinatorRefusal !== undefined ||
+    options.coordinatorThrows !== undefined ||
+    options.coordinatorGate !== undefined;
 
   const deps: TaskDispatcherDeps = {
-    sessionHost,
-    emit: (events) => {
-      emitted.push(...events);
+    sessionHost: {
+      spawnSession: (spawnOptions) => {
+        coordinator.timeline.push('spawn');
+        return sessionHost.spawnSession(spawnOptions);
+      },
+      isLive: (appSessionId) => sessionHost.isLive(appSessionId),
+      sendMessage: (appSessionId, text) => sessionHost.sendMessage(appSessionId, text),
     },
+    emit,
     readTasks: () => tasksState,
     readMeters: () => metersState,
     nowIso: () => {
@@ -345,12 +547,18 @@ function buildHarness(options: {
     },
     staleAfterMs: STALE_AFTER_MS,
     // ⚠ OMITTED unless a case names it — so the DEFAULT this file exercises
-    // everywhere else is the shipped one: the flag off, no manager, every task in
-    // `task.projectRoot`, and no git anywhere.
+    // everywhere else is the shipped one: the flag off, no coordinator, every task
+    // in `task.projectRoot`, and no checkout anywhere.
     ...(options.worktreeIsolationEnabled === undefined
       ? {}
       : { worktreeIsolationEnabled: options.worktreeIsolationEnabled }),
-    ...(worktreeManager === undefined ? {} : { worktreeManager }),
+    ...(!isolationWired || options.omitCheckoutCoordinator === true
+      ? {}
+      : { checkoutCoordinator: coordinator }),
+    ...(!isolationWired || options.omitReadProjects === true
+      ? {}
+      : { readProjects: () => projectsState }),
+    ...(!isolationWired || options.omitNodeWriter === true ? {} : { nodeWriter }),
     ...(options.resolveWorkingDirectory === undefined
       ? {}
       : { resolveWorkingDirectory: options.resolveWorkingDirectory }),
@@ -374,8 +582,10 @@ function buildHarness(options: {
     artifactStore,
     instanceWriter: recordingInstanceWriter,
     nowIsoCallCount: () => nowIsoCallCount,
-    worktreeCalls: () => worktreeCalls,
-    gitCalls: () => gitCalls,
+    checkoutCreateCalls: () => coordinator.createCalls,
+    coordinator,
+    nodeWriter,
+    timeline: () => coordinator.timeline,
   };
 }
 
@@ -1390,27 +1600,30 @@ describe('TaskDispatcher — step 7 changes nothing about WHETHER a stage runs',
 
 // ─── slice 6 step 8 — isolation: BUILT, WIRED, AND SHIPPED OFF ───────────────
 //
-// ⚠ **NOT ONE REAL GIT COMMAND RUNS BELOW, AND NO WORKTREE IS EVER CREATED.** The
-// harness builds a real `WorktreeManager` over a RECORDING FAKE git runner. This
-// file lives inside the vimes checkout; a test that actually created a worktree
-// would leave one in the repository being developed.
+// ⚠ **NO REAL GIT AND NO REAL COORDINATOR RUNS BELOW, AND NO CHECKOUT IS EVER
+// CREATED.** The harness wires the FAKE coordinator (see its header for what it
+// stands in for and why). This file lives inside the vimes checkout; a test that
+// actually created a worktree would leave one in the repository being developed.
 //
-// The four cases in the first block are the shipping promise. The flag defaults to
+// The five cases in the first block are the shipping promise. The flag defaults to
 // OFF, and with it off this dispatcher is byte-identical to step 7's — which is why
 // the `describe` above ("the isolation scope boundary (D32 vs step 8)") still holds
 // verbatim, with its expectations untouched.
 
 describe('TaskDispatcher — assertion 8: with the flag OFF, NOTHING changed', () => {
-  it('a worktree task still resolves to projectRoot and issues NO GIT COMMAND AT ALL', () => {
+  it('a worktree task still resolves to projectRoot and issues NO CHECKOUT AT ALL', () => {
     // ⚠ THE SECOND HALF IS THE LOAD-BEARING ONE. "It span up in projectRoot" would
-    // also be true of an implementation that made a worktree and then ignored it, or
-    // that consulted git and fell back. Zero git calls is the proof that the whole
-    // isolation path is unreachable while the flag is off.
+    // also be true of an implementation that made a checkout and then ignored it, or
+    // that consulted the coordinator and fell back. Zero create calls is the proof
+    // that the whole isolation path is unreachable while the flag is off — and
+    // since the coordinator is the daemon's ONLY route to git since S17·U3, it is
+    // also the proof that no git subprocess was reached, which is what the retired
+    // `gitCalls().toEqual([])` half of this assertion used to say.
     const harness = buildHarness({
       tasks: [taskRecord({ isolation: 'worktree' })],
-      // A manager IS present — the same shape app.ts wires — and the flag is not
-      // named, i.e. it takes its default.
-      withWorktreeManager: true,
+      // A coordinator IS present — the same shape app.ts wires — and the flag is
+      // not named, i.e. it takes its default.
+      withCheckoutCoordinator: true,
     });
 
     return harness.dispatcher.dispatchTask(TASK_ID).then((result) => {
@@ -1418,33 +1631,33 @@ describe('TaskDispatcher — assertion 8: with the flag OFF, NOTHING changed', (
         { channel: 'sdk', cwd: PROJECT_ROOT, dispatched: true, permissionMode: 'auto', stage: 'implementing' },
       ]);
       expect(result).toMatchObject({ outcome: 'spawned', cwd: PROJECT_ROOT });
-      expect(harness.worktreeCalls()).toEqual([]);
-      expect(harness.gitCalls()).toEqual([]);
-      // And no worktree event, so the tasks stream is byte-identical too.
+      expect(harness.checkoutCreateCalls()).toEqual([]);
+      // And no nodes-stream event of any kind, so both streams are byte-identical.
       expect(eventTypes(harness.emitted)).toEqual([EVENT_TYPES.instanceRunAttached]);
+      expect(harness.nodeWriter.attachCalls).toEqual([]);
     });
   });
 
   it('the flag set EXPLICITLY to false is the same world', async () => {
     const harness = buildHarness({
       tasks: [taskRecord({ isolation: 'worktree' })],
-      withWorktreeManager: true,
+      withCheckoutCoordinator: true,
       worktreeIsolationEnabled: false,
     });
     const result = await harness.dispatcher.dispatchTask(TASK_ID);
 
     expect(result).toMatchObject({ outcome: 'spawned', cwd: PROJECT_ROOT });
-    expect(harness.gitCalls()).toEqual([]);
+    expect(harness.checkoutCreateCalls()).toEqual([]);
   });
 
   it('the DEFAULT resolver is still `projectRootWorkingDirectory`, unchanged', () => {
-    // The function step 4a exported and pinned. Step 8 did not touch it, and the
-    // flag-off world is entirely made of it.
+    // The function step 4a exported and pinned. Neither step 8 nor S17·U3 touched
+    // it, and the flag-off world is entirely made of it.
     expect(projectRootWorkingDirectory(taskRecord({ isolation: 'worktree' }))).toBe(PROJECT_ROOT);
     expect(projectRootWorkingDirectory(taskRecord({ isolation: 'shared-dir' }))).toBe(PROJECT_ROOT);
   });
 
-  it('WIRED AS app.ts WIRES IT, from a default env: still projectRoot, still no git', async () => {
+  it('WIRED AS app.ts WIRES IT, from a default env: still projectRoot, still no checkout', async () => {
     // ⚠ The link between the config default and the dispatcher, asserted rather than
     // assumed. The expression below is the SAME ONE app.ts evaluates
     // (`config.worktreeIsolation === 'on'`), fed by a default environment — so a
@@ -1452,78 +1665,111 @@ describe('TaskDispatcher — assertion 8: with the flag OFF, NOTHING changed', (
     // test, and the two halves of the shipping promise cannot drift apart.
     const harness = buildHarness({
       tasks: [taskRecord({ isolation: 'worktree' })],
-      withWorktreeManager: true,
+      withCheckoutCoordinator: true,
       worktreeIsolationEnabled: loadConfigFromEnv({}).worktreeIsolation === 'on',
     });
     const result = await harness.dispatcher.dispatchTask(TASK_ID);
 
     expect(result).toMatchObject({ outcome: 'spawned', cwd: PROJECT_ROOT });
-    expect(harness.gitCalls()).toEqual([]);
-    expect(harness.worktreeCalls()).toEqual([]);
+    expect(harness.checkoutCreateCalls()).toEqual([]);
   });
 
   it('an injected resolveWorkingDirectory still wins while the flag is off', async () => {
     // Step 4a's seam, still the only thing that decides the cwd in the off world.
     const harness = buildHarness({
       tasks: [taskRecord({ isolation: 'worktree' })],
-      withWorktreeManager: true,
+      withCheckoutCoordinator: true,
       resolveWorkingDirectory: () => '/injected/elsewhere',
     });
     const result = await harness.dispatcher.dispatchTask(TASK_ID);
 
     expect(result).toMatchObject({ cwd: '/injected/elsewhere' });
-    expect(harness.gitCalls()).toEqual([]);
+    expect(harness.checkoutCreateCalls()).toEqual([]);
   });
 });
 
-describe('TaskDispatcher — assertion 9: flag ON + worktree isolation', () => {
-  it('spawns in the WORKTREE and emits task_worktree_created BEFORE the spawn', async () => {
+describe('TaskDispatcher — assertion 9: flag ON + worktree isolation (§3.2 choreography)', () => {
+  it('spawns in the CHECKOUT and runs node_created → spawn → session_attached_to_node, IN THE LOCK', async () => {
     const harness = buildHarness({
       tasks: [taskRecord({ isolation: 'worktree' })],
-      withWorktreeManager: true,
+      withCheckoutCoordinator: true,
       worktreeIsolationEnabled: true,
     });
     const result = await harness.dispatcher.dispatchTask(TASK_ID);
 
-    // The session runs in the worktree, not the project root.
+    // The session runs in the checkout, not the project root.
     expect(harness.sessionHost.spawnCalls).toEqual([
-      { channel: 'sdk', cwd: WORKTREE_PATH, dispatched: true, permissionMode: 'auto', stage: 'implementing' },
+      { channel: 'sdk', cwd: CHECKOUT_PATH, dispatched: true, permissionMode: 'auto', stage: 'implementing' },
     ]);
-    expect(result).toMatchObject({ outcome: 'spawned', cwd: WORKTREE_PATH });
+    expect(result).toMatchObject({ outcome: 'spawned', cwd: CHECKOUT_PATH });
 
-    // ⚠ ORDER IS THE ASSERTION, not merely presence. The directory exists before
-    // the session does; recording it afterwards would leave a window in which an
-    // agent is running somewhere the log has never mentioned.
+    // §3.4: IDENTITIES AND INTENT ONLY. The request carries the joined projectId
+    // and nothing else — no path (the engine derives it), and no base ref (a
+    // dispatched stage run has no opinion, so §3.1's default algorithm answers).
+    expect(harness.checkoutCreateCalls()).toEqual([{ projectId: PROJECT_ID }]);
+
+    // ⚠ ORDER IS THE ASSERTION, not merely presence (§3.2). Three facts, three
+    // streams' worth of meaning: the node exists before the session does, the
+    // session exists before anything claims it, and the tasks-stream attach rides
+    // between them exactly where it always did.
     expect(eventTypes(harness.emitted)).toEqual([
-      EVENT_TYPES.taskWorktreeCreated,
+      EVENT_TYPES.nodeCreated,
       EVENT_TYPES.instanceRunAttached,
+      EVENT_TYPES.sessionAttachedToNode,
     ]);
-    const worktreeEvent = harness.emitted[0]!;
-    expect(worktreeEvent.stream).toBe('tasks');
-    expect(worktreeEvent.payload).toEqual({
-      taskId: TASK_ID,
-      path: WORKTREE_PATH,
-      branch: WORKTREE_BRANCH,
-      // D32's cost measurement, from the INJECTED clock — deterministic here.
-      setupMs: WORKTREE_SETUP_STEP_MS,
-    });
+    // The order claim again, from the OTHER side: at the instant the spawn ran,
+    // exactly one event (`node_created`) had been emitted. A dispatcher that
+    // spawned first and emitted all three afterwards would satisfy the list above
+    // and fail this line.
+    expect(harness.sessionHost.spawnEmittedCounts).toEqual([1]);
 
-    // And the git the manager actually ran: list, then add with the `--` guard.
-    expect(harness.gitCalls()).toEqual([
-      ['worktree', 'list', '--porcelain'],
-      ['worktree', 'add', '-b', WORKTREE_BRANCH, '--', WORKTREE_PATH],
+    // ⚠ ALL OF IT INSIDE ONE CRITICAL SECTION (§3.3). Holding the lock across the
+    // spawn is what makes a queued `remove` see the session its predecessor
+    // started, which is the rev-2 hazard A7 replays.
+    expect(harness.timeline()).toEqual(['lock-acquired', 'node_created', 'spawn', 'lock-released']);
+
+    // The nodes-stream fact went through the SOLE WRITER, with the coordinator's
+    // own nodeId and the host's own appSessionId — never ids the dispatcher made up.
+    expect(harness.nodeWriter.attachCalls).toEqual([
+      { nodeId: CHECKOUT_NODE_ID, appSessionId: SPAWNED_SESSION_ID },
     ]);
+    const attachEvent = harness.emitted[2]!;
+    expect(attachEvent.stream).toBe('nodes');
+    expect(attachEvent.payload).toEqual({
+      nodeId: CHECKOUT_NODE_ID,
+      appSessionId: SPAWNED_SESSION_ID,
+    });
   });
 
-  it('a FIX under isolation goes through the worktree like any other spawn (D46 inversion)', async () => {
-    // ⚠ WAS "a RESUME still keeps the author's own cwd — no worktree is resolved",
-    // on the I3/D6 grounds that `resumeSession` takes no cwd and the author is
-    // already sitting IN its worktree. D46 removed the resume, so a fix spawns — and
-    // a spawn under isolation resolves the worktree. `ensureWorktree` is IDEMPOTENT,
-    // so the fix lands in the SAME directory the prior attempt used and REUSES it
-    // (no creation event); that reuse is what keeps D53's "read the prior attempt's
-    // diff off disk" true for an isolated task — the diff is only there if the fixer
-    // is in the same worktree.
+  it('the tasks-stream attach is UNCHANGED — two facts, two streams, neither replacing the other', async () => {
+    const harness = buildHarness({
+      tasks: [taskRecord({ isolation: 'worktree' })],
+      withCheckoutCoordinator: true,
+      worktreeIsolationEnabled: true,
+    });
+    await harness.dispatcher.dispatchTask(TASK_ID);
+
+    const taskAttach = harness.emitted.find(
+      (event) => event.type === EVENT_TYPES.instanceRunAttached,
+    )!;
+    expect(taskAttach.stream).toBe('tasks');
+    expect(taskAttach.payload).toEqual({
+      instanceId: TASK_ID,
+      node: 'implementing',
+      appSessionId: SPAWNED_SESSION_ID,
+    });
+  });
+
+  it('a FIX under isolation gets its OWN checkout — the task-keyed re-use died with the manager', async () => {
+    // ⚠ WAS "a FIX under isolation goes through the worktree like any other spawn",
+    // whose point was that `ensureWorktree` was IDEMPOTENT so the fixer landed in
+    // the SAME directory the prior attempt used. **THAT IS GONE, AND IT IS SIGNED**
+    // (slice-17.md §3.10, pin 1): every `create` mints a FRESH nodeId, so a fix gets
+    // a fresh branch and a fresh path. The consequence is real and is named here
+    // rather than left to be discovered — D53's "read the prior attempt's diff off
+    // disk" no longer holds for an isolated task, because the fixer is not in the
+    // prior attempt's checkout. Re-entering an existing checkout is `open`'s job and
+    // has no dispatcher surface in v1.
     const harness = buildHarness({
       tasks: [
         taskRecord({
@@ -1532,25 +1778,41 @@ describe('TaskDispatcher — assertion 9: flag ON + worktree isolation', () => {
           sessionRefs: [implementingRef(HOT_AUTHOR_SESSION_ID)],
         }),
       ],
-      withWorktreeManager: true,
+      withCheckoutCoordinator: true,
       worktreeIsolationEnabled: true,
     });
     const result = await harness.dispatcher.dispatchTask(TASK_ID);
 
-    expect(result).toMatchObject({ outcome: 'spawned', cwd: WORKTREE_PATH });
-    expect(harness.sessionHost.spawnCalls[0]!.cwd).toBe(WORKTREE_PATH);
+    expect(result).toMatchObject({ outcome: 'spawned', cwd: CHECKOUT_PATH });
+    expect(harness.sessionHost.spawnCalls[0]!.cwd).toBe(CHECKOUT_PATH);
     expect(harness.sessionHost.resumeCalls).toEqual([]);
-    expect(harness.worktreeCalls()).toHaveLength(1);
+    expect(harness.checkoutCreateCalls()).toHaveLength(1);
+  });
+
+  it('two dispatches of one task get two DIFFERENT checkouts — nothing is silently re-opened', async () => {
+    // The other half of the pin-1 consequence, stated as the observable fact: the
+    // second dispatch does not land where the first one did. Under the manager it
+    // did, and that idempotence was the thing D53 leaned on.
+    const harness = buildHarness({
+      withCheckoutCoordinator: true,
+      worktreeIsolationEnabled: true,
+    });
+    const first = await harness.dispatcher.dispatchTask(TASK_ID);
+    const second = await harness.dispatcher.dispatchTask(TASK_ID);
+
+    expect(first).toMatchObject({ outcome: 'spawned', cwd: CHECKOUT_PATH });
+    expect(second).toMatchObject({ outcome: 'spawned' });
+    expect((second as { cwd: string }).cwd).not.toBe(CHECKOUT_PATH);
   });
 });
 
 describe('TaskDispatcher — assertion 10: flag ON + shared-dir is still projectRoot', () => {
-  it('runs in projectRoot, consults no manager, and issues no git', async () => {
+  it('runs in projectRoot, consults no coordinator, and makes no checkout', async () => {
     // D32 kept the per-task override precisely so a cost surprise is a config change
     // rather than a redesign. `shared-dir` means what it says even with the flag on.
     const harness = buildHarness({
       tasks: [taskRecord({ isolation: 'shared-dir' })],
-      withWorktreeManager: true,
+      withCheckoutCoordinator: true,
       worktreeIsolationEnabled: true,
     });
     const result = await harness.dispatcher.dispatchTask(TASK_ID);
@@ -1559,8 +1821,7 @@ describe('TaskDispatcher — assertion 10: flag ON + shared-dir is still project
       { channel: 'sdk', cwd: PROJECT_ROOT, dispatched: true, permissionMode: 'auto', stage: 'implementing' },
     ]);
     expect(result).toMatchObject({ outcome: 'spawned', cwd: PROJECT_ROOT });
-    expect(harness.worktreeCalls()).toEqual([]);
-    expect(harness.gitCalls()).toEqual([]);
+    expect(harness.checkoutCreateCalls()).toEqual([]);
     expect(eventTypes(harness.emitted)).toEqual([EVENT_TYPES.instanceRunAttached]);
   });
 });
@@ -1575,34 +1836,51 @@ describe('TaskDispatcher — ASSERTION 11, THE SAFETY ONE: a failed worktree run
   // Every case below therefore asserts the ABSENCE of the fallback directly —
   // `PROJECT_ROOT` must not appear in any spawn call, in any event, or in the result
   // — rather than only asserting that the outcome says `worktree-failed`.
+  //
+  // ⚠ **S17·U3 RE-ANCHORED THE HARNESS, NOT THE CLAIM.** These cases used to bend a
+  // real `WorktreeManager` by making its `git worktree list` fail; the manager is
+  // gone, so they bend the FAKE COORDINATOR by giving it the refusal the real one
+  // would have returned for the same underlying condition. Every expectation string
+  // below is the one that was there before — including
+  // `not-a-repo:fatal: not a git repository` and
+  // `worktree-isolation-enabled-without-a-manager`, which are the wire vocabulary a
+  // caller reads and are not something a swap of the implementation gets to churn.
 
-  const WORKTREE_FAILURES: ReadonlyArray<{ name: string; response: GitRunResult }> = [
-    { name: 'git missing', response: { stdout: '', stderr: 'spawn git ENOENT', exitCode: null } },
+  const CHECKOUT_REFUSALS: ReadonlyArray<{ name: string; refusal: CheckoutRefusal }> = [
+    {
+      name: 'git missing',
+      refusal: { outcome: 'refused', reason: 'git-unavailable', detail: 'spawn git ENOENT' },
+    },
     {
       name: 'not a repo',
-      response: { stdout: '', stderr: 'fatal: not a git repository', exitCode: 128 },
+      refusal: { outcome: 'refused', reason: 'not-a-repo', detail: 'fatal: not a git repository' },
     },
     {
       name: 'permission denied',
-      response: { stdout: '', stderr: 'fatal: could not create directory: Permission denied', exitCode: 128 },
+      refusal: {
+        outcome: 'refused',
+        reason: 'git-failed',
+        detail: 'fatal: could not create directory: Permission denied',
+      },
     },
   ];
 
-  for (const { name, response } of WORKTREE_FAILURES) {
+  for (const { name, refusal } of CHECKOUT_REFUSALS) {
     it(`${name}: zero spawns, no attach, worktree-failed, and NEVER projectRoot`, async () => {
       const harness = buildHarness({
         tasks: [taskRecord({ isolation: 'worktree' })],
         worktreeIsolationEnabled: true,
-        worktreeFailure: response,
+        coordinatorRefusal: refusal,
       });
       const result = await harness.dispatcher.dispatchTask(TASK_ID);
 
-      // 1. NOTHING RAN. Not in the worktree, not in the project root, not anywhere.
+      // 1. NOTHING RAN. Not in the checkout, not in the project root, not anywhere.
       expect(harness.sessionHost.spawnCalls).toHaveLength(0);
       expect(harness.sessionHost.resumeCalls).toEqual([]);
       // 2. NO `instance_run_attached` — there is no session to attach — and no
-      //    `task_worktree_created`, because nothing was created.
+      //    nodes-stream event either, because nothing was created.
       expect(harness.emitted).toEqual([]);
+      expect(harness.nodeWriter.attachCalls).toEqual([]);
       // 3. The outcome names what happened, in the EXECUTION vocabulary.
       expect(result.outcome).toBe('worktree-failed');
       expect(result).toMatchObject({ taskId: TASK_ID });
@@ -1615,11 +1893,15 @@ describe('TaskDispatcher — ASSERTION 11, THE SAFETY ONE: a failed worktree run
     });
   }
 
-  it('carries the manager’s classified reason AND git’s own words', async () => {
+  it('carries the coordinator’s classified reason AND git’s own words', async () => {
     const harness = buildHarness({
       tasks: [taskRecord({ isolation: 'worktree' })],
       worktreeIsolationEnabled: true,
-      worktreeFailure: { stdout: '', stderr: 'fatal: not a git repository', exitCode: 128 },
+      coordinatorRefusal: {
+        outcome: 'refused',
+        reason: 'not-a-repo',
+        detail: 'fatal: not a git repository',
+      },
     });
     const result = await harness.dispatcher.dispatchTask(TASK_ID);
 
@@ -1630,7 +1912,53 @@ describe('TaskDispatcher — ASSERTION 11, THE SAFETY ONE: a failed worktree run
     });
   });
 
-  it('the flag ON with NO manager is a FAILURE, not a silent downgrade to projectRoot', async () => {
+  it('a DETAIL-LESS refusal carries the bare reason, with no trailing separator', async () => {
+    // The other half of `<reason>[:<detail>]`: §3.10's `branch-already-exists` omits
+    // its detail when the branch is not checked out anywhere, and a formatter that
+    // always appended a colon would put `branch-already-exists:undefined` on the wire.
+    const harness = buildHarness({
+      tasks: [taskRecord({ isolation: 'worktree' })],
+      worktreeIsolationEnabled: true,
+      coordinatorRefusal: { outcome: 'refused', reason: 'branch-already-exists' },
+    });
+    const result = await harness.dispatcher.dispatchTask(TASK_ID);
+
+    expect(result).toEqual({
+      outcome: 'worktree-failed',
+      taskId: TASK_ID,
+      reason: 'branch-already-exists',
+    });
+  });
+
+  it('a RETRIED dispatch that finds branch-already-exists is worktree-failed like any other refusal', async () => {
+    // ⚠ **THE `reused: true` SEMANTICS, DEAD AND BURIED — AND THIS IS THE CASE THAT
+    // REPLACED THE OLD "a REUSED worktree spawns normally and emits NO creation
+    // event".** The manager derived its branch from the taskId, so a retry found
+    // `vimes/task-<id>` and silently re-entered the directory it named. The
+    // coordinator NEVER silently opens (§3.10, pin 1): a create whose branch exists
+    // is refused, pointing at `open`, and in v1 that refusal is a `worktree-failed`
+    // like any other — nothing spawns, nothing falls back.
+    const harness = buildHarness({
+      tasks: [taskRecord({ isolation: 'worktree' })],
+      worktreeIsolationEnabled: true,
+      coordinatorRefusal: {
+        outcome: 'refused',
+        reason: 'branch-already-exists',
+        detail: `${WORKTREE_ROOT}/node-somebody-else`,
+      },
+    });
+    const result = await harness.dispatcher.dispatchTask(TASK_ID);
+
+    expect(result).toEqual({
+      outcome: 'worktree-failed',
+      taskId: TASK_ID,
+      reason: `branch-already-exists:${WORKTREE_ROOT}/node-somebody-else`,
+    });
+    expect(harness.sessionHost.spawnCalls).toHaveLength(0);
+    expect(harness.emitted).toEqual([]);
+  });
+
+  it('the flag ON with NO coordinator is a FAILURE, not a silent downgrade to projectRoot', async () => {
     // A daemon wired inconsistently must not quietly resolve "isolate this" plus "no
     // isolator" into "run it in the shared directory and say nothing".
     const harness = buildHarness({
@@ -1648,74 +1976,230 @@ describe('TaskDispatcher — ASSERTION 11, THE SAFETY ONE: a failed worktree run
     expect(harness.emitted).toEqual([]);
   });
 
-  it('survives a manager that THROWS, and still refuses to fall back', async () => {
-    // The manager's contract is a returned result, but a dispatcher must survive its
-    // adapters regardless — and surviving must not mean "carry on in projectRoot".
-    const emitted: EventInput[] = [];
-    const sessionHost = new RecordingSessionHost();
-    const dispatcher = new TaskDispatcher({
-      sessionHost,
-      emit: (events) => {
-        emitted.push(...events);
-      },
-      readTasks: () => ({ tasks: { [TASK_ID]: taskRecord({ isolation: 'worktree' }) } }),
-      readMeters: () => metersStateWith(meterRecord()),
-      nowIso: () => FIXED_NOW,
-      staleAfterMs: STALE_AFTER_MS,
+  it('the isolation deps are ALL-OR-NOTHING — dropping any one is the same honest failure', async () => {
+    // The three (`checkoutCoordinator`, `readProjects`, `nodeWriter`) exist only for
+    // this path and are useless apart: a checkout nobody can attribute to a project,
+    // or whose session cannot be recorded on the tree, is not an isolator. Each is
+    // dropped independently so a wiring that lost exactly one cannot degrade to
+    // "isolate, but skip the bookkeeping".
+    for (const omission of [
+      { omitCheckoutCoordinator: true },
+      { omitReadProjects: true },
+      { omitNodeWriter: true },
+    ]) {
+      const harness = buildHarness({
+        tasks: [taskRecord({ isolation: 'worktree' })],
+        worktreeIsolationEnabled: true,
+        withCheckoutCoordinator: true,
+        ...omission,
+      });
+      const result = await harness.dispatcher.dispatchTask(TASK_ID);
+
+      expect(result, JSON.stringify(omission)).toEqual({
+        outcome: 'worktree-failed',
+        taskId: TASK_ID,
+        reason: 'worktree-isolation-enabled-without-a-manager',
+      });
+      expect(harness.sessionHost.spawnCalls, JSON.stringify(omission)).toHaveLength(0);
+      expect(harness.emitted, JSON.stringify(omission)).toEqual([]);
+    }
+  });
+
+  it('survives a coordinator that THROWS, and still refuses to fall back', async () => {
+    // The coordinator's contract is a returned result, but a dispatcher must survive
+    // its adapters regardless — and surviving must not mean "carry on in projectRoot".
+    const harness = buildHarness({
+      tasks: [taskRecord({ isolation: 'worktree' })],
       worktreeIsolationEnabled: true,
-      worktreeManager: {
-        ensureWorktree: () => {
-          throw new Error('manager exploded');
-        },
-      },
-      artifactStore: new MemoryArtifactStore(),
-      instanceWriter: new RecordingInstanceWriter(),
+      coordinatorThrows: new Error('manager exploded'),
     });
 
-    const result = await dispatchWithoutRejecting(dispatcher, TASK_ID);
+    const result = await dispatchWithoutRejecting(harness.dispatcher, TASK_ID);
 
     expect(result).toMatchObject({
       outcome: 'worktree-failed',
       reason: 'worktree-threw:manager exploded',
     });
-    expect(sessionHost.spawnCalls).toHaveLength(0);
-    expect(emitted).toEqual([]);
+    expect(harness.sessionHost.spawnCalls).toHaveLength(0);
+    expect(harness.emitted).toEqual([]);
   });
 
-  it('a REUSED worktree spawns normally and emits NO creation event', async () => {
-    // Idempotence seen from the dispatcher. A re-dispatch finds the directory it
-    // already has; `task_worktree_created` would be an untrue fact in an append-only
-    // log, and a near-zero reading poisoning D32's setup-cost column.
-    const existingWorktreeList = [
-      `worktree ${PROJECT_ROOT}`,
-      'HEAD 81ddf1600000000000000000000000000000000a',
-      'branch refs/heads/master',
-      '',
-      `worktree ${WORKTREE_PATH}`,
-      'HEAD 81ddf1600000000000000000000000000000000a',
-      `branch refs/heads/${WORKTREE_BRANCH}`,
-      '',
-      '',
-    ].join('\n');
+  it('an UNDECLARED project root is worktree-failed — a checkout the engine cannot attribute is one it must not create', async () => {
+    // ⚠ **GROUND TRUTH 2's REACHABLE CASE.** A task's `projectRoot` is walled by
+    // `config.projectRoots ∪ live-session cwds`, NOT by the D42 registry, so a task
+    // can legitimately name a directory no project claims. §3.4 has the engine
+    // resolve the repository from the PROJECT record, so there is nothing to resolve
+    // — and creating a branch and a directory on a real disk that no node, no
+    // project and no tree would ever account for is exactly what §3.2's join exists
+    // to prevent. It maps onto the existing no-fallback path: nothing spawns.
     const harness = buildHarness({
-      tasks: [taskRecord({ isolation: 'worktree' })],
+      tasks: [taskRecord({ isolation: 'worktree', projectRoot: '/home/ticktockbent/projects/undeclared' })],
       worktreeIsolationEnabled: true,
-      worktreeFailure: { stdout: existingWorktreeList, stderr: '', exitCode: 0 },
+      withCheckoutCoordinator: true,
     });
     const result = await harness.dispatcher.dispatchTask(TASK_ID);
 
-    expect(result).toMatchObject({ outcome: 'spawned', cwd: WORKTREE_PATH });
-    expect(eventTypes(harness.emitted)).toEqual([EVENT_TYPES.instanceRunAttached]);
-    // One command: the list. No second `add`.
-    expect(harness.gitCalls()).toEqual([['worktree', 'list', '--porcelain']]);
+    expect(result).toEqual({
+      outcome: 'worktree-failed',
+      taskId: TASK_ID,
+      reason: 'unknown-project:/home/ticktockbent/projects/undeclared',
+    });
+    expect(harness.checkoutCreateCalls()).toEqual([]);
+    expect(harness.sessionHost.spawnCalls).toHaveLength(0);
+    expect(harness.emitted).toEqual([]);
+  });
+
+  it('an ARCHIVED project does not claim its old root — archiving frees the directory', async () => {
+    // `ProjectWriter` refuses a duplicate LIVE root and archiving frees it, which is
+    // the whole reason the join filters on `archived`. An archived record still sits
+    // in the projection forever (nothing is ever removed from an append-only log),
+    // so a join that forgot the filter would happily attribute new work to a
+    // boundary a human deliberately retired.
+    const harness = buildHarness({
+      tasks: [taskRecord({ isolation: 'worktree' })],
+      worktreeIsolationEnabled: true,
+      withCheckoutCoordinator: true,
+      projects: projectsStateWith({ projectId: PROJECT_ID, root: PROJECT_ROOT, archived: true }),
+    });
+    const result = await harness.dispatcher.dispatchTask(TASK_ID);
+
+    expect(result).toMatchObject({
+      outcome: 'worktree-failed',
+      reason: `unknown-project:${PROJECT_ROOT}`,
+    });
+    expect(harness.checkoutCreateCalls()).toEqual([]);
+  });
+
+  it('a NESTED project is not the task’s project — the join is EXACT, never longest-prefix', async () => {
+    // ⚠ The reason this is not `projectForCwd`. A prefix match would hand the
+    // coordinator the ANCESTOR's projectId, and §3.4 would then cut the checkout out
+    // of the ANCESTOR's repository — a different repo than the one the task names,
+    // silently. Exact equality is what makes `repoRoot === task.projectRoot` an
+    // invariant rather than a coincidence.
+    const harness = buildHarness({
+      tasks: [taskRecord({ isolation: 'worktree' })],
+      worktreeIsolationEnabled: true,
+      withCheckoutCoordinator: true,
+      projects: projectsStateWith({ projectId: 'project-parent-0001', root: '/home/ticktockbent/projects' }),
+    });
+    const result = await harness.dispatcher.dispatchTask(TASK_ID);
+
+    expect(result).toMatchObject({
+      outcome: 'worktree-failed',
+      reason: `unknown-project:${PROJECT_ROOT}`,
+    });
+    expect(harness.checkoutCreateCalls()).toEqual([]);
+  });
+
+  it('TWO live projects at one root would be AMBIGUOUS, and ambiguity refuses rather than picks', async () => {
+    // ⚠ Structurally unreachable — `ProjectWriter.createProject` refuses an exact
+    // live-root duplicate — which is precisely why it is asserted: if that guard
+    // ever weakened, kill criterion 4's ambiguity would arrive HERE, at a
+    // `git worktree add` in one of two repositories that claim the same directory.
+    // Loud, never a pick.
+    const harness = buildHarness({
+      tasks: [taskRecord({ isolation: 'worktree' })],
+      worktreeIsolationEnabled: true,
+      withCheckoutCoordinator: true,
+      projects: projectsStateWith(
+        { projectId: PROJECT_ID, root: PROJECT_ROOT },
+        { projectId: 'project-vimes-0002', root: PROJECT_ROOT },
+      ),
+    });
+    const result = await harness.dispatcher.dispatchTask(TASK_ID);
+
+    expect(result).toEqual({
+      outcome: 'worktree-failed',
+      taskId: TASK_ID,
+      reason: `ambiguous-project:${PROJECT_ROOT}`,
+    });
+    expect(harness.checkoutCreateCalls()).toEqual([]);
+  });
+
+  it('a REFUSED spawn inside the lock un-makes the checkout and reports spawn-failed', async () => {
+    // Two claims, and both are new with §3.2's in-lock spawn:
+    //   • the OUTCOME stays in the SPAWN vocabulary — `spawn-failed`, not
+    //     `worktree-failed`. The checkout succeeded; the session did not.
+    //   • the checkout is COMPENSATED away (§3.7). Under the manager a failed spawn
+    //     left the directory behind for the next attempt to re-use; with the re-use
+    //     gone, leaving it would leak one directory and one branch per failed spawn.
+    const harness = buildHarness({
+      tasks: [taskRecord({ isolation: 'worktree' })],
+      worktreeIsolationEnabled: true,
+      withCheckoutCoordinator: true,
+    });
+    harness.sessionHost.refuseNextSpawn('preflight-failed');
+
+    const result = await dispatchWithoutRejecting(harness.dispatcher, TASK_ID);
+
+    expect(result).toEqual({
+      outcome: 'spawn-failed',
+      taskId: TASK_ID,
+      reason: 'preflight-failed',
+    });
+    expect(harness.timeline()).toEqual([
+      'lock-acquired',
+      'node_created',
+      'spawn',
+      'compensated',
+      'lock-released',
+    ]);
+    // No attach of either kind: the tasks-stream one is not written for a refused
+    // spawn (it never was), and the nodes-stream one was never reached.
+    expect(eventTypes(harness.emitted)).toEqual([EVENT_TYPES.nodeCreated]);
+    expect(harness.nodeWriter.attachCalls).toEqual([]);
+  });
+
+  it('a spawn that THROWS inside the lock compensates too, and never falls back', async () => {
+    const harness = buildHarness({
+      tasks: [taskRecord({ isolation: 'worktree' })],
+      worktreeIsolationEnabled: true,
+      withCheckoutCoordinator: true,
+    });
+    harness.sessionHost.throwOnSpawn(new Error('the host fell over'));
+
+    const result = await dispatchWithoutRejecting(harness.dispatcher, TASK_ID);
+
+    expect(result).toEqual({
+      outcome: 'spawn-failed',
+      taskId: TASK_ID,
+      reason: 'spawn-threw:the host fell over',
+    });
+    expect(harness.timeline()).toContain('compensated');
+    expect(JSON.stringify(result)).not.toContain(PROJECT_ROOT);
+  });
+
+  it('an attach REFUSAL degrades — the live session keeps its ground rather than being compensated away', async () => {
+    // ⚠ The deliberate asymmetry with the spawn above, and the reason it is not a
+    // throw: at this point a REAL AGENT IS RUNNING in the checkout. An unattached
+    // session lands in `unfiled` (S16/D90) — visible, and re-attachable by hand. A
+    // session whose directory was deleted underneath it is neither. Every refusal
+    // reason is unreachable by construction here (fresh open node, fresh unhomed
+    // session), so this is the shape of a fault that should never fire, not a
+    // routine path.
+    const harness = buildHarness({
+      tasks: [taskRecord({ isolation: 'worktree' })],
+      worktreeIsolationEnabled: true,
+      withCheckoutCoordinator: true,
+    });
+    harness.nodeWriter.refuseWith({ outcome: 'refused', reason: 'unknown-session' });
+
+    const result = await dispatchWithoutRejecting(harness.dispatcher, TASK_ID);
+
+    expect(result).toMatchObject({ outcome: 'spawned', cwd: CHECKOUT_PATH });
+    expect(harness.timeline()).not.toContain('compensated');
+    expect(eventTypes(harness.emitted)).toEqual([
+      EVENT_TYPES.nodeCreated,
+      EVENT_TYPES.instanceRunAttached,
+    ]);
   });
 });
 
 describe('TaskDispatcher — assertion 13: I10 still holds through the ASYNC path', () => {
-  it('a failed headroom gate reaches neither the worktree manager NOR the session host', async () => {
+  it('a failed headroom gate reaches neither the coordinator NOR the session host', async () => {
     // ⚠ The invariant that must survive every refactor. Making the path async moved
     // the working-directory resolution behind an `await`, and an implementation that
-    // resolved the cwd (creating a worktree — a real directory on a real disk) BEFORE
+    // resolved the cwd (creating a checkout — a real directory on a real disk) BEFORE
     // consulting the decision would satisfy every other assertion in this file while
     // doing real work for a task the gate refused.
     const harness = buildHarness({
@@ -1726,46 +2210,45 @@ describe('TaskDispatcher — assertion 13: I10 still holds through the ASYNC pat
         }),
       ],
       meters: metersStateWith(meterRecord({ percent: 40 })),
-      withWorktreeManager: true,
+      withCheckoutCoordinator: true,
       worktreeIsolationEnabled: true,
     });
     const result = await harness.dispatcher.dispatchTask(TASK_ID);
 
-    expect(harness.worktreeCalls()).toEqual([]);
-    expect(harness.gitCalls()).toEqual([]);
+    expect(harness.checkoutCreateCalls()).toEqual([]);
     expect(harness.sessionHost.spawnCalls).toHaveLength(0);
     expect(harness.sessionHost.resumeCalls).toEqual([]);
     expect(eventTypes(harness.emitted)).toEqual([EVENT_TYPES.dispatchRefused]);
     expect(result).toEqual({ outcome: 'refused', taskId: TASK_ID, reason: 'headroom-insufficient' });
   });
 
-  it('a DEFER is still silent and still makes no worktree', async () => {
+  it('a DEFER is still silent and still makes no checkout', async () => {
     const harness = buildHarness({
       tasks: [taskRecord({ isolation: 'worktree', gates: { deferUntilReset: 'window-5h' } })],
       meters: metersStateWith(meterRecord({ resetsAt: '2026-07-22T13:00:00.000Z' })),
-      withWorktreeManager: true,
+      withCheckoutCoordinator: true,
       worktreeIsolationEnabled: true,
     });
     const result = await harness.dispatcher.dispatchTask(TASK_ID);
 
     expect(result.outcome).toBe('deferred');
     expect(harness.emitted).toEqual([]);
-    expect(harness.gitCalls()).toEqual([]);
+    expect(harness.checkoutCreateCalls()).toEqual([]);
   });
 
-  it('an UNKNOWN task makes no worktree either', async () => {
+  it('an UNKNOWN task makes no checkout either', async () => {
     const harness = buildHarness({
       tasks: [taskRecord({ isolation: 'worktree' })],
-      withWorktreeManager: true,
+      withCheckoutCoordinator: true,
       worktreeIsolationEnabled: true,
     });
     const result = await harness.dispatcher.dispatchTask('task-that-does-not-exist');
 
     expect(result).toEqual({ outcome: 'unknown-task', taskId: 'task-that-does-not-exist' });
-    expect(harness.gitCalls()).toEqual([]);
+    expect(harness.checkoutCreateCalls()).toEqual([]);
   });
 
-  it('already-running still refuses BEFORE any worktree is made', async () => {
+  it('already-running still refuses BEFORE any checkout is made', async () => {
     const harness = buildHarness({
       tasks: [
         taskRecord({
@@ -1773,21 +2256,21 @@ describe('TaskDispatcher — assertion 13: I10 still holds through the ASYNC pat
           sessionRefs: [{ stage: 'planning', appSessionId: EXISTING_SESSION_ID }],
         }),
       ],
-      withWorktreeManager: true,
+      withCheckoutCoordinator: true,
       worktreeIsolationEnabled: true,
     });
     harness.sessionHost.markLive(EXISTING_SESSION_ID);
     const result = await harness.dispatcher.dispatchTask(TASK_ID);
 
     expect(result).toEqual({ outcome: 'refused', taskId: TASK_ID, reason: 'already-running' });
-    expect(harness.gitCalls()).toEqual([]);
+    expect(harness.checkoutCreateCalls()).toEqual([]);
   });
 
   it('the isolated path is DETERMINISTIC — identical inputs, identical results and events', async () => {
     const buildAndDispatch = async (): Promise<{ result: unknown; emitted: EventInput[] }> => {
       const harness = buildHarness({
         tasks: [taskRecord({ isolation: 'worktree' })],
-        withWorktreeManager: true,
+        withCheckoutCoordinator: true,
         worktreeIsolationEnabled: true,
       });
       return { result: await harness.dispatcher.dispatchTask(TASK_ID), emitted: harness.emitted };
@@ -2826,9 +3309,12 @@ describe('TaskDispatcher — S7·7b fix-seed threading', () => {
 //   2. asserts, WHILE the first is still suspended, that no spawn has happened
 //      yet — the positive evidence that the window is genuinely open;
 //   3. only then releases the gate and awaits both.
-// The gate is a `worktreeManagerOverride` whose `ensureWorktree` parks on a
-// promise this file resolves by hand, which holds the exact `await` D54 named
-// open for as long as the assertions need.
+// The gate is a `coordinatorGate` the FAKE COORDINATOR parks on before it emits
+// anything, which holds the exact `await` D54 named open for as long as the
+// assertions need. ⚠ S17·U3 moved that park from `ensureWorktree` to
+// `coordinator.create`, which is the same position in the same window — the
+// `await` between `decideDispatch` saying spawn and `instance_run_attached`
+// landing.
 
 const SECOND_TASK_ID = 'task-dispatch-0002';
 
@@ -2840,74 +3326,50 @@ function createGate(): { promise: Promise<void>; release: () => void } {
   return { promise, release };
 }
 
-// A worktree manager that RECORDS and PARKS. `reused: true` on the way out, so it
-// emits no `task_worktree_created` and `emitted` stays a clean instrument for
-// "did the in-flight attempt write anything".
-function gatedWorktreeManager(): {
-  manager: Pick<WorktreeManager, 'ensureWorktree'>;
-  ensureCalls: string[];
-  release: () => void;
-} {
-  const gate = createGate();
-  const ensureCalls: string[] = [];
-  return {
-    manager: {
-      ensureWorktree: async (task: TaskRecord) => {
-        ensureCalls.push(task.taskId);
-        await gate.promise;
-        return {
-          ok: true as const,
-          path: `${WORKTREE_ROOT}/task-${task.taskId}`,
-          branch: `vimes/task-${task.taskId}`,
-          reused: true,
-          setupMs: 0,
-        };
-      },
-    },
-    ensureCalls,
-    release: gate.release,
-  };
-}
-
 describe('TaskDispatcher — the D54 in-flight lock (S7·7c)', () => {
   it('two OVERLAPPING attempts on one task: exactly one spawn, the other is in-flight', async () => {
-    const gated = gatedWorktreeManager();
+    const gate = createGate();
     const harness = buildHarness({
       worktreeIsolationEnabled: true,
-      worktreeManagerOverride: gated.manager,
+      coordinatorGate: gate.promise,
     });
 
     // FIRE BOTH. Neither is awaited yet: the first runs its synchronous prefix,
-    // claims the lock, reaches `ensureWorktree` and PARKS there.
+    // claims the lock, reaches `coordinator.create` and PARKS there.
     const firstAttempt = harness.dispatcher.dispatchTask(TASK_ID);
     const secondAttempt = harness.dispatcher.dispatchTask(TASK_ID);
 
     // ⚠ THE OVERLAP PROOF. The second attempt has already returned — its whole
     // body is the lock check — while the first is still suspended: no session has
     // been spawned, and nothing has been written. A dispatcher WITHOUT the lock
-    // would be parked twice inside `ensureWorktree` here, and would spawn twice
+    // would be parked twice inside `create` here, and would spawn twice
     // the moment the gate opened.
     expect(await secondAttempt).toEqual({ outcome: 'in-flight', taskId: TASK_ID });
     expect(harness.sessionHost.spawnCalls).toEqual([]);
     expect(harness.emitted).toEqual([]);
-    // Only ONE attempt ever reached the worktree — the loser never got past the
-    // lock, so it never touched the manager either.
-    expect(gated.ensureCalls).toEqual([TASK_ID]);
+    // Only ONE attempt ever reached the coordinator — the loser never got past the
+    // lock, so it never proposed a checkout either.
+    expect(harness.checkoutCreateCalls()).toEqual([{ projectId: PROJECT_ID }]);
 
-    gated.release();
+    gate.release();
     expect(await firstAttempt).toEqual({
       outcome: 'spawned',
       taskId: TASK_ID,
       stage: 'implementing',
       appSessionId: SPAWNED_SESSION_ID,
-      cwd: WORKTREE_PATH,
+      cwd: CHECKOUT_PATH,
     });
 
-    // ONE spawn, ONE event. The in-flight attempt is SILENT — no `dispatch_refused`
-    // (the decision function never saw it) and no event of its own (nothing
-    // happened and nothing changed; the winner's result is the record).
+    // ONE spawn, and the §3.2 pair of events from the winner alone. The in-flight
+    // attempt is SILENT — no `dispatch_refused` (the decision function never saw
+    // it) and no event of its own (nothing happened and nothing changed; the
+    // winner's result is the record).
     expect(harness.sessionHost.spawnCalls).toHaveLength(1);
-    expect(eventTypes(harness.emitted)).toEqual([EVENT_TYPES.instanceRunAttached]);
+    expect(eventTypes(harness.emitted)).toEqual([
+      EVENT_TYPES.nodeCreated,
+      EVENT_TYPES.instanceRunAttached,
+      EVENT_TYPES.sessionAttachedToNode,
+    ]);
   });
 
   it('holds on the SHIPPED default path too (flag off, no manager at all)', async () => {
@@ -3005,29 +3467,38 @@ describe('TaskDispatcher — the D54 in-flight lock (S7·7c)', () => {
     // A global lock would serialise the whole board, which is the opposite of what
     // a task dispatcher is for. Both calls park inside the SAME gate, so their
     // windows genuinely overlap; both must still spawn.
-    const gated = gatedWorktreeManager();
+    const gate = createGate();
     const harness = buildHarness({
       tasks: [taskRecord(), taskRecord({ taskId: SECOND_TASK_ID })],
       worktreeIsolationEnabled: true,
-      worktreeManagerOverride: gated.manager,
+      coordinatorGate: gate.promise,
     });
 
     const firstAttempt = harness.dispatcher.dispatchTask(TASK_ID);
     const secondAttempt = harness.dispatcher.dispatchTask(SECOND_TASK_ID);
     // BOTH are suspended in the window at the same moment — the overlap is real,
-    // and neither was turned away.
-    expect(gated.ensureCalls).toEqual([TASK_ID, SECOND_TASK_ID]);
+    // and neither was turned away. (This is the DISPATCHER's per-task lock, not
+    // the coordinator's per-project one: the fake serialises nothing, which is
+    // exactly what isolates the claim under test.)
+    expect(harness.checkoutCreateCalls()).toEqual([
+      { projectId: PROJECT_ID },
+      { projectId: PROJECT_ID },
+    ]);
     expect(harness.sessionHost.spawnCalls).toEqual([]);
 
-    gated.release();
+    gate.release();
     const [firstResult, secondResult] = await Promise.all([firstAttempt, secondAttempt]);
 
     expect(firstResult).toMatchObject({ outcome: 'spawned', taskId: TASK_ID });
     expect(secondResult).toMatchObject({ outcome: 'spawned', taskId: SECOND_TASK_ID });
     expect(harness.sessionHost.spawnCalls).toHaveLength(2);
     expect(eventTypes(harness.emitted)).toEqual([
+      EVENT_TYPES.nodeCreated,
       EVENT_TYPES.instanceRunAttached,
+      EVENT_TYPES.sessionAttachedToNode,
+      EVENT_TYPES.nodeCreated,
       EVENT_TYPES.instanceRunAttached,
+      EVENT_TYPES.sessionAttachedToNode,
     ]);
   });
 });
@@ -3040,11 +3511,16 @@ describe('TaskDispatcher — the D54 in-flight lock (S7·7c)', () => {
 // the oracle, so a kind retired in a later wave starts being guarded here for
 // free rather than needing a new string added to a hand-written list.
 //
-// ⚠ `dispatch_refused` and `task_worktree_created` are DELIBERATELY still their
-// original spelling and are NOT in the alias table (slice-11.md's explicitly-out):
-// their generic siblings arrive with the watchdog/dispatcher splits and the E2
-// tree store. This assertion is therefore exactly right about them too — it asks
-// "is this a RETIRED kind", not "does this start with task_".
+// ⚠ `dispatch_refused` is DELIBERATELY still its original spelling and is NOT in
+// the alias table (slice-11.md's explicitly-out): its generic sibling arrives with
+// the watchdog/dispatcher split. This assertion is therefore exactly right about
+// it too — it asks "is this a RETIRED kind", not "does this start with task_".
+//
+// ⚠ `task_worktree_created` used to be named here beside it. **THE DISPATCHER NO
+// LONGER EMITS IT AT ALL** (S17·U3): the migration map's `task_worktree_created`
+// → `node_created` with provenance is done, and the nodes-stream pair the
+// isolated path now writes is already generic. The event constructor survives in
+// core because history still has to validate — nothing writes it.
 describe('TaskDispatcher — S11-A6: every emitted kind is the GENERIC one', () => {
   it('attach + capture + both reports emit NO retired kind', async () => {
     const emittedAcrossFlows: EventInput[] = [];

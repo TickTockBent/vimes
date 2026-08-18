@@ -69,7 +69,6 @@ import { TaskDispatcher } from './taskDispatcher.js';
 import { TaskWatchdog } from './taskWatchdog.js';
 import { GitAdapter, defaultGitRunner, type GitRunner } from './gitAdapter.js';
 import { CheckoutCoordinator } from './checkoutCoordinator.js';
-import { WorktreeManager } from './worktreeManager.js';
 import {
   SearchService,
   createRipgrepPreflight,
@@ -568,25 +567,15 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     workflowRef: shippedWorkflow.ref,
   });
 
-  // ─── worker isolation (slice 6 step 8) — BUILT, WIRED, AND OFF ─────────────
+  // ─── worker isolation (slice 6 step 8, re-engined by S17·U3) — STILL OFF ───
   //
-  // The manager is constructed unconditionally so the wiring is exercised on every
-  // boot, but the DISPATCHER only consults it when `config.worktreeIsolation` is
-  // `'on'` — and that env var defaults to **`off`**, so on this machine today the
-  // manager is reachable and never reached. See taskDispatcher.ts's isolation block
+  // ⚠ `const worktreeManager = new WorktreeManager({...})` STOOD HERE and is GONE:
+  // S17·U3 deleted the class. The dispatcher now takes `checkoutCoordinator`
+  // (constructed further down) and `nodeWriter`, wired at the bottom of its deps
+  // below. The FLAG is untouched — `config.worktreeIsolation` still defaults to
+  // `off`, so on this machine today the coordinator is reachable from the
+  // dispatcher and never reached by it. See taskDispatcher.ts's isolation block
   // for why the flip is a human's.
-  //
-  // It shares the SAME injectable git runner the git API uses (`deps.gitRunner`,
-  // defaulting to the real one): one subprocess seam for git in the whole daemon,
-  // so a test that fakes git fakes all of it.
-  const worktreeManager = new WorktreeManager({
-    runner: deps.gitRunner ?? defaultGitRunner,
-    worktreeRoot: config.worktreeRoot,
-    // The INJECTED clock, stamped HERE at the boundary and nowhere deeper (rule
-    // 0.3), converted to epoch milliseconds because `setupMs` is a DURATION. This
-    // is the only place the worktree cost measurement touches a real clock.
-    nowMs: () => Date.parse(clock.now()),
-  });
 
   const taskDispatcher = new TaskDispatcher({
     // `sessionHost` is constructed further down; these thunks only run per
@@ -612,6 +601,10 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     emit: (events) => router.emit(events),
     readTasks: () => readTasksAsLegacyView(),
     readMeters: () => currentMetersState(),
+    // S17·U3: the D42 registry, for the projectRoot → projectId join §3.2 leans
+    // on. The SAME `bootFromSnapshot` thunk every other service takes, so nothing
+    // here holds a cached copy of anything.
+    readProjects: () => bootFromSnapshot(projectsProjection, snapshotStore, store),
     // The INJECTED clock, stamped HERE at the boundary and nowhere deeper
     // (rule 0.3). Never `Date.now()`.
     nowIso: () => clock.now(),
@@ -623,7 +616,21 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     // on any dispatch path. Flipping it changes WHERE REAL WORK EXECUTES on a real
     // disk, which is Wes's call to make deliberately (rule 0).
     worktreeIsolationEnabled: config.worktreeIsolation === 'on',
-    worktreeManager,
+    // S17·U3: the checkout maker, narrowed to `create` (the dispatcher may not
+    // `open` or `remove` — those are U4's propose routes). Wrapped in a thunk
+    // rather than passed by value because `checkoutCoordinator` is constructed
+    // FURTHER DOWN, beside the node writer it shares; the arrow only runs per
+    // dispatch, long after construction — the same deferral `sessionHost` above
+    // already relies on.
+    checkoutCoordinator: {
+      create: (request, inLockFollowUp) => checkoutCoordinator.create(request, inLockFollowUp),
+    },
+    // S17·U3: §3.2's `session_attached_to_node`, through the SOLE writer of the
+    // nodes stream — the SAME instance the node API and the coordinator use, never
+    // a second path (principle 10). Deferred for the same reason as above.
+    nodeWriter: {
+      attachSession: (input) => nodeWriter.attachSession(input),
+    },
     // S7·5b-i: the state-owning half of native plan capture (D48). The dispatcher
     // writes captured plans into `artifactStore` and proposes planning→plan-ready
     // through `instanceWriter` (I7's choke point — the SAME one-writer instance the
@@ -725,13 +732,11 @@ export function createDaemon(deps: DaemonDeps): Daemon {
 
   // ─── the checkout coordinator (S17·U2, E2-c) ───────────────────────────────
   //
-  // ⚠ **CONSTRUCTED AND, TODAY, ALMOST UNCONSUMED — DELIBERATELY** (slice-17.md
-  // §3.11). The only thing that calls it on this boot is the orphan scan in
-  // `start()` below. `taskDispatcher` migrates onto it in U3 and the propose
-  // routes arrive in U4; until then `worktreeManager` above keeps doing exactly
-  // what it does today. Two writers of worktrees therefore EXIST after this
-  // unit and only ONE has callers — that is the signed transition-safety
-  // sequencing, not a leftover.
+  // ⚠ **THE ONLY MAKER OF CHECKOUTS IN THIS DAEMON** since S17·U3 deleted
+  // `WorktreeManager` (slice-17.md §3.11 — the two-writer window the signed
+  // transition safety opened for exactly one unit is closed). Two callers today:
+  // the orphan scan in `start()` below, and `taskDispatcher` above, which reaches
+  // it through the deferred thunk in its deps. The propose routes arrive in U4.
   //
   // It shares the SAME injected git runner every other git caller uses
   // (`deps.gitRunner`, defaulting to the real one): ONE subprocess seam for git
@@ -752,8 +757,8 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     readProjects: () => bootFromSnapshot(projectsProjection, snapshotStore, store),
     readNodes: () => bootFromSnapshot(nodesProjection, snapshotStore, store),
     readSessions: () => bootFromSnapshot(sessionsProjection, snapshotStore, store),
-    // The SAME root `worktreeManager` is handed, from the same config field —
-    // one directory, one operator-facing env var (`VIMES_WORKTREE_ROOT`).
+    // The SAME config field the retired manager read — one directory, one
+    // operator-facing env var (`VIMES_WORKTREE_ROOT`).
     worktreeRoot: config.worktreeRoot,
     // §3.10's `checkout-unrecorded-mismatch` row is the only consumer. `access`
     // rather than `existsSync` so the probe is async like everything around it,

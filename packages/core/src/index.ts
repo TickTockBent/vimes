@@ -262,24 +262,22 @@ export type { StageInstructionContext } from './tasks/stageInstruction.js';
 // constructors already flow through `export * from './events.js'` below, so nothing
 // redundant is re-exported here.
 export { deriveReviewOutcome } from './tasks/reviewOutcome.js';
-// Step 8 — WHERE a stage runs, derived from the taskId alone. Pure and total, and
-// in core (not beside the daemon's manager) because a worktree's identity must be
+// S17·U1 — the NODE-derived checkout names (§3.6). Pure and total, and in core
+// (not beside the daemon's coordinator) because a checkout's identity must be
 // re-derivable by the board, a future GC and any replay without a daemon running.
-export {
-  TASK_WORKTREE_BRANCH_PREFIX,
-  TASK_WORKTREE_DIR_PREFIX,
-  taskWorktreeBranch,
-  taskWorktreeDirName,
-} from './tasks/worktreePaths.js';
-// S17·U1 — the NODE-derived pair (§3.6), added BESIDE the task pair above per
-// §3.11's transition safety. Exported here for the same reason the task pair is:
-// the identity of a checkout must be re-derivable without a daemon. ⚠ **BARREL
-// LINES ONLY — no logic in this unit is core's.** The functions themselves
+// ⚠ **BARREL LINES ONLY — no logic here is core's.** The functions themselves
 // landed in U1 (`da1de7c`); U2 is their first consumer
 // (`daemon/src/checkoutCoordinator.ts`) and `@vimes/core` publishes no subpath
-// for `tasks/` or `git/`, so without these three lines U1's work is unreachable
+// for `tasks/` or `git/`, so without these lines U1's work is unreachable
 // from the daemon and U2 would have to re-derive the naming — precisely the
 // duplicate-derivation hazard §3.6 exists to prevent.
+//
+// ⚠ **THE TASK-DERIVED PAIR THAT STOOD ABOVE THESE IS GONE (S17·U3).**
+// `TASK_WORKTREE_BRANCH_PREFIX`, `TASK_WORKTREE_DIR_PREFIX`,
+// `taskWorktreeBranch` and `taskWorktreeDirName` were re-exported here for
+// `worktreeManager.ts`, which died in the same unit. §3.11's transition safety
+// is why the two pairs coexisted for exactly two units and no deploy in between
+// could derive a node name from a task id.
 export {
   NODE_CHECKOUT_BRANCH_PREFIX,
   NODE_CHECKOUT_DIR_PREFIX,

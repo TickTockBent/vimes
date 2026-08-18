@@ -1,44 +1,35 @@
-// ─── slice 6 step 8 — where a task's worktree lives (PURE) ───────────────────
+// ─── slice 6 step 8 → slice 17 U3 — where a CHECKOUT lives (PURE) ────────────
 //
-// D32 pinned `worktree` as the default isolation. Two names have to come out of a
-// task before any git command can be built: the BRANCH the worktree checks out
-// and the DIRECTORY NAME it lives under. Both are derived here, and here only.
+// Two names have to come out of an id before any git command can be built: the
+// BRANCH the checkout uses and the DIRECTORY NAME it lives under. Both are
+// derived here, and here only.
 //
 // Everything in this module is PURE and TOTAL (rule 0.3): no clock, no I/O, no
 // randomness, and NOTHING THROWS. It is in `packages/core` rather than beside the
-// manager on purpose — a name that decides where a worker's files go is a fact the
-// board, a future GC and any replay must be able to re-derive without a daemon.
+// coordinator on purpose — a name that decides where a worker's files go is a fact
+// the board, a future GC and any replay must be able to re-derive without a daemon.
 //
-// ⚠ **DERIVED FROM `taskId` ALONE, DELIBERATELY.** The same task must map to the
-// same worktree every time, so a retried dispatch RE-USES the directory it already
-// has rather than multiplying worktrees across a task's life. Anything else in the
-// derivation (a stage, a counter, a timestamp) would break that.
-//
-// ⚠ **THE TASK ID IS TREATED AS UNTRUSTED INPUT.** Today every taskId is minted by
-// `TaskWriter` from an injected uuid source, so the hostile cases below are not
+// ⚠ **THE ID IS TREATED AS UNTRUSTED INPUT.** Today every nodeId is minted by the
+// engine from an injected uuid source, so the hostile cases in the tests are not
 // reachable from the current code. That is exactly why the sanitiser is written
-// now, while it is free: the output of this module becomes A FILESYSTEM PATH and A
-// GIT REF, and slice 7's MCP surface is a caller we have not written yet. A
-// traversal (`../../etc`), a separator (`a/b`) or a leading dash (`-rf`, which git
-// would read as an OPTION rather than an operand) must be impossible by
-// construction here, not by a check somewhere downstream.
-
-// ⚠ **LEGACY, AWAITING DELETION (slice-17.md §3.11).** Slice 17 replaces the
-// task-derived pair below with the NODE-derived pair at the bottom of this file.
-// Per §3.11's transition safety, U1 (this unit) adds the node-derived helpers
-// BESIDE these rather than touching them, so no intermediate deploy can derive
-// `vimes/node-*` from a task id. U3 switches every caller to the node-derived
-// pair and DELETES this task-prefixed pair in the same unit — until then, this
-// pair stays exactly as it is. Do not "clean it up" early.
-
-// The branch every task worktree checks out. Namespaced under `vimes/` so a
-// human's `git branch` output separates VIMES's bookkeeping from their own work at
-// a glance, and so a future cleanup can enumerate ours without guessing.
-export const TASK_WORKTREE_BRANCH_PREFIX = 'vimes/task-';
-
-// The directory-name prefix. The SAME `task-` stem as the branch, so a worktree on
-// disk and a branch in the repo are recognisably the same object.
-export const TASK_WORKTREE_DIR_PREFIX = 'task-';
+// while it is free: the output of this module becomes A FILESYSTEM PATH and A GIT
+// REF, and the propose routes are a caller with an outside surface. A traversal
+// (`../../etc`), a separator (`a/b`) or a leading dash (`-rf`, which git would
+// read as an OPTION rather than an operand) must be impossible by construction
+// here, not by a check somewhere downstream.
+//
+// ⚠ **THE TASK-DERIVED PAIR THAT STOOD HERE IS GONE (S17·U3, slice-17.md §3.11).**
+// `TASK_WORKTREE_BRANCH_PREFIX` / `TASK_WORKTREE_DIR_PREFIX` /
+// `taskWorktreeBranch` / `taskWorktreeDirName` derived a `vimes/task-<taskId>`
+// branch and a `task-<taskId>` directory, and their determinism WAS the old
+// idempotence: a re-dispatched task landed back in the directory it already had.
+// §3.6 replaced the tenant word (`task` appears in neither name any more) and
+// §3.10 replaced the re-use (the engine never silently opens an existing
+// checkout). U1 added the node pair BESIDE the task pair so no intermediate
+// deploy could derive `vimes/node-*` from a task id; U3 switched the dispatcher
+// and deleted the task pair in the same unit. The escaper, the fingerprint and
+// the length cap below survived that swap VERBATIM — they were always about the
+// id being untrusted, never about what kind of id it was.
 
 // The conservative charset a derived name may contain VERBATIM. Everything else is
 // escaped (below). Chosen to be simultaneously safe as a path component on every
@@ -72,22 +63,22 @@ function fingerprint(rawValue: string): string {
 }
 
 /**
- * Escape a task id into the safe charset, INJECTIVELY.
+ * Escape an id into the safe charset, INJECTIVELY.
  *
  * ⚠ The injectivity is the point, and it is why this STRIPS NOTHING. A sanitiser
  * that deleted unsafe characters would map `a/b` and `ab` onto the same directory,
- * i.e. two different tasks would silently share one worktree and edit each other's
- * files — the precise hazard this whole step exists to remove, reintroduced by the
- * function that was supposed to prevent it. So every unsafe character is ESCAPED
- * rather than dropped: `_` followed by the 4-hex-digit UTF-16 code unit. `_` is
- * itself outside the safe charset, so it is escaped too and the encoding stays
- * unambiguous.
+ * i.e. two different checkouts would silently share one worktree and edit each
+ * other's files — the precise hazard this whole step exists to remove,
+ * reintroduced by the function that was supposed to prevent it. So every unsafe
+ * character is ESCAPED rather than dropped: `_` followed by the 4-hex-digit UTF-16
+ * code unit. `_` is itself outside the safe charset, so it is escaped too and the
+ * encoding stays unambiguous.
  *
  * Total: a lone surrogate, a NUL, a control byte and an empty string all encode.
  */
-function escapeToSafeCharset(taskId: string): string {
+function escapeToSafeCharset(rawId: string): string {
   let escaped = '';
-  for (const character of Array.from(taskId)) {
+  for (const character of Array.from(rawId)) {
     // Array.from iterates by CODE POINT, so an astral character arrives whole; it
     // is then escaped as its individual code units, which round-trips fine because
     // we only ever need the mapping to be one-way and injective.
@@ -102,65 +93,25 @@ function escapeToSafeCharset(taskId: string): string {
   return escaped;
 }
 
-// The escaped-and-length-bounded stem shared by the branch and the directory name.
-// Over-long ids keep a readable 64-character head and gain a fingerprint of the
-// WHOLE id, so truncation cannot merge two distinct tasks.
-function taskWorktreeSlug(taskId: string): string {
-  const escaped = escapeToSafeCharset(taskId);
-  if (escaped.length <= MAX_SLUG_LENGTH) {
-    return escaped;
-  }
-  return `${escaped.slice(0, MAX_SLUG_LENGTH)}-${fingerprint(taskId)}`;
-}
-
-/**
- * The git branch this task's worktree checks out — e.g.
- * `vimes/task-task-dispatch-0001`.
- *
- * Pure, total, deterministic. The `vimes/task-` prefix also guarantees the ref can
- * never begin with `-` no matter what the id was, so it can never be read as a git
- * option even if a future caller forgets the `--` guard.
- */
-export function taskWorktreeBranch(taskId: string): string {
-  return `${TASK_WORKTREE_BRANCH_PREFIX}${taskWorktreeSlug(taskId)}`;
-}
-
-/**
- * The directory NAME (never a full path) for this task's worktree — e.g.
- * `task-task-dispatch-0001`. The manager joins it onto the configured worktree
- * root; this module deliberately knows nothing about that root, so it stays free
- * of any filesystem or configuration dependency.
- *
- * Pure, total, deterministic, and never `.`, `..`, empty-after-prefix-stripping,
- * or dash-leading.
- */
-export function taskWorktreeDirName(taskId: string): string {
-  return `${TASK_WORKTREE_DIR_PREFIX}${taskWorktreeSlug(taskId)}`;
-}
-
 // ─── slice 17, unit 1 — node-derived checkout names (§3.6, §3.11) ────────────
 //
-// The forest's replacement for the pair above: every engine-created checkout is
-// a NODE (E2-a — one node kind, worktree-ness carried as a `provenance`
-// property), so its branch and directory now derive from the NODE's id rather
-// than a task's. The derivation pipeline — `escapeToSafeCharset` + the FNV-1a
-// `fingerprint` + the length-capped slug — is reused VERBATIM (§0's recon: it
-// survives the move unchanged); only the prefix and the input id differ.
-//
-// ⚠ **THE NODE ID IS TREATED AS UNTRUSTED INPUT, BY THE SAME ARGUMENT AS
-// ABOVE.** Every nodeId is minted by the engine today, so the hostile cases are
-// not reachable from current code — the sanitiser is written now, while it is
-// free, because the output becomes A FILESYSTEM PATH and A GIT REF the moment
-// `create`/`open` run (U2).
+// Every engine-created checkout is a NODE (E2-a — one node kind, worktree-ness
+// carried as a `provenance` property), so its branch and directory derive from
+// the NODE's id. The derivation pipeline above — `escapeToSafeCharset` + the
+// FNV-1a `fingerprint` + the length-capped slug — is the one the retired
+// task-derived pair used, reused VERBATIM (§0's recon: it survives the move
+// unchanged); only the prefix and the input id ever differed.
 //
 // ⚠ **DERIVED FROM `nodeId` ALONE.** Identical nodeId ⇒ identical branch and
-// directory name, every time (§3.7's derivation property) — the same
-// determinism the task pair guarantees, now for nodes.
+// directory name, every time (§3.7's derivation property). Note what that does
+// NOT buy any more: because every `create` mints a FRESH nodeId, determinism here
+// is a replay property, not an idempotence one — nothing re-enters an existing
+// checkout by re-deriving its name (§3.10, pin 1).
 
-// The branch every node-derived checkout checks out. Same `vimes/` namespace as
-// the legacy pair, so both families read as VIMES's own bookkeeping at a glance;
-// `node-` (not `task-`) is the tenant word this slice replaces (§3.6: `task`
-// appears in neither).
+// The branch every node-derived checkout checks out. Namespaced under `vimes/` so
+// a human's `git branch` output separates VIMES's bookkeeping from their own work
+// at a glance, and so a future cleanup can enumerate ours without guessing;
+// `node-` is the stem (§3.6: the tenant word `task` appears in neither name).
 export const NODE_CHECKOUT_BRANCH_PREFIX = 'vimes/node-';
 
 // The directory-name prefix. The SAME `node-` stem as the branch, so a worktree
@@ -168,9 +119,8 @@ export const NODE_CHECKOUT_BRANCH_PREFIX = 'vimes/node-';
 export const NODE_CHECKOUT_DIR_PREFIX = 'node-';
 
 // The escaped-and-length-bounded stem shared by the node branch and directory
-// name. Reuses `escapeToSafeCharset` and `fingerprint` verbatim, at the same
-// `MAX_SLUG_LENGTH` cap, so an over-long nodeId is bounded exactly the way an
-// over-long taskId already is above.
+// name. Over-long ids keep a readable 64-character head and gain a fingerprint of
+// the WHOLE id, so truncation cannot merge two distinct checkouts.
 function nodeCheckoutSlug(nodeId: string): string {
   const escaped = escapeToSafeCharset(nodeId);
   if (escaped.length <= MAX_SLUG_LENGTH) {

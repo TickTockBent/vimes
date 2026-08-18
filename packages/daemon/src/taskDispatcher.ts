@@ -6,22 +6,24 @@ import {
   instanceRunAttached,
   reportFiled,
   resolveStageRunner,
-  taskWorktreeCreated,
   type ArtifactStore,
   type DispatchDeferReason,
   type DispatchRefuseReason,
   type EventInput,
   type MetersState,
+  type ProjectsState,
   type ReportCompletionPayload,
   type ReportReviewPayload,
   type StageInstructionContext,
   type StageRunnerPlan,
   type TaskRecord,
+  type TaskStage,
   type TasksState,
 } from '@vimes/core';
 import type { SessionHost } from './sessionHost.js';
 import type { InstanceWriter } from './instanceWriter.js';
-import type { WorktreeManager } from './worktreeManager.js';
+import type { CheckoutCoordinator, CheckoutRefusal } from './checkoutCoordinator.js';
+import type { NodeWriter } from './nodeWriter.js';
 
 // ─── slice 6 step 4a — the dispatcher EXECUTOR (daemon I/O) ──────────────────
 //
@@ -65,12 +67,33 @@ import type { WorktreeManager } from './worktreeManager.js';
 //
 //   • **`off` — TODAY'S BEHAVIOUR, BYTE-FOR-BYTE.** Every task, including one whose
 //     record says `isolation: 'worktree'`, resolves to `task.projectRoot`. No git
-//     command is issued, the worktree manager is never consulted, and step 4a's
+//     command is issued, the checkout coordinator is never consulted, and step 4a's
 //     pinned assertions below hold unchanged. D32 is still not honoured, and it
 //     still says so out loud rather than pretending otherwise.
-//   • **`on`** — an `isolation: 'worktree'` task runs in its own git worktree, made
-//     by `WorktreeManager`. `shared-dir` still resolves to `projectRoot`, because
-//     that is what the field means.
+//   • **`on`** — an `isolation: 'worktree'` task runs in its own git checkout, made
+//     by the `CheckoutCoordinator` (S17·U3). `shared-dir` still resolves to
+//     `projectRoot`, because that is what the field means.
+//
+// ⚠ **S17·U3 REPLACED THE ISOLATION HALF'S ENGINE, NOT ITS CONTRACT.** What used to
+// be `WorktreeManager.ensureWorktree(task)` — a task-derived branch and directory,
+// idempotently re-used across dispatches — is now
+// `coordinator.create({ projectId }, inLockFollowUp)`: the engine mints a NODE,
+// derives the branch/path from the nodeId (§3.6), records `node_created` WITH
+// provenance, and runs the spawn INSIDE the coordinator's per-project critical
+// section (§3.2/§3.3). `worktreeManager.ts` and core's task-derived name pair are
+// DELETED by that unit; §3.11's transition safety is what made the swap a single
+// step with no two-writer window.
+//
+// ⚠ **`reused: true` SEMANTICS DIED WITH THE MANAGER, AND THAT IS SIGNED (§3.10).**
+// The old idempotence was derived from the TASK id: a re-dispatch found the same
+// `vimes/task-<id>` branch and silently re-entered its directory. The coordinator
+// NEVER silently opens (pin 1) — every create mints a fresh nodeId, so a fresh
+// branch and a fresh path — and a create that finds its branch already there is
+// refused (`branch-already-exists`, pointing at `open`). Consequence, stated
+// loudly rather than discovered: **a retried isolated dispatch no longer lands in
+// the directory the previous attempt used.** In v1 that refusal is a
+// `worktree-failed` like any other, so nothing spawns; re-entering an existing
+// checkout is `open`'s job and gets a surface in a later slice.
 //
 // **WHY IT SHIPS OFF, stated so nobody "finishes the job" by flipping the default.**
 // Isolation changes WHERE REAL WORK EXECUTES ON A REAL MACHINE — new directories on
@@ -127,6 +150,21 @@ export interface TaskDispatcherDeps {
   // a gate that has since failed.
   readTasks: () => TasksState;
   readMeters: () => MetersState;
+  // ── S17·U3: the D42 registry, for the projectRoot → projectId JOIN ──────────
+  //
+  // The coordinator takes a `projectId` (§3.4 — it resolves the repository from
+  // the PROJECT record, never from a caller-supplied path); a task carries a
+  // `projectRoot`. This read is the whole of the join, and it is a thunk called
+  // FRESH on every attempt for the same reason `readTasks` is: a project declared
+  // (or archived) since the last dispatch must be seen.
+  //
+  // OPTIONAL, and only because it is one of the THREE ISOLATION DEPS below —
+  // absent means the same thing they do, and the same thing an absent manager
+  // meant before this unit: this daemon cannot isolate. Nothing on the flag-off
+  // path reads it, which is why every pre-S17 construction stays valid without
+  // naming it (the same "the safe value is the one you get by saying nothing"
+  // discipline `worktreeIsolationEnabled` states).
+  readProjects?: () => ProjectsState;
   // INJECTED clock (rule 0.3). The ONLY time source in this module; nothing here
   // calls Date.now(), and `decideDispatch` receives whatever this returns.
   nowIso: () => string;
@@ -143,15 +181,16 @@ export interface TaskDispatcherDeps {
   // caveat has nothing left to except.)
   resolveWorkingDirectory?: (task: TaskRecord) => string;
 
-  // ── ISOLATION (step 8) — the two deps that make D32 real, and the flag ───────
+  // ── ISOLATION (step 8, re-engined by S17·U3) — the deps that make D32 real ───
   //
-  // The worktree maker. Kept to `ensureWorktree` alone (`Pick`, the same narrowing
-  // the session-host seam uses): the dispatcher may CREATE a worker directory and
-  // may not destroy one. `removeWorktree` exists on the class and is wired to
-  // nothing — see its comment; when a worktree should be destroyed is Wes's policy
-  // decision, and a dispatcher that could reach it would be the place that decision
-  // got made by accident.
-  worktreeManager?: Pick<WorktreeManager, 'ensureWorktree'>;
+  // The checkout maker. Kept to `create` alone (`Pick`, the same narrowing the
+  // session-host seam uses): the dispatcher may CREATE a checkout and may not
+  // remove one, and may not `open` a pre-existing branch either. `remove` and
+  // `open` exist on the coordinator and are reached from the propose routes (U4),
+  // never from here — when a checkout should be destroyed is Wes's policy
+  // decision, and a dispatcher that could reach it would be the place that
+  // decision got made by accident.
+  checkoutCoordinator?: Pick<CheckoutCoordinator, 'create'>;
 
   // ⚠ **THE SHIPPING FLAG. DEFAULT `false` = TODAY'S BEHAVIOUR EXACTLY.**
   //
@@ -225,6 +264,26 @@ export interface TaskDispatcherDeps {
   // wiring these deps changes NO live behaviour and needs no restart.
   artifactStore: ArtifactStore;
   instanceWriter: Pick<InstanceWriter, 'proposeMove'>;
+
+  // ── S17·U3: the SOLE writer of the nodes stream, narrowed to one method ─────
+  //
+  // §3.2's last step is `session_attached_to_node` for the freshly spawned
+  // session. It goes through `NodeWriter.attachSession` and NEVER through a
+  // hand-rolled `emit` on this class, for exactly the reason `instanceWriter`
+  // above is a `Pick<InstanceWriter, 'proposeMove'>` rather than an
+  // `instance_moved` this module writes: a second writer of tree state would end
+  // the one-writer property (principle 10) that app.ts states in so many words —
+  // "this instance is the ONLY thing in the daemon that writes `node_created` /
+  // `node_closed` / `session_attached_to_node`, and any later caller (a
+  // spawn-into-a-node flow, a TUI command) takes THIS instance". This IS that
+  // spawn-into-a-node flow.
+  //
+  // The third of the isolation deps, optional on the same terms — absent means
+  // this daemon cannot isolate, never "isolate but skip the tree edge". A
+  // session sitting in a checkout the tree has never heard of is the attribution
+  // gap §3.2 exists to close, so it is not something a missing dependency gets
+  // to reintroduce quietly.
+  nodeWriter?: Pick<NodeWriter, 'attachSession'>;
 }
 
 // What happened to a composed stage instruction. Present on a result ONLY when an
@@ -312,8 +371,14 @@ export type DispatchAttemptResult =
       // work it actually attempted.
       readonly outcome: 'worktree-failed';
       readonly taskId: string;
-      // The manager's classified reason plus git's own words, verbatim. NOT a
-      // `DispatchRefuseReason`.
+      // The coordinator's classified refusal plus git's own words, verbatim. NOT
+      // a `DispatchRefuseReason`.
+      //
+      // ⚠ S17·U3: **EVERY coordinator refusal on this path lands HERE** — an
+      // isolated dispatch that cannot get its checkout spawns nothing (A11). The
+      // spelling is the manager's own, `<reason>:<detail>` (detail omitted when
+      // the refusal carries none), so the vocabulary widened while the SHAPE and
+      // the behaviour did not.
       readonly reason: string;
     }
   | {
@@ -352,20 +417,42 @@ export type DispatchAttemptResult =
     }
   | { readonly outcome: 'unknown-task'; readonly taskId: string };
 
-// What the working-directory resolution produced. The FAILURE arm carries no
-// directory at all, deliberately: there is no "the directory we would have used"
-// field for a caller to reach for, so a fallback to `projectRoot` cannot be written
-// by accident from the shape of this type.
-type WorkingDirectoryResolution =
-  | {
-      readonly ok: true;
-      readonly cwd: string;
-      // Emitted BEFORE the spawn when a worktree was really created. Absent on the
-      // plain path and on a reuse — see `taskWorktreeCreated`'s own note on why a
-      // reuse must not claim a creation.
-      readonly worktreeEvent?: EventInput;
-    }
-  | { readonly ok: false; readonly reason: string };
+// What ONE spawn attempt produced, INDEPENDENT of where it ran. Factored out by
+// S17·U3 because the spawn now has two call sites — the plain path, and the
+// coordinator's in-lock follow-up — and two copies of the D50 clamps, the D91
+// naming and the D48 plan-mode branch would be two places for them to drift.
+//
+// The FAILURE arm carries no appSessionId at all, deliberately: there is no "the
+// session we would have had" field for a caller to reach for.
+type SpawnOutcome =
+  | { readonly outcome: 'spawned'; readonly appSessionId: string }
+  | { readonly outcome: 'spawn-failed'; readonly reason: string };
+
+// The same thing PLUS the third arm the isolated path can produce, and the `cwd`
+// the run actually got. The FAILURE arms carry no directory at all, deliberately:
+// there is no "the directory we would have used" field for a caller to reach for,
+// so a fallback to `projectRoot` cannot be written by accident from the shape of
+// this type.
+type StageRunSpawn =
+  | { readonly outcome: 'spawned'; readonly appSessionId: string; readonly cwd: string }
+  | { readonly outcome: 'spawn-failed'; readonly reason: string }
+  | { readonly outcome: 'worktree-failed'; readonly reason: string };
+
+// The projectRoot → projectId JOIN's answer (§3.2). Either the one live project
+// declared at exactly this root, or a refusal — never a guess.
+type ProjectJoin =
+  | { readonly outcome: 'resolved'; readonly projectId: string }
+  | { readonly outcome: 'refused'; readonly reason: string };
+
+// Thrown out of the in-lock follow-up ONLY to unwind the coordinator's critical
+// section after a spawn that did not happen, so §3.7 compensation un-makes the
+// checkout git just created rather than leaving a tenant-less directory behind.
+// It carries NOTHING: the real outcome is already sitting in the caller's own
+// variable, and putting it in the error too would be two sources of one fact.
+//
+// ⚠ It never escapes `dispatchTask` — the create call is wrapped and this class's
+// contract is still that nothing throws.
+class CheckoutFollowUpAborted extends Error {}
 
 export class TaskDispatcher {
   private readonly deps: TaskDispatcherDeps;
@@ -466,9 +553,16 @@ export class TaskDispatcher {
    *     job.** Once the attach event has landed, `decideDispatch`'s `already-running`
    *     refusal covers every later attempt (including one arriving after this
    *     process restarted), and `SessionHost`'s I11 backstop still refuses a resume
-   *     against a live process on the human's own resume path. `ensureWorktree` is
-   *     idempotent on top of both, so a racing pair converges on one directory.
-   *     The lock closes the gap BETWEEN them; it does not replace either.
+   *     against a live process on the human's own resume path. The lock closes
+   *     the gap BETWEEN them; it does not replace either.
+   *
+   *     ⚠ S17·U3 REMOVED A THIRD BACKSTOP that used to sit here: "`ensureWorktree`
+   *     is idempotent on top of both, so a racing pair converges on one
+   *     directory". That was the manager's task-keyed re-use, and it died with the
+   *     manager (§3.10, pin 1 — the coordinator never silently opens). The
+   *     coordinator's own per-project queued lock now serialises isolated
+   *     dispatches instead, and a racing pair no longer converges: the loser is
+   *     refused rather than merged.
    */
   async dispatchTask(taskId: string): Promise<DispatchAttemptResult> {
     const task = this.deps.readTasks().tasks[taskId];
@@ -539,10 +633,13 @@ export class TaskDispatcher {
           // spawn path below is the whole of the answer. A fix carries its context in
           // the FIX-SEED instead (see `deliverStageInstruction`).
           const runnerPlan = resolveStageRunner(task);
-          // WHERE it runs. Under the flag this may create a git worktree, which is
-          // why the whole method is async.
-          const workingDirectory = await this.resolveSpawnWorkingDirectory(task);
-          if (!workingDirectory.ok) {
+          // WHERE it runs, and — since S17·U3 — the SPAWN ITSELF when the task is
+          // isolated, because §3.2 puts the spawn inside the coordinator's critical
+          // section. One `await`, in the position `resolveSpawnWorkingDirectory`
+          // used to hold, which is why the whole method is async and why D54's
+          // window is exactly where it always was.
+          const stageRunSpawn = await this.spawnStageRun(task, decision.stage);
+          if (stageRunSpawn.outcome === 'worktree-failed') {
             // ⚠ **NO FALLBACK. NO SPAWN. NO EVENT.** The task asked to be isolated and
             // it could not be; running it in the shared project root anyway would be
             // the concurrency hazard isolation exists to remove, and the log would show
@@ -556,17 +653,60 @@ export class TaskDispatcher {
             return {
               outcome: 'worktree-failed',
               taskId: task.taskId,
-              reason: workingDirectory.reason,
+              reason: stageRunSpawn.reason,
             };
           }
-          const cwd = workingDirectory.cwd;
-          if (workingDirectory.worktreeEvent !== undefined) {
-            // BEFORE the spawn, deliberately. The directory exists at this point and
-            // the session does not; recording it after the spawn would leave a window
-            // in which an agent is running somewhere the log has never mentioned.
-            this.deps.emit([workingDirectory.worktreeEvent]);
+          if (stageRunSpawn.outcome === 'spawn-failed') {
+            return {
+              outcome: 'spawn-failed',
+              taskId: task.taskId,
+              reason: stageRunSpawn.reason,
+            };
           }
-          // Stage runs are ORDINARY SESSIONS (spec §3.5) on the 'sdk' channel:
+          const instructionDelivery = this.deliverStageInstruction(
+            task,
+            runnerPlan,
+            stageRunSpawn.appSessionId,
+          );
+          return {
+            outcome: 'spawned',
+            taskId: task.taskId,
+            stage: decision.stage,
+            appSessionId: stageRunSpawn.appSessionId,
+            cwd: stageRunSpawn.cwd,
+            // Spread rather than set: under the default seam the key is ABSENT, so
+            // the result is byte-identical to step 4a's and every prior assertion
+            // (and the dispatch route's envelope) is untouched.
+            ...(instructionDelivery === undefined ? {} : { instructionDelivery }),
+          };
+        }
+      }
+    } finally {
+      // ⚠ EVERY PATH RELEASES — refused, deferred, spawned, worktree-failed, and a
+      // spawn that THREW alike. A `finally` rather than a delete before each return
+      // precisely because the throwing path is the one a hand-placed release
+      // forgets, and a task whose id is never released is a task that can never be
+      // dispatched again for the life of the process — a silent, permanent stall
+      // that would look exactly like "the orchestrator stopped promoting things".
+      this.inFlightDispatches.delete(taskId);
+    }
+  }
+
+  /**
+   * ONE spawn of ONE stage run, through the session host, with its
+   * `instance_run_attached` — everything that is TRUE OF EVERY SPAWN regardless of
+   * where it runs.
+   *
+   * Factored out by S17·U3 so the plain path and the coordinator's in-lock
+   * follow-up share one copy of the D50 clamps, the D48 plan-mode branch, the
+   * S7·7d stage and the D91 name. Two copies would be two places for them to
+   * drift, and the isolated copy is the one nobody exercises in production today.
+   *
+   * SYNCHRONOUS on purpose: `spawnSession` is, and the in-lock follow-up wants the
+   * smallest possible critical section.
+   */
+  private spawnAndAttachRun(task: TaskRecord, stage: TaskStage, cwd: string): SpawnOutcome {
+    // Stage runs are ORDINARY SESSIONS (spec §3.5) on the 'sdk' channel:
           // everything slices 1–5b built — stream, diff, cost, resume, attention —
           // applies to a stage run for free. There is no parallel session concept.
           //
@@ -603,83 +743,59 @@ export class TaskDispatcher {
           // different fact from a task titled with nothing. Neither yields a name
           // here: an empty name is not a name, so the key is omitted entirely and
           // the label ladder's derivation fallback (prong ii) answers instead.
-          const dispatchedSessionName =
-            task.title === undefined || task.title === '' ? undefined : `${task.title} — ${decision.stage}`;
-          const spawnOptions =
-            decision.stage === 'planning'
-              ? {
-                  channel: 'sdk' as const,
-                  cwd,
-                  dispatched: true as const,
-                  permissionMode: 'plan' as const,
-                  stage: decision.stage,
-                  ...(dispatchedSessionName === undefined ? {} : { name: dispatchedSessionName }),
-                }
-              : {
-                  channel: 'sdk' as const,
-                  cwd,
-                  dispatched: true as const,
-                  permissionMode: 'auto' as const,
-                  stage: decision.stage,
-                  ...(dispatchedSessionName === undefined ? {} : { name: dispatchedSessionName }),
-                };
-          let spawnResult;
-          try {
-            spawnResult = this.deps.sessionHost.spawnSession(spawnOptions);
-          } catch (spawnError) {
-            // The host's contract is to refuse rather than throw, but a dispatcher
-            // must survive its adapters regardless.
-            return {
-              outcome: 'spawn-failed',
-              taskId: task.taskId,
-              reason: `spawn-threw:${describeThrown(spawnError)}`,
-            };
-          }
-          if ('refused' in spawnResult) {
-            // The spawn did not yield a session (preflight, typically). NO
-            // `instance_run_attached` — there is no session to attach — and NO
-            // `dispatch_refused`, on two counts: this was an execution failure
-            // rather than a decision (see the vocabulary note above), and the
-            // session host ALREADY evented its own refusal. Recording it again here
-            // would double-count one failure as two facts in the log.
-            return { outcome: 'spawn-failed', taskId: task.taskId, reason: spawnResult.reason };
-          }
-          this.deps.emit([
-            // The alias adapter's `task_session_attached` mapping, forward:
-            // taskId -> instanceId, stage -> node, appSessionId verbatim.
-            instanceRunAttached({
-              instanceId: task.taskId,
-              node: decision.stage,
-              appSessionId: spawnResult.appSessionId,
-            }),
-          ]);
-          const instructionDelivery = this.deliverStageInstruction(
-            task,
-            runnerPlan,
-            spawnResult.appSessionId,
-          );
-          return {
-            outcome: 'spawned',
-            taskId: task.taskId,
-            stage: decision.stage,
-            appSessionId: spawnResult.appSessionId,
+    const dispatchedSessionName =
+      task.title === undefined || task.title === '' ? undefined : `${task.title} — ${stage}`;
+    const spawnOptions =
+      stage === 'planning'
+        ? {
+            channel: 'sdk' as const,
             cwd,
-            // Spread rather than set: under the default seam the key is ABSENT, so
-            // the result is byte-identical to step 4a's and every prior assertion
-            // (and the dispatch route's envelope) is untouched.
-            ...(instructionDelivery === undefined ? {} : { instructionDelivery }),
+            dispatched: true as const,
+            permissionMode: 'plan' as const,
+            stage,
+            ...(dispatchedSessionName === undefined ? {} : { name: dispatchedSessionName }),
+          }
+        : {
+            channel: 'sdk' as const,
+            cwd,
+            dispatched: true as const,
+            permissionMode: 'auto' as const,
+            stage,
+            ...(dispatchedSessionName === undefined ? {} : { name: dispatchedSessionName }),
           };
-        }
-      }
-    } finally {
-      // ⚠ EVERY PATH RELEASES — refused, deferred, spawned, worktree-failed, and a
-      // spawn that THREW alike. A `finally` rather than a delete before each return
-      // precisely because the throwing path is the one a hand-placed release
-      // forgets, and a task whose id is never released is a task that can never be
-      // dispatched again for the life of the process — a silent, permanent stall
-      // that would look exactly like "the orchestrator stopped promoting things".
-      this.inFlightDispatches.delete(taskId);
+    let spawnResult;
+    try {
+      spawnResult = this.deps.sessionHost.spawnSession(spawnOptions);
+    } catch (spawnError) {
+      // The host's contract is to refuse rather than throw, but a dispatcher
+      // must survive its adapters regardless.
+      return { outcome: 'spawn-failed', reason: `spawn-threw:${describeThrown(spawnError)}` };
     }
+    if ('refused' in spawnResult) {
+      // The spawn did not yield a session (preflight, typically). NO
+      // `instance_run_attached` — there is no session to attach — and NO
+      // `dispatch_refused`, on two counts: this was an execution failure
+      // rather than a decision (see the vocabulary note above), and the
+      // session host ALREADY evented its own refusal. Recording it again here
+      // would double-count one failure as two facts in the log.
+      return { outcome: 'spawn-failed', reason: spawnResult.reason };
+    }
+    this.deps.emit([
+      // The alias adapter's `task_session_attached` mapping, forward:
+      // taskId -> instanceId, stage -> node, appSessionId verbatim.
+      //
+      // ⚠ S17·U3 left this EXACTLY AS IT WAS. `task_session_attached` (tasks
+      // stream) and `session_attached_to_node` (nodes stream) are TWO DIFFERENT
+      // FACTS on two different streams — "this task's stage run is that session"
+      // and "that session lives on this tree node" — and the isolated path writes
+      // both. Neither is a spelling of the other and neither replaces the other.
+      instanceRunAttached({
+        instanceId: task.taskId,
+        node: stage,
+        appSessionId: spawnResult.appSessionId,
+      }),
+    ]);
+    return { outcome: 'spawned', appSessionId: spawnResult.appSessionId };
   }
 
   /**
@@ -962,69 +1078,220 @@ export class TaskDispatcher {
   }
 
   /**
-   * WHERE this stage run executes — the whole of step 8's decision, in one place.
+   * WHERE this stage run executes, and — when it is isolated — the whole of §3.2's
+   * choreography. Step 8's decision, re-engined by S17·U3, still in one place.
    *
    * Three worlds, and the first two are the same world:
    *
    *   1. **Flag OFF** (the default, and production today) → the injected
    *      `resolveWorkingDirectory` seam, whose default is `task.projectRoot`.
-   *      `task.isolation` is not even read. **NO GIT COMMAND IS ISSUED**, which is
-   *      the assertable form of "byte-identical to before this step".
+   *      `task.isolation` is not even read. **NO GIT COMMAND IS ISSUED**, and the
+   *      coordinator is never consulted — which is the assertable form of
+   *      "byte-identical to before this step".
    *   2. **Flag on, `isolation: 'shared-dir'`** → the same seam, same answer. That
    *      is what the field means; D32 kept the per-task override precisely so a cost
    *      surprise is a config change rather than a redesign.
-   *   3. **Flag on, `isolation: 'worktree'`** → the manager. Success carries the
-   *      worktree path and, when something was really created, the event that
-   *      records it. Failure carries a reason AND NO DIRECTORY.
+   *   3. **Flag on, `isolation: 'worktree'`** → the CheckoutCoordinator, and the
+   *      spawn happens inside ITS critical section rather than out here.
    *
-   * ⚠ A manager that is absent while the flag is on is a FAILURE, not a silent
-   * downgrade to `projectRoot`. It means somebody wired the daemon inconsistently,
-   * and the safe reading of "isolate this" plus "no isolator" is "do not run", not
-   * "run it in the shared directory and say nothing".
+   * ⚠ ASYNC even on the plain path, and that is load-bearing rather than
+   * cosmetic: D54's in-flight window is the `await` between the decision and
+   * `instance_run_attached`, and the shipped (flag-off) world's only `await` is
+   * this call. A synchronous fast path here would close the window the lock is
+   * asserted over, and the lock's own tests would start passing vacuously.
    *
-   * Never throws: the manager's contract is a returned result, and a manager that
-   * broke it is caught here anyway.
+   * Never throws — see `spawnIntoCheckout` for the coordinator half.
    */
-  private async resolveSpawnWorkingDirectory(
-    task: TaskRecord,
-  ): Promise<WorkingDirectoryResolution> {
+  private async spawnStageRun(task: TaskRecord, stage: TaskStage): Promise<StageRunSpawn> {
     if (this.deps.worktreeIsolationEnabled !== true || task.isolation !== 'worktree') {
-      return { ok: true, cwd: this.resolveWorkingDirectory(task) };
+      const cwd = await this.resolvePlainWorkingDirectory(task);
+      const plainSpawn = this.spawnAndAttachRun(task, stage, cwd);
+      return plainSpawn.outcome === 'spawned'
+        ? { outcome: 'spawned', appSessionId: plainSpawn.appSessionId, cwd }
+        : plainSpawn;
     }
-    const worktreeManager = this.deps.worktreeManager;
-    if (worktreeManager === undefined) {
-      return { ok: false, reason: 'worktree-isolation-enabled-without-a-manager' };
+    return this.spawnIntoCheckout(task, stage);
+  }
+
+  /**
+   * The flag-off / `shared-dir` answer: whatever the injected seam says.
+   *
+   * ⚠ **ASYNC WITH NOTHING TO AWAIT, AND THAT IS LOAD-BEARING RATHER THAN
+   * SLOPPY.** This is step 8's `resolveSpawnWorkingDirectory` in its plain-path
+   * form, kept async for the reason it always was: the `await` on it is the ONLY
+   * suspension point the shipped (flag-off) world has, and D54's in-flight window
+   * IS that suspension. Making it synchronous would run the whole dispatch —
+   * decision, spawn, attach — inside one uninterrupted synchronous prefix, which
+   * closes the window the lock guards and makes the lock's own tests pass
+   * vacuously (observed: `holds on the SHIPPED default path too` reddens the
+   * moment this `await` disappears).
+   */
+  private async resolvePlainWorkingDirectory(task: TaskRecord): Promise<string> {
+    return this.resolveWorkingDirectory(task);
+  }
+
+  /**
+   * §3.2's choreography, from the dispatcher's side.
+   *
+   * The coordinator owns the order and the lock; this method's whole job is to
+   * hand it the identities and the in-lock follow-up. INSIDE one critical section,
+   * in this order:
+   *
+   *   1. the coordinator mints the nodeId, derives branch + path, resolves the
+   *      base ref, runs git, and emits `node_created` WITH provenance;
+   *   2. **then** this follow-up spawns the session with `cwd` = the checkout, and
+   *      emits `task_session_attached` exactly as the plain path does;
+   *   3. **then** `session_attached_to_node` lands the session on its node.
+   *
+   * The directory exists before the session does, and the session exists before
+   * anything claims it — the same "never a window in which an agent is running
+   * somewhere the log has never mentioned" property the pre-S17 worktree event
+   * had, now with the tree edge as well.
+   *
+   * ⚠ **EVERY REFUSAL IS `worktree-failed`, WITH NO FALLBACK** (A11). A coordinator
+   * that is absent while the flag is on is a FAILURE too, not a silent downgrade
+   * to `projectRoot`: somebody wired the daemon inconsistently, and the safe
+   * reading of "isolate this" plus "no isolator" is "do not run", not "run it in
+   * the shared directory and say nothing".
+   *
+   * ⚠ **A SPAWN THAT FAILS THROWS OUT OF THE FOLLOW-UP ON PURPOSE.** The checkout
+   * exists at that point and has no tenant; throwing is how §3.7 compensation gets
+   * to un-make it, and it is what keeps a failed spawn from leaking one directory
+   * and one branch per attempt now that the manager's task-keyed re-use is gone.
+   * The outcome itself travels in `checkoutSpawn`, not in the error.
+   *
+   * Never throws: a coordinator that broke its own contract is caught here, the
+   * same posture the spawn path takes.
+   */
+  private async spawnIntoCheckout(task: TaskRecord, stage: TaskStage): Promise<StageRunSpawn> {
+    const checkoutCoordinator = this.deps.checkoutCoordinator;
+    const readProjects = this.deps.readProjects;
+    const nodeWriter = this.deps.nodeWriter;
+    if (checkoutCoordinator === undefined || readProjects === undefined || nodeWriter === undefined) {
+      // ⚠ ONE reason for all three, and the pinned wording of the pre-S17 failure
+      // kept VERBATIM. The three deps are the isolation DEPENDENCY SET — a
+      // coordinator that cannot be attributed to a project, or whose spawn cannot
+      // be recorded on the tree, is not a usable isolator — so the FACT reported
+      // is the one that was always reported: isolation was asked for and this
+      // daemon has no isolator. The outcome vocabulary a caller reads is not
+      // something a swap of the implementation gets to churn.
+      return { outcome: 'worktree-failed', reason: 'worktree-isolation-enabled-without-a-manager' };
     }
-    let ensureResult;
+    const projectJoin = this.resolveProjectId(task, readProjects());
+    if (projectJoin.outcome === 'refused') {
+      return { outcome: 'worktree-failed', reason: projectJoin.reason };
+    }
+
+    let checkoutSpawn: SpawnOutcome | undefined;
+    let checkoutPath: string | undefined;
+    let createResult;
     try {
-      ensureResult = await worktreeManager.ensureWorktree(task);
-    } catch (ensureError) {
-      // The manager's contract is to refuse rather than throw, but a dispatcher must
-      // survive its adapters regardless — the same posture the spawn path takes.
-      return { ok: false, reason: `worktree-threw:${describeThrown(ensureError)}` };
+      createResult = await checkoutCoordinator.create(
+        // §3.4: IDENTITIES AND INTENT only. No path, and no base ref — a dispatched
+        // stage run has no opinion about which branch it starts from, so §3.1's
+        // pinned default-branch algorithm answers.
+        { projectId: projectJoin.projectId },
+        async (checkout) => {
+          checkoutPath = checkout.path;
+          checkoutSpawn = this.spawnAndAttachRun(task, stage, checkout.path);
+          if (checkoutSpawn.outcome !== 'spawned') {
+            throw new CheckoutFollowUpAborted();
+          }
+          // §3.2's last step, through the SOLE writer of the nodes stream (see the
+          // `nodeWriter` dep's note) and never a hand-rolled emit.
+          //
+          // ⚠ **A REFUSAL HERE IS A DEGRADE, NOT AN ABORT**, and the asymmetry with
+          // the spawn above is deliberate. Every refusal reason is unreachable by
+          // construction at this point — the node was born microseconds ago and is
+          // open, the session was born microseconds ago and is homed nowhere — but
+          // if one ever fired, throwing would point §3.7 compensation at a checkout
+          // that now has a LIVE SESSION IN IT. An unattached session lands in
+          // `unfiled` (S16/D90): visible, and re-attachable by hand. A session whose
+          // directory was deleted underneath it is neither.
+          //
+          // A writer that THROWS is a different matter and is deliberately NOT
+          // caught: that is `NodeProjectionDisagreementError`, a rule-0.1 finding,
+          // and it surfaces on the result as `worktree-failed` rather than being
+          // swallowed here.
+          nodeWriter.attachSession({
+            nodeId: checkout.nodeId,
+            appSessionId: checkoutSpawn.appSessionId,
+          });
+        },
+      );
+    } catch (createError) {
+      const abortedSpawn: SpawnOutcome | undefined = checkoutSpawn;
+      if (
+        createError instanceof CheckoutFollowUpAborted &&
+        abortedSpawn !== undefined &&
+        abortedSpawn.outcome === 'spawn-failed'
+      ) {
+        // Our own unwind. The spawn's outcome is the answer; the checkout has
+        // already been compensated away by the coordinator.
+        return abortedSpawn;
+      }
+      return { outcome: 'worktree-failed', reason: `worktree-threw:${describeThrown(createError)}` };
     }
-    if (!ensureResult.ok) {
-      // The classified reason AND git's own words, so a post-mortem does not need
-      // the daemon's stderr to tell "git is missing" from "that path is a file".
-      return { ok: false, reason: `${ensureResult.reason}:${ensureResult.detail}` };
+    if (createResult.outcome === 'refused') {
+      // The classified refusal AND git's own words where there are any, so a
+      // post-mortem does not need the daemon's stderr to tell "git is missing"
+      // from "that branch already exists".
+      return { outcome: 'worktree-failed', reason: describeCheckoutRefusal(createResult) };
     }
-    return {
-      ok: true,
-      cwd: ensureResult.path,
-      // A REUSE CREATED NOTHING, so it events nothing. See the event's own note: a
-      // false `task_worktree_created` would be both an untrue fact in an append-only
-      // log and a near-zero reading poisoning D32's setup-cost column.
-      ...(ensureResult.reused
-        ? {}
-        : {
-            worktreeEvent: taskWorktreeCreated({
-              taskId: task.taskId,
-              path: ensureResult.path,
-              branch: ensureResult.branch,
-              setupMs: ensureResult.setupMs,
-            }),
-          }),
-    };
+    if (
+      checkoutSpawn === undefined ||
+      checkoutSpawn.outcome !== 'spawned' ||
+      checkoutPath === undefined
+    ) {
+      // Unreachable: a `created` outcome means the follow-up ran and did not throw.
+      // Loud rather than repaired — reaching it means the coordinator called us
+      // never, or reported success over a follow-up that failed.
+      return { outcome: 'worktree-failed', reason: 'checkout-created-without-a-spawn' };
+    }
+    return { outcome: 'spawned', appSessionId: checkoutSpawn.appSessionId, cwd: checkoutPath };
+  }
+
+  /**
+   * The projectRoot → projectId join §3.2 leans on, and the ONLY place this class
+   * turns a directory into a declared identity.
+   *
+   * **EXACT-MATCH AGAINST LIVE PROJECTS, and both halves are deliberate.**
+   *
+   *   • **Exact**, not `projectForCwd`'s longest-prefix containment. The
+   *     coordinator resolves the REPOSITORY from the project record (§3.4), so a
+   *     prefix match would cut the checkout out of an ANCESTOR project's repo
+   *     rather than the one the task names — a different repository, silently.
+   *     Exact equality is what makes `repoRoot === task.projectRoot` an invariant
+   *     rather than a coincidence.
+   *   • **Live**, because `ProjectWriter.createProject` refuses a duplicate LIVE
+   *     root (`duplicate-root`, nothing emitted) and archiving frees the root. So
+   *     at most one candidate can exist, and the join is well-defined — which is
+   *     exactly the premise slice-17.md §0 verified and kill criterion 4 guards.
+   *
+   * ⚠ **AN UNDECLARED ROOT IS A REFUSAL, NOT A GUESS.** A task's `projectRoot` is
+   * walled by `config.projectRoots ∪ live-session cwds`, NOT by the D42 registry,
+   * so a task can legitimately name a directory no project claims. A checkout the
+   * engine cannot ATTRIBUTE is a checkout it must not CREATE: it would be a
+   * directory and a branch on a real disk that no node, no project and no tree
+   * would ever account for. It maps to the existing no-fallback path, so nothing
+   * spawns — the honest answer, and the one that says "declare this project" out
+   * loud instead of half-working.
+   *
+   * ⚠ The two-or-more arm cannot legitimately happen (see "Live" above). It is a
+   * LOUD refusal rather than a pick, because picking one of two roots that mean
+   * the same directory is the ambiguity kill criterion 4 exists to forbid.
+   */
+  private resolveProjectId(task: TaskRecord, projects: ProjectsState): ProjectJoin {
+    const liveProjectsAtRoot = Object.values(projects.projects).filter(
+      (project) => !project.archived && project.root === task.projectRoot,
+    );
+    if (liveProjectsAtRoot.length === 0) {
+      return { outcome: 'refused', reason: `unknown-project:${task.projectRoot}` };
+    }
+    if (liveProjectsAtRoot.length > 1) {
+      return { outcome: 'refused', reason: `ambiguous-project:${task.projectRoot}` };
+    }
+    return { outcome: 'resolved', projectId: liveProjectsAtRoot[0]!.projectId };
   }
 
   // ⚠ **`resumeStageRun` STOOD HERE AND WAS DELETED BY S7·7b (D46) — A RECORDED
@@ -1172,4 +1439,12 @@ export class TaskDispatcher {
 // A one-line description of a thrown value — never a stack, never a payload dump.
 function describeThrown(thrown: unknown): string {
   return thrown instanceof Error ? thrown.message : String(thrown);
+}
+
+// One coordinator refusal, in the `worktree-failed` reason's pinned spelling:
+// `<reason>` alone when the refusal carries no detail, `<reason>:<detail>` when it
+// does. The SAME shape `WorktreeManager`'s classified reason had, so a caller
+// reading these strings sees a wider vocabulary and not a new grammar.
+function describeCheckoutRefusal(refusal: CheckoutRefusal): string {
+  return refusal.detail === undefined ? refusal.reason : `${refusal.reason}:${refusal.detail}`;
 }
