@@ -1,7 +1,11 @@
 # Slice 17 — E2-c: the engine does git
 
-**Status: SKELETON rev 3, 2026-08-18 — awaiting ⟨Wes⟩'s §3 signatures.
-Nothing dispatches until signed.** Rev 1 (`48a0ac3`) and rev 2
+**Status: SIGNED 2026-08-18 ⟨Wes⟩ — "Signed, I think we're good to go."
+All eleven §3 decisions signed at rev 3, including the three
+orchestrator-chosen options flagged in the signing packet (crash
+recovery via compensation + orphan discovery; coordinator-owned
+repo-scoped queued lock; the §3.10 open table). Units dispatch
+sequentially per §5.** Rev 1 (`48a0ac3`) and rev 2
 (`44f056f`) were each reviewed by an outside model (Sol, at ⟨Wes⟩'s
 instigation); the orchestrator verified premises against the repo before
 amending. Round 1 fixed four blockers (rev 1's event model contradicted
