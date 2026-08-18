@@ -306,6 +306,206 @@ describe('GitAdapter with an injected fake runner', () => {
   });
 });
 
+// ─── S17·U2 — the checkout verbs, as PURE GIT (slice-17.md §3.1) ─────────────
+//
+// ⚠ **THE ARGUMENT VECTOR IS THE INSTRUMENT.** Every claim these verbs make is
+// a claim about the command line git is handed — that the base is a COMMIT and
+// not a movable ref, that every request-derived operand sits behind `--` (or
+// `--end-of-options`), that `remove` deletes no branch. A test that only
+// checked the returned `ok` would pass against an implementation that shelled
+// out to the wrong command entirely.
+//
+// NO REAL GIT RUNS IN THIS BLOCK: the runner is injected and records what it
+// was asked to run. The real-git evidence for these command FORMS was taken
+// once, by hand, against git 2.43.0 in a scratch repository (see the verbs'
+// shared docblock in gitAdapter.ts); the live-fire re-run is the slice's §6
+// machine gate, not a unit test.
+describe('GitAdapter — S17·U2 checkout verbs with a recording fake runner', () => {
+  const VERSION_LINE = 'git version 2.43.0';
+  const REPO_ROOT = '/repo';
+
+  interface RecordingRunner {
+    runner: GitRunner;
+    // Every invocation, in order, EXCLUDING the one-time `--version` preflight —
+    // which is noise here and would shift every index by one.
+    calls: string[][];
+  }
+
+  // `cannedByJoinedArgs`: an exact-match table keyed on the joined argv, so a
+  // command whose shape drifts by one token stops matching and the default
+  // (exit 0, empty stdout) applies — which is what makes a wrong argv visible.
+  function recordingRunner(
+    cannedByJoinedArgs: Record<string, { stdout?: string; stderr?: string; exitCode?: number | null }> = {},
+  ): RecordingRunner {
+    const calls: string[][] = [];
+    const runner: GitRunner = async (args) => {
+      if (args[0] === '--version') {
+        return { stdout: VERSION_LINE, stderr: '', exitCode: 0 };
+      }
+      calls.push([...args]);
+      const canned = cannedByJoinedArgs[args.join(' ')] ?? { stdout: '', exitCode: 0 };
+      return { stdout: canned.stdout ?? '', stderr: canned.stderr ?? '', exitCode: canned.exitCode ?? 0 };
+    };
+    return { runner, calls };
+  }
+
+  it('resolveCommit peels to a commit behind --end-of-options and trims the id', async () => {
+    const recording = recordingRunner({
+      'rev-parse --verify --quiet --end-of-options main^{commit}': { stdout: 'abc123def\n' },
+    });
+    const adapter = new GitAdapter({ runner: recording.runner });
+    expect(await adapter.resolveCommit(REPO_ROOT, 'main')).toEqual({ ok: true, value: 'abc123def' });
+    // `--` would make the ref a PATHSPEC in rev-parse; `--end-of-options` is the
+    // option guard. Asserted as an exact vector so a swap is caught.
+    expect(recording.calls[0]).toEqual([
+      'rev-parse',
+      '--verify',
+      '--quiet',
+      '--end-of-options',
+      'main^{commit}',
+    ]);
+  });
+
+  it('resolveCommit surfaces an unknown ref as git-failed, never as an empty commit', async () => {
+    const recording = recordingRunner({
+      'rev-parse --verify --quiet --end-of-options nope^{commit}': { exitCode: 1, stderr: '' },
+    });
+    const adapter = new GitAdapter({ runner: recording.runner });
+    expect(await adapter.resolveCommit(REPO_ROOT, 'nope')).toEqual({
+      ok: false,
+      error: 'git-failed',
+      detail: '',
+    });
+  });
+
+  it('resolveCommit treats a zero-exit-with-no-id as drift, not as a resolution', async () => {
+    const recording = recordingRunner({
+      'rev-parse --verify --quiet --end-of-options main^{commit}': { stdout: '  \n', exitCode: 0 },
+    });
+    const adapter = new GitAdapter({ runner: recording.runner });
+    const result = await adapter.resolveCommit(REPO_ROOT, 'main');
+    expect(result).toEqual({ ok: false, error: 'git-failed', detail: 'rev-parse produced no commit id' });
+  });
+
+  it('checkRefFormat answers TRUE/FALSE as data and guards with the refs/heads/ prefix', async () => {
+    const recording = recordingRunner({
+      'check-ref-format refs/heads/bad..name': { exitCode: 1 },
+    });
+    const adapter = new GitAdapter({ runner: recording.runner });
+    expect(await adapter.checkRefFormat(REPO_ROOT, 'feature/x')).toEqual({ ok: true, value: true });
+    expect(await adapter.checkRefFormat(REPO_ROOT, 'bad..name')).toEqual({ ok: true, value: false });
+    // The composed operand ALWAYS begins with `refs/`, which is the injection
+    // guard for the one verb that refuses `--end-of-options` (git 2.43.0).
+    expect(recording.calls[0]).toEqual(['check-ref-format', 'refs/heads/feature/x']);
+    expect(recording.calls[1]![1]!.startsWith('refs/heads/')).toBe(true);
+  });
+
+  it('checkRefFormat still propagates git-unavailable rather than calling it malformed', async () => {
+    const adapter = new GitAdapter({ runner: async () => ({ stdout: '', stderr: '', exitCode: null }) });
+    expect(await adapter.checkRefFormat(REPO_ROOT, 'main')).toEqual({ ok: false, error: 'git-unavailable' });
+  });
+
+  it('originHeadTarget reports the target, and reports ABSENCE as null rather than an error', async () => {
+    const present = recordingRunner({
+      'symbolic-ref --quiet refs/remotes/origin/HEAD': { stdout: 'refs/remotes/origin/main\n' },
+    });
+    const presentAdapter = new GitAdapter({ runner: present.runner });
+    expect(await presentAdapter.originHeadTarget(REPO_ROOT)).toEqual({
+      ok: true,
+      value: 'refs/remotes/origin/main',
+    });
+
+    const absent = recordingRunner({
+      'symbolic-ref --quiet refs/remotes/origin/HEAD': { exitCode: 1 },
+    });
+    const absentAdapter = new GitAdapter({ runner: absent.runner });
+    expect(await absentAdapter.originHeadTarget(REPO_ROOT)).toEqual({ ok: true, value: null });
+  });
+
+  it('localBranchExists asks show-ref --verify for the FULL ref, behind --', async () => {
+    const recording = recordingRunner({
+      'show-ref --verify --quiet -- refs/heads/gone': { exitCode: 1 },
+    });
+    const adapter = new GitAdapter({ runner: recording.runner });
+    expect(await adapter.localBranchExists(REPO_ROOT, 'main')).toEqual({ ok: true, value: true });
+    expect(await adapter.localBranchExists(REPO_ROOT, 'gone')).toEqual({ ok: true, value: false });
+    expect(recording.calls[0]).toEqual(['show-ref', '--verify', '--quiet', '--', 'refs/heads/main']);
+  });
+
+  it('addWorktreeFromCommit passes the COMMIT as the operand, both positionals behind --', async () => {
+    const recording = recordingRunner();
+    const adapter = new GitAdapter({ runner: recording.runner });
+    const result = await adapter.addWorktreeFromCommit(REPO_ROOT, {
+      path: '/wt/node-a',
+      branch: 'vimes/node-a',
+      commit: 'deadbeef',
+    });
+    expect(result).toEqual({ ok: true, value: null });
+    expect(recording.calls[0]).toEqual([
+      'worktree',
+      'add',
+      '-b',
+      'vimes/node-a',
+      '--',
+      '/wt/node-a',
+      'deadbeef',
+    ]);
+    // §3.1: NO REF ANYWHERE IN THE VECTOR. The base is the resolved commit.
+    expect(recording.calls[0]).not.toContain('main');
+  });
+
+  it('addWorktreeForBranch checks out an existing branch and never mints one (-b absent)', async () => {
+    const recording = recordingRunner();
+    const adapter = new GitAdapter({ runner: recording.runner });
+    await adapter.addWorktreeForBranch(REPO_ROOT, { path: '/wt/node-b', branch: 'feature/x' });
+    expect(recording.calls[0]).toEqual(['worktree', 'add', '--', '/wt/node-b', 'feature/x']);
+    expect(recording.calls[0]).not.toContain('-b');
+  });
+
+  it('removeWorktree removes the path and NEVER touches a branch', async () => {
+    const recording = recordingRunner();
+    const adapter = new GitAdapter({ runner: recording.runner });
+    expect(await adapter.removeWorktree(REPO_ROOT, '/wt/node-a')).toEqual({ ok: true, value: null });
+    expect(recording.calls).toEqual([['worktree', 'remove', '--', '/wt/node-a']]);
+    // A10: removal preserves the branch. One command, and `branch` is not it.
+    expect(recording.calls.some((call) => call[0] === 'branch')).toBe(false);
+  });
+
+  it('removeWorktree carries git stderr as detail on a non-zero exit', async () => {
+    const recording = recordingRunner({
+      'worktree remove -- /wt/dirty': { exitCode: 1, stderr: "fatal: '/wt/dirty' contains modified files\n" },
+    });
+    const adapter = new GitAdapter({ runner: recording.runner });
+    expect(await adapter.removeWorktree(REPO_ROOT, '/wt/dirty')).toEqual({
+      ok: false,
+      error: 'git-failed',
+      detail: "fatal: '/wt/dirty' contains modified files",
+    });
+  });
+
+  it('deleteBranch force-deletes behind --, the §3.7-compensation-only verb', async () => {
+    const recording = recordingRunner();
+    const adapter = new GitAdapter({ runner: recording.runner });
+    expect(await adapter.deleteBranch(REPO_ROOT, 'vimes/node-a')).toEqual({ ok: true, value: null });
+    expect(recording.calls[0]).toEqual(['branch', '-D', '--', 'vimes/node-a']);
+  });
+
+  it('every checkout verb reports git-unavailable when the preflight cannot start git', async () => {
+    const deadRunner: GitRunner = async () => ({ stdout: '', stderr: '', exitCode: null });
+    const adapter = new GitAdapter({ runner: deadRunner });
+    const unavailable = { ok: false, error: 'git-unavailable' };
+    expect(await adapter.resolveCommit(REPO_ROOT, 'main')).toEqual(unavailable);
+    expect(await adapter.originHeadTarget(REPO_ROOT)).toEqual(unavailable);
+    expect(await adapter.localBranchExists(REPO_ROOT, 'main')).toEqual(unavailable);
+    expect(
+      await adapter.addWorktreeFromCommit(REPO_ROOT, { path: '/p', branch: 'b', commit: 'c' }),
+    ).toEqual(unavailable);
+    expect(await adapter.addWorktreeForBranch(REPO_ROOT, { path: '/p', branch: 'b' })).toEqual(unavailable);
+    expect(await adapter.removeWorktree(REPO_ROOT, '/p')).toEqual(unavailable);
+    expect(await adapter.deleteBranch(REPO_ROOT, 'b')).toEqual(unavailable);
+  });
+});
+
 // ── gitAvailable over the real runner (verify-row; git IS present at 2.43.0) ──
 describe('gitAvailable — real git preflight', () => {
   it('returns true when git is on PATH', async () => {

@@ -271,6 +271,29 @@ export {
   taskWorktreeBranch,
   taskWorktreeDirName,
 } from './tasks/worktreePaths.js';
+// S17·U1 — the NODE-derived pair (§3.6), added BESIDE the task pair above per
+// §3.11's transition safety. Exported here for the same reason the task pair is:
+// the identity of a checkout must be re-derivable without a daemon. ⚠ **BARREL
+// LINES ONLY — no logic in this unit is core's.** The functions themselves
+// landed in U1 (`da1de7c`); U2 is their first consumer
+// (`daemon/src/checkoutCoordinator.ts`) and `@vimes/core` publishes no subpath
+// for `tasks/` or `git/`, so without these three lines U1's work is unreachable
+// from the daemon and U2 would have to re-derive the naming — precisely the
+// duplicate-derivation hazard §3.6 exists to prevent.
+export {
+  NODE_CHECKOUT_BRANCH_PREFIX,
+  NODE_CHECKOUT_DIR_PREFIX,
+  nodeCheckoutBranch,
+  nodeCheckoutDirName,
+} from './tasks/worktreePaths.js';
+// S17·U1 — the §3.9 ref-name grammar (core's first `git/` tenant). Pure, total,
+// never throws; the adapter's `check-ref-format` half is the daemon's.
+export {
+  MAX_REF_NAME_LENGTH,
+  validateRefName,
+  type RefNameRefusalReason,
+  type RefNameValidationResult,
+} from './git/refValidation.js';
 // S7·1 (rule 0.5) — the task-as-work-order shapes, reserved with NO consumer.
 // `acceptanceCriterionSchema`/`AcceptanceCriterion` already flow through the
 // `export * from './schemas.js'` above, and `workOrderAmended`/

@@ -7,6 +7,7 @@ import {
   sessionAttachedToNode,
   type EventInput,
   type IdSource,
+  type NodeProvenance,
   type NodeRecord,
   type NodesState,
   type ProjectsState,
@@ -157,6 +158,91 @@ export interface CreateNodeInput {
   readonly directory: string | null;
 }
 
+// ─── S17·U2 — THE SEAL'S DELIBERATE OPENING (slice-17.md §1, Part B) ─────────
+//
+// Everything above says v1 cannot create a provenance-bearing node and that the
+// ABSENCE of a parameter is the enforcement. **This is the unit that opens that
+// seal, and it opens it exactly one crack wide.**
+//
+// `CreateNodeInput` STILL has no provenance field; `nodeApi.ts` is untouched and
+// still cannot reach this; the public create path still stamps `provenance:
+// null` and every S14-A2 assertion about it stays green UNMODIFIED. What changes
+// is that ONE engine caller — `checkoutCoordinator.ts`, which has actually just
+// run `git worktree add` — may now record what it performed. The rule the seal
+// was defending is unchanged and is worth restating: **a provenance claim may
+// only be minted by the code that performed the git operation it claims.**
+// A request shape never mints one, because a request never performs one.
+//
+// ⚠ **A3's REFUSAL LIVES HERE, AT THE WRITER.** `projections/nodes.ts` ignores a
+// second `node_created` for an id it already holds — that is the STRUCTURAL
+// backstop (write-once against replay of a log some future careless caller
+// wrote), and slice-17.md §4/A3 says explicitly that it is the backstop and not
+// the refusal. The refusal is `node-already-exists` below: LOUD, nothing
+// emitted, so a second provenance write is a named answer rather than a 200
+// with no record.
+//
+// ⚠ **THE nodeId IS THE CALLER'S, AND THAT IS FORCED BY §3.2.** Every other
+// method here mints from the injected source. The coordinator cannot: the branch
+// name and the checkout path are DERIVED FROM THE nodeId (§3.6) and must exist
+// before `git worktree add` runs, so the id is minted one layer up — from the
+// same injected `IdSource`, at the top of the same critical section — and
+// arrives here already spent. This class therefore does not mint for this
+// method, and the `ids` dep is untouched by it.
+
+// The engine path's OWN closed vocabulary, deliberately NOT a widening of
+// `nodeRefusalReasonSchema`. That enum is pinned by an exact-equality test over
+// the reasons REACHABLE THROUGH THE HTTP API (nodeApi.test.ts) — "no dead
+// vocabulary, no free text" — and these reasons are reachable through no route
+// at all, by construction. Two enums, two audiences, and the seam between them
+// is the same seam that keeps a request from minting a provenance.
+export const checkoutNodeRefusalReasonSchema = z.enum([
+  /** No LIVE project by that id. Archived counts as unknown, exactly as it does for `createNode`. */
+  'unknown-project',
+  /**
+   * ⚠ **A3, THE WRITER HALF.** A node by this id already exists, so this would
+   * be a SECOND birth record — and for a provenance-bearing node that means a
+   * second checkout claim over a node whose claim is already written and
+   * write-once. Refused loudly, nothing emitted. The fold's ignore-duplicate is
+   * the structural backstop behind this, never a substitute for it.
+   */
+  'node-already-exists',
+  /** A name of nothing but whitespace — same rule, same reason, as `createNode`. */
+  'empty-name',
+  /** An empty nodeId. Unreachable from an injected uuid source; refused anyway, because this method takes the id from its caller rather than minting it. */
+  'empty-node-id',
+]);
+export type CheckoutNodeRefusalReason = z.infer<typeof checkoutNodeRefusalReasonSchema>;
+
+/**
+ * What the CHECKOUT COORDINATOR names — after git has already performed.
+ *
+ * Every field here describes something that EXISTS on disk by the time this is
+ * called: the id the branch and path were derived from, the project the
+ * repository belongs to, and the provenance recording which commit was checked
+ * out where. Nothing in this shape is a request's; it is a report of work done.
+ */
+export interface CreateCheckoutNodeInput {
+  /** The id MINTED BY THE COORDINATOR (§3.2) — the branch and path already derive from it. */
+  readonly nodeId: string;
+  /** A LIVE project's id (D42), resolved from the repository's root. */
+  readonly projectId: string;
+  /** The human label. The coordinator passes the BRANCH name — see its own docblock for why. */
+  readonly name: string;
+  /**
+   * The checkout path. NOT nullable here (unlike `CreateNodeInput.directory`):
+   * a checkout node without a directory would be a claim about a place with no
+   * place. Same E3-a meaning as everywhere else — spawn-default cwd, never
+   * containment.
+   */
+  readonly directory: string;
+  /** The four checkable facts (§3.1): branch, baseRef, resolvedCommit, path. */
+  readonly provenance: NodeProvenance;
+}
+
+export type CreateCheckoutNodeResult =
+  | { readonly outcome: 'created'; readonly node: NodeRecord }
+  | { readonly outcome: 'refused'; readonly reason: CheckoutNodeRefusalReason };
+
 export interface CloseNodeInput {
   readonly nodeId: string;
 }
@@ -301,6 +387,87 @@ export class NodeWriter {
     if (bornNode === undefined) {
       throw new NodeProjectionDisagreementError(
         `node_created was written for ${nodeId} but the nodes projection did not fold it`,
+      );
+    }
+    return { outcome: 'created', node: bornNode };
+  }
+
+  /**
+   * **ENGINE-ONLY (S17·U2).** Create a node that WAS BORN WITH A CHECKOUT: emit
+   * ONE provenance-bearing `node_created` and return the record as the
+   * projection folded it.
+   *
+   * ⚠ **THE ONLY CALLER IS `checkoutCoordinator.ts`, AND THAT IS THE WHOLE
+   * DESIGN** (slice-17.md §1, and the seal block above this method's input
+   * type). No route reaches it, no MCP tool reaches it, and adding a caller that
+   * has not itself just run `git worktree add` is a decision record, not a
+   * patch: provenance is a claim about the filesystem, and only the code that
+   * changed the filesystem is in a position to make it.
+   *
+   * ⚠ **A3's REFUSAL IS `node-already-exists`, HERE, LOUDLY.** The nodes fold
+   * already ignores a duplicate birth — that is the structural backstop against
+   * replay; this is the refusal, and slice-17.md §4 says the difference matters.
+   *
+   * The read-back is the point for exactly the reason `createNode` states, with
+   * one addition specific to this path: the returned record's `provenance` comes
+   * from THE FOLD, so a projection that dropped or mangled the claim surfaces
+   * here as a disagreement rather than as an echo of what we hoped it stored.
+   *
+   * TOTAL over its input space (I8): no input throws. The one throw is the
+   * rule-0.1 projection/log divergence, as everywhere else in this class.
+   */
+  createCheckoutNode(input: CreateCheckoutNodeInput): CreateCheckoutNodeResult {
+    if (input.nodeId.trim().length === 0) {
+      return { outcome: 'refused', reason: 'empty-node-id' };
+    }
+
+    // Fresh reads, every call. ARCHIVED COUNTS AS UNKNOWN, exactly as in
+    // `createNode`: a checkout under a dead boundary is organization nobody
+    // asked to be homeless, and the git work it claims is not a reason to
+    // reopen a boundary somebody archived.
+    const project = this.deps.readProjects().projects[input.projectId];
+    if (project === undefined || project.archived) {
+      return { outcome: 'refused', reason: 'unknown-project' };
+    }
+
+    // A3, the writer half. Checked BEFORE the name so a duplicate id is always
+    // reported as a duplicate id, whatever else is wrong with the request.
+    if (this.deps.readNodes().nodes[input.nodeId] !== undefined) {
+      return { outcome: 'refused', reason: 'node-already-exists' };
+    }
+
+    const trimmedName = input.name.trim();
+    if (trimmedName.length === 0) {
+      return { outcome: 'refused', reason: 'empty-name' };
+    }
+
+    this.deps.emit([
+      nodeCreated({
+        nodeId: input.nodeId,
+        // v1: a checkout node is born TOP-LEVEL under its project's virtual
+        // root. There is no `parentNodeId` parameter — not an ignored one — for
+        // the same reason `CreateNodeInput` has no `provenance` one: the shape
+        // that does not exist cannot be misused. Hanging a checkout under a
+        // group node is a real want and a real decision (which group? chosen by
+        // whom? through what surface?), and it lands with the surface that asks
+        // the question, not with the unit that performs git.
+        parentNodeId: null,
+        projectId: input.projectId,
+        name: trimmedName,
+        // ⚠ **THE SEAL'S ONE CRACK.** Write-once at creation, exactly as the
+        // E2-a schema promises: the fold never updates it, so what is written
+        // here is what this node claims forever.
+        provenance: input.provenance,
+        directory: input.directory,
+        // D11 / rule 0.5, unchanged: the key is reserved and accepts only null.
+        nodeConfig: null,
+      }),
+    ]);
+
+    const bornNode = this.deps.readNodes().nodes[input.nodeId];
+    if (bornNode === undefined) {
+      throw new NodeProjectionDisagreementError(
+        `node_created (with provenance) was written for ${input.nodeId} but the nodes projection did not fold it`,
       );
     }
     return { outcome: 'created', node: bornNode };

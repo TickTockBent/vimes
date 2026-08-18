@@ -1,6 +1,6 @@
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { readFile, stat } from 'node:fs/promises';
+import { access, readFile, stat } from 'node:fs/promises';
 // Synchronous, because the PreCompact answer path it serves is synchronous all
 // the way down (the gate decides inside one request, with no awaits between the
 // hook's POST and its exit code).
@@ -67,7 +67,8 @@ import { NodeWriter } from './nodeWriter.js';
 import { ProjectWriter } from './projectWriter.js';
 import { TaskDispatcher } from './taskDispatcher.js';
 import { TaskWatchdog } from './taskWatchdog.js';
-import { defaultGitRunner, type GitRunner } from './gitAdapter.js';
+import { GitAdapter, defaultGitRunner, type GitRunner } from './gitAdapter.js';
+import { CheckoutCoordinator } from './checkoutCoordinator.js';
 import { WorktreeManager } from './worktreeManager.js';
 import {
   SearchService,
@@ -720,6 +721,54 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     readProjects: () => bootFromSnapshot(projectsProjection, snapshotStore, store),
     readNodes: () => bootFromSnapshot(nodesProjection, snapshotStore, store),
     readSessions: () => bootFromSnapshot(sessionsProjection, snapshotStore, store),
+  });
+
+  // ─── the checkout coordinator (S17·U2, E2-c) ───────────────────────────────
+  //
+  // ⚠ **CONSTRUCTED AND, TODAY, ALMOST UNCONSUMED — DELIBERATELY** (slice-17.md
+  // §3.11). The only thing that calls it on this boot is the orphan scan in
+  // `start()` below. `taskDispatcher` migrates onto it in U3 and the propose
+  // routes arrive in U4; until then `worktreeManager` above keeps doing exactly
+  // what it does today. Two writers of worktrees therefore EXIST after this
+  // unit and only ONE has callers — that is the signed transition-safety
+  // sequencing, not a leftover.
+  //
+  // It shares the SAME injected git runner every other git caller uses
+  // (`deps.gitRunner`, defaulting to the real one): ONE subprocess seam for git
+  // in the whole daemon, so a test that fakes git fakes all of it.
+  //
+  // The three projection reads are the SAME `bootFromSnapshot` thunks every
+  // other service takes, so nothing here holds a cached copy of anything — and
+  // §3.3's remove gate re-reads sessions through this thunk INSIDE the lock,
+  // which is the whole reason it is a thunk and not a value.
+  const checkoutCoordinator = new CheckoutCoordinator({
+    adapter: new GitAdapter({ runner: deps.gitRunner ?? defaultGitRunner }),
+    // The SOLE writer of the nodes stream's S9·1 events, shared rather than
+    // duplicated: `node_created` WITH provenance goes through the same instance
+    // the node API uses (principle 10 — one writer, never a second path).
+    nodeWriter,
+    emit: (events) => router.emit(events),
+    ids,
+    readProjects: () => bootFromSnapshot(projectsProjection, snapshotStore, store),
+    readNodes: () => bootFromSnapshot(nodesProjection, snapshotStore, store),
+    readSessions: () => bootFromSnapshot(sessionsProjection, snapshotStore, store),
+    // The SAME root `worktreeManager` is handed, from the same config field —
+    // one directory, one operator-facing env var (`VIMES_WORKTREE_ROOT`).
+    worktreeRoot: config.worktreeRoot,
+    // §3.10's `checkout-unrecorded-mismatch` row is the only consumer. `access`
+    // rather than `existsSync` so the probe is async like everything around it,
+    // and a rejection means "not there" — the only thing this question needs.
+    pathExists: async (candidatePath) => {
+      try {
+        await access(candidatePath);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    logWarn: (message) => {
+      console.warn(message);
+    },
   });
 
   // ─── the standing orchestrator (S8·3, D56) ─────────────────────────────────
@@ -1512,6 +1561,31 @@ export function createDaemon(deps: DaemonDeps): Daemon {
       // running. Its escalation memory is re-derived from the log, so a boot can
       // neither re-send a level nor forget one.
       compactionSteward.start();
+      // ─── S17·U2 — the orphan scan (slice-17.md §3.7) ───────────────────────
+      //
+      // §3.7's recovery contract is DISCOVERY, NOT ADOPTION: a checkout under
+      // `worktreeRoot` that no node's provenance claims is what process death
+      // mid-sequence leaves behind, and v1's honest answer is to SAY SO once, at
+      // boot, and let a human decide. Nothing here removes anything, adopts
+      // anything or writes an event — a boot diagnostic that mutates the disk
+      // would be a reaper, and the reaper is a decision nobody has made.
+      //
+      // Fire-and-forget and never awaited: it runs `git worktree list` once per
+      // live project, and a boot must not wait on (or die from) a repository
+      // that has moved. Every failure is already a warn inside `listOrphans`;
+      // the catch here is the belt to that braces.
+      void checkoutCoordinator
+        .listOrphans()
+        .then((orphans) => {
+          for (const orphan of orphans) {
+            console.warn(
+              `orphan checkout (claimed by no node): ${orphan.path} branch=${orphan.branch ?? '(detached)'} project=${orphan.projectId}`,
+            );
+          }
+        })
+        .catch(() => {
+          // Discovery is a diagnostic. It never fails a boot.
+        });
       snapshotTimer = setInterval(() => {
         try {
           saveAllSnapshots();

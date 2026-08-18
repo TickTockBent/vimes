@@ -673,4 +673,247 @@ export class GitAdapter {
     const result = await this.run(repoRoot, ['commit', '-m', message, '--']);
     return result.ok ? { ok: true, value: null } : result;
   }
+
+  // ─── S17·U2 — the checkout lifecycle, AS PURE GIT VERBS (slice-17.md §3.1) ──
+  //
+  // ⚠ **EVERY METHOD BELOW PERFORMS; NOT ONE OF THEM DECIDES.** No lock, no
+  // projection read, no event, no policy, no refusal vocabulary of its own —
+  // slice-17.md §1 puts all of that in `checkoutCoordinator.ts` ("the adapter
+  // performs; the coordinator decides"), and the split is the whole point of the
+  // unit. A method here answers ONE question git can answer, or runs ONE git
+  // mutation, and returns the existing `GitOpResult` shape. The `GitOpError` set
+  // above is UNCHANGED: a policy refusal ("that branch is checked out
+  // elsewhere") is not a subprocess failure and never becomes a member.
+  //
+  // The injection discipline is this file's, verbatim: ARRAY ARGS, no shell, and
+  // a `--` (or `--end-of-options`) guard before every request-derived operand.
+  // Each command form below was VERIFIED against real git 2.43.0 in a scratch
+  // repository before it was written (rule 0.7 — observed, not documented):
+  //   • `worktree add -b <branch> -- <path> <commit>` — new branch at a COMMIT
+  //   • `worktree add -- <path> <branch>`             — an EXISTING branch
+  //   • `worktree remove -- <path>`                   — leaves the branch alone
+  //   • `branch -D -- <branch>`                       — compensation only
+  //   • `show-ref --verify --quiet -- refs/heads/<b>` — existence, exit 0/1
+  //   • `rev-parse --verify --quiet --end-of-options <ref>^{commit}`
+  //   • `symbolic-ref --quiet refs/remotes/origin/HEAD` — exit 1 when absent
+  // ⚠ `check-ref-format` is the ONE verb that REFUSES `--end-of-options`
+  // (git 2.43.0 answers exit 129 + usage). Its guard is structural instead —
+  // see `checkRefFormat`.
+
+  /**
+   * Resolve a ref to the immutable commit it names RIGHT NOW.
+   *
+   * §3.1's load-bearing primitive: a ref moves, a commit does not, so every
+   * checkout this engine creates is created FROM THE RESOLVED COMMIT and the
+   * commit is what gets recorded as provenance. Without this step "branched off
+   * main" degrades into an unfalsifiable story the moment main advances.
+   *
+   * `^{commit}` peels a tag (or any other object) to the commit it points at, so
+   * an annotated tag as a base ref resolves rather than failing later at
+   * `worktree add`. `--verify --quiet` makes a ref that does not exist a plain
+   * non-zero exit with no stderr noise → `git-failed`; the CALLER decides what
+   * an unresolvable ref means (it is a policy refusal, not a git outage).
+   *
+   * ⚠ `--end-of-options` rather than `--`: in `rev-parse`, `--` separates revs
+   * from PATHS and would make the operand a pathspec. `--end-of-options` is the
+   * option guard (git 2.24+), and it is what keeps a hostile ref name from being
+   * read as a flag.
+   */
+  async resolveCommit(repoRoot: string, ref: string): Promise<GitOpResult<string>> {
+    const result = await this.run(repoRoot, [
+      'rev-parse',
+      '--verify',
+      '--quiet',
+      '--end-of-options',
+      `${ref}^{commit}`,
+    ]);
+    if (!result.ok) {
+      return result;
+    }
+    const resolvedCommit = result.value.trim();
+    if (resolvedCommit === '') {
+      // `--verify --quiet` exits non-zero on an unknown ref, so an empty stdout
+      // on a ZERO exit is drift, not a normal answer. Reported as git-failed
+      // rather than returned as an empty commit id nobody could check.
+      return { ok: false, error: 'git-failed', detail: 'rev-parse produced no commit id' };
+    }
+    return { ok: true, value: resolvedCommit };
+  }
+
+  /**
+   * Does GIT ITSELF consider this candidate a legal branch-ref name?
+   *
+   * §3.9's ADAPTER half. The grammar half is core's pure `validateRefName`
+   * (`packages/core/src/git/refValidation.ts`, S17·U1) and both run at the
+   * boundary: the pure grammar refuses the hostile menagerie BEFORE a candidate
+   * is ever built into a command line, and this asks git about the cases only
+   * git knows (`@{`, a trailing dot, a lone `@`, the reserved forms).
+   *
+   * ⚠ **THE ANSWER IS DATA, NOT A FAILURE.** A malformed candidate is git
+   * exiting non-zero, which `run` classifies as `git-failed`; that is this
+   * verb's `false`, not an error, because "your ref name is illegal" is a fact
+   * about the request and the coordinator owns what to do about it. Only a
+   * genuine `git-unavailable` propagates as `ok: false` — check-ref-format's
+   * ONLY non-zero exit is an invalid name (it reads no repository at all).
+   *
+   * ⚠ **THE `refs/heads/` PREFIX IS THE INJECTION GUARD**, because this is the
+   * one git verb that does NOT accept `--end-of-options` (2.43.0: exit 129 with
+   * a usage line). The composed argument therefore always begins with `refs/`
+   * and can never be read as an option, whatever the candidate is. The prefix
+   * also satisfies check-ref-format's two-level requirement without
+   * `--allow-onelevel`, so a bare `main` is checked as the branch ref it would
+   * become.
+   */
+  async checkRefFormat(repoRoot: string, candidate: string): Promise<GitOpResult<boolean>> {
+    const result = await this.run(repoRoot, ['check-ref-format', `refs/heads/${candidate}`]);
+    if (result.ok) {
+      return { ok: true, value: true };
+    }
+    if (result.error === 'git-unavailable') {
+      return result;
+    }
+    return { ok: true, value: false };
+  }
+
+  /**
+   * What does `refs/remotes/origin/HEAD` point at — or nothing?
+   *
+   * §3.1 step 1's primitive, and NOTHING MORE: this reports the fact, the
+   * coordinator runs the four-step algorithm. Absent (the common case for a repo
+   * that was never cloned, and for a clone whose remote HEAD was never fetched)
+   * is `value: null`, not an error — "there is no origin/HEAD" is an ANSWER.
+   *
+   * The ref is a CONSTANT here, never request-derived, so no operand guard is
+   * owed; `--quiet` keeps the absent case free of stderr noise.
+   */
+  async originHeadTarget(repoRoot: string): Promise<GitOpResult<string | null>> {
+    const result = await this.run(repoRoot, ['symbolic-ref', '--quiet', 'refs/remotes/origin/HEAD']);
+    if (!result.ok) {
+      if (result.error === 'git-unavailable') {
+        return result;
+      }
+      // Non-zero = the symbolic ref is not there. The ANSWER, not a failure.
+      return { ok: true, value: null };
+    }
+    const target = result.value.trim();
+    return { ok: true, value: target === '' ? null : target };
+  }
+
+  /**
+   * Does a LOCAL branch by this name exist?
+   *
+   * `show-ref --verify` demands the FULL ref path (`refs/heads/<name>`), which
+   * is exactly what makes this a branch question rather than a "some ref
+   * somewhere" question — a tag named `main` does not answer yes. Exit 1 is
+   * "no", and like the two verbs above that is data rather than a failure.
+   *
+   * Deliberately NOT a filter over `branches()`: that verb lists every local
+   * branch to answer one membership question, and the coordinator asks this on
+   * every create and every open.
+   */
+  async localBranchExists(repoRoot: string, branch: string): Promise<GitOpResult<boolean>> {
+    const result = await this.run(repoRoot, [
+      'show-ref',
+      '--verify',
+      '--quiet',
+      '--',
+      `refs/heads/${branch}`,
+    ]);
+    if (result.ok) {
+      return { ok: true, value: true };
+    }
+    if (result.error === 'git-unavailable') {
+      return result;
+    }
+    return { ok: true, value: false };
+  }
+
+  /**
+   * `git worktree add -b <branch> -- <path> <commit>` — a NEW branch, checked
+   * out at an IMMUTABLE COMMIT.
+   *
+   * ⚠ **THE COMMIT, NEVER THE REF (§3.1).** The caller resolved a ref to a
+   * commit first and passes the commit here, so a ref that moves between the two
+   * calls cannot change what is checked out — and the recorded provenance
+   * therefore describes what is actually on disk. Handing this verb a ref name
+   * would quietly reintroduce exactly the race §3.1 exists to close.
+   *
+   * `-b <branch>` binds the branch as the option's VALUE (never readable as an
+   * option itself, the discipline `git commit -m <message>` uses); the `--`
+   * guard puts BOTH positional operands where no leading dash can be misread.
+   */
+  async addWorktreeFromCommit(
+    repoRoot: string,
+    checkout: { path: string; branch: string; commit: string },
+  ): Promise<GitOpResult<null>> {
+    const result = await this.run(repoRoot, [
+      'worktree',
+      'add',
+      '-b',
+      checkout.branch,
+      '--',
+      checkout.path,
+      checkout.commit,
+    ]);
+    return result.ok ? { ok: true, value: null } : result;
+  }
+
+  /**
+   * `git worktree add -- <path> <branch>` — check out an EXISTING branch at a
+   * new path. §3.10's `open` verb.
+   *
+   * No `-b`: the branch already exists and this must not create one. Git refuses
+   * with its own message when the branch is checked out somewhere else — but the
+   * coordinator asks that question BEFORE calling (via `worktrees()`), because
+   * `branch-checked-out-elsewhere` is a state refusal with its own status, not
+   * an opaque git-failed.
+   */
+  async addWorktreeForBranch(
+    repoRoot: string,
+    checkout: { path: string; branch: string },
+  ): Promise<GitOpResult<null>> {
+    const result = await this.run(repoRoot, [
+      'worktree',
+      'add',
+      '--',
+      checkout.path,
+      checkout.branch,
+    ]);
+    return result.ok ? { ok: true, value: null } : result;
+  }
+
+  /**
+   * `git worktree remove -- <path>` — reclaim the directory.
+   *
+   * ⚠ **THIS DELETES NO BRANCH, AND THAT IS THE SAME DELIBERATE CHOICE
+   * `worktreeManager.removeWorktree` HAS ALWAYS MADE.** Deleting a branch
+   * destroys commits, which is a strictly larger act than reclaiming a
+   * directory; slice-17.md §3.10 says removal preserves the branch, and A10
+   * pins it.
+   */
+  async removeWorktree(repoRoot: string, path: string): Promise<GitOpResult<null>> {
+    const result = await this.run(repoRoot, ['worktree', 'remove', '--', path]);
+    return result.ok ? { ok: true, value: null } : result;
+  }
+
+  /**
+   * `git branch -D -- <branch>` — force-delete a local branch.
+   *
+   * ⚠ **THIS VERB EXISTS FOR EXACTLY ONE CALLER: §3.7 COMPENSATION.** When a
+   * `create` has already run `worktree add -b` and the event write (or the
+   * in-lock follow-up) then throws, the branch that add minted is OURS, is
+   * recorded NOWHERE, and holds no work anybody asked for — so the coordinator
+   * un-makes it along with the checkout and leaves zero orphans. Nothing else in
+   * VIMES may call this: `open`'s compensation removes the checkout ONLY,
+   * because there the branch PRE-EXISTED and must survive, and `remove` never
+   * deletes a branch at all.
+   *
+   * If you are about to wire this to a cleanup, a reaper, or a UI button: that
+   * is a decision record, not a patch (the reasoning `worktreeManager`'s removal
+   * docblock states, one step further along — this one destroys commits).
+   */
+  async deleteBranch(repoRoot: string, branch: string): Promise<GitOpResult<null>> {
+    const result = await this.run(repoRoot, ['branch', '-D', '--', branch]);
+    return result.ok ? { ok: true, value: null } : result;
+  }
 }
