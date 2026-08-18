@@ -3,6 +3,7 @@ import { CountingIdSource, SteppingClock } from '../ids.js';
 import { MemoryEventStore } from '../memoryEventStore.js';
 import type { EventInput, EventRecord } from '../schemas.js';
 import {
+  checkoutRemoved,
   nodeClosed,
   nodeCreated,
   sessionAttachedToNode,
@@ -360,6 +361,34 @@ describe('nodes projection — ONE PARENT PER SESSION', () => {
     ]);
     expect(nodesProjection.serialize(state)).toBe(nodesProjection.serialize(baseState));
     expect(nodeIdForSession(state, SESSION_A)).toBeNull();
+  });
+});
+
+describe('nodes projection — checkout_removed (S17·U1, fold DEFERRED — slice-17.md §1)', () => {
+  it('replays as a no-op: the fold is TOTAL, so a registered-but-unfolded kind changes nothing', () => {
+    // `checkout_removed` is a real, EVENT_TYPES-registered, schema-validating
+    // event (events.ts) — unlike the malformed/foreign hostile records in the
+    // "totality and purity" block below, this one parses cleanly. It is still a
+    // no-op here because `projections/nodes.ts` does not list a case for it
+    // (deliberately — the fold lands with its first consumer, D86). That
+    // deferral is exactly what this test makes assertable: the state and its
+    // serialized bytes are IDENTICAL with or without the event in the log.
+    const priorState = stateFromLog([declareChain()]);
+    const serializedBefore = nodesProjection.serialize(priorState);
+
+    const afterState = stateFromLog([
+      declareChain(),
+      [
+        checkoutRemoved({
+          nodeId: WORKTREE_NODE,
+          path: CHECKOUT_PROVENANCE.path,
+          branch: CHECKOUT_PROVENANCE.branch,
+        }),
+      ],
+    ]);
+
+    expect(nodesProjection.serialize(afterState)).toBe(serializedBefore);
+    expect(afterState.nodes[WORKTREE_NODE]).toEqual(priorState.nodes[WORKTREE_NODE]);
   });
 });
 

@@ -364,6 +364,16 @@ export const EVENT_TYPES = {
   nodeCreated: 'node_created',
   nodeClosed: 'node_closed',
   sessionAttachedToNode: 'session_attached_to_node',
+  // ── S17·U1 — checkout_removed, a NODES-STREAM AUDIT FACT (slice-17.md §1) ──
+  //
+  // ⚠ **NOT A FOURTH MEMBER OF THE S9·1 SET ABOVE — that set is still exactly
+  // three, and the test that pins it stays green.** `checkout_removed` records
+  // that a checkout's DISK was actually removed; it is orthogonal to
+  // `node_closed`'s TREE fact, same three-axis discipline the S9·1 note above
+  // states. RESERVED (rule 0.5): the schema lands so the event validates and
+  // constructs, but the FOLD is DEFERRED to its first consumer (a later,
+  // deliberate nodes-projection bump, D86) — see the payload schema's docblock.
+  checkoutRemoved: 'checkout_removed',
   // ── S11 (D72 Move 2) — THE GENERIC INSTANCE VOCABULARY ─────────────────────
   //
   // The task family above, re-spelled in the engine's own words (node-kit §1.7):
@@ -1189,6 +1199,29 @@ export const sessionAttachedToNodePayloadSchema = z.object({
   appSessionId: z.string().min(1),
 });
 
+// checkout_removed — a NODES-STREAM AUDIT FACT (slice-17.md §1), NOT a fourth
+// member of the S9·1 family above. It records that a checkout's DISK was
+// actually removed; the node itself, its provenance, and its tree position are
+// untouched by this event — removal here is a DISK fact, orthogonal to
+// `node_closed`'s TREE fact (same three-axis discipline the S9·1 note above
+// states, extended to a fourth axis-adjacent verb rather than folded into
+// closure).
+//
+// ⚠ **RESERVED SHAPE, FOLD DEFERRED (rule 0.5).** The schema is registered now
+// so the event validates and constructs; `projections/nodes.ts` does not fold
+// it yet, and that is safe by construction — the fold is TOTAL, so an unknown
+// event kind is already a no-op there. The first consumer (a later, deliberate
+// nodes-projection bump, D86 — NOT this unit) wires the fold. Emitted ONLY when
+// disk was actually removed (never on the idempotent no-op second remove,
+// slice-17.md §3.10) — the payload's `branch` field is carried so an audit log
+// reads human-legible without a join back to the node's own (by-then-still-
+// live) provenance record.
+export const checkoutRemovedPayloadSchema = z.object({
+  nodeId: z.string().min(1),
+  path: z.string().min(1),
+  branch: z.string().min(1),
+});
+
 // ── S11 (D72 Move 2) — the GENERIC INSTANCE payloads ─────────────────────────
 //
 // Each one generalises exactly one retired task payload, field for field. The
@@ -1478,6 +1511,8 @@ export const EVENT_PAYLOAD_SCHEMAS = {
   [EVENT_TYPES.nodeCreated]: nodeCreatedPayloadSchema,
   [EVENT_TYPES.nodeClosed]: nodeClosedPayloadSchema,
   [EVENT_TYPES.sessionAttachedToNode]: sessionAttachedToNodePayloadSchema,
+  // S17·U1 — reserved (fold deferred to D86); see the payload schema's docblock.
+  [EVENT_TYPES.checkoutRemoved]: checkoutRemovedPayloadSchema,
   // S11 (D72 Move 2) — the generic instance family. Registered beside the task
   // rows they retire, which stay registered forever: history still validates.
   [EVENT_TYPES.instanceCreated]: instanceCreatedPayloadSchema,
@@ -1537,6 +1572,7 @@ export type NodeProvenance = z.infer<typeof nodeProvenanceSchema>;
 export type NodeCreatedPayload = z.infer<typeof nodeCreatedPayloadSchema>;
 export type NodeClosedPayload = z.infer<typeof nodeClosedPayloadSchema>;
 export type SessionAttachedToNodePayload = z.infer<typeof sessionAttachedToNodePayloadSchema>;
+export type CheckoutRemovedPayload = z.infer<typeof checkoutRemovedPayloadSchema>;
 export type InstanceCreatedPayload = z.infer<typeof instanceCreatedPayloadSchema>;
 export type InstanceMovedPayload = z.infer<typeof instanceMovedPayloadSchema>;
 export type InstanceMoveRejectedPayload = z.infer<typeof instanceMoveRejectedPayloadSchema>;
@@ -2112,6 +2148,14 @@ export function nodeClosed(payload: NodeClosedPayload): EventInput {
 }
 export function sessionAttachedToNode(payload: SessionAttachedToNodePayload): EventInput {
   return { stream: NODES_STREAM, type: EVENT_TYPES.sessionAttachedToNode, payload };
+}
+
+// checkout_removed (S17·U1 — see EVENT_TYPES.checkoutRemoved and the payload
+// schema above). Same NODES_STREAM as its three siblings — it is a fact about
+// a node's checkout, and `projections/nodes.ts` folds only this stream (D34) —
+// even though the fold itself is deferred.
+export function checkoutRemoved(payload: CheckoutRemovedPayload): EventInput {
+  return { stream: NODES_STREAM, type: EVENT_TYPES.checkoutRemoved, payload };
 }
 
 // The task↔session link (step 4a). On the 'tasks' stream and NOT the session's

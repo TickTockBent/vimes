@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
+import { validateRefName } from '../git/refValidation.js';
 import {
+  NODE_CHECKOUT_BRANCH_PREFIX,
+  NODE_CHECKOUT_DIR_PREFIX,
   TASK_WORKTREE_BRANCH_PREFIX,
   TASK_WORKTREE_DIR_PREFIX,
+  nodeCheckoutBranch,
+  nodeCheckoutDirName,
   taskWorktreeBranch,
   taskWorktreeDirName,
 } from './worktreePaths.js';
@@ -182,5 +187,134 @@ describe('worktreePaths — assertion 3: distinct ids never collide', () => {
     // literal id '_0041' must not land where the escape of 'A' would.
     expect(taskWorktreeDirName('_0041')).not.toBe(taskWorktreeDirName('A'));
     expect(taskWorktreeDirName('/')).not.toBe(taskWorktreeDirName('\\'));
+  });
+});
+
+// ─── slice 17, unit 1 — node-derived checkout names (§3.6, §3.11) ────────────
+//
+// Same pipeline, same idiom, new tenant: everything above pins the LEGACY
+// task-derived pair (unmodified, per §3.11 — U3 deletes it later); everything
+// below pins the pair that replaces it. The hostile menagerie and the
+// `expectSafeName` shape-check are REUSED verbatim from above rather than
+// duplicated, because the escaper and fingerprint pipeline is reused verbatim
+// in the implementation too.
+
+// Node ids as the engine actually mints them today (uuid-shaped) and as a
+// human-legible placeholder — deliberately containing NEITHER 'task' NOR any
+// prefix collision with the legacy family, so the tenant-word assertion below
+// tests the DERIVATION's own vocabulary rather than an id that happened to
+// carry the word already.
+const REALISTIC_NODE_ID = 'node-aaaa-0001';
+const UUID_NODE_ID = '00000000-0000-4000-8000-00000000node';
+
+describe('worktreePaths — node-derived names, assertion: deterministic (§3.7)', () => {
+  it('maps the same nodeId to the same branch and dir, every time', () => {
+    for (const nodeId of [REALISTIC_NODE_ID, UUID_NODE_ID, ...HOSTILE_TASK_IDS.map((c) => c.taskId)]) {
+      const firstBranch = nodeCheckoutBranch(nodeId);
+      const firstDirName = nodeCheckoutDirName(nodeId);
+      for (let repeat = 0; repeat < 5; repeat += 1) {
+        expect(nodeCheckoutBranch(nodeId)).toBe(firstBranch);
+        expect(nodeCheckoutDirName(nodeId)).toBe(firstDirName);
+      }
+    }
+  });
+
+  it('derives from the nodeId ALONE — the readable happy path is pinned verbatim', () => {
+    expect(nodeCheckoutBranch(REALISTIC_NODE_ID)).toBe('vimes/node-node-aaaa-0001');
+    expect(nodeCheckoutDirName(REALISTIC_NODE_ID)).toBe('node-node-aaaa-0001');
+  });
+});
+
+describe('worktreePaths — node-derived names, assertion: hostile nodeIds are safe, and nothing throws', () => {
+  for (const { name, taskId: hostileNodeId } of HOSTILE_TASK_IDS) {
+    it(`${name}: no traversal, no separator, no leading dash, no throw`, () => {
+      let branch = '';
+      let dirName = '';
+      expect(() => {
+        branch = nodeCheckoutBranch(hostileNodeId);
+        dirName = nodeCheckoutDirName(hostileNodeId);
+      }, `${name} must not throw — these functions are TOTAL`).not.toThrow();
+
+      expectSafeName(dirName, `${name} dirName`);
+      expect(dirName.startsWith(NODE_CHECKOUT_DIR_PREFIX), `${name}: keeps its prefix`).toBe(true);
+
+      expect(branch.startsWith(NODE_CHECKOUT_BRANCH_PREFIX), `${name}: keeps its prefix`).toBe(true);
+      const branchTail = branch.slice(NODE_CHECKOUT_BRANCH_PREFIX.length);
+      expectSafeName(`${NODE_CHECKOUT_DIR_PREFIX}${branchTail}`, `${name} branch tail`);
+      expect(branch.split('/'), `${name}: exactly one slash, ours`).toHaveLength(2);
+    });
+  }
+});
+
+describe('worktreePaths — node-derived names, assertion: distinct ids never collide', () => {
+  it('gives every distinct nodeId a distinct branch AND a distinct dir, even over a shared 64-char prefix', () => {
+    // The fingerprint's ENTIRE job (worktreePaths.ts's `nodeCheckoutSlug`,
+    // reusing `fingerprint` verbatim): without it, two ids that agree on their
+    // first MAX_SLUG_LENGTH characters would truncate onto the SAME directory —
+    // two different checkouts quietly sharing one worktree. These two ids are
+    // chosen to collapse under exactly that failure mode.
+    const distinctNodeIds = [
+      REALISTIC_NODE_ID,
+      UUID_NODE_ID,
+      `${'z'.repeat(64)}A`,
+      `${'z'.repeat(64)}B`,
+      `${'z'.repeat(200)}A`,
+      `${'z'.repeat(200)}B`,
+    ];
+    const branches = new Set(distinctNodeIds.map(nodeCheckoutBranch));
+    const dirNames = new Set(distinctNodeIds.map(nodeCheckoutDirName));
+    expect(branches.size, 'every distinct nodeId must own a distinct branch').toBe(
+      distinctNodeIds.length,
+    );
+    expect(dirNames.size, 'every distinct nodeId must own a distinct directory').toBe(
+      distinctNodeIds.length,
+    );
+  });
+});
+
+describe('worktreePaths — node-derived names, prefix correctness', () => {
+  it('uses the node-specific prefixes, distinct from the legacy task pair', () => {
+    expect(NODE_CHECKOUT_BRANCH_PREFIX).toBe('vimes/node-');
+    expect(NODE_CHECKOUT_DIR_PREFIX).toBe('node-');
+    expect(NODE_CHECKOUT_BRANCH_PREFIX).not.toBe(TASK_WORKTREE_BRANCH_PREFIX);
+    expect(NODE_CHECKOUT_DIR_PREFIX).not.toBe(TASK_WORKTREE_DIR_PREFIX);
+    expect(nodeCheckoutBranch(REALISTIC_NODE_ID).startsWith(NODE_CHECKOUT_BRANCH_PREFIX)).toBe(true);
+    expect(nodeCheckoutDirName(REALISTIC_NODE_ID).startsWith(NODE_CHECKOUT_DIR_PREFIX)).toBe(true);
+  });
+});
+
+describe('worktreePaths — node-derived names, assertion A5 #16: no tenant word "task"', () => {
+  it('never spells "task" in a node-derived branch or directory name', () => {
+    // The derivation's own vocabulary (prefixes + escaper + fingerprint) must
+    // never spell the retired tenant word — checked over ids that do not
+    // themselves already contain it, so this tests the CODE, not the input.
+    const taskFreeNodeIds = [
+      REALISTIC_NODE_ID,
+      UUID_NODE_ID,
+      'node-bbbb-0002',
+      '../../etc',
+      '-rf',
+      '',
+      'x'.repeat(5_000),
+    ];
+    for (const nodeId of taskFreeNodeIds) {
+      expect(nodeCheckoutBranch(nodeId)).not.toMatch(/task/i);
+      expect(nodeCheckoutDirName(nodeId)).not.toMatch(/task/i);
+    }
+    // Also true of the bare prefixes themselves.
+    expect(NODE_CHECKOUT_BRANCH_PREFIX).not.toMatch(/task/i);
+    expect(NODE_CHECKOUT_DIR_PREFIX).not.toMatch(/task/i);
+  });
+});
+
+describe('worktreePaths — node-derived names, branch passes the §3.9 ref grammar', () => {
+  it('every node-derived branch — happy-path and hostile — validates under validateRefName', () => {
+    for (const nodeId of [REALISTIC_NODE_ID, UUID_NODE_ID, ...HOSTILE_TASK_IDS.map((c) => c.taskId)]) {
+      const branch = nodeCheckoutBranch(nodeId);
+      expect(
+        validateRefName(branch),
+        `branch derived from ${JSON.stringify(nodeId)} must pass validateRefName: got ${branch}`,
+      ).toEqual({ ok: true });
+    }
   });
 });

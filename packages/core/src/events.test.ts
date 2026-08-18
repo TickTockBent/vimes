@@ -52,6 +52,8 @@ import {
   nodeProvenanceSchema,
   sessionAttachedToNode,
   sessionAttachedToNodePayloadSchema,
+  checkoutRemoved,
+  checkoutRemovedPayloadSchema,
 } from './events.js';
 import { cacheObservabilityProjection } from './projections/cacheObservability.js';
 import { replayFromEmpty } from './projections/projection.js';
@@ -1058,6 +1060,57 @@ describe('session_attached_to_node (S9·1 — one parent per session)', () => {
     expect(
       sessionAttachedToNodePayloadSchema.safeParse({ appSessionId: 'app-session-0001' }).success,
     ).toBe(false);
+  });
+});
+
+describe('checkout_removed (S17·U1 — a nodes-stream AUDIT fact, fold DEFERRED per slice-17.md §1)', () => {
+  const removalPayload = {
+    nodeId: 'node-aaaa-0002',
+    path: '/home/user/projects/vimes-worktrees/session-tree',
+    branch: 'feature/session-tree',
+  };
+
+  it('constructs on the nodes stream and validates', () => {
+    expect(checkoutRemoved(removalPayload)).toEqual({
+      stream: 'nodes',
+      type: 'checkout_removed',
+      payload: removalPayload,
+    });
+    expect(NODES_STREAM).toBe('nodes');
+    expect(checkoutRemovedPayloadSchema.safeParse(removalPayload).success).toBe(true);
+    expect(EVENT_TYPES.checkoutRemoved).toBe('checkout_removed');
+    expect(EVENT_PAYLOAD_SCHEMAS[EVENT_TYPES.checkoutRemoved]).toBe(checkoutRemovedPayloadSchema);
+  });
+
+  it('requires nodeId, path and branch — all three, all non-empty', () => {
+    const { nodeId: _omittedNodeId, ...nodelessPayload } = removalPayload;
+    expect(checkoutRemovedPayloadSchema.safeParse(nodelessPayload).success).toBe(false);
+    const { path: _omittedPath, ...pathlessPayload } = removalPayload;
+    expect(checkoutRemovedPayloadSchema.safeParse(pathlessPayload).success).toBe(false);
+    const { branch: _omittedBranch, ...branchlessPayload } = removalPayload;
+    expect(checkoutRemovedPayloadSchema.safeParse(branchlessPayload).success).toBe(false);
+    expect(checkoutRemovedPayloadSchema.safeParse({ ...removalPayload, nodeId: '' }).success).toBe(
+      false,
+    );
+    expect(checkoutRemovedPayloadSchema.safeParse({ ...removalPayload, path: '' }).success).toBe(
+      false,
+    );
+    expect(checkoutRemovedPayloadSchema.safeParse({ ...removalPayload, branch: '' }).success).toBe(
+      false,
+    );
+    expect(checkoutRemovedPayloadSchema.safeParse({}).success).toBe(false);
+  });
+
+  it('strips an unknown key rather than refusing it — the house convention (node_closed precedent)', () => {
+    // zod strips unknown keys by default (same observation node_closed's own
+    // test makes above): the proof is that a smuggled field does not survive
+    // the parse, not that the parse is refused outright.
+    const parsed = checkoutRemovedPayloadSchema.safeParse({
+      ...removalPayload,
+      forceDelete: true,
+    });
+    expect(parsed.success).toBe(true);
+    expect(parsed.success && 'forceDelete' in parsed.data).toBe(false);
   });
 });
 

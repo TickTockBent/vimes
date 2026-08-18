@@ -23,6 +23,14 @@
 // would read as an OPTION rather than an operand) must be impossible by
 // construction here, not by a check somewhere downstream.
 
+// ⚠ **LEGACY, AWAITING DELETION (slice-17.md §3.11).** Slice 17 replaces the
+// task-derived pair below with the NODE-derived pair at the bottom of this file.
+// Per §3.11's transition safety, U1 (this unit) adds the node-derived helpers
+// BESIDE these rather than touching them, so no intermediate deploy can derive
+// `vimes/node-*` from a task id. U3 switches every caller to the node-derived
+// pair and DELETES this task-prefixed pair in the same unit — until then, this
+// pair stays exactly as it is. Do not "clean it up" early.
+
 // The branch every task worktree checks out. Namespaced under `vimes/` so a
 // human's `git branch` output separates VIMES's bookkeeping from their own work at
 // a glance, and so a future cleanup can enumerate ours without guessing.
@@ -128,4 +136,70 @@ export function taskWorktreeBranch(taskId: string): string {
  */
 export function taskWorktreeDirName(taskId: string): string {
   return `${TASK_WORKTREE_DIR_PREFIX}${taskWorktreeSlug(taskId)}`;
+}
+
+// ─── slice 17, unit 1 — node-derived checkout names (§3.6, §3.11) ────────────
+//
+// The forest's replacement for the pair above: every engine-created checkout is
+// a NODE (E2-a — one node kind, worktree-ness carried as a `provenance`
+// property), so its branch and directory now derive from the NODE's id rather
+// than a task's. The derivation pipeline — `escapeToSafeCharset` + the FNV-1a
+// `fingerprint` + the length-capped slug — is reused VERBATIM (§0's recon: it
+// survives the move unchanged); only the prefix and the input id differ.
+//
+// ⚠ **THE NODE ID IS TREATED AS UNTRUSTED INPUT, BY THE SAME ARGUMENT AS
+// ABOVE.** Every nodeId is minted by the engine today, so the hostile cases are
+// not reachable from current code — the sanitiser is written now, while it is
+// free, because the output becomes A FILESYSTEM PATH and A GIT REF the moment
+// `create`/`open` run (U2).
+//
+// ⚠ **DERIVED FROM `nodeId` ALONE.** Identical nodeId ⇒ identical branch and
+// directory name, every time (§3.7's derivation property) — the same
+// determinism the task pair guarantees, now for nodes.
+
+// The branch every node-derived checkout checks out. Same `vimes/` namespace as
+// the legacy pair, so both families read as VIMES's own bookkeeping at a glance;
+// `node-` (not `task-`) is the tenant word this slice replaces (§3.6: `task`
+// appears in neither).
+export const NODE_CHECKOUT_BRANCH_PREFIX = 'vimes/node-';
+
+// The directory-name prefix. The SAME `node-` stem as the branch, so a worktree
+// on disk and a branch in the repo are recognisably the same object.
+export const NODE_CHECKOUT_DIR_PREFIX = 'node-';
+
+// The escaped-and-length-bounded stem shared by the node branch and directory
+// name. Reuses `escapeToSafeCharset` and `fingerprint` verbatim, at the same
+// `MAX_SLUG_LENGTH` cap, so an over-long nodeId is bounded exactly the way an
+// over-long taskId already is above.
+function nodeCheckoutSlug(nodeId: string): string {
+  const escaped = escapeToSafeCharset(nodeId);
+  if (escaped.length <= MAX_SLUG_LENGTH) {
+    return escaped;
+  }
+  return `${escaped.slice(0, MAX_SLUG_LENGTH)}-${fingerprint(nodeId)}`;
+}
+
+/**
+ * The git branch this node's checkout uses — e.g.
+ * `vimes/node-node-aaaa-0001`.
+ *
+ * Pure, total, deterministic. The `vimes/node-` prefix also guarantees the ref
+ * can never begin with `-` no matter what the id was, so it can never be read
+ * as a git option even if a future caller forgets the `--` guard.
+ */
+export function nodeCheckoutBranch(nodeId: string): string {
+  return `${NODE_CHECKOUT_BRANCH_PREFIX}${nodeCheckoutSlug(nodeId)}`;
+}
+
+/**
+ * The directory NAME (never a full path) for this node's checkout — e.g.
+ * `node-node-aaaa-0001`. The coordinator joins it onto the configured worktree
+ * root (U2); this module deliberately knows nothing about that root, so it
+ * stays free of any filesystem or configuration dependency.
+ *
+ * Pure, total, deterministic, and never `.`, `..`, empty-after-prefix-stripping,
+ * or dash-leading.
+ */
+export function nodeCheckoutDirName(nodeId: string): string {
+  return `${NODE_CHECKOUT_DIR_PREFIX}${nodeCheckoutSlug(nodeId)}`;
 }
