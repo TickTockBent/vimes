@@ -1,9 +1,15 @@
 # Slice 16 — sessionList dies; sessions get names
 
-**Status: SIGNED 2026-08-17 ⟨Wes⟩ — "signed as written, keep rolling."
-All ten §3 decisions signed at skeleton review; D73 and D91 moved to
-decisions.md same day. Units dispatch sequentially per §5.** Sequenced 2026-08-17 (⟨Wes⟩-approved order): slice 16 →
-E2-c → Move 4; InputLease parked until briefings are scheduled.
+**Status: CLOSED 2026-08-18 ⟨Wes⟩.** Machine gate passed 2026-08-17;
+human gate walked 2026-08-17 (8/9 clean, §7), halted on S16-F1 (§8),
+fixed via U6 and re-verified 2026-08-18 — ⟨Wes⟩ confirmed the task
+lines are showing and closed the slice. One finding (S16-F1, ruled
+"Fix in core 100%"), one design note promoted to D94, one flake noted
+to watch. *(Originally SIGNED 2026-08-17 ⟨Wes⟩ — "signed as written,
+keep rolling"; all ten §3 decisions signed at skeleton review; D73 and
+D91 moved to decisions.md same day.)* Next per the ⟨Wes⟩-approved
+sequence: E2-c → Move 4; InputLease parked until briefings are
+scheduled.
 
 The tree became home in slice 15; this slice deletes the surface it
 replaced (`#/sessions` + SessionListView) and pays the two debts that
@@ -313,9 +319,11 @@ the marker), true only of the capped input the UI used to see. Now
 moot in behavior (post-U6 the stripper is a passthrough for these) but
 misleading prose; ride it on the next UI unit.
 
-**Remaining for CLOSED: ⟨Wes⟩ re-verifies walk step 3** (historical
-sessions now show task lines on the phone). Steps 1–2, 4–9 stand as
-passed.
+**Step 3 re-verified and CONFIRMED 2026-08-18 ⟨Wes⟩ — task lines
+showing.** Corroborated on the spine (sessions snapshot v2, 42/50
+sessions with re-derived task-line titles). Steps 1–2, 4–9 stood as
+passed; with step 3 confirmed the human gate is PASSED and the slice
+is CLOSED.
 
 ## §6. Gates & kill criteria
 
