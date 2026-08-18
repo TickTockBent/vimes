@@ -5,8 +5,8 @@
 // (Move 1b) owns every byte of I/O — including reading the `input` JSON Schema
 // files this module can only name.
 //
-// The schema implemented here is SIGNED (D71). `private-docs/extension-model.md` §2
-// (the manifest) + §5.3 (capability validation) and `private-docs/node-kit.md` §1 (the
+// The schema implemented here is SIGNED (D71). `docs/extension-model.md` §2
+// (the manifest) + §5.3 (capability validation) and `docs/node-kit.md` §1 (the
 // node kit) are the references; every rule below cites its section. This file
 // implements them — it does not improve them.
 //

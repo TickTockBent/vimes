@@ -1,4 +1,4 @@
-// Pure framing for raw-terminal binary WS frames (private-docs/slice-3.md §Raw terminal;
+// Pure framing for raw-terminal binary WS frames (docs/slice-3.md §Raw terminal;
 // packages/daemon/src/wsHub.ts is the wire authority). A frame is
 // `[uint8 terminalTag][...payloadBytes]`: the leading byte routes to a terminal on
 // this connection, the rest is verbatim PTY bytes. NOTHING here parses the payload

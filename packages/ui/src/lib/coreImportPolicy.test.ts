@@ -1,4 +1,4 @@
-// D87 (private-docs/decisions.md) sanctions @vimes/core under
+// D87 (docs/decisions.md) sanctions @vimes/core under
 // packages/ui/src as a TYPE-ONLY dependency: rider 1 requires every import
 // whose module specifier is @vimes/core to be a bare `import type`
 // STATEMENT — never an inline `{ type X }` specifier — because the
@@ -12,7 +12,7 @@
 // including .test.ts files (the walker still visits them; the exemption
 // below is scoped to rider 1's assertion only, not to the walk).
 //
-// D87 ADDENDUM (2026-08-13, private-docs/decisions.md, S15-F2): `.test.ts`
+// D87 ADDENDUM (2026-08-13, docs/decisions.md, S15-F2): `.test.ts`
 // files are EXEMPT from rider 1's type-only-statement rule. They run in
 // node and never enter the browser bundle, so bundle discipline (D87's
 // intent 1) is untouched; value-importing core constants to cross-check UI

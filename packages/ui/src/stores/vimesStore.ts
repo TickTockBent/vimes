@@ -38,7 +38,7 @@ import { SESSIONS_AFFECTING_TYPES, TREE_AFFECTING_TYPES } from '../lib/sessionTr
 // does not reshape it.
 import type { TreeResponse } from '@vimes/core';
 
-// The single shared WS connection (private-docs/slice-1.md step-3 scope): one socket
+// The single shared WS connection (docs/slice-1.md step-3 scope): one socket
 // multiplexes every subscribed stream; per-stream lastSeq is tracked so a
 // reconnect resubscribes everything from where it left off (the I2 client
 // behavior), with exponential backoff 1s..10s.

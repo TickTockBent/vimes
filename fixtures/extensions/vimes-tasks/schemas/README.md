@@ -13,5 +13,5 @@ Their real contents arrive with the migration that gives them a consumer: the
 shipped payload shapes live today in `packages/core/src/tasks/workOrder.ts`
 (`submitPlanPayloadSchema`, `createTaskToolPayloadSchema`) and
 `packages/core/src/schemas.ts`, and the migration map routes them here
-(`private-docs/migration-map.md` §1.2). Filling them ahead of that consumer would be
+(`docs/migration-map.md` §1.2). Filling them ahead of that consumer would be
 copying a shape twice — principle 9's exact hazard.

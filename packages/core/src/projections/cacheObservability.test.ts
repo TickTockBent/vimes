@@ -14,7 +14,7 @@ import { cacheObservabilityProjection } from './cacheObservability.js';
 
 const APP_SESSION_ID = 'aaaaaaaa-0000-4000-8000-000000000001';
 
-// The real Spike-C usage shape (private-docs/calibration.md): 1h-tier, ~93% warm.
+// The real Spike-C usage shape (docs/calibration.md): 1h-tier, ~93% warm.
 const spikeCUsage = {
   cache_creation: { ephemeral_1h_input_tokens: 2909, ephemeral_5m_input_tokens: 0 },
   cache_creation_input_tokens: 2909,

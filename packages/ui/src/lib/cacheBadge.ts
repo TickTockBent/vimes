@@ -21,7 +21,7 @@
 // D24 (binding): the billing bucket is NOT derivable yet — this lib exposes
 // the RAW serviceTier string only, never a fabricated "5h window" / "$100
 // automation" label. Rule 0.5 (binding): no cache-vandal warning lives here —
-// that machinery is RESERVED, with no consumer in the MVP UI (private-docs/slice-4.md
+// that machinery is RESERVED, with no consumer in the MVP UI (docs/slice-4.md
 // "Step-4 scope call").
 
 import { formatDuration } from './duration.js';

@@ -685,7 +685,7 @@ describe('evaluateMeterAlerts (edge-triggered — a meter that cries wolf costs 
 
 // ---------------------------------------------------------------------------
 // slice 5 step 4a FIX — bounded history must not masquerade as a window reset
-// (FINDING 2026-07-21, private-docs/calibration.md)
+// (FINDING 2026-07-21, docs/calibration.md)
 // ---------------------------------------------------------------------------
 
 const WEEKLY_POLL_INTERVAL_MS = 5 * 60 * 1000;
@@ -869,7 +869,7 @@ describe('evaluateMeterAlerts across a bounded history (absence of a reset is no
 
 // ---------------------------------------------------------------------------
 // slice 5 — `resets_at` JITTER (FINDING 2026-07-21, SHIPPED: 33 notifications
-// for one 80% crossing). private-docs/calibration.md.
+// for one 80% crossing). docs/calibration.md.
 //
 // The bug's whole nature is that the fixtures were too tidy: every alert-path
 // test built `resetsAt` from a clean fixed ISO literal, so 833 tests could not
@@ -1126,7 +1126,7 @@ describe('evaluateMeterAlerts against a JITTERED resets_at (the shipped 33-notif
 
 // ---------------------------------------------------------------------------
 // slice 5 step 4a FIX 2 — THE LIVE INCIDENT, replayed from the event log
-// (FINDING 2026-07-21 SHIPPED, private-docs/calibration.md: 33 alerts, one crossing)
+// (FINDING 2026-07-21 SHIPPED, docs/calibration.md: 33 alerts, one crossing)
 // ---------------------------------------------------------------------------
 //
 // Every row below is VERBATIM from `~/.vimes/events.db` — the `meter_sample`

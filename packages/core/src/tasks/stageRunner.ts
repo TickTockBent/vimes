@@ -15,7 +15,7 @@
 // task's `sessionRefs` and, for an `implementing` stage that already had an
 // author, returned `{ mode: 'resume', appSessionId }` — the fix loop went back to
 // the hot, cache-warm session that wrote the work. That was a deliberate design
-// (private-docs/design-directions.md, "The dispatcher's review/fix loop + cache
+// (docs/design-directions.md, "The dispatcher's review/fix loop + cache
 // economics", Wes 2026-07-20: *"Fixes of orchestrator-found flaws go to the
 // original hot-cache worker (cheap + context-rich)"*), and **D46 reversed it.**
 //

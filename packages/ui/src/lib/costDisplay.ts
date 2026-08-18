@@ -8,7 +8,7 @@
 // and nothing in this module ever sums, converts, or apportions a dollar figure
 // — `formatMoney` (D38) is the one deliberate exception, and it is presentation,
 // not computation: it REFORMATS the exact `nanoDollars` integer to 2 dp for
-// display, the same number, never a different one (private-docs/decisions.md D38 records
+// display, the same number, never a different one (docs/decisions.md D38 records
 // why this doesn't breach the rule). An un-known (unpriced / unpriceable /
 // flagged row) contributes NOTHING to a dollar total and is surfaced beside it as
 // a token count — never rendered, and never allowed to be rendered, as $0.
@@ -227,7 +227,7 @@ export function unvalidatedNote(rollup: RollupView | null | undefined): string |
 // `formatUsd` (packages/core/src/pricing/priceTable.ts) stays at 6 dp forever —
 // micro-dollars are the Money boundary the figure spike C2 reconciles against
 // OTel's USD, and rounding at the source would trade that validation for a
-// formatting preference (private-docs/decisions.md D38). Two decimal places is a VIEW
+// formatting preference (docs/decisions.md D38). Two decimal places is a VIEW
 // concern, so it lives here, downstream of the boundary, touching nothing core
 // computed.
 //

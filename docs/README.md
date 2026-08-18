@@ -15,6 +15,28 @@ The operating record for the design. Each file has one job:
 | [architecture.md](architecture.md) | **Standing constraints** (spun up 2026-07-22): system-shaping structures the spec didn't pin. First tenant: projections are stream-local (D34) — read it before writing any projection fold. |
 | _slice-N.md_ | *(per slice)* A slice's signed-off design as an operational plan: scope, build order, assertion list. |
 
+## Publication
+
+This suite is **public** — VIMES is a showcase repo and `docs/` is tracked
+(re-homed from `private-docs/` and re-tracked 2026-08-18 after sweeps on
+2026-08-14 and 2026-08-18). Everything written here is written for
+publication, at write time — a later sweep is a backstop, not the plan:
+
+- **No credentials, ever** — no tokens, keys, team domains/`aud` values,
+  or anything pasted from an env file. Naming a *mechanism* ("the hook
+  bearer secret", `~/.claude/.credentials.json`) is fine; a *value* never is.
+- **No client data** — client names, engagement pricing, audit findings,
+  or anything a consulting deliverable touches. Describe workloads
+  generically ("a paid client site-audit service").
+- **Third-party repo analyses stay out** — the decomposition series and
+  its cloned references live in `decomposition/`, which is untracked via
+  `.git/info/exclude` (not `.gitignore`, which is itself tracked). Citing
+  a decomposition file by path from a tracked doc is fine; quoting its
+  contents at length is not.
+- Personal machine paths (`/home/ticktockbent/…`) and lab hostnames are
+  accepted exposure (they appear throughout the code); Cloudflare Access
+  is the boundary that matters, not path obscurity.
+
 Working rules that span the suite:
 - **Rule 0** — no behavior-shaping change ships without evidence + sign-off.
 - **Gate-D** — budgets and bands are never pinned unreviewed; calibrate first,

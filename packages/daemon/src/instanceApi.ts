@@ -1052,7 +1052,7 @@ export function registerInstanceApi(app: Hono, deps: InstanceApiDeps): void {
   // stage-vocabulary filtering, no legality re-derivation, nothing an
   // extension-blind route could get wrong about a tenant's workflow. Serving
   // this would require the engine to hold a tenant opinion, which is slice
-  // kill criterion 2 (private-docs/slice-13.md §6.2) and did not come up: the
+  // kill criterion 2 (docs/slice-13.md §6.2) and did not come up: the
   // declaration is already the wire shape, node-kit-parsed and PINNED, and
   // this route only omits the two things rule 0.5 says have no consumer yet
   // (node `properties`/`briefing`/`acceptance`, dispatch-side machinery) and

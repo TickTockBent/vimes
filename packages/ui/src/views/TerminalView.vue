@@ -6,7 +6,7 @@ import { decideMountReady, decideStartCwd } from '../lib/terminalStart.js';
 import { deriveTerminalRows } from '../lib/terminalList.js';
 import type { TerminalHandle } from '../lib/xterm-setup.js';
 
-// Raw PTY shell — the ESCAPE HATCH (private-docs/design-directions.md): functional on
+// Raw PTY shell — the ESCAPE HATCH (docs/design-directions.md): functional on
 // desktop, reachable on mobile. Deliberately NOT a polished mobile daily-driver —
 // no elaborate keyboard toolbar. xterm.js is loaded via dynamic import() so it
 // lands in its own lazy chunk (the build-manifest gate enforces this).

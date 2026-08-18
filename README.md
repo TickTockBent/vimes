@@ -89,7 +89,7 @@ tunnel in front of it. Configuration is by environment — `VIMES_PORT` (4600),
 This project keeps its reasoning — decisions, calibration data, architecture
 notes, risk register, per-slice plans — in a private design-doc suite that
 is not published in this repo. Code comments cite it by filename (e.g. "see
-`private-docs/decisions.md` D37") for anyone with local access to the suite;
+`docs/decisions.md` D37") for anyone with local access to the suite;
 those references are not resolvable from the public repo alone.
 
 ## Caveats

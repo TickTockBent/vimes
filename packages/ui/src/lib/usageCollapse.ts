@@ -1,6 +1,6 @@
 import type { EventRecord } from './types.js';
 
-// D17 (private-docs/open-questions.md): one turn spans several SDK assistant
+// D17 (docs/open-questions.md): one turn spans several SDK assistant
 // messages (thinking, tool_use, final text), EACH carrying a usage
 // snapshot — the daemon emits one usage_block per message, so identical
 // snapshots repeat within a turn. The store keeps every event as delivered

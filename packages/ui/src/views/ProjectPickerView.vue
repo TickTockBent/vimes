@@ -333,7 +333,7 @@ onMounted(() => {
         >
           <span class="text-sm font-medium text-ink">{{ projectDisplayName(project) }}</span>
           <span class="truncate font-mono text-xs text-ink-dim">{{ project.root }}</span>
-          <span class="text-xs text-ink-dim">no URL of its own — see private-docs/decisions D61</span>
+          <span class="text-xs text-ink-dim">no URL of its own — see docs/decisions D61</span>
         </div>
       </li>
     </ul>

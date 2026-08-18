@@ -3,9 +3,9 @@
 # THE REAL MANIFEST, assembled from the SIGNED references (D71) and from
 # nothing else:
 #
-#   • private-docs/extension-model.md §3.1 — identity, capabilities, the seven verbs
+#   • docs/extension-model.md §3.1 — identity, capabilities, the seven verbs
 #     (three of them shipped today), overlays, panes, events.
-#   • private-docs/node-kit.md §1.9 — the four node kinds, the `software` workflow, the
+#   • docs/node-kit.md §1.9 — the four node kinds, the `software` workflow, the
 #     full edges array with its placement hazard, the forbidden row, and the
 #     nine nodes with their briefings and acceptance shapes.
 #

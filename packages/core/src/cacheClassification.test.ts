@@ -6,7 +6,7 @@ import {
   readServiceTier,
 } from './cacheClassification.js';
 
-// The real Spike-C sample (private-docs/calibration.md, rule 0.7 verify-row): a live
+// The real Spike-C sample (docs/calibration.md, rule 0.7 verify-row): a live
 // 1h-tier, ~93%-warm usage block observed in the deployed events.db.
 const spikeCUsage: Record<string, unknown> = {
   cache_creation: { ephemeral_1h_input_tokens: 2909, ephemeral_5m_input_tokens: 0 },

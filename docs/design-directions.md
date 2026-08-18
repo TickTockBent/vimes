@@ -1705,8 +1705,8 @@ noodle when idle.*
 *(⟨Wes⟩: "an even better candidate than the book genesis stuff. It runs an
 agentic audit using a skill and outputs artifacts." Orchestrator assessment
 banked same day, ⟨Wes⟩'s word. The workload:
-`~/projects/infrastructure/audit-pipeline` — Clocktower and Associates' paid
-site audit ($2,500–3,500/run): one `/audit <url> [pages:N] [client]`
+`~/projects/infrastructure/audit-pipeline` — a paid client site-audit
+service (private repo): one `/audit <url> [pages:N] [client]`
 command, 18 TodoWrite-mirrored phases driving a live site through the
 Charlotte MCP, deterministic deductive scoring, findings JSON → PDF.)*
 

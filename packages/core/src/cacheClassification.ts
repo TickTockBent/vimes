@@ -4,7 +4,7 @@
 // every field is guarded: missing or non-numeric values read as 0, and the
 // billing bucket is NEVER fabricated (D24 — only `service_tier` is captured raw).
 //
-// Verified against the real Spike-C sample (private-docs/calibration.md, rule 0.7):
+// Verified against the real Spike-C sample (docs/calibration.md, rule 0.7):
 //   cache_creation: { ephemeral_1h_input_tokens: 2909, ephemeral_5m_input_tokens: 0 }
 //   cache_read_input_tokens: 39044, cache_creation_input_tokens: 2909
 //   input_tokens: 2, output_tokens: 2, service_tier: "standard"

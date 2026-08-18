@@ -208,7 +208,7 @@ describe('custody vocabulary (D10)', () => {
   });
 });
 
-// Attention reason enum reservation (rule 0.5, private-docs/decomposition/README.md
+// Attention reason enum reservation (rule 0.5, docs/decomposition/README.md
 // tracker row "Attention reason enum additions"): 'rate-limited' (slice 5,
 // StopFailure/rate_limit_event) and 'brake' (slice 7, cascade guard) widen
 // the value space now. NO setter emits them yet — verify every reason-typed

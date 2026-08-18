@@ -1,4 +1,4 @@
-// Defect 2 (mobile ergonomics, private-docs/... follow-up): the composer was a
+// Defect 2 (mobile ergonomics, docs/... follow-up): the composer was a
 // single-line <input>, so multiline prompts scrolled out of view as the user
 // typed. Replaced with an auto-growing <textarea> that expands with content
 // up to a capped number of visible rows, then scrolls internally beyond that.

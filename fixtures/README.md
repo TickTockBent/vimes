@@ -1,10 +1,10 @@
 # Golden fixtures
 
-Synthetic, real-shaped, pinned per Claude Code version (rule 0.7; see private-docs/slice-0.md).
+Synthetic, real-shaped, pinned per Claude Code version (rule 0.7; see docs/slice-0.md).
 
 **Shape provenance:** field layout (field names, nesting, types) was derived from
 two real transcripts captured on this box during the slice-1 step-0 spikes
-(private-docs/calibration.md, "Slice-1 step-0 spikes") against **Claude Code version
+(docs/calibration.md, "Slice-1 step-0 spikes") against **Claude Code version
 `2.1.207`** (SDK `0.3.207`) — one `query()` transcript and one
 `settingSources: []`-isolated `query()` transcript, both SDK-channel. Only the
 *shape* was borrowed: `sessionId`, `uuid`, `timestamp`, `type`,
@@ -20,7 +20,7 @@ the Claude Code version bumps.
 
 **PTY-channel transcript shape: UNVERIFIED (open question D15).** The spike's
 PTY-hosted sessions produced no discoverable transcript `.jsonl` at all — see
-private-docs/calibration.md D15. These fixtures cover only the **SDK-channel** JSONL
+docs/calibration.md D15. These fixtures cover only the **SDK-channel** JSONL
 shape (the `query()` transcripts); whether PTY-hosted sessions persist the same
 record shapes, a subset, or write to a different location remains open. Rule
 0.8 makes the JSONL tail the only structure source for PTY sessions, so this
@@ -67,7 +67,7 @@ gap blocks trusting the tailer against real PTY output until D15 resolves.
   inference:** the record layout and the value populations were measured
   2026-07-22 over **30 real transcripts / 134 `queued_command` attachments** in
   the live store, and that measurement CORRECTED the earlier S1/D5 prose (see
-  private-docs/risk-register.md, "`queued_command` attachment shape"). **Only the shape
+  docs/risk-register.md, "`queued_command` attachment shape"). **Only the shape
   was borrowed — every prompt string, uuid, path and timestamp here is invented,
   and no test in this repo reads `~/.claude`.** The file pins, in order: a
   `prompt` correction with `origin.kind:'human'` and an enqueue `timestamp`; a

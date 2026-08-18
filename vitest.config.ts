@@ -45,7 +45,7 @@ import vue from '@vitejs/plugin-vue';
 // mounted a `.vue`, so this config needed no plugins — and that hole is exactly
 // what let a missing `:key` on PanelHost's StreamView branch ship (a keyless
 // in-place route swap reused the mounted view, so `onMounted`/subscribe never
-// re-ran; see private-docs/slice-15.md S15-F5). `@vitejs/plugin-vue` is the same
+// re-ran; see docs/slice-15.md S15-F5). `@vitejs/plugin-vue` is the same
 // plugin `packages/ui/vite.config.ts` builds with; it touches ONLY `.vue` files,
 // so every pre-existing pure-TS test transforms exactly as before.
 //

@@ -62,7 +62,7 @@ export default defineConfig({
     outDir: 'dist',
     // Emit dist/.vite/manifest.json so scripts/check-build-manifest.mjs can prove
     // (deterministically, no calibration) that CM6 lives in its own lazy chunk and
-    // the entry chunk never statically imports it. See private-docs/slice-3.md §Editor.
+    // the entry chunk never statically imports it. See docs/slice-3.md §Editor.
     manifest: true,
   },
 });
