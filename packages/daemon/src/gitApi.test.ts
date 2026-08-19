@@ -2,7 +2,7 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
-import { CountingIdSource, SteppingClock } from '@vimes/core';
+import { CountingIdSource, SteppingClock, nodeCreated, projectCreated } from '@vimes/core';
 import type { AccessVerifier } from './auth.js';
 import { createDaemon, type Daemon } from './app.js';
 import type { DaemonConfig } from './config.js';
@@ -14,6 +14,7 @@ import type {
   GitBranchesResponse,
   GitCommitResponse,
   GitRefusalResponse,
+  GitWorktreesResponse,
 } from './gitApi.js';
 
 // ─── Git API over a live daemon with an INJECTED fake git runner ──────────────
@@ -666,6 +667,159 @@ describe('Git API — repo discovery under the allowlist', () => {
       expect(body.repos.map((repo) => repo.name)).toEqual(['readable']);
     } finally {
       chmodSync(lockedDirectory, 0o755);
+      await daemon.stop();
+    }
+  });
+});
+
+// ─── S17·U4 (slice-17.md §3.7) — the orphan listing on the worktrees route ────
+//
+// §3.7 signs "the listing is exposed on the existing worktrees read route", so
+// `GET /api/git/worktrees` grew an ADDITIVE `orphans` key beside the array it
+// always returned. Three claims, and each needs the whole daemon rather than a
+// bare route because the answer is a JOIN across the coordinator's own two
+// inputs (git's worktree list and the nodes projection's provenance):
+//   • a checkout under `worktreeRoot` that no node's provenance claims is
+//     listed as an orphan;
+//   • the same checkout, once a node CLAIMS it, is not;
+//   • a worktree outside `worktreeRoot` — a human's own, none of the engine's
+//     business — is never called an orphan either way.
+// The existing `repoRoot`/`worktrees` half is asserted unchanged in each case,
+// which is what "additive" means here.
+describe('Git API — worktrees route carries the S17 orphan listing', () => {
+  // A worktree list holding the main checkout plus one engine-shaped checkout
+  // under the (test) worktree root.
+  function worktreeListStdout(mainRepoRoot: string, checkoutPath: string): string {
+    return [
+      `worktree ${mainRepoRoot}`,
+      'HEAD 1111111111111111111111111111111111111111',
+      'branch refs/heads/main',
+      '',
+      `worktree ${checkoutPath}`,
+      'HEAD 2222222222222222222222222222222222222222',
+      'branch refs/heads/vimes/node-abc-1234abcd',
+      '',
+    ].join('\n');
+  }
+
+  interface OrphanCase {
+    daemon: Daemon;
+    repoRoot: string;
+    checkoutPath: string;
+  }
+
+  // A daemon whose worktree root is a real temporary directory, with ONE live
+  // project registered at `repoRoot` (its birth event appended straight to the
+  // log — this case's subject is the read route, not the registry's HTTP
+  // surface, exactly as nodeApi.test.ts seeds its own fixtures).
+  async function startOrphanCase(label: string): Promise<OrphanCase> {
+    const repoRoot = makeRoot(label);
+    const worktreeRoot = makeRoot(`${label}-worktrees`);
+    const checkoutPath = join(worktreeRoot, 'node-abc-1234abcd');
+    const controls: FakeGitControls = {
+      calls: [],
+      canned: {
+        worktree: { stdout: worktreeListStdout(repoRoot, checkoutPath), stderr: '', exitCode: 0 },
+      },
+    };
+    const daemon = await startDaemon(
+      { ...buildConfig([repoRoot]), worktreeRoot },
+      makeFakeRunner(controls),
+    );
+    daemon.store.append([projectCreated({ projectId: 'project-1', root: repoRoot })]);
+    return { daemon, repoRoot, checkoutPath };
+  }
+
+  function fetchWorktrees(daemon: Daemon, repoRoot: string): Promise<Response> {
+    return apiFetch(daemon, `/api/git/worktrees?root=${encodeURIComponent(repoRoot)}`);
+  }
+
+  it('lists an unclaimed checkout under worktreeRoot as an orphan, leaving worktrees untouched', async () => {
+    const orphanCase = await startOrphanCase('orphan');
+    try {
+      const response = await fetchWorktrees(orphanCase.daemon, orphanCase.repoRoot);
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as GitWorktreesResponse;
+
+      // The pre-existing half, unchanged.
+      expect(body.repoRoot).toBe(orphanCase.repoRoot);
+      expect(body.worktrees.map((worktree) => worktree.path)).toEqual([
+        orphanCase.repoRoot,
+        orphanCase.checkoutPath,
+      ]);
+      expect(body.worktrees[1]!.branch).toBe('refs/heads/vimes/node-abc-1234abcd');
+
+      // The additive half: the checkout under worktreeRoot is an orphan; the
+      // main checkout, which lives outside it, is not the engine's business.
+      expect(body.orphans).toEqual([
+        {
+          projectId: 'project-1',
+          path: orphanCase.checkoutPath,
+          branch: 'refs/heads/vimes/node-abc-1234abcd',
+        },
+      ]);
+    } finally {
+      await orphanCase.daemon.stop();
+    }
+  });
+
+  it("a checkout CLAIMED by a node's provenance is not an orphan", async () => {
+    const orphanCase = await startOrphanCase('claimed');
+    try {
+      // The node is born with the provenance that claims the path — the same
+      // shape `CheckoutCoordinator` records, appended directly.
+      orphanCase.daemon.store.append([
+        nodeCreated({
+          nodeId: 'node-abc',
+          parentNodeId: null,
+          projectId: 'project-1',
+          name: 'vimes/node-abc-1234abcd',
+          provenance: {
+            branch: 'vimes/node-abc-1234abcd',
+            baseRef: 'main',
+            resolvedCommit: '2222222222222222222222222222222222222222',
+            path: orphanCase.checkoutPath,
+          },
+          directory: orphanCase.checkoutPath,
+          nodeConfig: null,
+        }),
+      ]);
+
+      const response = await fetchWorktrees(orphanCase.daemon, orphanCase.repoRoot);
+      const body = (await response.json()) as GitWorktreesResponse;
+
+      // Same two worktrees as the unclaimed case — only the orphan verdict moved.
+      expect(body.worktrees.map((worktree) => worktree.path)).toEqual([
+        orphanCase.repoRoot,
+        orphanCase.checkoutPath,
+      ]);
+      expect(body.orphans).toEqual([]);
+    } finally {
+      await orphanCase.daemon.stop();
+    }
+  });
+
+  it('a repo with no engine checkouts at all reports an EMPTY orphan list beside its worktrees', async () => {
+    const repoRoot = makeRoot('no-orphans');
+    const worktreeRoot = makeRoot('no-orphans-worktrees');
+    const controls: FakeGitControls = {
+      calls: [],
+      canned: {
+        worktree: {
+          stdout: `worktree ${repoRoot}\nHEAD 1111111111111111111111111111111111111111\nbranch refs/heads/main\n\n`,
+          stderr: '',
+          exitCode: 0,
+        },
+      },
+    };
+    const daemon = await startDaemon({ ...buildConfig([repoRoot]), worktreeRoot }, makeFakeRunner(controls));
+    daemon.store.append([projectCreated({ projectId: 'project-1', root: repoRoot })]);
+    try {
+      const response = await fetchWorktrees(daemon, repoRoot);
+      const body = (await response.json()) as GitWorktreesResponse;
+      expect(body.worktrees.map((worktree) => worktree.path)).toEqual([repoRoot]);
+      expect(body.orphans).toEqual([]);
+    } finally {
       await daemon.stop();
     }
   });

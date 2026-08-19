@@ -53,6 +53,7 @@ import {
 } from './auth.js';
 import { WsHub, type WsHubDeps } from './wsHub.js';
 import { DAEMON_API_VERSION, DAEMON_CAPABILITIES } from './apiVersion.js';
+import { registerCheckoutApi } from './checkoutApi.js';
 import { registerFileApi } from './fileApi.js';
 import { registerGitApi } from './gitApi.js';
 import { registerInstanceApi, resolveInitialNode } from './instanceApi.js';
@@ -540,6 +541,12 @@ export function createDaemon(deps: DaemonDeps): Daemon {
   registerGitApi(app, {
     getAllowedRoots: () => [...config.projectRoots, ...sessionHost.liveSessionCwds()],
     runner: deps.gitRunner,
+    // S17·U4 (§3.7): the worktrees read route also reports this repository's
+    // ORPHAN checkouts, and `CheckoutCoordinator.listOrphans` is their only
+    // source. Wrapped in a thunk because `checkoutCoordinator` is constructed
+    // FURTHER DOWN — the same deferral `sessionHost` above already relies on;
+    // the arrow only runs per request.
+    listOrphans: () => checkoutCoordinator.listOrphans(),
   });
 
   // ─── the task API (slice 6 step 4b) ────────────────────────────────────────
@@ -773,6 +780,26 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     },
     logWarn: (message) => {
       console.warn(message);
+    },
+  });
+
+  // ─── the checkout propose-routes (S17·U4, §3.4/§3.5) ───────────────────────
+  //
+  // Behind the same auth wall (`app.use('*', ...)` above — I14 needs no per-route
+  // work here) and before the static catch-all, in the same region as the other
+  // registerXApi calls. Registered HERE rather than beside the git API so it sits
+  // beside the coordinator it proposes to, which is also the only place the
+  // instance is in scope by value.
+  //
+  // ⚠ The coordinator is narrowed to three ONE-ARGUMENT verbs: an HTTP caller may
+  // not supply an `inLockFollowUp` (§3.3 — the in-lock hook is the dispatcher's
+  // alone, and above it takes `create` narrowed the other way, to the one verb a
+  // dispatch may perform). Two callers, two narrowings, one coordinator.
+  registerCheckoutApi(app, {
+    checkoutCoordinator: {
+      create: (request) => checkoutCoordinator.create(request),
+      open: (request) => checkoutCoordinator.open(request),
+      remove: (request) => checkoutCoordinator.remove(request),
     },
   });
 

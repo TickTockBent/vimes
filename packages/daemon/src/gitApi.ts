@@ -1,7 +1,8 @@
 import type { Hono, Context } from 'hono';
 import { readdir } from 'node:fs/promises';
-import { basename, isAbsolute, join, relative } from 'node:path';
+import { basename, isAbsolute, join, relative, resolve } from 'node:path';
 import { resolveWithinRoots, realpathProbe, type RealpathProbe } from './filePaths.js';
+import type { OrphanCheckout } from './checkoutCoordinator.js';
 import {
   GitAdapter,
   type GitRunner,
@@ -46,6 +47,20 @@ export interface GitApiDeps {
   // Injected git runner (subprocess boundary). Defaults to the real execFile
   // runner; CI injects a fake returning canned output.
   runner?: GitRunner;
+  // ── S17·U4 (slice-17.md §3.7) — the orphan listing's SOLE source ───────────
+  //
+  // `CheckoutCoordinator.listOrphans`, wrapped in a thunk by `app.ts` because
+  // the coordinator is constructed further down. **This file computes NOTHING
+  // about orphans**: it asks, and it joins the answer onto the worktrees it is
+  // already reporting for the requested repo.
+  //
+  // REQUIRED rather than optional, unlike `realpath` and `runner` above, and the
+  // asymmetry is the point: those two have honest defaults (the real probe, the
+  // real runner) while an absent orphan lister has none — defaulting to `[]`
+  // would report "this repository has no orphan checkouts" to a caller who never
+  // asked the engine, which is the quiet-empty-state failure mode this project
+  // has already been bitten by once.
+  listOrphans: () => Promise<OrphanCheckout[]>;
 }
 
 // ── the API contract (rule 0.5 — reserved now, the UI consumes it in step 3) ──
@@ -69,9 +84,29 @@ export interface GitBranchesResponse {
   repoRoot: string;
   branches: GitBranch[];
 }
+// ⚠ **`orphans` IS AN ADDITIVE S17·U4 EXTENSION (§3.7).** `repoRoot` and
+// `worktrees` are untouched — every existing consumer reads exactly what it read
+// before. The new key carries §3.7's recovery contract: the checkouts under
+// `worktreeRoot` that NO node's provenance claims, i.e. what process death
+// mid-sequence leaves behind.
+//
+// It is a SUBSET OF `worktrees`, restricted to this repository by a path join
+// against the array above — `listOrphans()` answers for the whole estate (it is
+// keyed by projectId, not by repo root), and reporting another project's orphans
+// on a repo-scoped read would be an honest-looking lie about the repo you asked
+// about. The join is set membership on resolved paths and nothing more; which
+// checkouts ARE orphans is decided entirely by `listOrphans()` (§3.7's DISCOVERY
+// contract — no adoption, no removal, and nothing recomputed at this layer).
+//
+// Reading it as a claimed/orphan split: a worktree in `worktrees` that is NOT in
+// `orphans` is either engine-claimed or none of the engine's business (a human's
+// own worktree living outside `worktreeRoot`). Those two are deliberately not
+// distinguished here — `listOrphans` does not answer that question, and this
+// file may not invent an answer.
 export interface GitWorktreesResponse {
   repoRoot: string;
   worktrees: GitWorktree[];
+  orphans: OrphanCheckout[];
 }
 export interface GitStageResponse {
   repoRoot: string;
@@ -378,6 +413,11 @@ export function registerGitApi(app: Hono, deps: GitApiDeps): void {
   });
 
   // GET /api/git/worktrees?root=<r>
+  //
+  // S17·U4 (§3.7): the response now ALSO carries the orphan listing for this
+  // repository — "the listing is exposed on the existing worktrees read route",
+  // signed. Additive: `repoRoot` and `worktrees` are produced by the same two
+  // lines they always were, and the refusal paths are unchanged.
   app.get('/api/git/worktrees', async (context) => {
     const rootParam = context.req.query('root') ?? '';
     const resolution = await resolveRepoRoot(rootParam, deps, adapter, realpath);
@@ -391,7 +431,22 @@ export function registerGitApi(app: Hono, deps: GitApiDeps): void {
         statusForOpError(worktreesResult.error),
       );
     }
-    const response: GitWorktreesResponse = { repoRoot: resolution.repoRoot, worktrees: worktreesResult.value };
+    // The join, and the whole of this route's orphan logic: keep the orphans the
+    // engine reported whose path is one of the worktrees just listed. Resolved on
+    // both sides because git prints the path it recorded and `listOrphans`
+    // resolves before comparing — the same normalisation the coordinator's own
+    // remove row uses.
+    const worktreePathsInThisRepo = new Set(
+      worktreesResult.value.map((worktree) => resolve(worktree.path)),
+    );
+    const orphans = (await deps.listOrphans()).filter((orphan) =>
+      worktreePathsInThisRepo.has(resolve(orphan.path)),
+    );
+    const response: GitWorktreesResponse = {
+      repoRoot: resolution.repoRoot,
+      worktrees: worktreesResult.value,
+      orphans,
+    };
     return context.json(response);
   });
 
