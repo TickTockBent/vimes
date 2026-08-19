@@ -1,11 +1,20 @@
 # Slice 17 — E2-c: the engine does git
 
-**Status: SIGNED 2026-08-18 ⟨Wes⟩ — "Signed, I think we're good to go."
+**Status: CLOSED 2026-08-19.** Built in five units (U1–U4 + a comment
+micro-unit), machine gate PASSED (§6b: suite 3638/150 ×2, ci-gate all
+profiles, A2/A5 greps clean, 18/18 route-level live fire against real
+git), deployed. No human gate was scheduled — no UI ships, and
+⟨Wes⟩'s §3 signature was the design gate. Carried forward as named
+consequences, not loose ends: `reused:true` is gone (D53's
+read-the-prior-diff-off-disk no longer holds under isolation), the
+remove gate matches cwd by exact equality, and checkout nodes are
+born top-level.
+
+**SIGNED 2026-08-18 ⟨Wes⟩ — "Signed, I think we're good to go."**
 All eleven §3 decisions signed at rev 3, including the three
 orchestrator-chosen options flagged in the signing packet (crash
 recovery via compensation + orphan discovery; coordinator-owned
-repo-scoped queued lock; the §3.10 open table). Units dispatch
-sequentially per §5.** Rev 1 (`48a0ac3`) and rev 2
+repo-scoped queued lock; the §3.10 open table). Rev 1 (`48a0ac3`) and rev 2
 (`44f056f`) were each reviewed by an outside model (Sol, at ⟨Wes⟩'s
 instigation); the orchestrator verified premises against the repo before
 amending. Round 1 fixed four blockers (rev 1's event model contradicted
@@ -347,11 +356,15 @@ CLAUDE.md diff rule governs). Judgment items:
 - **Wiring had zero coverage** until the agent added daemon-level
   probes — the D37 failure mode again, caught by the implementer.
 
-**U5 (micro) — two stale comments** left false by U3's deletions
-(`checkoutCoordinator.ts`'s "two writers therefore EXIST",
+**U5 (micro) `007c4d7`** — two stale comments left false by U3's
+deletions (`checkoutCoordinator.ts`'s "two writers therefore EXIST",
 `config.test.ts`'s citation of the deleted `worktreeManager.test.ts`).
-Comments only; the S15·U5b precedent (fixes go to a new agent, never
-the orchestrator's hands).
+Comments only, diff verified to contain no executable line; suite
+unchanged at 3638/150. The S15·U5b precedent (fixes go to a new
+agent, never the orchestrator's hands). **No restart owed**: the
+change is comment bytes, behaviourally identical to the deployed
+build — stated rather than assumed, because the CLAUDE.md rule is
+"check the diff", and this is what checking it found.
 
 ## §6. Gates & kill criteria
 
