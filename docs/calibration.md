@@ -2258,3 +2258,15 @@ SDK channel report-only as designed (`floor (unset)`, binary path named).
 2.1.224` (both root:root 600 preserved). The +9 is now the number that
 prices the next verify spike (D73's stated purpose) — at the next CLI
 verification, both values re-pin together, deliberately.
+
+### 2026-08-19 — operational: D73 stays silent across two more CLI moves (S17 deploys)
+
+Three restarts across the S17·U2/U3 and U4 deploys, all silent, while the
+CLI kept moving on its own: **2.1.233 → 2.1.234 → 2.1.235**. Boot line at
+the last one: `pty running 2.1.235, floor 2.1.224, last verified 2.1.224
+(+11 patch releases ahead of evidence)`. That is five consecutive deploys
+with no spurious warning under the floor semantics, against a pin that
+under the old exact-equality rule would have warned on every single one.
+The counter is now the number that prices the next verify spike: **+11**
+and rising ~1 per two days. When that spike runs, floor and last-verified
+re-pin together, deliberately (D73).

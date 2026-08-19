@@ -239,6 +239,46 @@ S9·2 (manifest) / S9·5 (client contract):
 
 ---
 
+---
+
+## E6. The checkout seam (S17/E2-c, built 2026-08-19)
+
+*Added after the fact, because it is a standing structure the S9·1 pass
+did not pin: E2-c settled that the engine does git, but not what the
+engine's shape for doing it would be.*
+
+**Two layers, and the split is load-bearing.** `gitAdapter.ts` PERFORMS
+— it is the one `execFile('git')` in the repo, array args only, and it
+holds no policy, no lock, no projection read and no event. `checkoutCoordinator.ts`
+DECIDES — it owns the ordering, the gates, the lock, event emission and
+compensation, and it never spawns anything itself. A rule that wants to
+know about sessions, nodes or projects belongs in the coordinator; a
+rule about how to phrase a git command belongs in the adapter. Neither
+reaches into the other's half.
+
+**One writer, one path.** After S17·U3 there is exactly one way a
+checkout comes into existence, and both callers (the task dispatcher and
+the HTTP API) reach it through the same coordinator instance. The API's
+view is narrowed to three one-argument verbs so an HTTP caller cannot
+supply the in-lock follow-up the dispatcher uses — structural, not
+conventional.
+
+**Serialization is per project, queued, and covers more than git.** The
+critical section spans git → `node_created` → spawn → attach, because
+the hazard is not two git commands colliding; it is a removal landing in
+the window between a checkout being made and a session being recorded in
+it. Waiters queue and re-evaluate their gates from fresh projection
+reads inside the lock. There is no try-lock and no busy refusal.
+
+**Disk is never the source of record.** The remove gate asks the
+sessions fold, never the filesystem and never a computed transcript path
+(D45). Provenance on the node says what the engine made; anything on
+disk beneath `worktreeRoot` that no provenance claims is an ORPHAN, and
+the contract for orphans is discovery (boot WARN + the worktrees read
+route), never automatic adoption.
+
+---
+
 ## Walk order with Wes
 
 E1 (inventory + its five decisions) → E2 (tree + three decisions) → E3
