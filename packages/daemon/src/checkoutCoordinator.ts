@@ -41,12 +41,13 @@ import type { NodeWriter } from './nodeWriter.js';
 // through the constructor. A test drives the whole choreography — including the
 // hazard sequences A7 and A8 — with fakes and gets byte-identical results.
 //
-// ⚠ **NOTHING CONSUMES THIS YET** (§3.11's deliberate sequencing). `app.ts`
-// constructs it and runs `listOrphans()` at boot as a WARN line; the dispatcher
-// migrates in U3 and the routes arrive in U4. `worktreeManager.ts` keeps working
-// exactly as it does today, so two writers EXIST after this unit and only one
-// has callers — that is the transition-safety shape §3.11 signed, not an
-// oversight.
+// ⚠ **§3.11's TRANSITION IS DONE — THIS IS THE ONLY CHECKOUT WRITER NOW.**
+// `app.ts` constructs it and runs `listOrphans()` at boot as a WARN line; the
+// dispatcher took it over in U3 and the routes arrived in U4 (`checkoutApi.ts`).
+// `worktreeManager.ts` is GONE — S17·U3 deleted the class along with the legacy
+// `vimes/task-*` naming helpers — so the two-writers state §3.11 signed as a
+// deliberate, temporary shape has closed: there is exactly one path to checkout
+// creation, and it is this one.
 
 // ── the closed refusal vocabulary — the COORDINATOR'S OWN ───────────────────
 //

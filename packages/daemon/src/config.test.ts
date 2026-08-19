@@ -4,7 +4,7 @@ import { loadConfigFromEnv } from './config.js';
 // ─── D73's four version pins, as env parsing (S16·U1) ────────────────────────
 //
 // A narrow suite on purpose: the rest of `loadConfigFromEnv` is asserted where its
-// values are consumed (worktreeManager.test.ts for the isolation flag, and so on).
+// values are consumed (taskDispatcher.test.ts for the isolation flag, and so on).
 // What is pinned here is the half of D73 that lives in the ENVIRONMENT, including
 // the deliberate REMOVAL — the old `VIMES_EXPECTED_CLI_VERSION` had different
 // semantics, so a stale value left in `/etc/vimes/env` must read as "no floor
