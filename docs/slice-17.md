@@ -294,7 +294,64 @@ items, all in-mandate, recorded with rationale AT the code:
   `--end-of-options` (exit 129) — its guard is the constant
   `refs/heads/` prefix instead. Observed in a scratch repo, not
   assumed from docs.
-- Restart owed by U2+U3, bundled (none taken yet).
+- Restart owed by U2+U3, bundled — **taken 2026-08-19**, clean boot,
+  no orphans, D73 silent through CLI 2.1.235.
+
+**U3 `dfd6535`** (2026-08-18): dispatcher → coordinator; the legacy
+writer and naming die. 3640 → 3595 (−30 worktreeManager, −26 legacy
+naming, +11 net dispatcher), zero changed pins, every re-anchoring
+enumerated in the agent's report. Judgment items:
+- **The plain path's lone `await` is LOAD-BEARING** — collapsing
+  `resolvePlainWorkingDirectory` to a synchronous call closes D54's
+  in-flight window and makes the lock's own tests pass vacuously.
+  Observed, restored, and recorded at the code. Nearly lost.
+- **`session_attached_to_node` goes through `NodeWriter.attachSession`**,
+  never a raw emit — app.ts already named this flow as that writer's
+  expected caller.
+- **Isolation deps are optional and all-or-nothing**, sharing the
+  pinned `worktree-isolation-enabled-without-a-manager` refusal (wire
+  vocabulary, deliberately unchanged).
+- **A failed spawn inside the lock throws** so §3.7 compensation
+  un-makes the checkout; **an attach refusal deliberately does NOT** —
+  a real agent is already running there, and `unfiled` is recoverable
+  where a deleted cwd is not.
+- **`ambiguous-project` added** for the structurally-impossible
+  two-live-roots case: the KC4 edge made loud rather than improvised.
+
+**U4 `886ebe9`** (2026-08-19): `checkoutApi.ts` — propose-routes, the
+total refusal→status map, orphan listing. 3595 → 3638, zero changed
+pins. Deployed 2026-08-19 (ci-gate + restart; the skeleton's "U4 rides
+ci-gate" line was WRONG — U4 touches `packages/daemon`, so the
+CLAUDE.md diff rule governs). Judgment items:
+- **Refusal body follows `gitApi`'s `{error: <reason>, detail?}`, not
+  `nodeApi`'s `{error:'conflict', reason}`** — nodeApi can put a
+  constant in `error` only because every refusal there is a 409; §3.5
+  spreads sixteen reasons across four statuses.
+- **`unknown-project` is 404 here but 409 in nodeApi** — §3.5
+  *reserves* 409 for state conflicts, which makes nodeApi's uniform
+  posture non-binding (the call `projectApi` already makes).
+- **`GitApiDeps.listOrphans` is REQUIRED, not optional** — an absent
+  orphan lister has no honest default; defaulting to `[]` would report
+  "no orphans" to a caller who never asked the engine, the D37
+  quiet-empty-state failure exactly.
+- **Orphans on the repo-scoped route are a set-membership JOIN** —
+  `listOrphans()` is estate-wide, the route is repo-scoped, so the
+  field is the subset of *this response's* worktrees that the engine
+  reports as orphans. Priced cost: one `git worktree list` per live
+  project per call; fine for an unconsumed route, must be known
+  before a UI mounts it.
+- **Self-referential test caught by the agent**: its per-verb loops
+  compared status to `statusForCheckoutRefusal(reason)` — round-trip
+  fidelity, not the map — and stayed green under sabotage. The
+  load-bearing guard is the signed table restated as data; both kept.
+- **Wiring had zero coverage** until the agent added daemon-level
+  probes — the D37 failure mode again, caught by the implementer.
+
+**U5 (micro) — two stale comments** left false by U3's deletions
+(`checkoutCoordinator.ts`'s "two writers therefore EXIST",
+`config.test.ts`'s citation of the deleted `worktreeManager.test.ts`).
+Comments only; the S15·U5b precedent (fixes go to a new agent, never
+the orchestrator's hands).
 
 ## §6. Gates & kill criteria
 
@@ -320,6 +377,47 @@ items, all in-mandate, recorded with rationale AT the code:
   ruling). (5) Holding the coordinator lock across spawn measurably
   starves dispatches in practice — halt, the lock scope earns its own
   decision rather than a quiet narrowing.
+
+## §6b. Machine gate RESULTS (2026-08-19, orchestrator-run)
+
+**PASSED.**
+
+- **Suite** 3638 green / 150 files, run twice (U4 gate + inside
+  ci-gate); typecheck clean; no `.vue` touched anywhere in the slice.
+- **ci-gate ALL PROFILES** passed; advisories clean.
+- **A2** (single-writer grep): zero git `worktree`/`branch`
+  invocations outside `gitAdapter.ts` in live code. The two textual
+  hits are zod enums for the isolation MODE, not commands.
+- **A5** (#16 tenant-word grep): zero. The surviving
+  `task_worktree_created` references are the RETIRED event kind in
+  the registry — kept forever so history still validates — with
+  **zero live emitters** (verified).
+- **ROUTE-LEVEL LIVE FIRE: 18/18 checks passed**, real `git` 2.43
+  subprocesses via `defaultGitRunner` against a scratch repo
+  registered as a temporary project (never a production root; the
+  production DB was never opened). Harness kept at
+  `scratchpad/livefire.mjs` (untracked). Covered: create (201, node
+  born with provenance, branch engine-derived and tenant-word-free,
+  path beneath worktreeRoot, git really made the worktree,
+  `resolvedCommit` verified immutable against `rev-parse`); open on a
+  checked-out branch → 409 `branch-checked-out-elsewhere` naming the
+  path; open on a free branch → its own node at its own path; open on
+  a missing branch → 404 `branch-not-found`; §3.4 smuggled
+  `path`/`directory`/`worktreePath` fields ignored, checkout still
+  beneath worktreeRoot; remove blocked by a LIVE session with EMPTY
+  claudeSessionIds (prong a) and by a DEAD session WITH a transcript
+  (prong b), each naming its blocker; remove succeeds with no
+  blockers and the BRANCH SURVIVES while the worktree leaves disk;
+  second remove → idempotent no-op with `diskRemoved:false` and NO
+  second `checkout_removed` event (event count 1→1); unknown node →
+  404; orphan discovery lists an unclaimed checkout and does NOT list
+  engine-claimed ones.
+- **Harness bugs, not product bugs** (recorded because the run log
+  shows them): the first pass asserted 200 for create/open, which
+  honestly answer **201**, and mis-read `readAllStreamsGrouped`'s
+  return as grouped rather than flat. Both were the gate's errors.
+- **Human gate:** none — no UI ships (§6). ⟨Wes⟩'s §3 signature was
+  the design gate.
 
 ## §7. Outside-review triage record (Sol; both rounds)
 
