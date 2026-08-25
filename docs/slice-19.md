@@ -315,6 +315,24 @@ standing clearance applies.
 D48's plan footing are declaration rows; the compiled switches are
 deleted and their behavior frozen as the differential's reference.
 
+## §6c. Post-close cold review — findings record (2026-08-25)
+
+⟨Wes⟩'s cold review over the slice-19 diff: ONE actionable finding.
+
+**S19-F1 (P2) — misplaced `permission_mode` produced TWO contradictory
+diagnostics.** U1's removal of the key from `BRIEFING_KEYS` meant the
+unknown-key sweep emitted `unknown-briefing-property` alongside the
+dedicated `briefing-permission-mode-misplaced` — defeating the
+known-but-misplaced vs typo distinction the dedicated refusal exists
+for. The U1 test searched only for the desired code, which is how the
+extra one slipped through. REPRODUCED at the orchestrator gate before
+fixing. Fixed (new agent, on the PR branch): the key is recognized in
+the sweep's known-set (never repopulating `ParsedBriefing`), the
+placement refusal fires ALONE (orchestrator re-reproduced: one code),
+the test asserts presence AND absence, and a negative control pins
+that genuine typos still get `unknown-briefing-property`. 3837 →
+3839/160.
+
 ## §7. Outside-review triage record (Sol)
 
 **Round 1 (2026-08-25, on rev 1) — "not ready"; ALL EIGHT sustained,

@@ -908,6 +908,20 @@ kind = "hold"
     expect(issue.message).toContain('never inside `[workflows.nodes.briefing]`');
   });
 
+  it('gives a misplaced `permission_mode` EXACTLY one diagnostic, not two', () => {
+    // P2 finding (2026-08-25): S19·U1 dropped `permission_mode` from the
+    // sweep's known-key list, so a misplaced key tripped BOTH the generic
+    // `unknown-briefing-property` sweep AND the dedicated
+    // `briefing-permission-mode-misplaced` refusal — the exact contradiction
+    // the named refusal exists to prevent (node-kit §1.4.4: a misplacement
+    // must read differently from a typo). `expectRefusal` above only checks
+    // the wanted code is PRESENT; this asserts the unwanted one is ABSENT too.
+    const result = parseExtensionManifest(withBriefingKey('permission_mode', '"plan"'));
+    if (result.ok) throw new Error('expected a refusal, but the manifest parsed cleanly');
+    expect(codes(result.errors)).toContain('briefing-permission-mode-misplaced');
+    expect(codes(result.errors)).not.toContain('unknown-briefing-property');
+  });
+
   it('refuses the misplaced key for BOTH declared values, `default` included', () => {
     // `default` is the fail-closed value, so a manifest could carry it believing
     // it to be inert. It is refused exactly like `plan`: the placement is the
@@ -920,6 +934,15 @@ kind = "hold"
     // different operator problems and must read differently.
     const typo = expectRefusal(withBriefingKey('permision_mode', '"plan"'), 'unknown-briefing-property');
     expect(typo.path).toBe('workflows[0].nodes[0].briefing.permision_mode');
+  });
+
+  it('negative control: a genuinely unknown briefing key still gets `unknown-briefing-property`', () => {
+    // Recognizing `permission_mode` in the sweep's known-key list (so the
+    // misplacement refusal above isn't doubled) must not have widened the
+    // sweep into silence generally — an unrelated unknown key, no relation
+    // to `permission_mode` at all, still trips the generic refusal.
+    const issue = expectRefusal(withBriefingKey('banana', '1'), 'unknown-briefing-property');
+    expect(issue.path).toBe('workflows[0].nodes[0].briefing.banana');
   });
 
   it('leaves NODE-level placement alone — the live manifest parses unchanged', () => {

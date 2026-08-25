@@ -1546,12 +1546,18 @@ function parseNodeKinds(
   return kinds;
 }
 
-// ⚠ **`permission_mode` LEFT THIS LIST IN S19·U1 (slice-19 §3.4, signed
-// 2026-08-25).** It is not an addition to the vocabulary and not a removal from
-// the manifest — it is a PLACEMENT rule: the key keeps exactly one home, the
-// node, and the briefing table stops being a second one. See
-// `refuseBriefingPermissionMode` below for what a briefing carrying it gets.
-const BRIEFING_KEYS = ['composer', 'inputs', 'tools', 'capture'];
+// `permission_mode` is RECOGNIZED here — this is the unknown-key sweep's known
+// set, not the vocabulary of `ParsedBriefing`. It stays in this list so a
+// briefing carrying it gets exactly ONE diagnostic: `refuseBriefingPermissionMode`
+// below's named `briefing-permission-mode-misplaced`, not a second, contradictory
+// `unknown-briefing-property` from the sweep (node-kit §1.4.4 — an operator must
+// be able to tell a misplacement from a typo). It is never read back into
+// `ParsedBriefing`: the key keeps exactly ONE home, the node
+// (`NodeProperties.permissionMode`), and the briefing table is refused as a
+// second one rather than accepted as one (slice-19 §3.4, signed 2026-08-25;
+// this recognition fixed same-day after a P2 review found the sweep and the
+// placement refusal both firing on the same key).
+const BRIEFING_KEYS = ['composer', 'inputs', 'tools', 'capture', 'permission_mode'];
 
 /**
  * slice-19 §3.4: briefing-level `permission_mode` has ONE HOME, and it is the
