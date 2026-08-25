@@ -611,7 +611,15 @@ describe('SessionHost — plan capture (D48)', () => {
       onPlanCaptured: (appSessionId, planText) => captured.push({ appSessionId, planText }),
     });
     try {
-      const spawn = host.spawnSession({ channel: 'sdk', cwd: '/p', permissionMode: 'plan' });
+      // S19·U3 (§3.7): arming is DECLARATION-KEYED now, not mode-keyed — this is
+      // the shipped corner (`permissionMode: 'plan'` AND `planCaptureArmed:
+      // true`), both required to reach the interception this case pins.
+      const spawn = host.spawnSession({
+        channel: 'sdk',
+        cwd: '/p',
+        permissionMode: 'plan',
+        planCaptureArmed: true,
+      });
       const appSessionId = 'appSessionId' in spawn ? spawn.appSessionId : '';
       await waitFor(() => permissionResults.length === 1);
 
@@ -711,12 +719,72 @@ describe('SessionHost — plan capture (D48)', () => {
     // No onPlanCaptured injected → the host's no-op callback path.
     const { host } = makeHarness({ sdkQueryFactory: factory });
     try {
-      host.spawnSession({ channel: 'sdk', cwd: '/p', permissionMode: 'plan' });
+      // S19·U3 (§3.7): armed explicitly — see the first case's note.
+      host.spawnSession({ channel: 'sdk', cwd: '/p', permissionMode: 'plan', planCaptureArmed: true });
       await waitFor(() => permissionResults.length === 1);
       expect(permissionResults[0]).toEqual({
         behavior: 'deny',
         message: 'VIMES stops at the plan boundary',
       });
+    } finally {
+      host.stop();
+    }
+  });
+
+  // ── S19·U3 (§3.7), A5's harvest half — REAL, and asserted ON THE HOST ────────
+  //
+  // The declaration decouples plan MODE (write-blocked) from plan CAPTURE
+  // (harvested): `permission_mode: 'plan'` alone is a LEGAL, real cell — the
+  // planner runs write-blocked and NOTHING is harvested — unreachable before
+  // this unit because the shipped manifest always paired the two (recon fact 9).
+  // The differential in `briefingPreflight.test.ts` proves the DECLARATION side
+  // (`planCaptureArmed: false`); these two cases prove the ENGINE actually obeys
+  // it, on the real `SessionHost` `planCaptureSessions` set — observed the only
+  // way that set is observable: whether ExitPlanMode is intercepted.
+  it('plan-footing WITHOUT capture armed: the planner runs write-blocked and NOTHING is harvested', async () => {
+    const captured: Array<{ appSessionId: string; planText: string }> = [];
+    const { factory } = makeSdkFactory(async function* ({ options }) {
+      yield { type: 'system', subtype: 'init', session_id: 'claude-1' };
+      void options.canUseTool('ExitPlanMode', { plan: 'ignored here' }, { requestId: 'req-e' });
+    });
+    const { host, store } = makeHarness({
+      sdkQueryFactory: factory,
+      onPlanCaptured: (appSessionId, planText) => captured.push({ appSessionId, planText }),
+    });
+    try {
+      // `permissionMode: 'plan'` WITHOUT `planCaptureArmed` — the write-blocked,
+      // unharvested cell. The session is NOT in `planCaptureSessions`, so
+      // ExitPlanMode falls through to the ORDINARY gate rather than being
+      // intercepted — the only externally observable proof of that set's state.
+      const spawn = host.spawnSession({ channel: 'sdk', cwd: '/p', permissionMode: 'plan' });
+      const appSessionId = 'appSessionId' in spawn ? spawn.appSessionId : '';
+      await waitFor(() => types(store, appSessionId).includes('gate_fired'));
+
+      const gate = records(store, appSessionId).find((record) => record.type === 'gate_fired')!;
+      expect((gate.payload as { toolName: string }).toolName).toBe('ExitPlanMode');
+      expect(captured).toEqual([]);
+    } finally {
+      host.stop();
+    }
+  });
+
+  it('plan-footing WITH capture armed: the shipped corner — intercepted and harvested', async () => {
+    const captured: Array<{ appSessionId: string; planText: string }> = [];
+    const { factory, calls } = makeSdkFactory(async function* ({ options }) {
+      yield { type: 'system', subtype: 'init', session_id: 'claude-1' };
+      const result = await options.canUseTool('ExitPlanMode', { plan: 'THE PLAN' }, { requestId: 'req-plan' });
+      void result;
+      yield { type: 'result', subtype: 'success' };
+    });
+    const { host } = makeHarness({
+      sdkQueryFactory: factory,
+      onPlanCaptured: (appSessionId, planText) => captured.push({ appSessionId, planText }),
+    });
+    try {
+      host.spawnSession({ channel: 'sdk', cwd: '/p', permissionMode: 'plan', planCaptureArmed: true });
+      await waitFor(() => calls.length === 1);
+      await waitFor(() => captured.length === 1);
+      expect(captured[0]!.planText).toBe('THE PLAN');
     } finally {
       host.stop();
     }
@@ -1048,7 +1116,16 @@ describe('SessionHost — dispatched auto-footing (spike 2026-07-26)', () => {
       onPlanCaptured: (appSessionId, planText) => captured.push({ appSessionId, planText }),
     });
     try {
-      host.spawnSession({ channel: 'sdk', cwd: '/p', dispatched: true, permissionMode: 'plan' });
+      // S19·U3 (§3.7): arming is DECLARATION-KEYED — `planCaptureArmed: true`
+      // added explicitly (was implied by `permissionMode: 'plan'` alone
+      // through S19·U2; that coupling is exactly what this unit removed).
+      host.spawnSession({
+        channel: 'sdk',
+        cwd: '/p',
+        dispatched: true,
+        permissionMode: 'plan',
+        planCaptureArmed: true,
+      });
       await waitFor(() => calls.length === 1);
       expect(calls[0]!.permissionMode).toBe('plan');
       // Plan-capture fired — proves the spawn WAS registered in planCaptureSessions.
@@ -1060,10 +1137,13 @@ describe('SessionHost — dispatched auto-footing (spike 2026-07-26)', () => {
   });
 
   it('an "auto" spawn is NOT a plan-capture session: ExitPlanMode falls through to the normal gate', async () => {
-    // ⚠ VERIFY-BY-BREAKING anchor. Broaden the `planCaptureSessions.add` guard in
-    // ClaudeSdkAdapter.spawn (or the handleGate check) to also accept 'auto' and
+    // ⚠ VERIFY-BY-BREAKING anchor, UPDATED FOR S19·U3 (§3.7). Through S19·U2 this
+    // guarded a mode check (`permissionMode === 'plan'`); the arming test is
+    // `planCaptureArmed === true` now, and this spawn sets NEITHER — an 'auto'
+    // footing with no arming declared. Broaden `ClaudeSdkAdapter.spawn`'s
+    // `planCaptureArmed` guard to also fire on `permissionMode === 'auto'` and
     // THIS case reddens: onPlanCaptured would fire and no gate_fired would be
-    // emitted. The plan-capture marker must stay 'plan'-only.
+    // emitted.
     const captured: Array<{ appSessionId: string; planText: string }> = [];
     const { factory } = makeSdkFactory(async function* ({ options }) {
       yield { type: 'system', subtype: 'init', session_id: 'claude-1' };
@@ -1950,32 +2030,39 @@ describe('SessionHost — custody refusals, adoption, session ops (D10 / v0.2)',
   });
 });
 
-// ── S7·6b/S7·7b/S7·7d: report tool exposure + handlers + the SDK-boundary wrap ─
+// ── S7·6b/S7·7b/S19·U3: report tool exposure + handlers + the SDK-boundary wrap ─
 //
 // The adapter exposes SDK-agnostic specs — `report_review` (S7·6b) and
-// `report_completion` (S7·7b) — to a dispatched session, SCOPED TO ITS STAGE as of
-// S7·7d: implementing is offered the completion tool, review the review tool, and
-// planning NEITHER (its deliverable travels via ExitPlanMode, and under plan mode
-// an offered MCP tool is a permission gate — the f35a77dd stall). The dispatcher's
-// guards are unchanged and remain the state-facing authority: recordReview no-ops
-// without a `review` sessionRef and recordCompletion without an `implementing` one.
-// The factory wraps specs into `mcpServers` via the SDK — tested here through
-// `buildReportMcpServers` with a FAKE surface, so CI never loads the real SDK (the
-// SDK-boundary rule).
+// `report_completion` (S7·7b) — to a dispatched session. Through S19·U2 WHICH
+// ones was a stage→ids SWITCH (S7·7d); S19·U3 (§3.6) DELETED that switch — the
+// declaration (validated preflight) now hands the host `reportToolIds` directly,
+// and this class only BUILDS specs from ids it is given. The dispatcher's guards
+// are unchanged and remain the state-facing authority: recordReview no-ops
+// without a `review` sessionRef and recordCompletion without an `implementing`
+// one. The factory wraps specs into `mcpServers` via the SDK — tested here
+// through `buildReportMcpServers` with a FAKE surface, so CI never loads the
+// real SDK (the SDK-boundary rule).
 
-describe('SessionHost — report tool exposure (S7·6b + S7·7b + S7·7d)', () => {
-  // The stage→tools map, asserted stage by stage. ⚠ These three cases REPLACE the
-  // pre-S7·7d "a dispatched spawn carries BOTH specs" case, which encoded the
-  // exposure decision this unit reverses; its schema assertions survive in the
-  // no-stage fallback case below, which is the only path that still sees both.
-  it('a dispatched PLANNING spawn carries NO reportTools key at all', async () => {
+describe('SessionHost — report tool exposure (S7·6b + S7·7b + S19·U3 §3.6)', () => {
+  // The ids→specs map, asserted id-set by id-set — what a real preflight would
+  // hand each dispatchable stage, spelled explicitly here rather than derived
+  // from `stage` (the derivation is exactly what S19·U3 deleted).
+  it('a dispatched PLANNING spawn carries NO reportTools key at all (no declared ids)', async () => {
     const { factory, calls } = makeSdkFactory(async function* () {
       yield { type: 'system', subtype: 'init', session_id: 'claude-1' };
       yield { type: 'result', subtype: 'success' };
     });
     const { host } = makeHarness({ sdkQueryFactory: factory });
     try {
-      host.spawnSession({ channel: 'sdk', cwd: '/p', dispatched: true, permissionMode: 'plan', stage: 'planning' });
+      // The shipped planning node declares NO tools (§3b) — `reportToolIds`
+      // absent, matching what a real preflight success hands this spawn.
+      host.spawnSession({
+        channel: 'sdk',
+        cwd: '/p',
+        dispatched: true,
+        permissionMode: 'plan',
+        stage: 'planning',
+      });
       await waitFor(() => calls.length === 1);
       // Absent, not an empty array: under plan mode the SDK routes MCP calls
       // through canUseTool, so a tool the planner cannot honestly use is a gate
@@ -1986,14 +2073,20 @@ describe('SessionHost — report tool exposure (S7·6b + S7·7b + S7·7d)', () =
     }
   });
 
-  it('a dispatched IMPLEMENTING spawn carries exactly [report_completion]', async () => {
+  it('a dispatched IMPLEMENTING spawn with reportToolIds=[report_completion] carries exactly that spec', async () => {
     const { factory, calls } = makeSdkFactory(async function* () {
       yield { type: 'system', subtype: 'init', session_id: 'claude-1' };
       yield { type: 'result', subtype: 'success' };
     });
     const { host } = makeHarness({ sdkQueryFactory: factory });
     try {
-      host.spawnSession({ channel: 'sdk', cwd: '/p', dispatched: true, stage: 'implementing' });
+      host.spawnSession({
+        channel: 'sdk',
+        cwd: '/p',
+        dispatched: true,
+        stage: 'implementing',
+        reportToolIds: ['vimes_report.report_completion'],
+      });
       await waitFor(() => calls.length === 1);
       const specs = calls[0]!.reportTools;
       // Present AND absent, both asserted: the author is offered its own tool and
@@ -2006,14 +2099,20 @@ describe('SessionHost — report tool exposure (S7·6b + S7·7b + S7·7d)', () =
     }
   });
 
-  it('a dispatched REVIEW spawn carries exactly [report_review]', async () => {
+  it('a dispatched REVIEW spawn with reportToolIds=[report_review] carries exactly that spec', async () => {
     const { factory, calls } = makeSdkFactory(async function* () {
       yield { type: 'system', subtype: 'init', session_id: 'claude-1' };
       yield { type: 'result', subtype: 'success' };
     });
     const { host } = makeHarness({ sdkQueryFactory: factory });
     try {
-      host.spawnSession({ channel: 'sdk', cwd: '/p', dispatched: true, stage: 'review' });
+      host.spawnSession({
+        channel: 'sdk',
+        cwd: '/p',
+        dispatched: true,
+        stage: 'review',
+        reportToolIds: ['vimes_report.report_review'],
+      });
       await waitFor(() => calls.length === 1);
       const specs = calls[0]!.reportTools;
       expect(specs!.map((spec) => spec.name)).toEqual(['report_review']);
@@ -2024,21 +2123,25 @@ describe('SessionHost — report tool exposure (S7·6b + S7·7b + S7·7d)', () =
     }
   });
 
-  it('a dispatched spawn with NO stage falls back to BOTH specs (fail-open-to-guarded)', async () => {
+  it('a dispatched spawn carrying BOTH ids mounts both specs, in declared order', async () => {
+    // The general case the id→spec construction survives for: any COMBINATION a
+    // declaration names, in the order it names them — order is asserted because
+    // it is the order the tools mount on the single `vimes_report` server, and a
+    // stable order keeps the prompt prefix stable (cache discipline).
     const { factory, calls } = makeSdkFactory(async function* () {
       yield { type: 'system', subtype: 'init', session_id: 'claude-1' };
       yield { type: 'result', subtype: 'success' };
     });
     const { host } = makeHarness({ sdkQueryFactory: factory });
     try {
-      host.spawnSession({ channel: 'sdk', cwd: '/p', dispatched: true });
+      host.spawnSession({
+        channel: 'sdk',
+        cwd: '/p',
+        dispatched: true,
+        reportToolIds: ['vimes_report.report_review', 'vimes_report.report_completion'],
+      });
       await waitFor(() => calls.length === 1);
       const specs = calls[0]!.reportTools;
-      // The pre-S7·7d exposure, kept for the plumbing-bug case only: a session that
-      // reached the host without a stage can still report, and the dispatcher guard
-      // decides whether the report counts. Order is asserted because the array order
-      // is the order the tools mount on the single `vimes_report` server, and a
-      // stable order keeps the prompt prefix stable (cache discipline).
       expect(specs).toHaveLength(2);
       expect(specs!.map((spec) => spec.name)).toEqual(['report_review', 'report_completion']);
       for (const spec of specs!) {
@@ -2048,6 +2151,56 @@ describe('SessionHost — report tool exposure (S7·6b + S7·7b + S7·7d)', () =
       // so neither tool lets a session name the task it is reporting against.
       expect(Object.keys(specs![0]!.inputSchema)).toEqual(['criteria']);
       expect(Object.keys(specs![1]!.inputSchema)).toEqual(['worklog']);
+    } finally {
+      host.stop();
+    }
+  });
+
+  it('a dispatched spawn with NO reportToolIds carries NO reportTools key — the fallback is GONE (S19·U3)', async () => {
+    // ⚠ **THIS IS THE FAIL-OPEN-TO-BOTH FALLBACK'S DELETION, PINNED.** Through
+    // S19·U2 a dispatched spawn reaching the host with no recognized stage fell
+    // back to BOTH specs (fail-open-to-guarded, a defence against a stage-typo
+    // plumbing bug). §3.6 removed the stage-derivation entirely, so there is no
+    // stage-shaped bug left to fall open FOR — a dispatched spawn with no
+    // declared ids now offers no report tools at all, matching what a REAL
+    // preflight only ever produces for a node that declares none (planning,
+    // today). Unreachable-by-fallback is not the same claim as
+    // unreachable-by-refusal: an id that IS declared but unknown is refused
+    // preflight (§3.6, `briefingPreflight.test.ts`'s A4) before a spawn like
+    // this one is ever attempted.
+    const { factory, calls } = makeSdkFactory(async function* () {
+      yield { type: 'system', subtype: 'init', session_id: 'claude-1' };
+      yield { type: 'result', subtype: 'success' };
+    });
+    const { host } = makeHarness({ sdkQueryFactory: factory });
+    try {
+      host.spawnSession({ channel: 'sdk', cwd: '/p', dispatched: true });
+      await waitFor(() => calls.length === 1);
+      expect('reportTools' in calls[0]!).toBe(false);
+    } finally {
+      host.stop();
+    }
+  });
+
+  it('an id this engine does not build throws, naming the id (§3.6 fail-closed belt)', async () => {
+    // Unreachable in production — preflight validates every declared id against
+    // `isEngineKnownToolId` before this spawn ever happens (§3.5/§3.6) — but "a
+    // tenant selects among engine tools; it never mints one" is enforced twice:
+    // refused before the spawn, and THROWN here if that first belt ever failed.
+    const { factory } = makeSdkFactory(async function* () {
+      yield { type: 'system', subtype: 'init', session_id: 'claude-1' };
+      yield { type: 'result', subtype: 'success' };
+    });
+    const { host } = makeHarness({ sdkQueryFactory: factory });
+    try {
+      expect(() =>
+        host.spawnSession({
+          channel: 'sdk',
+          cwd: '/p',
+          dispatched: true,
+          reportToolIds: ['vimes_report.rm_rf'],
+        }),
+      ).toThrow(/unknown report tool id "vimes_report\.rm_rf"/);
     } finally {
       host.stop();
     }
@@ -2080,9 +2233,15 @@ describe('SessionHost — report tool exposure (S7·6b + S7·7b + S7·7d)', () =
       onReviewReported: (appSessionId, criteria) => captured.push({ appSessionId, criteria }),
     });
     try {
-      // S7·7d: spawned as the stage that actually gets this tool, so the case
-      // exercises the real shape (one spec, at index 0) rather than the fallback.
-      const spawn = host.spawnSession({ channel: 'sdk', cwd: '/p', dispatched: true, stage: 'review' });
+      // S19·U3: declared explicitly (was `stage: 'review'` alone through S19·U2,
+      // which derived the id) — one spec, at index 0.
+      const spawn = host.spawnSession({
+        channel: 'sdk',
+        cwd: '/p',
+        dispatched: true,
+        stage: 'review',
+        reportToolIds: ['vimes_report.report_review'],
+      });
       const appSessionId = 'appSessionId' in spawn ? spawn.appSessionId : '';
       await waitFor(() => calls.length === 1);
       const spec = calls[0]!.reportTools![0]!;
@@ -2109,9 +2268,14 @@ describe('SessionHost — report tool exposure (S7·6b + S7·7b + S7·7d)', () =
       onCompletionReported: (appSessionId, worklog) => captured.push({ appSessionId, worklog }),
     });
     try {
-      // S7·7d: the implementing stage is the one offered this tool, and it is the
-      // ONLY spec it is offered — hence index 0 where this used to read index 1.
-      const spawn = host.spawnSession({ channel: 'sdk', cwd: '/p', dispatched: true, stage: 'implementing' });
+      // S19·U3: declared explicitly — one spec, at index 0.
+      const spawn = host.spawnSession({
+        channel: 'sdk',
+        cwd: '/p',
+        dispatched: true,
+        stage: 'implementing',
+        reportToolIds: ['vimes_report.report_completion'],
+      });
       const appSessionId = 'appSessionId' in spawn ? spawn.appSessionId : '';
       await waitFor(() => calls.length === 1);
       const spec = calls[0]!.reportTools![0]!;
@@ -2139,9 +2303,15 @@ describe('SessionHost — report tool exposure (S7·6b + S7·7b + S7·7d)', () =
       onCompletionReported: (_appSessionId, worklog) => captured.push(worklog),
     });
     try {
-      host.spawnSession({ channel: 'sdk', cwd: '/p', dispatched: true, stage: 'implementing' });
+      host.spawnSession({
+        channel: 'sdk',
+        cwd: '/p',
+        dispatched: true,
+        stage: 'implementing',
+        reportToolIds: ['vimes_report.report_completion'],
+      });
       await waitFor(() => calls.length === 1);
-      // S7·7d: sole spec on an implementing spawn (was index 1 of the both-tools array).
+      // S19·U3: sole spec, declared explicitly.
       const spec = calls[0]!.reportTools![0]!;
       expect(spec.name).toBe('report_completion');
       await expect(spec.handler({})).resolves.toEqual({ ok: true });
@@ -2309,19 +2479,25 @@ describe('SessionHost — the author grant exposure matrix (S8·6, D56/D65)', ()
   });
 
   // ── the other direction: no dispatched stage ever sees the board family ──────
-  it.each(['planning', 'implementing', 'review'] as const)(
+  it.each([
+    ['planning', []],
+    ['implementing', ['vimes_report.report_completion']],
+    ['review', ['vimes_report.report_review']],
+  ] as const)(
     'a dispatched %s spawn sees NO vimes_board server and NO create_task tool',
-    async (stage) => {
+    async (stage, reportToolIds) => {
       const { factory, calls } = makeSdkFactory(async function* () {
         yield { type: 'system', subtype: 'init', session_id: 'claude-1' };
         yield { type: 'result', subtype: 'success' };
       });
       // The grant IS composed on this host — so a leak would be a real leak, not
-      // an absence of anything to leak.
+      // an absence of anything to leak. S19·U3: `reportToolIds` declared
+      // explicitly per stage (what a real preflight hands each one, §3b) so this
+      // spawn actually carries report tools to check for a leak alongside.
       const { grant, askedFor } = fakeGrant();
       const { host } = makeHarness({ sdkQueryFactory: factory, orchestratorReportTools: grant });
       try {
-        host.spawnSession({ channel: 'sdk', cwd: '/p', dispatched: true, stage });
+        host.spawnSession({ channel: 'sdk', cwd: '/p', dispatched: true, stage, reportToolIds });
         await waitFor(() => calls.length === 1);
         const specs = calls[0]!.reportTools ?? [];
         expect(specs.map((spec) => spec.name)).not.toContain('create_task');
@@ -2334,7 +2510,7 @@ describe('SessionHost — the author grant exposure matrix (S8·6, D56/D65)', ()
     },
   );
 
-  it('a dispatched spawn with NO stage (the fail-open fallback) still sees no board family', async () => {
+  it('a dispatched spawn with NO reportToolIds (fail-closed, S19·U3 — the fallback is gone) still sees no board family', async () => {
     const { factory, calls } = makeSdkFactory(async function* () {
       yield { type: 'system', subtype: 'init', session_id: 'claude-1' };
       yield { type: 'result', subtype: 'success' };
@@ -2344,12 +2520,11 @@ describe('SessionHost — the author grant exposure matrix (S8·6, D56/D65)', ()
     try {
       host.spawnSession({ channel: 'sdk', cwd: '/p', dispatched: true });
       await waitFor(() => calls.length === 1);
-      // S7·7d's fallback offers BOTH report tools; it must never offer a third
-      // family as well — fail-open-to-guarded, not fail-open-to-everything.
-      expect(calls[0]!.reportTools!.map((spec) => spec.name)).toEqual([
-        'report_review',
-        'report_completion',
-      ]);
+      // §3.6 deleted the fail-open-to-both fallback (see the report-tool-exposure
+      // describe's own case for that deletion, pinned) — a dispatched spawn with
+      // no declared ids offers NO report tools, and — the property THIS case
+      // pins — still no third family either.
+      expect('reportTools' in calls[0]!).toBe(false);
       expect(askedFor).toEqual([]);
     } finally {
       host.stop();

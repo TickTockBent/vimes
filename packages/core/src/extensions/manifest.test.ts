@@ -871,6 +871,124 @@ kind = "hold"
     expect(parseExtensionManifest(withCapture('doctrine/a.md', 'plan')).ok).toBe(true);
   });
 
+  // ── S19·U1 (slice-19 §3.4, signed 2026-08-25): permission-mode PLACEMENT ──
+  //
+  // Not a vocabulary change — `default | plan` is untouched and nothing is
+  // added. What changed is that the key has exactly ONE home: the node (or the
+  // `[[node-kinds]]` bundle it composes). A briefing-level `permission_mode` is
+  // a NAMED refusal, so an operator can tell a misplacement from a typo.
+  const withBriefingKey = (key: string, value: string): string => `${KIT_PREAMBLE}
+[[workflows]]
+id = "w"
+title = "W"
+initial = "a"
+edges = [ { from = "a", to = "b", by = ["human"] } ]
+
+[[workflows.nodes]]
+id = "a"
+kind = "work"
+  [workflows.nodes.briefing]
+  composer = "briefings/a"
+  ${key} = ${value}
+
+[[workflows.nodes]]
+id = "b"
+kind = "hold"
+`;
+
+  it('refuses a BRIEFING-level `permission_mode`, naming the node as its one home', () => {
+    const issue = expectRefusal(
+      withBriefingKey('permission_mode', '"plan"'),
+      'briefing-permission-mode-misplaced',
+    );
+    expect(issue.path).toBe('workflows[0].nodes[0].briefing.permission_mode');
+    // The house refusal idiom (the `offered_when` retirement is the model):
+    // say WHERE the key legally lives, not merely that it is wrong here.
+    expect(issue.message).toContain('NODE');
+    expect(issue.message).toContain('never inside `[workflows.nodes.briefing]`');
+  });
+
+  it('gives a misplaced `permission_mode` EXACTLY one diagnostic, not two', () => {
+    // P2 finding (2026-08-25): S19·U1 dropped `permission_mode` from the
+    // sweep's known-key list, so a misplaced key tripped BOTH the generic
+    // `unknown-briefing-property` sweep AND the dedicated
+    // `briefing-permission-mode-misplaced` refusal — the exact contradiction
+    // the named refusal exists to prevent (node-kit §1.4.4: a misplacement
+    // must read differently from a typo). `expectRefusal` above only checks
+    // the wanted code is PRESENT; this asserts the unwanted one is ABSENT too.
+    const result = parseExtensionManifest(withBriefingKey('permission_mode', '"plan"'));
+    if (result.ok) throw new Error('expected a refusal, but the manifest parsed cleanly');
+    expect(codes(result.errors)).toContain('briefing-permission-mode-misplaced');
+    expect(codes(result.errors)).not.toContain('unknown-briefing-property');
+  });
+
+  it('refuses the misplaced key for BOTH declared values, `default` included', () => {
+    // `default` is the fail-closed value, so a manifest could carry it believing
+    // it to be inert. It is refused exactly like `plan`: the placement is the
+    // error, not the value.
+    expectRefusal(withBriefingKey('permission_mode', '"default"'), 'briefing-permission-mode-misplaced');
+  });
+
+  it('gives the misplacement its OWN code, distinct from a plain typo', () => {
+    // A genuine unknown key still lands on the generic sweep — the two are
+    // different operator problems and must read differently.
+    const typo = expectRefusal(withBriefingKey('permision_mode', '"plan"'), 'unknown-briefing-property');
+    expect(typo.path).toBe('workflows[0].nodes[0].briefing.permision_mode');
+  });
+
+  it('negative control: a genuinely unknown briefing key still gets `unknown-briefing-property`', () => {
+    // Recognizing `permission_mode` in the sweep's known-key list (so the
+    // misplacement refusal above isn't doubled) must not have widened the
+    // sweep into silence generally — an unrelated unknown key, no relation
+    // to `permission_mode` at all, still trips the generic refusal.
+    const issue = expectRefusal(withBriefingKey('banana', '1'), 'unknown-briefing-property');
+    expect(issue.path).toBe('workflows[0].nodes[0].briefing.banana');
+  });
+
+  it('leaves NODE-level placement alone — the live manifest parses unchanged', () => {
+    // Recon fact 2: the shipped manifest declares `permission_mode` at the NODE
+    // level only (`planning`, D48). §3.4 touches the manifest not at all, and
+    // this is the assertion that keeps that true.
+    const manifest = expectManifest(readFixture());
+    const planning = manifest.workflows[0]?.nodes.find((node) => node.id === 'planning');
+    expect(planning?.properties.permissionMode).toBe('plan');
+    // …and every OTHER node still resolves to the fail-closed default.
+    const others = (manifest.workflows[0]?.nodes ?? []).filter((node) => node.id !== 'planning');
+    expect(others.map((node) => node.properties.permissionMode)).toEqual(others.map(() => 'default'));
+  });
+
+  it('the D55 cross-declaration rule now reads the NODE footing, briefing-free', () => {
+    // The rule used to consult `briefing.permissionMode ?? node`; with the
+    // briefing half gone it consults the node alone — same refusal, one source.
+    const issue = expectRefusal(
+      `${KIT_PREAMBLE}
+[[workflows]]
+id = "w"
+title = "W"
+initial = "a"
+edges = [ { from = "a", to = "b", by = ["human"] } ]
+
+[[node-kinds]]
+id = "planner"
+attaches_session = true
+permission_mode  = "plan"
+
+[[workflows.nodes]]
+id = "a"
+kind = "planner"
+  [workflows.nodes.briefing]
+  composer = "briefings/a"
+  tools = ["vimes_report.report_completion"]
+
+[[workflows.nodes]]
+id = "b"
+kind = "hold"
+`,
+      'plan-mode-with-tools',
+    );
+    expect(issue.message).toContain('D55');
+  });
+
   it('refuses a max_traversals that is not a positive integer', () => {
     expectRefusal(
       `${KIT_PREAMBLE}

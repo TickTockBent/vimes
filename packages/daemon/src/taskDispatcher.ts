@@ -5,7 +5,6 @@ import {
   dispatchRefused,
   instanceRunAttached,
   reportFiled,
-  resolveStageRunner,
   type ArtifactStore,
   type DispatchDeferReason,
   type DispatchRefuseReason,
@@ -22,6 +21,14 @@ import {
 // S18·U2 (Move 4) — the composer's out-of-band context type travels with the
 // composer itself, which is tenant code now. Root barrel only.
 import type { StageInstructionContext } from '@vimes/ext-tasks';
+// S19·U3 (slice-19 §3.5): the declaration path's preflight is THE ONLY PATH now
+// — `briefingUnresolvableReason` is the wire-stable spelling a refusal surfaces
+// as (§3.5's `spawn-failed` reuse), so this is a value import, not type-only.
+import {
+  briefingUnresolvableReason,
+  type BriefingPreflightResult,
+  type BriefingPreflightSuccess,
+} from './briefingPreflight.js';
 import type { SessionHost } from './sessionHost.js';
 import type { InstanceWriter } from './instanceWriter.js';
 import type { CheckoutCoordinator, CheckoutRefusal } from './checkoutCoordinator.js';
@@ -207,40 +214,51 @@ export interface TaskDispatcherDeps {
   // `config.worktreeIsolation === 'on'`.
   worktreeIsolationEnabled?: boolean;
 
-  // ── THE INSTRUCTION SEAM — MACHINERY ONLY, CONTENT DELIBERATELY ABSENT ──────
+  // ── RETIRED, S19·U3: THE PRE-DECLARATION INSTRUCTION SEAM ───────────────────
   //
-  // A stage run is currently told NOTHING: the dispatcher starts a session and
-  // sends no prompt. This seam is where the words will go, and the default is
-  // `() => null`, i.e. **exactly today's behaviour — nothing is sent.**
+  // ⚠ **NOTHING IN THIS CLASS CALLS THIS ANY MORE.** Through S19·U2 this was
+  // where a stage run's words came from, composed POST-SPAWN inside
+  // `deliverStageInstruction`. The flip moved composition to `preflightBriefing`
+  // below, which runs BEFORE the spawn and RETAINS the composed string —
+  // `deliverStageInstruction` is delivery only now, so this field has no call
+  // site left in the class.
   //
-  // ⚠ **NO PROMPT TEXT IS WRITTEN ANYWHERE IN THIS STEP, ON PURPOSE.** What a
-  // review prompt or a fix prompt actually SAYS is a product decision for Wes and
-  // is explicitly deferred; writing one here would pin content nobody signed off,
-  // which is rule 0.2's discipline applied to words instead of numbers. The seam
-  // exists so the machinery is complete and testable now and the words can land
-  // later without reshaping anything.
-  //
-  // It receives the `StageRunnerPlan` as well as the task because spawn and resume
-  // wanted opposite briefings. ⚠ S7·7b: D46 left `StageRunnerPlan` with ONE mode,
-  // so the argument is now constant — it is KEPT because the parameter is part of
-  // the pure composer's signature in core, and because a second mode would restore
-  // the need for it. What actually distinguishes a fix from a first pass is the
-  // CONTEXT's fix-seed, not the plan.
-  //
-  // Returning `null` or an empty string sends nothing. A non-empty string is sent
-  // ONCE, through `sessionHost.sendMessage`, after the session exists.
-  //
-  // ⚠ S7·7a WIDENS IT WITH AN OPTIONAL 3rd PARAM — the fetched plan blob (and,
-  // later, S7·7b's fix-seed) as a `StageInstructionContext`. Optional so the
-  // default `() => null` and every pre-S7·7a construction stay source-compatible
-  // and byte-identical: a composer that ignores the context is unchanged. The
-  // daemon is the only caller that can supply it, because the blob is IO the pure
-  // composer must not touch — see `deliverStageInstruction` for the fetch.
+  // KEPT ON THE TYPE, not deleted, and that is a deliberate, narrow exception to
+  // "delete the compiled half": every OTHER construction of `TaskDispatcherDeps`
+  // across the test suite that predates this unit and has nothing to do with the
+  // flip (`recordPlan`/`recordReview`/`recordCompletion`-only harnesses) may still
+  // pass this key with no effect and no edit required — deleting the field would
+  // turn "field this construction doesn't need" into "excess-property error this
+  // construction must now fix", which is a much wider blast radius than the flip
+  // itself. A tenant composer's real home is `@vimes/ext-tasks`'s
+  // `briefingComposers` table now (§3.1), reached through the preflight below.
   composeStageInstruction?: (
     task: TaskRecord,
     plan: StageRunnerPlan,
     context?: StageInstructionContext,
   ) => string | null;
+
+  // ── S19·U3 (§3.5): THE DECLARATION PATH — THE ONLY PATH ─────────────────────
+  //
+  // Runs BEFORE `spawnStageRun` — before a worktree is created and before a
+  // session exists — resolving the composer entry point, validating the declared
+  // tool ids and the §3.7 capture combo, assembling the declared input set and
+  // INVOKING the composer, RETAINING the composed string for post-spawn delivery.
+  // A refusal at any of those steps returns `{ outcome: 'spawn-failed', reason:
+  // 'briefing-unresolvable:<sub-reason>' }` with NO worktree, NO spawn and NO
+  // event — the same "returned, not recorded" shape `worktree-failed` already
+  // has, and NOT a new member of `DispatchAttemptResult` (the routes serialize
+  // that union verbatim, so growing it would have been the wire change §2
+  // forbids — it stayed a reused reason instead, per §3.5).
+  //
+  // ⚠ **OPTIONAL ON THE TYPE, BUT NOT OPTIONAL ON THE SPAWN PATH.** A
+  // construction that never reaches a `spawn` decision (every refuse/defer case,
+  // every `recordPlan`/`recordReview`/`recordCompletion`-only harness) never
+  // needs this and may omit it, exactly as before. One that DOES reach `spawn`
+  // without providing it gets a loud, immediate throw (the private default below)
+  // rather than a silent fallback to compiled behaviour that no longer exists —
+  // there is nothing left to fall back TO.
+  preflightBriefing?: (task: TaskRecord) => BriefingPreflightResult;
 
   // ── S7·5b-i: the native plan-capture seam (D48, I10) ─────────────────────────
   //
@@ -474,18 +492,10 @@ export class TaskDispatcher {
   // the window this closes.
   private readonly inFlightDispatches = new Set<string>();
   private readonly resolveWorkingDirectory: (task: TaskRecord) => string;
-  private readonly composeStageInstruction: (
-    task: TaskRecord,
-    plan: StageRunnerPlan,
-    context?: StageInstructionContext,
-  ) => string | null;
 
   constructor(deps: TaskDispatcherDeps) {
     this.deps = deps;
     this.resolveWorkingDirectory = deps.resolveWorkingDirectory ?? projectRootWorkingDirectory;
-    // THE DEFAULT IS SILENCE — today's behaviour exactly. See the seam's note:
-    // the words are Wes's decision and are deliberately not written in this step.
-    this.composeStageInstruction = deps.composeStageInstruction ?? (() => null);
   }
 
   /**
@@ -634,13 +644,58 @@ export class TaskDispatcher {
           // has a second mode to return, so there is nothing left to branch on and the
           // spawn path below is the whole of the answer. A fix carries its context in
           // the FIX-SEED instead (see `deliverStageInstruction`).
-          const runnerPlan = resolveStageRunner(task);
+          //
+          // ── S19·U3 (§3.5): THE PREFLIGHT — BEFORE ANY WORKTREE, BEFORE ANY SPAWN ──
+          //
+          // Resolves the composer, validates the declared tool ids and the §3.7
+          // capture combo, assembles the declared inputs and INVOKES the composer,
+          // retaining the composed string. A refusal at any step spawns NOTHING and
+          // creates NO worktree — the same "returned, not recorded" shape
+          // `worktree-failed` already has — and reuses the EXISTING `spawn-failed`
+          // outcome with `briefing-unresolvable:<sub-reason>` (§3.5's wire-stable
+          // spelling): the routes serialize `DispatchAttemptResult` verbatim, so a
+          // new outcome member would be the wire change §2 forbids.
+          //
+          // ⚠ **AN UNWIRED DEP IS A DEGRADE, NOT A THROW.** `preflightBriefing` is
+          // OPTIONAL on the type (so every refuse/defer/`recordPlan`-only
+          // construction across the test suite stays untouched — see the dep's own
+          // note), but this class's contract is TOTAL: nothing here throws. The
+          // isolation deps set the precedent (`checkoutCoordinator`/`readProjects`/
+          // `nodeWriter` missing → `worktree-failed`, never an exception) and this
+          // follows it — a daemon wired without this dep on the spawn path is a
+          // real construction bug, and the honest answer is "nothing spawns",
+          // reported as a result, not a crashed promise.
+          if (this.deps.preflightBriefing === undefined) {
+            return {
+              outcome: 'spawn-failed',
+              taskId: task.taskId,
+              reason: 'preflight-not-wired',
+            };
+          }
+          const preflightResult = this.deps.preflightBriefing(task);
+          if (!preflightResult.ok) {
+            // ⚠ THE THROWN VALUE NEVER RIDES THE WIRE (§3.5) — but it is not
+            // nowhere, either. U2 decision 2's rider: a composer that threw leaves a
+            // detail string ONLY the daemon's own log sees, so an operator staring
+            // at `briefing-unresolvable:compose-threw` can still find out why.
+            if (preflightResult.reason === 'compose-threw' && preflightResult.detail !== undefined) {
+              console.error(
+                `[TaskDispatcher] briefing composer threw for task ${task.taskId} ` +
+                  `(stage ${task.stage}): ${preflightResult.detail}`,
+              );
+            }
+            return {
+              outcome: 'spawn-failed',
+              taskId: task.taskId,
+              reason: briefingUnresolvableReason(preflightResult.reason),
+            };
+          }
           // WHERE it runs, and — since S17·U3 — the SPAWN ITSELF when the task is
           // isolated, because §3.2 puts the spawn inside the coordinator's critical
           // section. One `await`, in the position `resolveSpawnWorkingDirectory`
           // used to hold, which is why the whole method is async and why D54's
           // window is exactly where it always was.
-          const stageRunSpawn = await this.spawnStageRun(task, decision.stage);
+          const stageRunSpawn = await this.spawnStageRun(task, decision.stage, preflightResult);
           if (stageRunSpawn.outcome === 'worktree-failed') {
             // ⚠ **NO FALLBACK. NO SPAWN. NO EVENT.** The task asked to be isolated and
             // it could not be; running it in the shared project root anyway would be
@@ -666,8 +721,7 @@ export class TaskDispatcher {
             };
           }
           const instructionDelivery = this.deliverStageInstruction(
-            task,
-            runnerPlan,
+            preflightResult.composed,
             stageRunSpawn.appSessionId,
           );
           return {
@@ -707,7 +761,12 @@ export class TaskDispatcher {
    * SYNCHRONOUS on purpose: `spawnSession` is, and the in-lock follow-up wants the
    * smallest possible critical section.
    */
-  private spawnAndAttachRun(task: TaskRecord, stage: TaskStage, cwd: string): SpawnOutcome {
+  private spawnAndAttachRun(
+    task: TaskRecord,
+    stage: TaskStage,
+    cwd: string,
+    preflightResult: BriefingPreflightSuccess,
+  ): SpawnOutcome {
     // Stage runs are ORDINARY SESSIONS (spec §3.5) on the 'sdk' channel:
           // everything slices 1–5b built — stream, diff, cost, resume, attention —
           // applies to a stage run for free. There is no parallel session concept.
@@ -716,23 +775,25 @@ export class TaskDispatcher {
           // `taskRef: null` into `session_created`, and sessionHost.ts is frozen for
           // this step, so the session→task backlink does not exist yet. The link
           // lives ONLY on the task side, in the `instance_run_attached` below.
-          // D48: the PLANNING stage runs write-blocked in permissionMode 'plan' so
-          // the planner produces a plan rather than doing the work; the SDK adapter
-          // intercepts its ExitPlanMode and hands the plan to `recordPlan` (S7·5b-ii).
-          // Every other stage spawns in the default mode — the key is added ONLY for
-          // planning, keeping the non-planning spawn options byte-identical.
-          // D50: EVERY dispatched task session is `dispatched: true` — the SDK adapter
-          // then clamps it to the closed tool allowlist (no sub-agent spawns) and
-          // auto-denies AskUserQuestion (no human to answer it). The planning branch
-          // also runs write-blocked in permissionMode 'plan' (D48); every other
-          // dispatched stage runs permissionMode 'auto' (Anthropic's server-side
-          // classifier — no per-tool gate; the PreToolUse hard-deny boundary hook is
-          // a separate follow-up unit, not yet in place).
-          // S7·7d: BOTH branches name the stage, because the host uses it to decide
-          // WHICH report tool this session is offered (`report_completion` for
-          // implementing, `report_review` for review, neither for planning). It is
-          // not a branch discriminator here — it is the same fact both branches
-          // already have, now travelling to the one place that needs it.
+          //
+          // ⚠ **S19·U3 (§3.4/§3.6/§3.7) DELETED THE COMPILED PERMISSION/STAGE
+          // SWITCH THAT USED TO STAND HERE.** Through S19·U2 this branched on
+          // `stage === 'planning'` to pick `permissionMode: 'plan' | 'auto'` — a
+          // hard-coded restatement of the manifest's own declaration. The footing,
+          // the tool ids AND the capture arming now all come from ONE place, the
+          // PREFLIGHT result the caller already ran before this method was ever
+          // reached (`preflightResult`, §3.5): `permissionFooting` is §3.4's
+          // mapping applied to the node's declared `permission_mode`;
+          // `toolIds` are the declared, engine-validated report-tool ids (§3.6 —
+          // the host builds SPECS from them post-allocation; this method only
+          // carries the ids across the seam); `planCaptureArmed` is the
+          // DECLARATION's `capture` list, independent of the footing (§3.7). D48's
+          // and D50's DOCTRINE is unchanged — planning still runs write-blocked,
+          // every dispatched session is still clamped — only the SOURCE of the
+          // footing moved from a compiled switch to a read declaration.
+          // S7·7d: the stage still rides — the host's own bookkeeping, unrelated
+          // to tool selection since S19·U3 (see `AdapterSpawnContext.stage`'s
+          // note in sessionHost.ts).
           //
           // D91 prong (i): the dispatched session is NAMED at birth, closing the
           // asymmetry with `orchestratorApi.ts` (which has always named its own
@@ -747,24 +808,19 @@ export class TaskDispatcher {
           // the label ladder's derivation fallback (prong ii) answers instead.
     const dispatchedSessionName =
       task.title === undefined || task.title === '' ? undefined : `${task.title} — ${stage}`;
-    const spawnOptions =
-      stage === 'planning'
-        ? {
-            channel: 'sdk' as const,
-            cwd,
-            dispatched: true as const,
-            permissionMode: 'plan' as const,
-            stage,
-            ...(dispatchedSessionName === undefined ? {} : { name: dispatchedSessionName }),
-          }
-        : {
-            channel: 'sdk' as const,
-            cwd,
-            dispatched: true as const,
-            permissionMode: 'auto' as const,
-            stage,
-            ...(dispatchedSessionName === undefined ? {} : { name: dispatchedSessionName }),
-          };
+    const spawnOptions = {
+      channel: 'sdk' as const,
+      cwd,
+      dispatched: true as const,
+      permissionMode: preflightResult.permissionFooting,
+      stage,
+      // ABSENT STAYS ABSENT (same idiom as `name`): a stage with no declared
+      // tools (planning, today) carries no `reportToolIds` key at all, rather
+      // than an empty array — one absence idiom, everywhere in this file.
+      ...(preflightResult.toolIds.length === 0 ? {} : { reportToolIds: preflightResult.toolIds }),
+      ...(preflightResult.planCaptureArmed ? { planCaptureArmed: true as const } : {}),
+      ...(dispatchedSessionName === undefined ? {} : { name: dispatchedSessionName }),
+    };
     let spawnResult;
     try {
       spawnResult = this.deps.sessionHost.spawnSession(spawnOptions);
@@ -1104,15 +1160,19 @@ export class TaskDispatcher {
    *
    * Never throws — see `spawnIntoCheckout` for the coordinator half.
    */
-  private async spawnStageRun(task: TaskRecord, stage: TaskStage): Promise<StageRunSpawn> {
+  private async spawnStageRun(
+    task: TaskRecord,
+    stage: TaskStage,
+    preflightResult: BriefingPreflightSuccess,
+  ): Promise<StageRunSpawn> {
     if (this.deps.worktreeIsolationEnabled !== true || task.isolation !== 'worktree') {
       const cwd = await this.resolvePlainWorkingDirectory(task);
-      const plainSpawn = this.spawnAndAttachRun(task, stage, cwd);
+      const plainSpawn = this.spawnAndAttachRun(task, stage, cwd, preflightResult);
       return plainSpawn.outcome === 'spawned'
         ? { outcome: 'spawned', appSessionId: plainSpawn.appSessionId, cwd }
         : plainSpawn;
     }
-    return this.spawnIntoCheckout(task, stage);
+    return this.spawnIntoCheckout(task, stage, preflightResult);
   }
 
   /**
@@ -1165,7 +1225,11 @@ export class TaskDispatcher {
    * Never throws: a coordinator that broke its own contract is caught here, the
    * same posture the spawn path takes.
    */
-  private async spawnIntoCheckout(task: TaskRecord, stage: TaskStage): Promise<StageRunSpawn> {
+  private async spawnIntoCheckout(
+    task: TaskRecord,
+    stage: TaskStage,
+    preflightResult: BriefingPreflightSuccess,
+  ): Promise<StageRunSpawn> {
     const checkoutCoordinator = this.deps.checkoutCoordinator;
     const readProjects = this.deps.readProjects;
     const nodeWriter = this.deps.nodeWriter;
@@ -1195,7 +1259,7 @@ export class TaskDispatcher {
         { projectId: projectJoin.projectId },
         async (checkout) => {
           checkoutPath = checkout.path;
-          checkoutSpawn = this.spawnAndAttachRun(task, stage, checkout.path);
+          checkoutSpawn = this.spawnAndAttachRun(task, stage, checkout.path, preflightResult);
           if (checkoutSpawn.outcome !== 'spawned') {
             throw new CheckoutFollowUpAborted();
           }
@@ -1316,98 +1380,36 @@ export class TaskDispatcher {
   // guards that human path, inside the host where it always lived.
 
   /**
-   * Compose and send this stage run's instruction, if there is one.
+   * Send this stage run's ALREADY-COMPOSED instruction, if there is one.
    *
-   * Returns `undefined` when NOTHING WAS COMPOSED — which is the default, and the
-   * whole of today's behaviour: no composer, no message, no result field. The
-   * distinction between "no instruction exists" and "an instruction failed to
-   * arrive" is the reason this returns `undefined` rather than a status of its own.
+   * Returns `undefined` when NOTHING WAS COMPOSED — the default when the
+   * preflight's composer produced an empty string, and the whole of the
+   * behaviour that predates any words at all. The distinction between "no
+   * instruction exists" and "an instruction failed to arrive" is the reason this
+   * returns `undefined` rather than a status of its own.
+   *
+   * ⚠ **S19·U3: DELIVERY ONLY.** Through S19·U2 this method COMPOSED —
+   * fetching the plan blob, threading the fix-seed, calling
+   * `composeStageInstruction` — all POST-spawn, so a compose failure landed as
+   * `not-delivered` on a task that already had a live worker sitting with no
+   * instructions (slice-19 §0 recon fact 5). §3.5 moved composition to the
+   * PREFLIGHT, before any worktree or spawn exists; by the time this method
+   * runs, `composed` is a plain string the caller is only handing off to
+   * `sendMessage`. `not-delivered` now names SEND-time failures alone — its
+   * `compose-threw` branch is gone because there is nothing left in this method
+   * that can throw while composing.
    *
    * ⚠ Never throws, and never fails the dispatch. The session exists and is
    * attached by the time we get here; unwinding that because a message did not
    * land would leave a live session the task no longer references.
    */
   private deliverStageInstruction(
-    task: TaskRecord,
-    plan: StageRunnerPlan,
+    composed: string,
     appSessionId: string,
   ): StageInstructionDelivery | undefined {
-    // ── S7·7a: fetch the approved plan blob and hand it to the composer ────────
-    //
-    // The composer is PURE (rule 0.3) and must not touch the artifact store, so
-    // the ONE piece of IO the fresh-implementer briefing needs happens HERE, at the
-    // daemon boundary, and is passed IN. The task carries only the plan's content
-    // hash (`planArtifactHash`); the blob lives in the store.
-    //
-    // (S7·7b: "BOTH call sites (spawn and resume)" used to be true of this method.
-    // D46 removed the resume path entirely — there is now exactly ONE call site.)
-    //
-    // ⚠ NEVER THROWS, NEVER FAILS THE DISPATCH. A store read is IO, so it is inside
-    // the same try/catch discipline the rest of this method keeps: a fetch that
-    // throws, or a present hash whose blob is null (shouldn't happen — the store
-    // wrote it at `recordPlan`), DEGRADES to the no-plan briefing rather than
-    // erroring. Absent hash → no fetch at all (the store is not consulted), so a
-    // task that never planned is byte-identical to before this unit.
-    let planBlobText: string | undefined;
-    if (task.planArtifactHash !== undefined) {
-      try {
-        const planBlob = this.deps.artifactStore.getBlob(task.planArtifactHash);
-        planBlobText = planBlob === null ? undefined : planBlob;
-      } catch {
-        // A failed blob read is not a failed dispatch — degrade to no plan. The
-        // composer then falls back to its work-order-only (or generic) briefing.
-        planBlobText = undefined;
-      }
-    }
-
-    // ── S7·7b: the FIX-SEED (D46), read straight off the task record ───────────
-    //
-    // NO IO AT ALL, in deliberate contrast to the plan above: `lastReview` and
-    // `lastCompletion` are FOLDED FIELDS (S7·7b-core's projection folds of
-    // `report_filed`, both report kinds — `review_reported` /
-    // `completion_reported` before S11·U2), so the seed is already in the
-    // record this method was handed. That is the whole reason the payloads are
-    // carried inline on their events rather than stored as blobs — a fix-seed that
-    // needed a fetch would need a degrade path, and this one cannot fail.
-    //
-    // ⚠ **LATEST-WINS, AND STALE-REV FEEDBACK CAN RIDE ALONG. ACCEPTED FOR NOW.**
-    // Both fields keep only the NEWEST report (see taskRecordSchema). After an
-    // AMENDMENT (a new `workOrderRev`, D46's second correction door) the newest
-    // review may have judged the OLD work-order, and it will still be rendered into
-    // the new revision's briefing. The payloads each carry their own `workOrderRev`,
-    // so a filter — "drop a seed whose rev is behind the task's" — is a few lines
-    // away; it is deliberately NOT built in this unit, because which side of that
-    // choice is right (drop it, or show it labelled as stale) is a product call
-    // nobody has made. If you are here because a fixer acted on obsolete feedback,
-    // this is the note you were looking for.
-    //
-    // ABSENT STAYS ABSENT: each key is spread in only when its source is present,
-    // never set to `undefined`. A present-but-undefined key is NOT the same as an
-    // absent one — `composeStageInstruction`'s contract is that an empty context
-    // composes byte-identically to no context, and `'reviewFeedback' in context`
-    // must stay false on a first pass.
-    const reviewFeedback = task.lastReview?.criteria;
-    const worklog = task.lastCompletion?.worklog;
-    const instructionContext: StageInstructionContext = {
-      ...(planBlobText === undefined ? {} : { plan: planBlobText }),
-      ...(reviewFeedback === undefined ? {} : { reviewFeedback }),
-      ...(worklog === undefined ? {} : { worklog }),
-    };
-    // An EMPTY context is passed as `undefined`, not as `{}` — that is what keeps a
-    // first-pass dispatch byte-identical to the pre-S7·7a call, where the third
-    // argument did not exist at all.
-    const planContext: StageInstructionContext | undefined =
-      Object.keys(instructionContext).length === 0 ? undefined : instructionContext;
-
-    let instructionText: string | null;
-    try {
-      instructionText = this.composeStageInstruction(task, plan, planContext);
-    } catch (composeError) {
-      return { status: 'not-delivered', reason: `compose-threw:${describeThrown(composeError)}` };
-    }
-    // `null` and the empty string are the same instruction: none. An empty send
+    // `''` is the same instruction as "nothing composed": none. An empty send
     // would still cost a turn and would read to the agent as a prompt.
-    if (typeof instructionText !== 'string' || instructionText.length === 0) {
+    if (composed.length === 0) {
       return undefined;
     }
     let sendResult;
@@ -1416,7 +1418,7 @@ export class TaskDispatcher {
       // echoes the turn into the event log as a `message(role:'user')` — so a
       // stage run's brief is visible in the transcript exactly like any other
       // instruction. The dispatcher does not get a private channel.
-      sendResult = this.deps.sessionHost.sendMessage(appSessionId, instructionText);
+      sendResult = this.deps.sessionHost.sendMessage(appSessionId, composed);
     } catch (sendError) {
       return { status: 'not-delivered', reason: `send-threw:${describeThrown(sendError)}` };
     }

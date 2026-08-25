@@ -23,3 +23,17 @@ export { composeStageInstruction, type StageInstructionContext } from './stageIn
 // `tasks/workOrder.ts` by S18·U2; the engine-bound shapes it sat beside stayed
 // in core (§3.4 c1). Consumer: the daemon's `createTaskTool.ts`.
 export { createTaskToolPayloadSchema, type CreateTaskToolPayload } from './createTaskPayload.js';
+
+// S19·U1 (slice-19 §3.1) — the Tier-1 COMPOSER TABLE. `[…].briefing.composer`
+// is an entry-point STRING; this is where the tenant resolves it. Thin wrappers
+// over the prose module above — zero prose bytes moved — and no fallback row:
+// an unresolvable entry point is a preflight refusal (§3.5), never a generic
+// briefing. `BriefingInputs` is the tenant-side STRUCTURAL TWIN of the engine's
+// `BriefingInputSet`; the two are joined in the daemon, and
+// `packages/ext-host/surface.json` does not grow for it (A7 ⟨signed⟩).
+export {
+  briefingComposers,
+  type BriefingComposer,
+  type BriefingInputs,
+  type ProjectedTaskRecord,
+} from './briefingComposers.js';

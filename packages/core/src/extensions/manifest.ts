@@ -301,8 +301,13 @@ export interface ParsedBriefing {
   readonly composer: string;
   readonly inputs: readonly string[];
   readonly tools: readonly string[];
-  readonly permissionMode?: z.infer<typeof permissionModeSchema>;
   readonly capture: readonly string[];
+  // ⚠ **`permissionMode` IS DELIBERATELY ABSENT HERE (slice-19 §3.4, 2026-08-25).**
+  // It stood on this interface until S19·U1. Permission mode now has exactly ONE
+  // home — the NODE (`NodeProperties.permissionMode`, which every node and node
+  // kind already carries) — and a briefing-level `permission_mode` key is a
+  // named refusal rather than a second place to say the same thing. Read the
+  // effective mode off the node's properties; there is nothing to fall back to.
 }
 
 export interface ParsedAcceptance {
@@ -1541,7 +1546,43 @@ function parseNodeKinds(
   return kinds;
 }
 
-const BRIEFING_KEYS = ['composer', 'inputs', 'tools', 'permission_mode', 'capture'];
+// `permission_mode` is RECOGNIZED here — this is the unknown-key sweep's known
+// set, not the vocabulary of `ParsedBriefing`. It stays in this list so a
+// briefing carrying it gets exactly ONE diagnostic: `refuseBriefingPermissionMode`
+// below's named `briefing-permission-mode-misplaced`, not a second, contradictory
+// `unknown-briefing-property` from the sweep (node-kit §1.4.4 — an operator must
+// be able to tell a misplacement from a typo). It is never read back into
+// `ParsedBriefing`: the key keeps exactly ONE home, the node
+// (`NodeProperties.permissionMode`), and the briefing table is refused as a
+// second one rather than accepted as one (slice-19 §3.4, signed 2026-08-25;
+// this recognition fixed same-day after a P2 review found the sweep and the
+// placement refusal both firing on the same key).
+const BRIEFING_KEYS = ['composer', 'inputs', 'tools', 'capture', 'permission_mode'];
+
+/**
+ * slice-19 §3.4: briefing-level `permission_mode` has ONE HOME, and it is the
+ * NODE. Its presence in a `[workflows.nodes.briefing]` table is an ERROR rather
+ * than an ignored key, for the same reason `offered_when`'s is: a manifest
+ * carrying it is a manifest whose author believes the briefing governs the
+ * spawn's permission footing, and silently dropping the field would silently
+ * change which footing a dispatched session runs under.
+ *
+ * Deliberately NOT a resolution rule. There was no precedence between the two
+ * placements and there is now nothing to have precedence over — §3.4 chose the
+ * one home rather than inventing a winner.
+ */
+function refuseBriefingPermissionMode(
+  collector: IssueCollector,
+  table: Record<string, unknown>,
+  path: string,
+): void {
+  if (table.permission_mode === undefined) return;
+  collector.error(
+    'briefing-permission-mode-misplaced',
+    `${path}.permission_mode`,
+    '`permission_mode` belongs on the NODE (or the `[[node-kinds]]` it composes), never inside `[workflows.nodes.briefing]` (slice-19 §3.4): one home, so the declared footing is readable in one place. Move the key up one level — the vocabulary (`default` | `plan`) and its meaning are unchanged.',
+  );
+}
 
 /**
  * node-kit §1.8.1: "the INPUTS are the security surface." A CLOSED allow-list
@@ -1616,6 +1657,10 @@ function parseBriefing(
     'unknown-briefing-property',
     'briefing property',
   );
+  // Runs AFTER the unknown-key sweep so the misplacement gets its own named
+  // refusal rather than a generic "unknown briefing property" (node-kit §1.4.4's
+  // rule: an operator must be able to tell a misplacement from a typo).
+  refuseBriefingPermissionMode(collector, raw, briefingPath);
 
   // node-kit §1.8.1: "the prose is code." The composer is an extension entry
   // point; only its NAME is declarative.
@@ -1637,15 +1682,6 @@ function parseBriefing(
       allowEmpty: true,
     }) ?? [];
 
-  const permissionMode = readEnum(
-    collector,
-    raw,
-    'permission_mode',
-    `${briefingPath}.permission_mode`,
-    permissionModeSchema,
-    { required: false },
-  );
-
   const capture =
     readStringArray(collector, raw, 'capture', `${briefingPath}.capture`, {
       required: false,
@@ -1656,7 +1692,7 @@ function parseBriefing(
   );
 
   if (composer === undefined) return undefined;
-  return { composer, inputs, tools, permissionMode, capture };
+  return { composer, inputs, tools, capture };
 }
 
 // node-kit §1.8.4 — six alternative bodies for ONE acceptance table; a node
@@ -2271,7 +2307,11 @@ function parseWorkflowNodes(
     // hazard, q16). D55 exists BECAUSE plan mode gates MCP tools: an offered
     // tool under plan mode fires a human gate, and an unattended planner then
     // waits forever. A node declaring both has rebuilt that stall.
-    const effectivePermissionMode = briefing?.permissionMode ?? properties.permissionMode;
+    // slice-19 §3.4: ONE HOME. This used to read
+    // `briefing?.permissionMode ?? properties.permissionMode`; the briefing half
+    // no longer exists (a briefing-level key is refused above), so the node's
+    // resolved properties ARE the effective footing.
+    const effectivePermissionMode = properties.permissionMode;
     if (effectivePermissionMode === 'plan' && (briefing?.tools.length ?? 0) > 0) {
       collector.error(
         'plan-mode-with-tools',

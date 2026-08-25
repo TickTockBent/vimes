@@ -486,3 +486,30 @@ export {
   type MoveDecision,
   type EngineRefusalReason,
 } from './extensions/proposeMove.js';
+
+// S19·U1 (slice-19 §3.2) — the briefing INPUT SET: the projection that makes
+// the declared input kinds disjoint, and the engine-side assembly that reads
+// ONLY the rows a node declared. Named, not wildcarded, for the same reason the
+// two lists above are named. The consumer is the daemon's dispatch preflight
+// (U2); the tenant side of the seam is a STRUCTURAL twin declared locally in
+// `@vimes/ext-tasks` — `packages/ext-host/surface.json` does not grow for this
+// (slice-19 A7 ⟨signed⟩).
+export {
+  projectInstanceRecord,
+  assembleBriefingInputs,
+  briefingInputRefusalReasonSchema,
+  PROJECTED_INSTANCE_RECORD_FIELDS,
+  EXCLUDED_INSTANCE_RECORD_FIELDS,
+  ASSEMBLABLE_BRIEFING_INPUT_ROWS,
+  INSTANCE_RECORD_ROW,
+  PLAN_ARTIFACT_ROW,
+  LAST_REVIEW_ROW,
+  LAST_COMPLETION_ROW,
+  type ProjectedInstanceRecord,
+  type ProjectedInstanceRecordField,
+  type ExcludedInstanceRecordField,
+  type BriefingInputSet,
+  type BriefingInputReads,
+  type BriefingInputAssembly,
+  type BriefingInputRefusalReason,
+} from './extensions/briefingInputs.js';

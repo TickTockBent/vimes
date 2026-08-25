@@ -39,7 +39,12 @@ import {
 // S18·U2 (Move 4) — the dispatcher's instruction seam is TENANT policy and lives
 // in the task extension now; the engine still owns WHETHER and WHO. Root barrel
 // only: the boundary checker refuses a deep import into an ext-* package.
-import { composeStageInstruction } from '@vimes/ext-tasks';
+//
+// ⚠ S19·U3: `composeStageInstruction` is NOT imported here any more.
+// `TaskDispatcher` stopped calling it (composition moved to the preflight,
+// below) — the tenant's real composer table is `briefingComposers`, reached
+// through `preflightBriefing`.
+import { briefingComposers } from '@vimes/ext-tasks';
 import Database from 'better-sqlite3';
 import { SqliteEventStore } from './sqliteEventStore.js';
 import { SqliteSnapshotStore } from './sqliteSnapshotStore.js';
@@ -70,6 +75,9 @@ import { loadShippedWorkflow } from './shippedManifest.js';
 import { NodeWriter } from './nodeWriter.js';
 import { ProjectWriter } from './projectWriter.js';
 import { TaskDispatcher } from './taskDispatcher.js';
+// S19·U2 (slice-19 §3.5): the declaration path's preflight. Wired below as an
+// injected dep the dispatcher does NOT call yet — U3 is the flip.
+import { preflightBriefing } from './briefingPreflight.js';
 import { TaskWatchdog } from './taskWatchdog.js';
 import { GitAdapter, defaultGitRunner, type GitRunner } from './gitAdapter.js';
 import { CheckoutCoordinator } from './checkoutCoordinator.js';
@@ -602,12 +610,36 @@ export function createDaemon(deps: DaemonDeps): Daemon {
       // no second session authority.
       sendMessage: (appSessionId, text) => sessionHost.sendMessage(appSessionId, text),
     },
-    // The minimal, stage-generic instruction Wes signed off 2026-07-24 (see
-    // packages/ext-tasks/src/stageInstruction.ts) — a dispatched worker is now
-    // told what task/stage/directory it's in and how to behave mid-run, instead
-    // of nothing. Per-stage specialisation (planning/implementing/review wording)
-    // is deliberately deferred — D43/D44, slice 7.
-    composeStageInstruction,
+    // ─── S19·U3 (slice-19 §3.5/§3.6/§3.7): the DECLARATION path — THE ONLY PATH ─
+    //
+    // ⚠ **THIS IS WHAT A STAGE RUN'S WORDS COME FROM NOW.** Through S19·U2 this
+    // dep was wired but never called (the compiled path — `composeStageInstruction`,
+    // composed POST-spawn — was still the whole of production). S19·U3 flipped the
+    // call site: `dispatchTask` now calls this BEFORE `spawnStageRun` (before any
+    // worktree or spawn exists), and the compiled composing path it replaced is
+    // deleted, not merely superseded. Per-stage specialisation
+    // (planning/implementing/review wording) is the tenant composer table's
+    // business (`briefingComposers`, `@vimes/ext-tasks`) — deliberately deferred
+    // beyond the minimal, stage-generic prose Wes signed off 2026-07-24 (see
+    // packages/ext-tasks/src/stageInstruction.ts) — D43/D44, slice 7.
+    //
+    // THREE injections, and each is the SAME object something else already uses:
+    //
+    //   • `workflow` — the boot-resolved declaration (§3.3's one-declaration
+    //     law, Move 3's signed F2). Literally the same `shippedWorkflow.workflow`
+    //     the `InstanceWriter` adjudicates against and the instance API serves
+    //     its edge table from. Dispatch becomes the THIRD reading of ONE
+    //     declaration, never a fourth resolution of its own.
+    //   • `composers` — the tenant's Tier-1 composer table (§3.1), through the
+    //     root barrel like every other `@vimes/ext-tasks` import here.
+    //   • `artifactStore` — the same store the dispatcher writes captured plans
+    //     into, so the `artifact:plan` row fetches from one place.
+    preflightBriefing: (task) =>
+      preflightBriefing(task, {
+        workflow: shippedWorkflow.workflow,
+        composers: briefingComposers,
+        artifactStore,
+      }),
     emit: (events) => router.emit(events),
     readTasks: () => readTasksAsLegacyView(),
     readMeters: () => currentMetersState(),
