@@ -450,6 +450,58 @@ exist; the boundary is mechanical and eight-way sabotage-proven; every
 tenant symbol movable under the dependency knot has moved; every
 stay-behind is named with its death trigger.
 
+## §6c. Post-close cold review — findings record (2026-08-25)
+
+⟨Wes⟩ ran a cold multi-angle code review over the slice-18 diff after
+close (10 findings). The review's headline confirms the extraction
+itself (byte-verbatim moves, re-covered tests, fixture-vs-live parity
+at HEAD, consumer re-points); every finding sits in the NEW ENFORCEMENT
+MACHINERY. Orchestrator verification before fixing:
+
+**S18-F3 — the primary gate has holes (checker, five sub-findings).**
+- (a) `stripComments` misreads a regex literal ending `\//` as a line
+  comment — **REPRODUCED at the orchestrator gate**: a deep import
+  after `/foo\//` on the same line passes clean. Fail-open in the
+  primary enforcement.
+- (b) Rules 7/8 scan core/daemon with `['.ts']` only (ext zones get
+  .ts/.mts/.cts) and drop non-literal dynamic imports there — verified
+  by read (`:561`, `:580`).
+- (c) Rule 6 never validates a surface row's `from` against
+  `@vimes/core` — the exact-origin law's upstream half is unenforced;
+  a relative re-export + a matching lying row passes. Verified by read.
+- (d) `isMainModule()` fails OPEN under symlinked invocation (strict
+  path equality, `:614`). ci-gate invokes directly so today's gate is
+  unaffected — but a fail-open wrapper is wrong regardless.
+- (e) String-literal awareness: reviewer claims import-shaped text in
+  strings false-positives. **NOT reproduced** by the orchestrator's
+  first experiment — handed to the fix unit with the reviewer's exact
+  shape; fix or record refuted.
+Classification: mis-implementations of signed §3.3, same family as
+S18-F2 — in-mandate fixes, recorded. The A5 evidence stands as run
+(the eight cases DID refuse); what F3 shows is that the refusals were
+necessary, not sufficient.
+
+**S18-F4 — the stem coupling was severed by the pre-authorized
+fixture swap (sessionIdentity.test.ts).** The swap (c3 doctrine) was
+signed, but it removed the only MACHINE check tying core's
+`DISPATCH_BRIEFING_STEM` to the composer's real output — a stem
+reword in ext-tasks now lands as a routine golden update while core
+stays green and D91 title derivation silently dies. The comment even
+still claims the coupling is machine-checked. Fix: the coupling test
+moves to its honest home — the DAEMON, which legally imports both
+`@vimes/core` and `@vimes/ext-tasks`; plus the comment corrected.
+In-mandate (strengthens signed D91/c3 intent; contradicts nothing).
+
+**Hygiene batch (in-mandate):** ALLOWED_HITS gains per-entry expected
+counts + comment-only enforcement (tightens the F1 ruling, changes no
+signed direction); three comment-truth misses the U4 sweep didn't
+catch (`createTaskTool.ts:71` "(…, core)", `stageRunner.ts:53`
+sibling-file claim, `discovery.test.ts:4` "empty barrel"); the
+stale-dist gotcha extended to name the two new packages; checker
+walker/parser duplication consolidated.
+
+All fixes to a NEW agent on the PR branch; gate re-run; PR updated.
+
 ## §7. Outside-review triage record (Sol)
 
 **Round 1 (2026-08-25, on skeleton rev 1) — verdict "not signable,"

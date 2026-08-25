@@ -50,7 +50,9 @@
 // being the same session is now handed to the fresh session explicitly — the prior
 // attempt's diff is read off disk (D53's rider), and the review feedback + the
 // prior attempt's worklog ride in the briefing as the FIX-SEED (see
-// `stageInstruction.ts`). That seed is the resume's replacement, and it is why
+// `packages/ext-tasks/src/stageInstruction.ts` — NOT a sibling of this file any
+// more: the composer is tenant code behind the Tier-1 boundary since S18·U2, and
+// core may not import it). That seed is the resume's replacement, and it is why
 // removing the resume did not lose the fixer's context.
 //
 // Rule 0.3: PURE and TOTAL. No clock, no I/O, no randomness, no mutation of the

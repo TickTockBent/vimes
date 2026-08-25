@@ -420,11 +420,22 @@ const DISPATCH_BRIEFING_VARIANTS: readonly {
 ];
 
 describe('deriveSessionTitle: the dispatch briefing is titled by its TASK LINE (S16-F1)', () => {
-  // ⚠ **THE COUPLING, MACHINE-CHECKED.** `DISPATCH_BRIEFING_STEM` is restated in
-  // sessionIdentity.ts rather than imported from the task subsystem, which is
-  // exactly the drift the UI stripper could only WARN about in a comment. This
-  // test closes it: change the composer's opening sentence and this reddens
-  // rather than going quietly inert.
+  // ⚠ **THE COUPLING IS NOT MACHINE-CHECKED HERE ANY MORE — IT MOVED (S18-F4).**
+  // `DISPATCH_BRIEFING_STEM` is restated in sessionIdentity.ts rather than
+  // imported from the task subsystem, which is exactly the drift the UI stripper
+  // could only WARN about in a comment. The case below once closed that drift by
+  // composing REAL briefings; S18·U2's signed fixture swap replaced them with the
+  // frozen constants above, so what it now proves is that those RECORDED BYTES
+  // open with the stem — true, useful for the derivation's own contract, and
+  // blind to a reword in the composer that produced them. The cold review named
+  // that severance (docs/slice-18.md §6c, S18-F4).
+  //
+  // THE LIVE COUPLING NOW LIVES AT `packages/daemon/src/dispatchBriefingStem.test.ts`
+  // — the daemon is the one package that legally imports both `@vimes/core` and
+  // `@vimes/ext-tasks`, so it can compose through the real
+  // `composeStageInstruction`. Reword the composer's opening sentence and THAT
+  // file reddens; this one would go quietly stale, which is why the constants
+  // above say to re-record rather than hand-edit.
   it.each(DISPATCH_BRIEFING_VARIANTS.map((v) => [v.variant, v] as const))(
     'the %s briefing opens with the stem the derivation matches on',
     (_variant, briefingVariant) => {

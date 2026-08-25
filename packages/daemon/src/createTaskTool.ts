@@ -68,8 +68,9 @@ export interface CreateTaskToolDeps {
 // ── the forced fields (principle 13) ─────────────────────────────────────────
 //
 // What the daemon decides and the model may not name. The payload schema
-// (`createTaskToolPayloadSchema`, core) makes naming any of them a validation
-// error; these constants are the values that go in their place.
+// (`createTaskToolPayloadSchema`, `@vimes/ext-tasks` since S18·U2) makes naming
+// any of them a validation error; these constants are the values that go in
+// their place.
 //
 // ⚠ THE STARTING NODE IS NO LONGER A CONSTANT HERE (S12·U2) — it arrives as
 // `deps.initialNode`, read off the boot declaration's `workflow.initial`. The

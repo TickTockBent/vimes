@@ -85,6 +85,30 @@ interface AllowedHit {
   file: string;
   identifier: (typeof MOVED_IDENTIFIERS)[number];
   reason: AllowedHitReason;
+  // ⚠ **EXACT, not a floor (S18 review batch).** A file×identifier pair with no
+  // count is a licence to add mentions: one truthful tombstone listed here would
+  // silently cover a second, a third, and eventually a live reference. The count
+  // makes every ADDITION a deliberate edit to this list — drift in either
+  // direction (a mention added, a mention deleted) reddens and has to be
+  // re-stated with its reason.
+  expectedCount: number;
+}
+
+// A hit is only ever allowed on a COMMENT line (S18 review batch). The F1
+// ruling exempted truthful DOC — tombstones, the signed positional stub, c3's
+// boundary note — and doc is a comment by definition. Live code mentioning a
+// moved identifier is the exact violation A3 exists to catch, so it can never
+// be covered by a listing: this predicate gates `isAllowedHit` itself, which
+// means the unlisted-hits test names a code-position hit with its file:line
+// rather than waving it through on the strength of a neighbouring comment.
+//
+// Leading whitespace is stripped first; `//` is a line comment and `*` is a
+// continuation line inside a `/** … */` block. Nothing else counts — a trailing
+// comment on a live statement (`const x = 1; // composeStageInstruction`) is a
+// code line and stays refused.
+function isCommentLine(lineText: string): boolean {
+  const trimmed = lineText.trimStart();
+  return trimmed.startsWith('//') || trimmed.startsWith('*');
 }
 
 // The S18-F1 allowed-hits list (§5b ruling, amended A3) — per-file,
@@ -99,23 +123,31 @@ const ALLOWED_HITS: readonly AllowedHit[] = [
   // The neighbouring D56 module-split note (index.ts:183, pre-dating the
   // move) explains why the orchestrator's founding composers are a
   // SEPARATE module from this one — same file, same tombstone context.
-  { file: 'index.ts', identifier: 'composeStageInstruction', reason: 'tombstone' },
-  { file: 'index.ts', identifier: 'StageInstructionContext', reason: 'tombstone' },
+  { file: 'index.ts', identifier: 'composeStageInstruction', reason: 'tombstone', expectedCount: 2 },
+  { file: 'index.ts', identifier: 'StageInstructionContext', reason: 'tombstone', expectedCount: 1 },
   // schemas.ts:389 — a "Consumer:" doctrine comment naming which composer's
   // fix-seed branch reads `lastReview`/`lastCompletion`. Informational
   // provenance, unrelated to the boundary mechanism itself.
-  { file: 'schemas.ts', identifier: 'composeStageInstruction', reason: 'historical-note' },
+  { file: 'schemas.ts', identifier: 'composeStageInstruction', reason: 'historical-note', expectedCount: 1 },
   // sessionIdentity.ts:67 — the c3 exemption's OWN boundary comment: the
   // `Task:` marker logic is restated (not imported) here so this module
   // stays a leaf, and the coupling to the real composer is held by a test.
   // This IS c3; the identifier's presence is the point, not a leftover.
-  { file: 'sessionIdentity.ts', identifier: 'composeStageInstruction', reason: 'c3-reference' },
+  { file: 'sessionIdentity.ts', identifier: 'composeStageInstruction', reason: 'c3-reference', expectedCount: 1 },
   // sessionIdentity.test.ts:266,293,295,386 — the S18·U2 frozen-fixture
   // provenance comments: every briefing string below was RECORDED from a
   // real `composeStageInstruction` call before the move (c3 doctrine), and
   // says so. Historical record of where the bytes came from, not a live
-  // reference to code that no longer lives here.
-  { file: 'sessionIdentity.test.ts', identifier: 'composeStageInstruction', reason: 'historical-note' },
+  // reference to code that no longer lives here. The FIFTH (:436) is the
+  // S18-F4 correction: the comment that used to claim this file still
+  // machine-checks the stem coupling now points at the daemon test that
+  // actually does (docs/slice-18.md §6c).
+  {
+    file: 'sessionIdentity.test.ts',
+    identifier: 'composeStageInstruction',
+    reason: 'historical-note',
+    expectedCount: 5,
+  },
   // projections/sessions.test.ts:1567 — points the reader at
   // sessionIdentity.test.ts for "the unit-level proof", naming the composer
   // for context. Same historical-provenance shape as the entry above.
@@ -123,16 +155,27 @@ const ALLOWED_HITS: readonly AllowedHit[] = [
     file: 'projections/sessions.test.ts',
     identifier: 'composeStageInstruction',
     reason: 'historical-note',
+    expectedCount: 1,
   },
   // tasks/workOrder.ts:126 — the numbered positional STUB §3.4/U2's
   // checkpoint explicitly signs ("keeps its position and its number...
   // exactly as sections 4/5 above do"). The stub's own existence requires
   // naming the schema that left.
-  { file: 'tasks/workOrder.ts', identifier: 'createTaskToolPayloadSchema', reason: 'signed-stub' },
+  {
+    file: 'tasks/workOrder.ts',
+    identifier: 'createTaskToolPayloadSchema',
+    reason: 'signed-stub',
+    expectedCount: 1,
+  },
 ];
 
 function isAllowedHit(hit: Hit): boolean {
+  if (!isCommentLine(hit.text)) return false;
   return ALLOWED_HITS.some((a) => a.file === hit.file && a.identifier === hit.identifier);
+}
+
+function hitsFor(allowed: AllowedHit, hits: Hit[]): Hit[] {
+  return hits.filter((h) => h.file === allowed.file && h.identifier === allowed.identifier);
 }
 
 describe('S18 §3.4/A3 — moved-vocabulary grep gate', () => {
@@ -150,11 +193,40 @@ describe('S18 §3.4/A3 — moved-vocabulary grep gate', () => {
 
   it('every ALLOWED_HITS entry still has at least one matching hit (a stale listing fails)', () => {
     const hits = findMovedVocabularyHits();
-    const stale = ALLOWED_HITS.filter(
-      (a) => !hits.some((h) => h.file === a.file && h.identifier === a.identifier),
-    );
+    const stale = ALLOWED_HITS.filter((a) => hitsFor(a, hits).length === 0);
     const rendered = stale.map((a) => `  ${a.file}: [${a.identifier}] (${a.reason})`).join('\n');
     expect(stale, `stale ALLOWED_HITS entries with no matching hit:\n${rendered}`).toEqual([]);
+  });
+
+  // ── the two directions the bare list could not see (S18 review batch) ──────
+
+  it('every ALLOWED_HITS entry matches EXACTLY its expectedCount (drift either way fails)', () => {
+    const hits = findMovedVocabularyHits();
+    const drifted = ALLOWED_HITS.map((a) => ({ allowed: a, actual: hitsFor(a, hits) }))
+      .filter(({ allowed, actual }) => actual.length !== allowed.expectedCount)
+      .map(
+        ({ allowed, actual }) =>
+          `  ${allowed.file}: [${allowed.identifier}] (${allowed.reason}) expected ${allowed.expectedCount}, found ${actual.length} at line(s) ${actual.map((h) => h.line).join(', ') || '(none)'}`,
+      );
+    expect(
+      drifted,
+      `ALLOWED_HITS count drift — a mention was added or removed without re-stating its reason:\n${drifted.join('\n')}`,
+    ).toEqual([]);
+  });
+
+  it('every hit an ALLOWED_HITS entry covers is on a COMMENT line — live code is never allowed', () => {
+    const hits = findMovedVocabularyHits();
+    const listedFilesAndIdentifiers = hits.filter((h) =>
+      ALLOWED_HITS.some((a) => a.file === h.file && a.identifier === h.identifier),
+    );
+    const codePositionHits = listedFilesAndIdentifiers.filter((h) => !isCommentLine(h.text));
+    const rendered = codePositionHits
+      .map((h) => `  ${h.file}:${h.line}: [${h.identifier}] ${h.text}`)
+      .join('\n');
+    expect(
+      codePositionHits,
+      `moved vocabulary in CODE POSITION (a listing exempts truthful doc, never live code):\n${rendered}`,
+    ).toEqual([]);
   });
 
   describe('§3.4 exemption enumeration (c1-c5) — the ONLY vocabulary allowed to stay', () => {

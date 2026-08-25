@@ -23,6 +23,19 @@ import {
 import { InstanceWriter, type CreateInstanceInput } from './instanceWriter.js';
 import { loadShippedWorkflow } from './shippedManifest.js';
 
+// ⚠ **THE STALE-DIST GOTCHA, AND THE TWO HOPS S18 ADDED TO IT.** Workspace
+// imports above resolve to each package's BUILT `dist/`, not its `src/`, so a
+// bare `npm test` after a source edit runs this file against stale output. The
+// hop that has always applied is `@vimes/core` via `packages/core/dist`; S18·U2
+// added two more, and the subject under test crosses both — `createTaskTool.ts`
+// imports `createTaskToolPayloadSchema` from `@vimes/ext-tasks` via
+// `packages/ext-tasks/dist`, which in turn takes its types from `@vimes/ext-host`
+// via `packages/ext-host/dist`. Editing tenant sources and re-running this file
+// alone proves nothing until the chain is rebuilt: run `npm run typecheck`
+// (`tsc -b`, which walks the project references in build order core → ext-host →
+// ext-tasks → daemon) or `npm run ci` first. Same fact as the root CLAUDE.md
+// "Repo gotchas" bullet, stated where it bites.
+//
 // ─── S8·6 — the author grant's handler (D56's first verb) ────────────────────
 //
 // Everything here runs the SPEC's handler directly, with a fake `createTask` — no
