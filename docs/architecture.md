@@ -281,6 +281,38 @@ route), never automatic adoption.
 
 ## Walk order with Wes
 
+## E7. The tenant boundary + declaration-governed dispatch (S18+S19, built 2026-08-25)
+
+Two standing structures the slices left behind, recorded so nothing
+re-derives them:
+
+**The Tier-1 boundary (S18, Move 4 as amended):** `@vimes/ext-host` is
+the interface package — an exact-origin allowlisted re-export surface
+over core (`surface.json` is the interface artifact; its diff is the
+changelog; direct re-exports only, name ≡ original). `@vimes/ext-tasks`
+is the tenant, importing ONLY ext-host + zod. The boundary's PRIMARY
+enforcement is `scripts/check-ext-boundary.mjs` (a real lexer, run
+fail-fast by ci-gate; q29(b)'s "fails resolution" was OBSERVED false
+under npm hoisting) — dependency absence is hygiene, the checker is the
+wall. Engine↔tenant types meet as STRUCTURAL twins joined in the
+daemon, the one package that legally imports both sides — also where
+cross-boundary couplings get their machine checks
+(`dispatchBriefingStem.test.ts`).
+
+**Declaration-governed dispatch (S19, first per-declaration move):**
+the boot-resolved declaration (ONE resolution, Move 3's F2 law — three
+readers now: adjudication, instance API, dispatch) governs briefings.
+The preflight COMPOSES before worktree/spawn: resolve composer →
+validate tool ids (engine-known set, fail-closed) → validate capture
+combo → assemble the declared input set → invoke → retain the string.
+Refusals ride `spawn-failed` + `briefing-unresolvable:<sub>` (wire
+union frozen). `instance.record` is a PROJECTION (disjoint input
+kinds — report/plan fields are their own kinds, unreachable when
+undeclared). Tool ids cross the spawn seam; the host builds
+session-bound specs. Capture arms off the declaration, independent of
+mode. The compiled switches are DELETED; their behavior survives as
+the frozen differential reference in `briefingPreflight.test.ts`.
+
 E1 (inventory + its five decisions) → E2 (tree + three decisions) → E3
 (subprojects, one decision) → E4/E5 are consequences, reviewed once E1–E3
 settle. Each settled DECISION becomes a D-record or folds into the pass

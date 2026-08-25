@@ -481,7 +481,15 @@ which is q24's business and blocks on the UI, not on this.
 Everything after move 4 is per-declaration and each carries its own D-record
 from the kit: briefings (`composer` + `inputs`), tool exposure (q14),
 acceptance shapes, auto-dispatch (`by`), isolation, watchdog bands, verbs,
-overlays, panes. Each is small, each is independently revertible, and — this
+overlays, panes.
+*Status:* **briefings DONE 2026-08-25** (slice 19, merged PR #3):
+composer + inputs + tools + permission_mode + capture all govern
+dispatch off the boot declaration; D55's matrix and D48's footing are
+declaration rows; compiled switches deleted, behavior frozen as the
+differential's reference. Tool exposure (q14)'s dispatched-session
+half landed WITH it (`briefing.tools` is live); the
+standing-entity/grants half remains open. Next candidates in kit
+order: acceptance shapes, auto-dispatch (`by`). Each is small, each is independently revertible, and — this
 is the payoff of the order — each is checked against a fixture that is still
 meaningful when it lands.
 
