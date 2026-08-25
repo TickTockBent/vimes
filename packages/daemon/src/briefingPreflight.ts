@@ -173,10 +173,22 @@ export interface BriefingPreflightSuccess {
   readonly planCaptureArmed: boolean;
 }
 
-/** A preflight refusal: the sub-reason, and nothing else. */
+/** A preflight refusal: the sub-reason, and — for one reason only — a detail. */
 export interface BriefingPreflightRefusal {
   readonly ok: false;
   readonly reason: BriefingPreflightSubReason;
+  /**
+   * LOGGING ONLY, NEVER WIRE. §3.5 pins the wire vocabulary at
+   * `briefing-unresolvable:<sub-reason>` and nothing wider — the routes serialize
+   * `DispatchAttemptResult` verbatim, so a thrown value's text has no business
+   * riding that string. But the detail is not nothing: an operator staring at
+   * `briefing-unresolvable:compose-threw` in the daemon's own log deserves to
+   * know WHAT the tenant composer threw, which is why this field exists at all
+   * (S19·U3, the flip's call-site rider). Present ONLY when
+   * `reason === 'compose-threw'`; every other refusal reason carries no detail
+   * because the check that produced it already IS the whole explanation.
+   */
+  readonly detail?: string;
 }
 
 /** TOTAL: every (task, declaration, table) triple maps to one of these two. */
@@ -332,13 +344,14 @@ export function preflightBriefing(
   let composed: string;
   try {
     composed = composer(inputs);
-  } catch {
-    // ⚠ THE THROWN VALUE IS DELIBERATELY NOT CARRIED. §3.5 pins the wire
-    // vocabulary at `briefing-unresolvable:<sub-reason>`, and a tenant's
-    // exception message is neither a sub-reason nor something the routes'
-    // consumers can switch on. The refusal says WHICH step failed; the
-    // exception's own text is the tenant's business.
-    return { ok: false, reason: 'compose-threw' };
+  } catch (composeThrown) {
+    // ⚠ THE THROWN VALUE NEVER RIDES THE WIRE. §3.5 pins the wire vocabulary at
+    // `briefing-unresolvable:<sub-reason>`, and a tenant's exception message is
+    // neither a sub-reason nor something the routes' consumers can switch on. The
+    // REFUSAL says WHICH step failed; `detail` is the one place the exception's
+    // own text survives at all, and it survives ONLY as far as the daemon's own
+    // log at the call site (taskDispatcher.ts) — never past it.
+    return { ok: false, reason: 'compose-threw', detail: describeThrown(composeThrown) };
   }
 
   return {
@@ -349,4 +362,13 @@ export function preflightBriefing(
     capture: declaration.capture,
     planCaptureArmed: declaration.capture.includes(PLAN_CAPTURE_NAME),
   };
+}
+
+// A one-line description of a thrown value — never a stack, never a payload
+// dump. The SAME shape `taskDispatcher.ts`'s own `describeThrown` produces
+// (deliberately not imported from there: this module does not depend on the
+// dispatcher, and the two describe the identical thing independently rather
+// than share an import for one three-line function).
+function describeThrown(thrown: unknown): string {
+  return thrown instanceof Error ? thrown.message : String(thrown);
 }

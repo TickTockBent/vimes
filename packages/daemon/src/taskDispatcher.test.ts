@@ -48,6 +48,16 @@ import {
   type DispatchAttemptResult,
   type TaskDispatcherDeps,
 } from './taskDispatcher.js';
+// S19·U3: the flip. `TaskDispatcherDeps.preflightBriefing` is the ONLY path a
+// spawn takes now (the compiled permission/stage switch this file used to pin
+// directly is DELETED); every case in this file that reaches `spawn` needs a
+// preflight result, so `buildHarness` supplies one by DEFAULT (below) matching
+// what the real declaration produces for the shipped manifest's three
+// dispatchable stages — briefingPreflight.test.ts's A2 differential is what
+// proves that mapping against the LIVE declaration; this file only needs a
+// stand-in that behaves the same way for cases testing something entirely
+// different (D54's lock, S17's checkout choreography, meters, D91 naming, …).
+import type { BriefingPreflightResult } from './briefingPreflight.js';
 
 const SHIPPED_WORKFLOW = loadShippedWorkflow();
 
@@ -107,6 +117,11 @@ class RecordingSessionHost {
     // S7·7d: recorded because the stage is what the host maps to a report-tool
     // offer — a dispatch that forgets it silently re-widens the exposure.
     stage?: TaskStage;
+    // S19·U3 (§3.6/§3.7): the seam's two new facts — recorded so a case can
+    // assert the dispatcher carried the preflight's ids and arming across,
+    // exactly as it recorded `permissionMode`/`stage` before it.
+    reportToolIds?: readonly string[];
+    planCaptureArmed?: boolean;
   }> = [];
   // ⚠ S17·U3's ORDERING INSTRUMENT, the same shape `RecordingInstanceWriter`
   // already uses: how many events had been emitted at the moment each spawn ran.
@@ -137,6 +152,8 @@ class RecordingSessionHost {
     permissionMode?: 'plan' | 'auto';
     dispatched?: boolean;
     stage?: TaskStage;
+    reportToolIds?: readonly string[];
+    planCaptureArmed?: boolean;
   }): SpawnResult {
     this.spawnCalls.push(options);
     this.spawnEmittedCounts.push(this.emittedCount());
@@ -446,6 +463,38 @@ function metersStateWith(...meters: MeterRecord[]): MetersState {
   return { meters: byId, history: {} };
 }
 
+// ─── S19·U3 — the harness's DEFAULT preflight result ─────────────────────────
+//
+// ⚠ **A STAND-IN, NOT THE PROOF.** This mirrors the SHIPPED manifest's
+// declaration for the three dispatchable stages — the same mapping the
+// compiled switches this unit deletes used to encode directly
+// (`permissionMode: stage === 'planning' ? 'plan' : 'auto'`, and the host's own
+// stage→ids switch). `briefingPreflight.test.ts`'s A2 differential is the
+// instrument that PROVES this mapping against the LIVE declaration; here it
+// exists only so the hundreds of cases in THIS file that dispatch a task for
+// reasons that have nothing to do with slice 19 (D54's lock, the checkout
+// choreography, meter gates, D91 naming, …) keep spawning with the SAME
+// options they always did, without each one naming a preflight override.
+const DEFAULT_REPORT_TOOL_IDS_BY_STAGE: Partial<Record<TaskStage, readonly string[]>> = {
+  implementing: ['vimes_report.report_completion'],
+  review: ['vimes_report.report_review'],
+};
+
+function defaultPreflightFor(task: TaskRecord): BriefingPreflightResult {
+  const permissionFooting = task.stage === 'planning' ? ('plan' as const) : ('auto' as const);
+  return {
+    ok: true,
+    // The default composes NOTHING — byte-identical to the pre-S19 default
+    // seam (`composeStageInstruction: () => null`), so every case that does not
+    // care about the instruction still sees zero `sendCalls`.
+    composed: '',
+    toolIds: DEFAULT_REPORT_TOOL_IDS_BY_STAGE[task.stage] ?? [],
+    permissionFooting,
+    capture: task.stage === 'planning' ? ['plan'] : [],
+    planCaptureArmed: task.stage === 'planning',
+  };
+}
+
 interface Harness {
   dispatcher: TaskDispatcher;
   sessionHost: RecordingSessionHost;
@@ -472,7 +521,10 @@ function buildHarness(options: {
   meters?: MetersState;
   nowIso?: string;
   resolveWorkingDirectory?: TaskDispatcherDeps['resolveWorkingDirectory'];
-  composeStageInstruction?: TaskDispatcherDeps['composeStageInstruction'];
+  // S19·U3: the ONLY path a spawn takes now. Defaults to `defaultPreflightFor`
+  // (above) — the shipped-manifest-shaped stand-in — so every case that does
+  // not care about the declaration path keeps its pre-flip spawn options.
+  preflightBriefing?: TaskDispatcherDeps['preflightBriefing'];
   // Step 8. BOTH default to the shipped default — no coordinator and the flag OFF
   // — so every case written before this step keeps exactly the behaviour it had.
   worktreeIsolationEnabled?: boolean;
@@ -562,12 +614,11 @@ function buildHarness(options: {
     ...(options.resolveWorkingDirectory === undefined
       ? {}
       : { resolveWorkingDirectory: options.resolveWorkingDirectory }),
-    // Omitted unless a case asks for one — so every OTHER case in this file runs
-    // against the real default (`() => null`, send nothing), which is the
-    // behaviour app.ts ships.
-    ...(options.composeStageInstruction === undefined
-      ? {}
-      : { composeStageInstruction: options.composeStageInstruction }),
+    // S19·U3: ALWAYS PROVIDED, never conditionally spread — every case in this
+    // file that reaches `spawn` needs a preflight result, so the harness's own
+    // default (`defaultPreflightFor`, matching the shipped declaration) stands
+    // in unless a case overrides it.
+    preflightBriefing: options.preflightBriefing ?? defaultPreflightFor,
     // S7·5b-i: the two deps `recordPlan` writes through. REQUIRED (no default),
     // so every construction of the dispatcher — including every case above — now
     // carries them; the fakes are inert on the dispatch path (nothing there calls
@@ -624,7 +675,7 @@ describe('TaskDispatcher — the spawn path', () => {
     const result = await harness.dispatcher.dispatchTask(TASK_ID);
 
     expect(harness.sessionHost.spawnCalls).toEqual([
-      { channel: 'sdk', cwd: PROJECT_ROOT, dispatched: true, permissionMode: 'auto', stage: 'implementing' },
+      { channel: 'sdk', cwd: PROJECT_ROOT, dispatched: true, permissionMode: 'auto', stage: 'implementing', reportToolIds: ['vimes_report.report_completion'] },
     ]);
     expect(harness.emitted).toHaveLength(1);
     const attachEvent = harness.emitted[0]!;
@@ -884,7 +935,7 @@ describe('TaskDispatcher — the isolation scope boundary (D32 vs step 8)', () =
     const result = await harness.dispatcher.dispatchTask(TASK_ID);
 
     expect(harness.sessionHost.spawnCalls).toEqual([
-      { channel: 'sdk', cwd: PROJECT_ROOT, dispatched: true, permissionMode: 'auto', stage: 'implementing' },
+      { channel: 'sdk', cwd: PROJECT_ROOT, dispatched: true, permissionMode: 'auto', stage: 'implementing', reportToolIds: ['vimes_report.report_completion'] },
     ]);
     expect(result).toMatchObject({ outcome: 'spawned', cwd: PROJECT_ROOT });
   });
@@ -922,6 +973,7 @@ describe('TaskDispatcher — the isolation scope boundary (D32 vs step 8)', () =
         dispatched: true,
         permissionMode: 'auto',
         stage: 'implementing',
+        reportToolIds: ['vimes_report.report_completion'],
       },
     ]);
     expect(result).toMatchObject({ cwd: `/var/lib/vimes/worktrees/${TASK_ID}` });
@@ -1012,7 +1064,7 @@ describe('TaskDispatcher — D46 INVERSION: the FIX LOOP spawns FRESH (was: resu
     // ⚠ THE LOAD-BEARING LINE. The hot author is never touched.
     expect(harness.sessionHost.resumeCalls).toEqual([]);
     expect(harness.sessionHost.spawnCalls).toEqual([
-      { channel: 'sdk', cwd: PROJECT_ROOT, dispatched: true, permissionMode: 'auto', stage: 'implementing' },
+      { channel: 'sdk', cwd: PROJECT_ROOT, dispatched: true, permissionMode: 'auto', stage: 'implementing', reportToolIds: ['vimes_report.report_completion'] },
     ]);
 
     // The attach names the NEW session, not the author — this is what makes the
@@ -1071,7 +1123,7 @@ describe('TaskDispatcher — D46 INVERSION: the FIX LOOP spawns FRESH (was: resu
     const result = await harness.dispatcher.dispatchTask(TASK_ID);
 
     expect(harness.sessionHost.spawnCalls).toEqual([
-      { channel: 'sdk', cwd: PROJECT_ROOT, dispatched: true, permissionMode: 'auto', stage: 'implementing' },
+      { channel: 'sdk', cwd: PROJECT_ROOT, dispatched: true, permissionMode: 'auto', stage: 'implementing', reportToolIds: ['vimes_report.report_completion'] },
     ]);
     expect(harness.sessionHost.resumeCalls).toEqual([]);
     expect(result.outcome).toBe('spawned');
@@ -1123,7 +1175,7 @@ describe('TaskDispatcher — THE INDEPENDENCE RULE, executed', () => {
     const result = await harness.dispatcher.dispatchTask(TASK_ID);
 
     expect(harness.sessionHost.spawnCalls).toEqual([
-      { channel: 'sdk', cwd: PROJECT_ROOT, dispatched: true, permissionMode: 'auto', stage: 'review' },
+      { channel: 'sdk', cwd: PROJECT_ROOT, dispatched: true, permissionMode: 'auto', stage: 'review', reportToolIds: ['vimes_report.report_review'] },
     ]);
     expect(harness.sessionHost.resumeCalls).toEqual([]);
     expect(result.outcome).toBe('spawned');
@@ -1235,18 +1287,47 @@ describe('TaskDispatcher — a fix that cannot start is a spawn-failure (D46 inv
   });
 });
 
-describe('TaskDispatcher — the instruction seam (MACHINERY; the words are deferred)', () => {
-  // ⚠ NO PROMPT TEXT IS ASSERTED HERE BEYOND WHAT A TEST ITSELF SUPPLIES. What a
-  // review or fix prompt should SAY is Wes's decision and is explicitly out of
-  // this step; these cases prove only that a string handed to the seam arrives
-  // verbatim, once, and that the DEFAULT is silence.
+// ─── S19·U3 — instruction DELIVERY, post-preflight (composing already happened) ─
+//
+// ⚠ **WHAT DIED HERE, AND WHERE ITS COVERAGE WENT.** Through S19·U2 this file's
+// "instruction seam" and "S7·7a plan-blob fetch and threading" describes pinned
+// `deliverStageInstruction` COMPOSING post-spawn: calling `composeStageInstruction`,
+// fetching the plan blob by `planArtifactHash`, threading it (and the S7·7b
+// fix-seed) into `StageInstructionContext`, and catching a throwing composer as
+// `not-delivered: compose-threw:…`. The flip (§3.5) moved ALL of that into the
+// PREFLIGHT, which runs BEFORE any worktree or spawn and retains the composed
+// STRING — `deliverStageInstruction` now only sends it. So:
+//
+//   • the plan-blob fetch's degrade rules (absent hash → no fetch; null blob →
+//     absent; throwing store → absent) are `briefingPreflight.test.ts`'s
+//     "the reads adapter carries today's degrade semantics" describe now;
+//   • the fix-seed threading (`reviewFeedback`/`worklog`, absent-stays-absent) is
+//     proved byte-identically by that file's A2 differential's "fix-seed"
+//     population;
+//   • `compose-threw` is `briefingPreflight.test.ts`'s A4 (a NAMED preflight
+//     refusal, pre-spawn, wire-stable as `briefing-unresolvable:compose-threw`) —
+//     there is no dispatcher-level "composer explodes mid-delivery" case any
+//     more, because nothing left in THIS method composes.
+//
+// What is LEFT here, and stays covered in THIS file, is the SEND-time mechanism:
+// the dispatcher hands `sessionHost.sendMessage` a string it was ALREADY given,
+// exactly once, iff the string is non-empty, and a refused or throwing send is
+// reported without unwinding the spawn.
+describe('TaskDispatcher — instruction delivery (S19·U3: composing already happened preflight)', () => {
   const STUB_INSTRUCTION = 'test-only instruction text — not a product prompt';
 
-  it('the DEFAULT composer sends nothing at all, on a first pass and on a fix alike', async () => {
-    // Assertion 10, first half — and this is the whole of the default behaviour.
-    // (D46: the second harness was "the resume path"; it is a fix, and a fix is a
-    // spawn now. The case is kept because the two dispatches still differ — one has
-    // a prior author on the record — and both must stay silent by default.)
+  function successPreflight(overrides: { composed: string }): BriefingPreflightResult {
+    return {
+      ok: true,
+      toolIds: [],
+      permissionFooting: 'auto',
+      capture: [],
+      planCaptureArmed: false,
+      ...overrides,
+    };
+  }
+
+  it('the DEFAULT preflight composes nothing, so nothing sends — first pass and fix alike', async () => {
     const firstPassHarness = buildHarness();
     await firstPassHarness.dispatcher.dispatchTask(TASK_ID);
     expect(firstPassHarness.sessionHost.sendCalls).toEqual([]);
@@ -1260,82 +1341,64 @@ describe('TaskDispatcher — the instruction seam (MACHINERY; the words are defe
     expect(fixHarness.sessionHost.sendCalls).toEqual([]);
   });
 
-  it('sends the composed string EXACTLY ONCE to the spawned session', async () => {
-    const composerCalls: Array<{ taskId: string; mode: string }> = [];
+  it('sends the RETAINED composed string EXACTLY ONCE to the spawned session', async () => {
     const harness = buildHarness({
       tasks: [taskRecord({ stage: 'review' })],
-      composeStageInstruction: (task, plan) => {
-        composerCalls.push({ taskId: task.taskId, mode: plan.mode });
-        return STUB_INSTRUCTION;
-      },
+      preflightBriefing: () => successPreflight({ composed: STUB_INSTRUCTION }),
     });
     const result = await harness.dispatcher.dispatchTask(TASK_ID);
 
-    expect(composerCalls).toEqual([{ taskId: TASK_ID, mode: 'spawn' }]);
     expect(harness.sessionHost.sendCalls).toEqual([
       { appSessionId: SPAWNED_SESSION_ID, text: STUB_INSTRUCTION },
     ]);
     expect(result).toMatchObject({ outcome: 'spawned', instructionDelivery: { status: 'sent' } });
   });
 
-  it('sends the composed string EXACTLY ONCE to the FIX session — the NEW one, not the author', async () => {
-    // ⚠ D46 INVERSION. Was "sends the composed string EXACTLY ONCE to the RESUMED
-    // session", and it asserted `mode: 'resume'` + `appSessionId` == the hot author,
-    // on the grounds that `plan.mode` was "the only way the composer can brief a
-    // returning author differently from a fresh one". There is no returning author;
-    // the composer sees `spawn` for a fix exactly as for a first pass, and the brief
-    // is sent to the FRESH session. What distinguishes a fix now is the fix-seed in
-    // the CONTEXT (asserted in the S7·7b block below), not the plan mode.
-    const composerCalls: string[] = [];
+  it('sends the RETAINED composed string to the FIX session — the NEW one, not the author', async () => {
+    // The brief goes to the session that will do the work. Sending it to
+    // HOT_AUTHOR_SESSION_ID would be briefing a session nobody dispatched (D46:
+    // a fix spawns fresh — see the D46 INVERSION describe above).
     const harness = buildHarness({
       tasks: [
         taskRecord({ stage: 'implementing', sessionRefs: [implementingRef(HOT_AUTHOR_SESSION_ID)] }),
       ],
-      composeStageInstruction: (_task, plan) => {
-        composerCalls.push(plan.mode);
-        return STUB_INSTRUCTION;
-      },
+      preflightBriefing: () => successPreflight({ composed: STUB_INSTRUCTION }),
     });
     const result = await harness.dispatcher.dispatchTask(TASK_ID);
 
-    expect(composerCalls).toEqual(['spawn']);
-    // The brief goes to the session that will do the work. Sending it to
-    // HOT_AUTHOR_SESSION_ID would be briefing a session nobody dispatched.
     expect(harness.sessionHost.sendCalls).toEqual([
       { appSessionId: SPAWNED_SESSION_ID, text: STUB_INSTRUCTION },
     ]);
     expect(result).toMatchObject({ outcome: 'spawned', instructionDelivery: { status: 'sent' } });
   });
 
-  it('sends NOTHING when the composer returns null or an empty string', async () => {
+  it('sends NOTHING when the retained composed string is empty', async () => {
     // An empty send would still cost a turn and would read to the agent as a
-    // prompt, so empty and null are the same instruction: none.
-    for (const composed of [null, ''] as const) {
-      const harness = buildHarness({ composeStageInstruction: () => composed });
-      const result = await harness.dispatcher.dispatchTask(TASK_ID);
-      expect(harness.sessionHost.sendCalls).toEqual([]);
-      // ...and the result carries no delivery field at all, so the default path's
-      // envelope is byte-identical to step 4a's.
-      expect(result).not.toHaveProperty('instructionDelivery');
-    }
+    // prompt, so an empty composed string is the same instruction as none.
+    const harness = buildHarness({ preflightBriefing: () => successPreflight({ composed: '' }) });
+    const result = await harness.dispatcher.dispatchTask(TASK_ID);
+    expect(harness.sessionHost.sendCalls).toEqual([]);
+    // ...and the result carries no delivery field at all, so the no-instruction
+    // path's envelope is byte-identical to step 4a's.
+    expect(result).not.toHaveProperty('instructionDelivery');
   });
 
-  it('is never consulted at all when nothing runs — a refusal receives no brief', async () => {
-    // The composer must not be a side-channel that fires on a path where no
-    // session exists.
-    let composerCallCount = 0;
+  it('the preflight is never consulted at all when nothing runs — a refusal receives no brief', async () => {
+    // The preflight must not be a side-channel that fires on a path where no
+    // session — and by construction no worktree — exists (§3.5's whole point).
+    let preflightCallCount = 0;
     const harness = buildHarness({
       tasks: [
         taskRecord({ stage: 'implementing', gates: { requireHeadroom: { meterId: 'window-5h', pct: 75 } } }),
       ],
       meters: metersStateWith(meterRecord({ percent: 40 })),
-      composeStageInstruction: () => {
-        composerCallCount += 1;
-        return STUB_INSTRUCTION;
+      preflightBriefing: (task) => {
+        preflightCallCount += 1;
+        return defaultPreflightFor(task);
       },
     });
     expect((await harness.dispatcher.dispatchTask(TASK_ID)).outcome).toBe('refused');
-    expect(composerCallCount).toBe(0);
+    expect(preflightCallCount).toBe(0);
     expect(harness.sessionHost.sendCalls).toEqual([]);
   });
 
@@ -1344,7 +1407,9 @@ describe('TaskDispatcher — the instruction seam (MACHINERY; the words are defe
     // dispatch and behaves like an idle agent. But the session exists and is
     // attached, so the dispatch itself still succeeded: un-attaching it would
     // leave a live session the task no longer references.
-    const refusedHarness = buildHarness({ composeStageInstruction: () => STUB_INSTRUCTION });
+    const refusedHarness = buildHarness({
+      preflightBriefing: () => successPreflight({ composed: STUB_INSTRUCTION }),
+    });
     refusedHarness.sessionHost.refuseNextSend('session-dead');
     const refusedResult = await refusedHarness.dispatcher.dispatchTask(TASK_ID);
     expect(refusedResult).toMatchObject({
@@ -1353,153 +1418,14 @@ describe('TaskDispatcher — the instruction seam (MACHINERY; the words are defe
     });
     expect(eventTypes(refusedHarness.emitted)).toEqual([EVENT_TYPES.instanceRunAttached]);
 
-    const throwingHarness = buildHarness({ composeStageInstruction: () => STUB_INSTRUCTION });
+    const throwingHarness = buildHarness({
+      preflightBriefing: () => successPreflight({ composed: STUB_INSTRUCTION }),
+    });
     throwingHarness.sessionHost.throwOnSend(new Error('transport gone'));
     const thrownResult = await dispatchWithoutRejecting(throwingHarness.dispatcher, TASK_ID);
     expect(thrownResult).toMatchObject({
       instructionDelivery: { status: 'not-delivered', reason: 'send-threw:transport gone' },
     });
-  });
-
-  it('a THROWING composer cannot take the dispatcher down', async () => {
-    const harness = buildHarness({
-      composeStageInstruction: () => {
-        throw new Error('composer exploded');
-      },
-    });
-    const result = await dispatchWithoutRejecting(harness.dispatcher, TASK_ID);
-    expect(harness.sessionHost.sendCalls).toEqual([]);
-    expect(result).toMatchObject({
-      outcome: 'spawned',
-      instructionDelivery: { status: 'not-delivered', reason: 'compose-threw:composer exploded' },
-    });
-  });
-});
-
-// ─── S7·7a: the daemon fetches the plan blob and threads it to the composer ────
-//
-// The composer is pure and cannot read the artifact store, so the ONE piece of IO
-// the fresh-implementer briefing needs — the plan blob by `planArtifactHash` —
-// happens in `deliverStageInstruction` and is passed IN as the context. These
-// cases pin exactly that threading, using a composer stub that echoes the context
-// (the core prose itself is pinned in stageInstruction.test.ts; here we only prove
-// the blob reaches the third argument, and never fails the dispatch).
-describe('TaskDispatcher — S7·7a plan-blob fetch and threading', () => {
-  const SENTINEL_PLAN = 'SENTINEL-PLAN-BLOB — the approved plan text';
-  const PLAN_HASH = 'a'.repeat(64);
-
-  // A composer stub that reports what context it received, so the delivered text
-  // proves whether the daemon fetched and threaded the plan.
-  const echoContextComposer: TaskDispatcherDeps['composeStageInstruction'] = (
-    _task,
-    _plan,
-    context,
-  ) => (context?.plan === undefined ? 'NO-PLAN-CONTEXT' : `PLAN:${context.plan}`);
-
-  it('fetches getBlob(planArtifactHash) and threads the blob to the composer (spawn path)', async () => {
-    const harness = buildHarness({
-      tasks: [taskRecord({ stage: 'implementing', planArtifactHash: PLAN_HASH })],
-      composeStageInstruction: echoContextComposer,
-    });
-    const getBlobHashes: string[] = [];
-    harness.artifactStore.getBlob = (hash: string) => {
-      getBlobHashes.push(hash);
-      return SENTINEL_PLAN;
-    };
-
-    const result = await harness.dispatcher.dispatchTask(TASK_ID);
-
-    expect(getBlobHashes).toEqual([PLAN_HASH]);
-    expect(harness.sessionHost.sendCalls).toEqual([
-      { appSessionId: SPAWNED_SESSION_ID, text: `PLAN:${SENTINEL_PLAN}` },
-    ]);
-    expect(result).toMatchObject({ outcome: 'spawned', instructionDelivery: { status: 'sent' } });
-  });
-
-  it('threads the fetched blob on a FIX dispatch too — the store is consulted once per run', async () => {
-    // ⚠ D46 INVERSION. Was "threads the fetched blob on the RESUME path too — both
-    // call sites are covered". There is ONE call site now (`deliverStageInstruction`
-    // is only reached from the spawn path), so what this case still earns is the
-    // fix-specific setup: a task carrying a prior author's ref must fetch and thread
-    // its plan exactly like a virgin one, and must do it for the NEW session.
-    const harness = buildHarness({
-      tasks: [
-        taskRecord({
-          stage: 'implementing',
-          planArtifactHash: PLAN_HASH,
-          sessionRefs: [implementingRef(HOT_AUTHOR_SESSION_ID)],
-        }),
-      ],
-      composeStageInstruction: echoContextComposer,
-    });
-    const getBlobHashes: string[] = [];
-    harness.artifactStore.getBlob = (hash: string) => {
-      getBlobHashes.push(hash);
-      return SENTINEL_PLAN;
-    };
-
-    const result = await harness.dispatcher.dispatchTask(TASK_ID);
-
-    expect(getBlobHashes).toEqual([PLAN_HASH]);
-    expect(harness.sessionHost.sendCalls).toEqual([
-      { appSessionId: SPAWNED_SESSION_ID, text: `PLAN:${SENTINEL_PLAN}` },
-    ]);
-    expect(result).toMatchObject({ outcome: 'spawned', instructionDelivery: { status: 'sent' } });
-  });
-
-  it('does NOT consult the store when the task has no planArtifactHash', async () => {
-    const harness = buildHarness({
-      tasks: [taskRecord({ stage: 'implementing' })],
-      composeStageInstruction: echoContextComposer,
-    });
-    let getBlobCallCount = 0;
-    harness.artifactStore.getBlob = () => {
-      getBlobCallCount += 1;
-      return SENTINEL_PLAN;
-    };
-
-    const result = await harness.dispatcher.dispatchTask(TASK_ID);
-
-    expect(getBlobCallCount).toBe(0);
-    // The composer ran with no plan context — the daemon never fabricated one.
-    expect(harness.sessionHost.sendCalls).toEqual([
-      { appSessionId: SPAWNED_SESSION_ID, text: 'NO-PLAN-CONTEXT' },
-    ]);
-    expect(result.outcome).toBe('spawned');
-  });
-
-  it('a present hash whose blob is NULL degrades to the no-plan briefing, never throws', async () => {
-    const harness = buildHarness({
-      tasks: [taskRecord({ stage: 'implementing', planArtifactHash: PLAN_HASH })],
-      composeStageInstruction: echoContextComposer,
-    });
-    harness.artifactStore.getBlob = () => null;
-
-    const result = await dispatchWithoutRejecting(harness.dispatcher, TASK_ID);
-
-    // getBlob returned null → context is undefined → the briefing degrades, and the
-    // dispatch still succeeds. A null blob is a degrade, not a dispatch failure.
-    expect(harness.sessionHost.sendCalls).toEqual([
-      { appSessionId: SPAWNED_SESSION_ID, text: 'NO-PLAN-CONTEXT' },
-    ]);
-    expect(result.outcome).toBe('spawned');
-  });
-
-  it('a THROWING getBlob cannot fail the dispatch — it degrades to no plan', async () => {
-    const harness = buildHarness({
-      tasks: [taskRecord({ stage: 'implementing', planArtifactHash: PLAN_HASH })],
-      composeStageInstruction: echoContextComposer,
-    });
-    harness.artifactStore.getBlob = () => {
-      throw new Error('store read exploded');
-    };
-
-    const result = await dispatchWithoutRejecting(harness.dispatcher, TASK_ID);
-
-    expect(harness.sessionHost.sendCalls).toEqual([
-      { appSessionId: SPAWNED_SESSION_ID, text: 'NO-PLAN-CONTEXT' },
-    ]);
-    expect(result.outcome).toBe('spawned');
   });
 });
 
@@ -1628,7 +1554,7 @@ describe('TaskDispatcher — assertion 8: with the flag OFF, NOTHING changed', (
 
     return harness.dispatcher.dispatchTask(TASK_ID).then((result) => {
       expect(harness.sessionHost.spawnCalls).toEqual([
-        { channel: 'sdk', cwd: PROJECT_ROOT, dispatched: true, permissionMode: 'auto', stage: 'implementing' },
+        { channel: 'sdk', cwd: PROJECT_ROOT, dispatched: true, permissionMode: 'auto', stage: 'implementing', reportToolIds: ['vimes_report.report_completion'] },
       ]);
       expect(result).toMatchObject({ outcome: 'spawned', cwd: PROJECT_ROOT });
       expect(harness.checkoutCreateCalls()).toEqual([]);
@@ -1699,7 +1625,7 @@ describe('TaskDispatcher — assertion 9: flag ON + worktree isolation (§3.2 ch
 
     // The session runs in the checkout, not the project root.
     expect(harness.sessionHost.spawnCalls).toEqual([
-      { channel: 'sdk', cwd: CHECKOUT_PATH, dispatched: true, permissionMode: 'auto', stage: 'implementing' },
+      { channel: 'sdk', cwd: CHECKOUT_PATH, dispatched: true, permissionMode: 'auto', stage: 'implementing', reportToolIds: ['vimes_report.report_completion'] },
     ]);
     expect(result).toMatchObject({ outcome: 'spawned', cwd: CHECKOUT_PATH });
 
@@ -1818,7 +1744,7 @@ describe('TaskDispatcher — assertion 10: flag ON + shared-dir is still project
     const result = await harness.dispatcher.dispatchTask(TASK_ID);
 
     expect(harness.sessionHost.spawnCalls).toEqual([
-      { channel: 'sdk', cwd: PROJECT_ROOT, dispatched: true, permissionMode: 'auto', stage: 'implementing' },
+      { channel: 'sdk', cwd: PROJECT_ROOT, dispatched: true, permissionMode: 'auto', stage: 'implementing', reportToolIds: ['vimes_report.report_completion'] },
     ]);
     expect(result).toMatchObject({ outcome: 'spawned', cwd: PROJECT_ROOT });
     expect(harness.checkoutCreateCalls()).toEqual([]);
@@ -2300,7 +2226,7 @@ describe('TaskDispatcher — planning spawns in plan mode (D48) + every spawn na
 
     expect(result).toMatchObject({ outcome: 'spawned', stage: 'planning' });
     expect(harness.sessionHost.spawnCalls).toEqual([
-      { channel: 'sdk', cwd: PROJECT_ROOT, dispatched: true, permissionMode: 'plan', stage: 'planning' },
+      { channel: 'sdk', cwd: PROJECT_ROOT, dispatched: true, permissionMode: 'plan', stage: 'planning', planCaptureArmed: true },
     ]);
   });
 
@@ -2315,7 +2241,14 @@ describe('TaskDispatcher — planning spawns in plan mode (D48) + every spawn na
       // the dispatched stage travels through unchanged, so hard-coding one of them
       // would let the other pass on the first one's name.
       expect(harness.sessionHost.spawnCalls).toEqual([
-        { channel: 'sdk', cwd: PROJECT_ROOT, dispatched: true, permissionMode: 'auto', stage },
+        {
+          channel: 'sdk',
+          cwd: PROJECT_ROOT,
+          dispatched: true,
+          permissionMode: 'auto',
+          stage,
+          reportToolIds: DEFAULT_REPORT_TOOL_IDS_BY_STAGE[stage],
+        },
       ]);
     }
   });
@@ -2349,6 +2282,7 @@ describe('TaskDispatcher — D91: the dispatched spawn carries the task name', (
         dispatched: true,
         permissionMode: 'auto',
         stage: 'implementing',
+        reportToolIds: ['vimes_report.report_completion'],
         name: `${TITLED_TASK_TITLE} — implementing`,
       },
     ]);
@@ -2369,6 +2303,7 @@ describe('TaskDispatcher — D91: the dispatched spawn carries the task name', (
         dispatched: true,
         permissionMode: 'plan',
         stage: 'planning',
+        planCaptureArmed: true,
         name: `${TITLED_TASK_TITLE} — planning`,
       },
     ]);
@@ -3147,150 +3082,19 @@ describe('TaskDispatcher — recordCompletion: the completion path seam (S7·7b)
   });
 });
 
-// ─── S7·7b — the FIX-SEED reaches the composer (D46) ──────────────────────────
-//
-// The dispatcher's half of the fix-seed: `lastReview.criteria` and
-// `lastCompletion.worklog` are read straight off the task record (folded fields —
-// NO IO, unlike the plan blob) and threaded into `StageInstructionContext`. The
-// WORDS are core's job and are pinned in stageInstruction.test.ts; these cases
-// prove only that the two values arrive, and that their ABSENCE is byte-identical
-// to before this unit.
+// ⚠ **S7·7b'S "FIX-SEED REACHES THE COMPOSER" DESCRIBE STOOD HERE AND WAS
+// DELETED BY S19·U3 (a recorded reversal, not a quiet edit).** Through S19·U2
+// this pinned `lastReview.criteria`/`lastCompletion.worklog` threading into
+// `StageInstructionContext` INSIDE `deliverStageInstruction`, which composed
+// post-spawn. §3.5 moved composition to the preflight, before any spawn exists,
+// so there is no fix-seed threading left in THIS class to pin — the fix-seed is
+// now one of `assembleBriefingInputs`'s declared input kinds
+// (`report:last-review` / `report:last-completion`, §3.2), and the byte-identity
+// proof moved to `briefingPreflight.test.ts`'s A2 differential (its "fix-seed"
+// population) plus U2's "the reads adapter carries today's degrade semantics"
+// describe (`readLastReview`/`readLastCompletion`, no I/O). Nothing in this file
+// replaces it because there is nothing left here for it to be ABOUT.
 
-describe('TaskDispatcher — S7·7b fix-seed threading', () => {
-  const SEEDED_REVIEW = {
-    taskId: TASK_ID,
-    stage: 'review' as const,
-    attempt: 1,
-    workOrderRev: 0,
-    criteria: [{ criterionId: 'c1', verdict: 'fail' as const, note: 'the guard never fires' }],
-  };
-  const SEEDED_COMPLETION = {
-    taskId: TASK_ID,
-    stage: 'implementing' as const,
-    attempt: 1,
-    workOrderRev: 0,
-    worklog: SAMPLE_WORKLOG,
-  };
-
-  // Captures the context object BY REFERENCE so a case can assert on key PRESENCE,
-  // which is the discipline under test — `'reviewFeedback' in context` is a
-  // different fact from `context.reviewFeedback === undefined`.
-  function captureContext(): {
-    composer: TaskDispatcherDeps['composeStageInstruction'];
-    contexts: Array<Record<string, unknown> | undefined>;
-  } {
-    const contexts: Array<Record<string, unknown> | undefined> = [];
-    return {
-      contexts,
-      composer: (_task, _plan, context) => {
-        contexts.push(context as Record<string, unknown> | undefined);
-        return 'stub instruction';
-      },
-    };
-  }
-
-  it('a bounced task carries BOTH halves of the seed to the composer', async () => {
-    const { composer, contexts } = captureContext();
-    const harness = buildHarness({
-      tasks: [
-        taskRecord({
-          stage: 'implementing',
-          sessionRefs: [implementingRef(HOT_AUTHOR_SESSION_ID)],
-          lastReview: SEEDED_REVIEW,
-          lastCompletion: SEEDED_COMPLETION,
-        }),
-      ],
-      composeStageInstruction: composer,
-    });
-    await harness.dispatcher.dispatchTask(TASK_ID);
-
-    expect(contexts).toHaveLength(1);
-    // The CRITERIA and the WORKLOG, unwrapped from their payloads — the composer
-    // gets the content, not the envelope.
-    expect(contexts[0]).toEqual({
-      reviewFeedback: SEEDED_REVIEW.criteria,
-      worklog: SEEDED_COMPLETION.worklog,
-    });
-  });
-
-  it('a FIRST PASS carries NO fix-seed keys at all — absent stays absent', async () => {
-    // ⚠ THE BYTE-IDENTICAL CLAIM. A task that has never been reviewed and never
-    // reported must produce the SAME call the pre-S7·7b dispatcher produced: a
-    // third argument of `undefined`, not `{}` and not `{reviewFeedback: undefined}`.
-    const { composer, contexts } = captureContext();
-    const harness = buildHarness({
-      tasks: [taskRecord({ stage: 'implementing' })],
-      composeStageInstruction: composer,
-    });
-    await harness.dispatcher.dispatchTask(TASK_ID);
-
-    expect(contexts).toEqual([undefined]);
-  });
-
-  it('review feedback WITHOUT a worklog threads only the key it has', async () => {
-    // A real, expected state (D46): a task bounced by hand, or reviewed against work
-    // whose author never reported. The absent half must not appear as a present
-    // undefined — see the composer's own asymmetry note in stageInstruction.ts.
-    const { composer, contexts } = captureContext();
-    const harness = buildHarness({
-      tasks: [taskRecord({ stage: 'implementing', lastReview: SEEDED_REVIEW })],
-      composeStageInstruction: composer,
-    });
-    await harness.dispatcher.dispatchTask(TASK_ID);
-
-    expect(Object.keys(contexts[0]!)).toEqual(['reviewFeedback']);
-    expect('worklog' in contexts[0]!).toBe(false);
-  });
-
-  it('the fix-seed rides ALONGSIDE the fetched plan, all three keys at once', async () => {
-    const PLAN_HASH_FOR_FIX = 'b'.repeat(64);
-    const { composer, contexts } = captureContext();
-    const harness = buildHarness({
-      tasks: [
-        taskRecord({
-          stage: 'implementing',
-          planArtifactHash: PLAN_HASH_FOR_FIX,
-          lastReview: SEEDED_REVIEW,
-          lastCompletion: SEEDED_COMPLETION,
-        }),
-      ],
-      composeStageInstruction: composer,
-    });
-    harness.artifactStore.getBlob = () => 'the approved plan';
-    await harness.dispatcher.dispatchTask(TASK_ID);
-
-    expect(contexts[0]).toEqual({
-      plan: 'the approved plan',
-      reviewFeedback: SEEDED_REVIEW.criteria,
-      worklog: SEEDED_COMPLETION.worklog,
-    });
-  });
-
-  it('reads the seed WITHOUT touching the artifact store — the folds are already in the record', async () => {
-    // The plan needs IO; the fix-seed does not. A store read here would mean the
-    // payloads had been moved to blobs, which would need a degrade path this
-    // method deliberately does not have for the seed.
-    const { composer } = captureContext();
-    const getBlobCalls: string[] = [];
-    const harness = buildHarness({
-      tasks: [
-        taskRecord({
-          stage: 'implementing',
-          lastReview: SEEDED_REVIEW,
-          lastCompletion: SEEDED_COMPLETION,
-        }),
-      ],
-      composeStageInstruction: composer,
-    });
-    harness.artifactStore.getBlob = (hash: string) => {
-      getBlobCalls.push(hash);
-      return null;
-    };
-    await harness.dispatcher.dispatchTask(TASK_ID);
-
-    expect(getBlobCalls).toEqual([]);
-  });
-});
 
 // ─── S7·7c — THE D54 PER-TASK IN-FLIGHT LOCK ─────────────────────────────────
 //

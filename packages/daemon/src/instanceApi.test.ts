@@ -266,6 +266,26 @@ function buildApiHarness(
     // instanceWriter instance, so the move would go through I7's one writer.
     artifactStore: new MemoryArtifactStore(),
     instanceWriter,
+    // S19·U3: the ONLY path a spawn takes now. This file's cases that "want the
+    // whole stack" reach a REAL `dispatchTask`, which calls `preflightBriefing`
+    // on the spawn path — a mechanical consequence of the flip, not a routes
+    // change (this stand-in mirrors the shipped declaration's per-stage shape
+    // exactly the way `taskDispatcher.test.ts`'s `defaultPreflightFor` does; the
+    // LIVE mapping is proven against the real declaration in
+    // `briefingPreflight.test.ts`'s A2 differential, not here).
+    preflightBriefing: (task) => ({
+      ok: true,
+      composed: '',
+      toolIds:
+        task.stage === 'implementing'
+          ? ['vimes_report.report_completion']
+          : task.stage === 'review'
+            ? ['vimes_report.report_review']
+            : [],
+      permissionFooting: task.stage === 'planning' ? 'plan' : 'auto',
+      capture: task.stage === 'planning' ? ['plan'] : [],
+      planCaptureArmed: task.stage === 'planning',
+    }),
   });
 
   const app = new Hono();

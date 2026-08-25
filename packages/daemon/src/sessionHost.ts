@@ -295,11 +295,33 @@ interface AdapterSpawnContext {
   // out sub-agents. Absent/false = today's behaviour. The PTY adapter ignores it.
   dispatched?: boolean;
   // S7·7d: the task stage this dispatched session is running. Set by the
-  // dispatcher on dispatched spawns; selects which report tools the session is
-  // OFFERED (see `reportToolsOptionFor`). Absent on interactive spawns — and on a
-  // dispatched spawn that somehow omits it, which falls back to the pre-S7·7d
-  // both-tools exposure. The PTY adapter ignores it.
+  // dispatcher on dispatched spawns.
+  //
+  // ⚠ **S19·U3: NO LONGER CONSUMED FOR TOOL SELECTION.** Through S19·U2 this was
+  // the ONLY input to `reportToolsOptionFor`'s stage→ids switch; that switch is
+  // DELETED (§3.6 — the declaration validates ids preflight, and the dispatcher
+  // now hands this adapter the ids directly via `reportToolIds`, below). `stage`
+  // itself is NOT deleted: it still rides this object because the dispatcher
+  // still needs it for its OWN bookkeeping one level up (the tree/task-stream
+  // event's `node`, and the D91 session name), and because deleting a field that
+  // has no other consumer INSIDE this file would ripple into every test that
+  // asserts `spawnCalls` byte-for-byte for no reason this unit's scope covers.
+  // Grep confirms: `reportToolsOptionFor` was `stage`'s only reader in this file.
+  // Absent on interactive spawns. The PTY adapter ignores it.
   stage?: TaskStage;
+  // S19·U3 (§3.6): the declared report-tool IDS this dispatched session is
+  // OFFERED, already validated preflight (`isEngineKnownToolId`, fail-closed) —
+  // this adapter selects among its own private builders by id and never derives
+  // one from `stage`. Absent/empty = no report tools, same absence idiom as
+  // every other optional key here. The PTY adapter ignores it.
+  reportToolIds?: readonly string[];
+  // S19·U3 (§3.7): whether this dispatched session's ExitPlanMode is
+  // INTERCEPTED and its plan HARVESTED. Independent of `permissionMode` —
+  // `permissionMode: 'plan'` alone runs the session write-blocked; THIS is what
+  // additionally arms the harvest, keyed off the DECLARATION's `capture` list,
+  // never off the mode. Absent/false = not armed (today's `'plan'`-mode-keyed
+  // behaviour is retired, not merely defaulted). The PTY adapter ignores it.
+  planCaptureArmed?: boolean;
   // S8·6 (D56/D65): the project this session is the STANDING ORCHESTRATOR for.
   //
   // ⚠ **DERIVED FROM THE SESSION RECORD, NEVER FROM THE CALL** — see
@@ -741,17 +763,29 @@ class ClaudeSdkAdapter implements SessionAdapter {
         //
         // ⚠ S8·6 ADDED THE OTHER BRANCH, AND THE `? :` IS THE POINT. A session is
         // a dispatched RUN or a standing ORCHESTRATOR, never both, so the two
-        // exposures cannot compose: a dispatched spawn is offered its stage's
-        // report tool and can never see `vimes_board`; an orchestrator is offered
+        // exposures cannot compose: a dispatched spawn is offered its DECLARED
+        // report tools and can never see `vimes_board`; an orchestrator is offered
         // the board family and never a report tool, because it does not report —
         // it authors, and nothing dispatched it to finish. D50's clamp is
         // untouched on both sides (see the orchestrator branch's own note).
+        //
+        // ⚠ S19·U3 (§3.6): the OFFER is now BY ID, not by stage — see
+        // `reportToolsOptionFor`'s own note for what changed and what did not.
         ...(context.dispatched === true
-          ? this.reportToolsOptionFor(context.appSessionId, context.stage)
+          ? this.reportToolsOptionFor(context.appSessionId, context.reportToolIds)
           : this.orchestratorToolsOptionFor(context.orchestratorForProjectId)),
       },
     });
-    if (context.permissionMode === 'plan') {
+    // ⚠ S19·U3 (§3.7): DECLARATION-KEYED, NOT MODE-KEYED. Through S19·U2 this
+    // read `context.permissionMode === 'plan'` — every plan-mode spawn armed the
+    // harvest, because the shipped manifest always paired the two (recon fact 9's
+    // trap: a differential run against the shipped manifest alone would have
+    // passed while proving nothing). The two are independent facts now:
+    // `permissionMode: 'plan'` runs the session write-blocked; `planCaptureArmed`
+    // is what additionally intercepts ExitPlanMode and harvests the plan. A
+    // plan-mode session with capture NOT declared runs write-blocked and
+    // unharvested — a real, legal cell (§3.7), unreachable before this unit.
+    if (context.planCaptureArmed === true) {
       this.planCaptureSessions.add(context.appSessionId);
     }
     if (context.dispatched === true) {
@@ -768,40 +802,59 @@ class ClaudeSdkAdapter implements SessionAdapter {
     };
   }
 
-  // S7·7d: WHICH report tools a dispatched session is offered, by stage. Returns
-  // the OPTION FRAGMENT rather than an array so the planning case can be the
+  // WHICH report tools a dispatched session is offered — S19·U3 (§3.6) REPLACED
+  // the stage→ids SWITCH this method used to run with an ids→specs BUILD. Returns
+  // the OPTION FRAGMENT rather than an array so "no declared tools" can be the
   // ABSENCE of the `reportTools` key rather than an empty array — the spread idiom
   // this file uses everywhere else for "this key does not apply to this spawn".
   //
-  // The map is exhaustive over `DISPATCHABLE_TASK_STAGES` (planning, implementing,
-  // review — the only three stages the dispatcher ever spawns for):
-  //   • planning     → NOTHING. The planner's deliverable travels via the
-  //                    ExitPlanMode interception (D48); it has nothing to report,
-  //                    and under plan mode an offered tool is a gate (see spawn()).
-  //   • implementing → `report_completion` only. It authors; it never reviews.
-  //   • review       → `report_review` only. It judges; it never claims authorship.
-  //   • anything else (stage absent, or a stage outside the dispatchable three) →
-  //     BOTH, the pre-S7·7d exposure. Fail-open-to-guarded, deliberately: an
-  //     unrecognized stage is a plumbing bug, and the failure mode we want from a
-  //     plumbing bug is "the session can still report and the dispatcher guard
-  //     adjudicates it", not "the loop silently loses its only way to finish".
-  //     Unreachable from `dispatchTask` today, which always passes its decision's
-  //     stage; it exists so that stops being load-bearing.
+  // ⚠ **THE DERIVATION DIED; THE CONSTRUCTION DID NOT.** Through S19·U2 this
+  // method asked "which stage is this?" and answered with a hard-coded map
+  // (planning → nothing, implementing → completion, review → review, anything
+  // else → fail-open-to-both). §3.6 moved the QUESTION upstream — the preflight
+  // validates every declared id against `isEngineKnownToolId` BEFORE a worktree
+  // exists — so by the time this method runs, the ids are already known-good, and
+  // "which tools" is a fact this method is HANDED, not one it derives. What
+  // SURVIVES is spec construction: it stays host-side because a report-tool spec
+  // closes over `appSessionId`, allocated inside `spawnSession`, and cannot exist
+  // before that (Sol round 2, finding 1).
+  //
+  // The pre-S19 "no stage → fail-open-to-both" fallback is GONE, not renamed:
+  // there is no longer a stage-derived default to fall open TO. A dispatched spawn
+  // with no `reportToolIds` now offers no report tools at all — the fail-CLOSED
+  // shape §3.6 intends, since nothing upstream of this call can produce a
+  // dispatched spawn without ids any more (the dispatcher always hands the
+  // preflight's `toolIds`, empty array included).
   private reportToolsOptionFor(
     appSessionId: string,
-    stage: TaskStage | undefined,
+    toolIds: readonly string[] | undefined,
   ): { reportTools?: SdkReportToolSpec[] } {
-    switch (stage) {
-      case 'planning':
-        return {};
-      case 'implementing':
-        return { reportTools: [this.buildCompletionSpec(appSessionId)] };
-      case 'review':
-        return { reportTools: [this.buildReviewSpec(appSessionId)] };
+    if (toolIds === undefined || toolIds.length === 0) {
+      return {};
+    }
+    return { reportTools: toolIds.map((toolId) => this.buildReportSpecById(appSessionId, toolId)) };
+  }
+
+  // The id→builder map §3.6 asks for: ONE id, ONE spec, exhaustive over the
+  // engine-known set `briefingDeclarations.ts`'s `ENGINE_REPORT_TOOL_IDS`
+  // validates preflight against (that module is the tenant-facing spelling;
+  // this switch is the SAME two ids, tied to it by `briefingPreflight.test.ts`'s
+  // A2 differential rather than by import — sessionHost.ts stays free of a
+  // dependency on the declaration layer, same posture S19·U2 already took).
+  //
+  // ⚠ FAIL-CLOSED, NOT UNREACHABLE-BY-COMMENT. An id that reaches here unknown
+  // is a preflight that let something through it should have refused — a real
+  // bug, not a hypothetical — so this throws rather than silently building
+  // nothing. "A tenant selects among engine tools; it never mints one" (§3.6)
+  // is enforced twice: refused before the spawn, and THROWN if that ever fails.
+  private buildReportSpecById(appSessionId: string, toolId: string): SdkReportToolSpec {
+    switch (toolId) {
+      case `${DEFAULT_TOOL_SERVER}.report_review`:
+        return this.buildReviewSpec(appSessionId);
+      case `${DEFAULT_TOOL_SERVER}.report_completion`:
+        return this.buildCompletionSpec(appSessionId);
       default:
-        return {
-          reportTools: [this.buildReviewSpec(appSessionId), this.buildCompletionSpec(appSessionId)],
-        };
+        throw new Error(`SessionHost: unknown report tool id "${toolId}" (preflight should have refused this)`);
     }
   }
 
@@ -1402,10 +1455,17 @@ export class SessionHost implements HookHost {
     // D50: the dispatcher passes `true` for every dispatched task session; absent
     // for interactive spawns, which is today's behaviour exactly.
     dispatched?: boolean;
-    // S7·7d: set by the dispatcher on dispatched spawns; selects which report tools
-    // the session is offered. Absent for interactive spawns — today's behaviour
-    // exactly (same absence idiom as `permissionMode` and `dispatched`).
+    // S7·7d: set by the dispatcher on dispatched spawns. S19·U3: no longer
+    // selects report tools (see `AdapterSpawnContext.stage`'s note) — kept for
+    // the dispatcher's own bookkeeping. Absent for interactive spawns.
     stage?: TaskStage;
+    // S19·U3 (§3.6): the declared, preflight-validated report-tool ids this
+    // dispatched session is offered — see `AdapterSpawnContext.reportToolIds`.
+    reportToolIds?: readonly string[];
+    // S19·U3 (§3.7): whether ExitPlanMode is intercepted and harvested for this
+    // spawn — see `AdapterSpawnContext.planCaptureArmed`. Independent of
+    // `permissionMode`.
+    planCaptureArmed?: boolean;
     // S8·3 (D56): set ONLY by the orchestrator ensure path, which founds the
     // standing entity for one project. It rides into `session_created` and is
     // never read back by the host — the marking exists so the ENSURE path can
@@ -1461,6 +1521,8 @@ export class SessionHost implements HookHost {
       permissionMode: options.permissionMode,
       dispatched: options.dispatched,
       stage: options.stage,
+      reportToolIds: options.reportToolIds,
+      planCaptureArmed: options.planCaptureArmed,
     });
     return { appSessionId };
   }
@@ -1572,9 +1634,10 @@ export class SessionHost implements HookHost {
     // claudeSessionId; no new appSessionId, no fork.
     this.emitGuardedLiveness(appSessionId, 'spawning', 'resume');
     const lastClaudeSessionId = session.claudeSessionIds.at(-1)?.id;
-    // No `permissionMode`, no `dispatched`, no `stage` — the three deliberate
-    // absences the parameter comments spell out, now visible as omissions rather
-    // than as trailing arguments nobody wrote.
+    // No `permissionMode`, no `dispatched`, no `stage`, no `reportToolIds`, no
+    // `planCaptureArmed` — the five deliberate absences the parameter comments
+    // spell out, now visible as omissions rather than as trailing arguments
+    // nobody wrote.
     this.startProcess({
       appSessionId,
       channel: session.channel,
@@ -1788,8 +1851,17 @@ export class SessionHost implements HookHost {
     // the same reason `dispatched` does not — a resumed session re-establishes its
     // dispatch context only through a re-dispatch.
     stage?: TaskStage;
+    // S19·U3 (§3.6): only a fresh dispatched spawn passes ids; resume never does,
+    // same reasoning as `stage`.
+    reportToolIds?: readonly string[];
+    // S19·U3 (§3.7): only a fresh dispatched spawn arms capture; resume never
+    // does — a resumed plan-capture session re-establishes nothing, because a
+    // captured plan already left `planCaptureSessions` at capture time (see
+    // `windDown`/the ExitPlanMode handler's own cleanup).
+    planCaptureArmed?: boolean;
   }): void {
-    const { appSessionId, channel, cwd, resume, permissionMode, dispatched, stage } = options;
+    const { appSessionId, channel, cwd, resume, permissionMode, dispatched, stage, reportToolIds, planCaptureArmed } =
+      options;
     const adapter: SessionAdapter = channel === 'sdk' ? this.sdkAdapter : this.ptyAdapter;
     const hookChannel = this.prepareHookChannel(appSessionId);
     const cause = resume === undefined ? 'spawn' : 'resume';
@@ -1833,6 +1905,8 @@ export class SessionHost implements HookHost {
       permissionMode: permissionMode ?? (orchestratorForProjectId === undefined ? undefined : 'auto'),
       dispatched,
       stage,
+      reportToolIds,
+      planCaptureArmed,
       orchestratorForProjectId,
     });
     live.settingsPath = hookChannel?.settingsPath;

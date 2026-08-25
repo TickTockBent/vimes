@@ -1,18 +1,13 @@
-import { afterAll, describe, expect, it } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { describe, expect, it } from 'vitest';
 import {
-  CountingIdSource,
   DISPATCHABLE_TASK_STAGES,
-  EventRouter,
   MemoryArtifactStore,
-  MemoryEventStore,
-  SteppingClock,
+  resolveStageRunner,
   type ArtifactStore,
   type EventInput,
   type MetersState,
   type ParsedWorkflow,
+  type StageRunnerPlan,
   type TaskRecord,
   type TaskStage,
   type TasksState,
@@ -22,18 +17,10 @@ import {
   composeStageInstruction,
   type BriefingComposer,
   type BriefingInputs,
+  type StageInstructionContext,
 } from '@vimes/ext-tasks';
 
-import { loadConfigFromEnv } from './config.js';
 import { loadShippedWorkflow } from './shippedManifest.js';
-import {
-  SessionHost,
-  buildReportMcpServers,
-  type SdkQueryFactory,
-  type SdkQueryOptions,
-  type SdkReportToolSpec,
-  type SdkStreamMessage,
-} from './sessionHost.js';
 import {
   TaskDispatcher,
   type DispatchAttemptResult,
@@ -49,33 +36,35 @@ import {
 } from './briefingPreflight.js';
 import { ENGINE_REPORT_TOOL_SERVER } from './briefingDeclarations.js';
 
-// ─── S19·U2 — THE DIFFERENTIAL UNIT (slice-19 §3.5/§3.6/§3.7, A2–A5) ─────────
+// ─── S19·U3 — THE DIFFERENTIAL UNIT, FROZEN AND FLIPPED (slice-19 §3.5/§3.6/§3.7, A2–A5) ─
 //
 // ⚠ **WHAT THIS FILE IS FOR, IN ONE SENTENCE.** slice-19 replaces three compiled
 // switches — the dispatcher's `plan`/`auto` selection, the session host's
 // stage→report-tools derivation, and its mode-keyed plan-capture arming — with
-// readings of a TENANT DECLARATION, and Move 3's choreography says the
-// replacement must be proven EQUIVALENT beside the original before either half
-// is deleted. This file is that proof.
+// readings of a TENANT DECLARATION. Move 3's choreography: differential BESIDE
+// (S19·U2) → FREEZE it → flip → delete. U3 did all three of the last steps, in
+// that order, and the freeze happened FIRST, before either compiled switch was
+// touched (see the FROZEN IMAGES section below for the evidence and the
+// provenance).
 //
 // The four differential dimensions (A2), each asserted per DISPATCHABLE stage:
 //
 //   briefing bytes  ·  tool ids  ·  permission footing  ·  capture arming
 //
-// and — the part that matters — **each compiled expectation is DERIVED FROM THE
-// COMPILED CODE, never restated as a literal.** The briefing comes from a real
-// `TaskDispatcher` running the real `composeStageInstruction` post-spawn; the
-// tool ids come from a real `SessionHost` spawning with the exact options that
-// dispatcher passed, mounted through the real `buildReportMcpServers`; the
-// footing and the capture arming come from the same recorded spawn options. A
-// differential built out of hand-typed expectations would agree with itself and
-// prove nothing, which is recon fact 9's warning applied to all four dimensions
-// rather than only to capture.
+// **Briefing bytes stay LIVE** — `compiledBriefingFor` below calls
+// `composeStageInstruction` DIRECTLY (the prose module survives S19·U3 whole;
+// only the compiled switches AROUND it are deleted), so this dimension is still
+// a real two-path comparison and not a frozen literal.
 //
-// ⚠ **NOTHING FLIPS IN THIS UNIT.** The preflight is wired into
-// `TaskDispatcherDeps` and is never called; the "wired and uncalled" case below
-// proves that by breaking it (a preflight that THROWS, and a dispatch that
-// succeeds anyway).
+// **Tool ids, permission footing and capture arming are FROZEN.** All three were
+// derived from code THIS UNIT deletes — the dispatcher's `stage === 'planning'`
+// switch and the session host's stage→ids switch / mode-keyed arming — so
+// deriving them live is no longer possible once the flip lands. Move 3's
+// precedent (S12·U3, `FROZEN_COMPILED_EDGE_SET` in core's `manifest.test.ts`)
+// is the idiom: capture the compiled image ONE LAST TIME, freeze it as a
+// literal with its provenance, and let the guard survive its reference's death.
+// A red against a frozen image is a finding about the DECLARED path, never
+// license to "update the freeze to match".
 
 const SHIPPED = loadShippedWorkflow().workflow;
 const DISPATCHABLE: readonly TaskStage[] = [...DISPATCHABLE_TASK_STAGES];
@@ -86,11 +75,6 @@ const SPAWNED_SESSION_ID = 'cccccccc-0000-4000-8000-00000000000a';
 const FIXED_NOW = '2026-08-25T12:00:00.000Z';
 const PLAN_HASH = 'b'.repeat(64);
 const PLAN_TEXT = 'Step 1. Read the declaration.\nStep 2. Compose from it.';
-
-// Session-settings files land here (config.dataDir). A real writable directory
-// keeps the mechanical side effect off the repository under development.
-const settingsTempDir = mkdtempSync(join(tmpdir(), 'vimes-s19-u2-'));
-afterAll(() => rmSync(settingsTempDir, { recursive: true, force: true }));
 
 // ── task fixtures ────────────────────────────────────────────────────────────
 //
@@ -194,8 +178,7 @@ function planStore(): ArtifactStore {
   store.getBlob = (hash: string) => (hash === PLAN_HASH ? PLAN_TEXT : realGetBlob(hash));
   return store;
 }
-
-// ── the COMPILED path, driven for real ───────────────────────────────────────
+// ── the shape a spawn recorded, still needed by A4/A7's real dispatchers ──────
 
 interface RecordedSpawn {
   channel: 'sdk' | 'pty';
@@ -204,150 +187,91 @@ interface RecordedSpawn {
   permissionMode?: 'plan' | 'auto';
   dispatched?: boolean;
   stage?: TaskStage;
+  reportToolIds?: readonly string[];
+  planCaptureArmed?: boolean;
 }
 
-interface CompiledRun {
-  /** The exact bytes `deliverStageInstruction` sent to the fresh session. */
-  readonly briefing: string;
-  /** The exact options the dispatcher handed the session host. */
-  readonly spawnOptions: RecordedSpawn;
-  readonly result: DispatchAttemptResult;
-}
-
-/**
- * Run ONE task through the REAL `TaskDispatcher` on the REAL compiled path —
- * `composeStageInstruction` from `@vimes/ext-tasks`, composed POST-spawn in
- * `deliverStageInstruction`, exactly as production does today — and hand back
- * everything the differential needs to compare against.
- *
- * The session host is a fake, and only a fake: this file must not start a Claude
- * process, and the spawn OPTIONS are the whole of what the compiled path decides.
- */
-async function compiledRun(task: TaskRecord, artifactStore: ArtifactStore): Promise<CompiledRun> {
-  const spawnCalls: RecordedSpawn[] = [];
-  const sendCalls: Array<{ appSessionId: string; text: string }> = [];
-  const tasksState: TasksState = { tasks: { [task.taskId]: task } };
-  const meters: MetersState = { meters: {}, history: {} };
-
-  const deps: TaskDispatcherDeps = {
-    sessionHost: {
-      spawnSession: (options) => {
-        spawnCalls.push(options);
-        return { appSessionId: SPAWNED_SESSION_ID };
-      },
-      isLive: () => false,
-      sendMessage: (appSessionId, text) => {
-        sendCalls.push({ appSessionId, text });
-        return { ok: true };
-      },
-    },
-    composeStageInstruction,
-    emit: () => {},
-    readTasks: () => tasksState,
-    readMeters: () => meters,
-    nowIso: () => FIXED_NOW,
-    staleAfterMs: 90_000,
-    artifactStore,
-    instanceWriter: { proposeMove: (taskId) => ({ outcome: 'unknown-task', taskId }) },
-  };
-
-  const result = await new TaskDispatcher(deps).dispatchTask(task.taskId);
-  const spawnOptions = spawnCalls[0];
-  const sent = sendCalls[0];
-  if (spawnOptions === undefined || sent === undefined) {
-    throw new Error(`the compiled path did not spawn+send for ${task.stage}: ${JSON.stringify(result)}`);
-  }
-  return { briefing: sent.text, spawnOptions, result };
-}
-
-// ── the compiled TOOL IDS, derived from the session host itself ──────────────
+// ── the COMPILED briefing BYTES, derived LIVE from the surviving prose module ─
 //
-// ⚠ **THIS IS THE ANSWER TO "DERIVE THE ID SET FROM ONE SOURCE".** The tool
-// names live in `SessionHost`'s PRIVATE `buildReviewSpec` / `buildCompletionSpec`
-// and the server name in its module-local `DEFAULT_TOOL_SERVER` — none of the
-// three is exported, and `sessionHost.ts` is outside this unit's touch list. So
-// the compiled id set is not copied; it is EXTRACTED at runtime:
-//
-//   real SessionHost.spawnSession(the dispatcher's own options)
-//     → the SDK query options the host built
-//     → `reportTools`, the specs `reportToolsOptionFor(stage)` chose
-//     → `buildReportMcpServers` (exported), which buckets them by
-//       `spec.server ?? DEFAULT_TOOL_SERVER`
-//     → server name × tool name = the ids a manifest declares.
-//
-// A rename on either half of `vimes_report.report_completion` therefore reddens
-// this differential rather than silently making a shipped declaration illegal.
-
-/** The fake SDK surface `buildReportMcpServers` mounts through. */
-type ReportToolSurface = Parameters<typeof buildReportMcpServers>[1];
-
-function mountedToolIds(reportTools: SdkReportToolSpec[] | undefined): string[] {
-  const mountedNamesByServer: Array<{ server: string; tools: string[] }> = [];
-  const surface: ReportToolSurface = {
-    tool: (name) => name,
-    createSdkMcpServer: (options) => {
-      mountedNamesByServer.push({
-        server: options.name,
-        tools: options.tools.map((mounted) => String(mounted)),
-      });
-      return options;
-    },
-  };
-  buildReportMcpServers(reportTools, surface);
-  return mountedNamesByServer.flatMap((entry) =>
-    entry.tools.map((toolName) => `${entry.server}.${toolName}`),
-  );
-}
-
-async function waitFor(predicate: () => boolean, timeoutMs = 4000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (!predicate()) {
-    if (Date.now() > deadline) throw new Error('waitFor timed out');
-    await new Promise((resolve) => setTimeout(resolve, 5));
+// ⚠ **PART A OF THE FLIP, DONE FIRST: THIS IS WHAT "MAY STAY DERIVED FROM
+// `composeStageInstruction`" MEANS IN CODE.** Through S19·U2 this file's
+// "compiled" comparison ran a REAL `TaskDispatcher`, which composed
+// POST-spawn inside `deliverStageInstruction` — fetching the plan blob,
+// threading the fix-seed, calling `composeStageInstruction`. S19·U3 deletes
+// ALL of that from the dispatcher (composition moved to the preflight, which is
+// what this file's `declaredRun` already exercises), so there is no dispatcher
+// call left that can reproduce these bytes. This helper is the "compiled" half
+// of the comparison NOW: it transcribes `deliverStageInstruction`'s pre-flip
+// context-assembly VERBATIM (same degrade rules — absent hash → no fetch; null
+// blob → absent; throwing store → absent; fix-seed read straight off the
+// record, no I/O) and calls the SAME `composeStageInstruction` the declared
+// path's composer wrappers call — so the differential stays a REAL two-path
+// proof: two different roads to the one surviving prose module, not one road
+// compared against a frozen echo of itself.
+function compiledBriefingFor(task: TaskRecord, artifactStore: ArtifactStore): string {
+  let planBlobText: string | undefined;
+  if (task.planArtifactHash !== undefined) {
+    try {
+      const planBlob = artifactStore.getBlob(task.planArtifactHash);
+      planBlobText = planBlob === null ? undefined : planBlob;
+    } catch {
+      planBlobText = undefined;
+    }
   }
-}
-
-/**
- * Spawn a REAL `SessionHost` with the options the compiled dispatcher produced,
- * and report which report-tool ids it actually mounted.
- */
-async function compiledToolIdsFor(spawnOptions: RecordedSpawn): Promise<string[]> {
-  const sdkCalls: SdkQueryOptions[] = [];
-  const factory: SdkQueryFactory = ({ options }) => {
-    sdkCalls.push(options);
-    const generator = (async function* (): AsyncGenerator<SdkStreamMessage> {
-      yield { type: 'system', subtype: 'init', session_id: 'claude-s19-u2' };
-      yield { type: 'result', subtype: 'success' };
-    })();
-    return Object.assign(generator, {
-      close(): void {
-        void generator.return(undefined);
-      },
-    });
+  const reviewFeedback = task.lastReview?.criteria;
+  const worklog = task.lastCompletion?.worklog;
+  const instructionContext: StageInstructionContext = {
+    ...(planBlobText === undefined ? {} : { plan: planBlobText }),
+    ...(reviewFeedback === undefined ? {} : { reviewFeedback }),
+    ...(worklog === undefined ? {} : { worklog }),
   };
-  const clock = new SteppingClock(FIXED_NOW, 1000);
-  const ids = new CountingIdSource();
-  const store = new MemoryEventStore({ clock, ids });
-  const router = new EventRouter(store);
-  const host = new SessionHost({
-    store,
-    router,
-    clock,
-    ids,
-    config: loadConfigFromEnv({ VIMES_DB_PATH: ':memory:', VIMES_DATA_DIR: settingsTempDir }),
-    sdkQueryFactory: factory,
-    projectsRoot: '/fake-projects',
-  });
-  try {
-    host.spawnSession(spawnOptions);
-    await waitFor(() => sdkCalls.length === 1);
-    return mountedToolIds(sdkCalls[0]!.reportTools);
-  } finally {
-    host.stop();
-  }
+  const planContext: StageInstructionContext | undefined =
+    Object.keys(instructionContext).length === 0 ? undefined : instructionContext;
+  const plan: StageRunnerPlan = resolveStageRunner(task);
+  return composeStageInstruction(task, plan, planContext) ?? '';
 }
 
-// ── the DECLARED path ────────────────────────────────────────────────────────
+// ── FROZEN IMAGES — the three dimensions derived from the DELETED code ────────
+//
+// ⚠ **CAPTURED 2026-08-25, BEFORE ANY DELETION, AGAINST `taskDispatcher.ts` +
+// `sessionHost.ts` @ COMMIT `105b5ea`** (S19·U2 HEAD — the last commit where
+// the dispatcher's `stage === 'planning'` switch and the session host's
+// stage→ids switch / mode-keyed capture arming still existed and ran in
+// production). Derivation method, run ONE LAST TIME before the flip: a REAL
+// `TaskDispatcher` (the compiled path — `composeStageInstruction` wired, NO
+// `preflightBriefing`) dispatched one task per dispatchable stage; the recorded
+// `spawnOptions.permissionMode` is the footing image; `spawnOptions.permissionMode
+// === 'plan'` is the capture-arming image — recon fact 9's coupling, captured
+// exactly as it stood; the tool ids were EXTRACTED by spawning those SAME
+// `spawnOptions` into a REAL `SessionHost` and reading `SdkQueryOptions.reportTools`
+// back through the exported `buildReportMcpServers` (S19·U2's own extraction
+// method, run one final time — see U2's checkpoint for the harness). The three
+// JSON lines this produced, transcribed verbatim as this file's new source of
+// truth:
+//
+//   {"stage":"planning","permissionMode":"plan","toolIds":[],"planCaptureArmed":true}
+//   {"stage":"implementing","permissionMode":"auto","toolIds":["vimes_report.report_completion"],"planCaptureArmed":false}
+//   {"stage":"review","permissionMode":"auto","toolIds":["vimes_report.report_review"],"planCaptureArmed":false}
+//
+// ⚠ **NOTHING HERE MAY BE "UPDATED TO MATCH" A DECLARATION CHANGE.** A red
+// against one of these three maps is a finding about the DECLARED path (or a
+// real, deliberate, signed change to what the engine footings/mounts/arms) —
+// never license to edit the freeze until it passes.
+const FROZEN_PERMISSION_FOOTING_BY_STAGE: Partial<Record<TaskStage, 'plan' | 'auto'>> = {
+  planning: 'plan',
+  implementing: 'auto',
+  review: 'auto',
+};
+const FROZEN_TOOL_IDS_BY_STAGE: Partial<Record<TaskStage, readonly string[]>> = {
+  planning: [],
+  implementing: ['vimes_report.report_completion'],
+  review: ['vimes_report.report_review'],
+};
+const FROZEN_PLAN_CAPTURE_ARMED_BY_STAGE: Partial<Record<TaskStage, boolean>> = {
+  planning: true,
+  implementing: false,
+  review: false,
+};
 
 function declaredRun(
   task: TaskRecord,
@@ -425,9 +349,10 @@ describe('S19-A2 — declared ≡ compiled, over the DISPATCHABLE domain', () =>
 
   it.each(CELLS.map((cell) => [`${cell.stage} · ${cell.population.name}`, cell] as const))(
     'BRIEFING BYTES are identical — %s',
-    async (_label, cell) => {
+    (_label, cell) => {
       const task = taskRecord({ stage: cell.stage, ...cell.population.overrides });
-      const compiled = await compiledRun(task, planStore());
+      // LIVE, not frozen — see `compiledBriefingFor`'s own note.
+      const compiled = compiledBriefingFor(task, planStore());
       const declared = declaredRun(task, planStore());
 
       expect(declared.ok).toBe(true);
@@ -436,7 +361,7 @@ describe('S19-A2 — declared ≡ compiled, over the DISPATCHABLE domain', () =>
       // prefix, not a normalised comparison — the whole claim is that the
       // declaration path can replace the compiled one without the model seeing
       // a single different character (cache discipline included).
-      expect(declared.composed).toBe(compiled.briefing);
+      expect(declared.composed).toBe(compiled);
       expect(declared.composed.length).toBeGreaterThan(0);
     },
   );
@@ -444,25 +369,22 @@ describe('S19-A2 — declared ≡ compiled, over the DISPATCHABLE domain', () =>
   // The four fixtures must actually produce DIFFERENT briefings for at least one
   // stage, or the cells above would be five copies of one comparison. This is
   // the same guard `dispatchBriefingStem.test.ts` keeps over its variant table.
-  it('the populations really do compose differently (the cells are not five copies)', async () => {
-    const composed = await Promise.all(
-      POPULATIONS.map(async (population) =>
-        (await compiledRun(taskRecord({ stage: 'implementing', ...population.overrides }), planStore()))
-          .briefing,
-      ),
+  it('the populations really do compose differently (the cells are not five copies)', () => {
+    const composed = POPULATIONS.map((population) =>
+      compiledBriefingFor(taskRecord({ stage: 'implementing', ...population.overrides }), planStore()),
     );
     expect(new Set(composed).size).toBe(POPULATIONS.length);
   });
 
-  it.each([...DISPATCHABLE])('TOOL IDS are identical — %s', async (stage) => {
+  it.each([...DISPATCHABLE])('TOOL IDS are identical — %s', (stage) => {
     const task = taskRecord({ stage, ...WORK_ORDER });
-    const compiled = await compiledRun(task, planStore());
-    const compiledIds = await compiledToolIdsFor(compiled.spawnOptions);
     const declared = declaredRun(task, planStore());
 
     expect(declared.ok).toBe(true);
     if (!declared.ok) return;
-    expect([...declared.toolIds]).toEqual(compiledIds);
+    // FROZEN, not live — see the FROZEN IMAGES section's provenance. The
+    // stage→ids switch this used to extract from a real `SessionHost` is gone.
+    expect([...declared.toolIds]).toEqual(FROZEN_TOOL_IDS_BY_STAGE[stage]);
     // …and the ids really are server-qualified, which is what §3.6 puts across
     // the seam. A bare tool name would compare equal to nothing here.
     for (const toolId of declared.toolIds) {
@@ -472,49 +394,41 @@ describe('S19-A2 — declared ≡ compiled, over the DISPATCHABLE domain', () =>
 
   // Verify-by-breaking for the tool dimension: the three stages must not all
   // mount the same thing, or "identical" above would be satisfied by a constant.
-  it('the three stages really do mount three different tool sets', async () => {
-    const perStage = await Promise.all(
-      DISPATCHABLE.map(async (stage) => {
-        const compiled = await compiledRun(taskRecord({ stage, ...WORK_ORDER }), planStore());
-        return (await compiledToolIdsFor(compiled.spawnOptions)).join('|');
-      }),
+  it('the three stages really do mount three different tool sets', () => {
+    const perStage = DISPATCHABLE.map(
+      (stage) => (FROZEN_TOOL_IDS_BY_STAGE[stage] ?? []).join('|'),
     );
     expect(new Set(perStage).size).toBe(3);
   });
 
-  it.each([...DISPATCHABLE])('PERMISSION FOOTING is identical — %s', async (stage) => {
+  it.each([...DISPATCHABLE])('PERMISSION FOOTING is identical — %s', (stage) => {
     const task = taskRecord({ stage, ...WORK_ORDER });
-    const compiled = await compiledRun(task, planStore());
     const declared = declaredRun(task, planStore());
 
     expect(declared.ok).toBe(true);
     if (!declared.ok) return;
-    // The compiled footing is whatever the dispatcher's own `plan`/`auto` switch
-    // put on the spawn options — read off the recorded call, never restated.
-    expect(declared.permissionFooting).toBe(compiled.spawnOptions.permissionMode);
+    // FROZEN: the compiled footing was whatever the dispatcher's own
+    // `plan`/`auto` switch put on the spawn options — that switch is deleted;
+    // this is its last recorded image (see FROZEN IMAGES).
+    expect(declared.permissionFooting).toBe(FROZEN_PERMISSION_FOOTING_BY_STAGE[stage]);
   });
 
-  it.each([...DISPATCHABLE])('CAPTURE ARMING is identical — %s', async (stage) => {
+  it.each([...DISPATCHABLE])('CAPTURE ARMING is identical — %s', (stage) => {
     const task = taskRecord({ stage, ...WORK_ORDER });
-    const compiled = await compiledRun(task, planStore());
     const declared = declaredRun(task, planStore());
 
     expect(declared.ok).toBe(true);
     if (!declared.ok) return;
-    // TODAY the two agree on every shipped node, because the shipped manifest
-    // correlates `permission_mode = "plan"` with `capture = ["plan"]`. That is
-    // exactly recon fact 9's trap, and it is why the A5 cells below exist: this
-    // assertion alone proves the flip is SAFE, not that the mechanism CHANGED.
-    expect(declared.planCaptureArmed).toBe(compiled.spawnOptions.permissionMode === 'plan');
+    // FROZEN: TODAY the two agreed on every shipped node, because the shipped
+    // manifest correlates `permission_mode = "plan"` with `capture = ["plan"]`
+    // — recon fact 9's trap, frozen exactly as observed, and why the A5 cells
+    // below exist: this assertion alone proves the flip was SAFE, not that the
+    // mechanism changed.
+    expect(declared.planCaptureArmed).toBe(FROZEN_PLAN_CAPTURE_ARMED_BY_STAGE[stage]);
   });
 
-  it('the footing/capture dimensions are not constants either', async () => {
-    const footings = await Promise.all(
-      DISPATCHABLE.map(async (stage) =>
-        (await compiledRun(taskRecord({ stage, ...WORK_ORDER }), planStore())).spawnOptions
-          .permissionMode,
-      ),
-    );
+  it('the footing/capture dimensions are not constants either', () => {
+    const footings = DISPATCHABLE.map((stage) => FROZEN_PERMISSION_FOOTING_BY_STAGE[stage]);
     expect(new Set(footings)).toEqual(new Set(['plan', 'auto']));
   });
 });
@@ -781,17 +695,30 @@ describe('S19-A4 — preflight refusals: named, wire-stable, and side-effect-fre
         workflow: cell.workflow,
         ...(cell.composers === undefined ? {} : { composers: cell.composers }),
       });
-      expect(result).toEqual({ ok: false, reason: cell.reason });
+      expect(result).toMatchObject({ ok: false, reason: cell.reason });
+      // S19·U3 (briefingPreflight.ts signature adjustment): `compose-threw` is
+      // the ONE reason that carries a logging-only `detail` — see the field's
+      // own doc. Every other refusal reason carries none; the check IS its own
+      // whole explanation.
+      if (cell.reason === 'compose-threw') {
+        expect(result).toMatchObject({ detail: 'the tenant composer refused the job' });
+      } else {
+        expect(result).not.toHaveProperty('detail');
+      }
     },
   );
 
+  // ═══ S19·U3 — Part B/D: THE END-TO-END REFUSAL CELL, THROUGH A REAL dispatchTask ═
+  //
+  // ⚠ **THROUGH S19·U2 THIS RAN `declaredRun` DIRECTLY AND `void`-DISCARDED THE
+  // WIRED DISPATCHER** ("untouched" meant untouched on an object built for the
+  // assertion but never actually driven). U3 is the flip: `dispatchTask` now
+  // calls `preflightBriefing` itself, BEFORE `spawnStageRun`, so this is the
+  // real thing — every refusal cell proven END-TO-END, through the SAME class
+  // production drives, with NO worktree, NO spawn and NO event on any of them.
   it.each(CELLS.map((cell) => [`${cell.reason} — ${cell.what}`, cell] as const))(
-    'touches NEITHER the emit seam, NOR the spawn seam, NOR the worktree seam — %s',
+    'refuses pre-worktree, end-to-end, through a REAL dispatchTask — %s',
     async (_label, cell) => {
-      // ⚠ THE THREE SPIES, and all three live on a REAL `TaskDispatcher` wired
-      // exactly as `app.ts` wires it — coordinator included — so "untouched"
-      // means untouched on the object U3 will call the preflight from, not on a
-      // stand-in built for the assertion.
       const emitted: EventInput[] = [];
       const spawnCalls: RecordedSpawn[] = [];
       const checkoutCreateCalls: unknown[] = [];
@@ -831,14 +758,18 @@ describe('S19-A4 — preflight refusals: named, wire-stable, and side-effect-fre
           },
         },
       });
-      void dispatcher;
 
-      const result = declaredRun(task, store, {
-        workflow: cell.workflow,
-        ...(cell.composers === undefined ? {} : { composers: cell.composers }),
+      const result = await dispatcher.dispatchTask(task.taskId);
+
+      // §3.5's wire-stable spelling — the EXISTING `spawn-failed` outcome, the
+      // sub-reason carrying the precision. No new union member; the routes
+      // serialize this verbatim (see the "surfaces as the EXISTING spawn-failed
+      // outcome" case below for the compile-time half of the same proof).
+      expect(result).toEqual({
+        outcome: 'spawn-failed',
+        taskId: task.taskId,
+        reason: briefingUnresolvableReason(cell.reason),
       });
-
-      expect(result).toEqual({ ok: false, reason: cell.reason });
       expect(emitted).toEqual([]);
       expect(spawnCalls).toEqual([]);
       expect(checkoutCreateCalls).toEqual([]);
@@ -868,12 +799,19 @@ describe('S19-A4 — preflight refusals: named, wire-stable, and side-effect-fre
     expect(briefingUnresolvableReason('compose-threw')).toBe(
       'briefing-unresolvable:compose-threw',
     );
-    // No thrown message rides along: §3.5 pins the vocabulary, and a tenant's
-    // exception text is neither a sub-reason nor switchable by any consumer.
+    // No thrown message rides the WIRE: §3.5 pins the vocabulary, and a
+    // tenant's exception text is neither a sub-reason nor switchable by any
+    // consumer. It DOES ride as far as `detail` (S19·U3's logging-only field,
+    // consumed only by the daemon's own log at the taskDispatcher.ts call
+    // site) — this result IS the whole vocabulary, `detail` included.
     const threw = declaredRun(taskRecord({ stage: 'implementing', ...WORK_ORDER }), planStore(), {
       composers: THROWING_TABLE,
     });
-    expect(threw).toEqual({ ok: false, reason: 'compose-threw' });
+    expect(threw).toEqual({
+      ok: false,
+      reason: 'compose-threw',
+      detail: 'the tenant composer refused the job',
+    });
   });
 });
 
@@ -951,16 +889,21 @@ describe('S19-A5 — capture follows the DECLARATION, independently', () => {
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
-// PART B — the preflight's own contract, and the "nothing flips" proof
+// PART B — the preflight is the ONLY path (S19·U3: the flip, proven positively)
 // ═════════════════════════════════════════════════════════════════════════════
-
-describe('S19·U2 — the preflight is WIRED and DELIBERATELY UNCALLED', () => {
-  it('a dispatch runs the COMPILED path even when the wired preflight would throw', async () => {
-    // ⚠ VERIFY BY BREAKING. A preflight that throws on every call is the loudest
-    // possible tripwire: if `TaskDispatcher` invoked the dep anywhere on the
-    // dispatch path, this dispatch could not spawn, could not send, and would not
-    // return `spawned`. It does all three — which is the machine form of "the
-    // compiled path is byte-untouched this unit".
+//
+// ⚠ **THIS DESCRIBE STOOD HERE AS "…IS WIRED AND DELIBERATELY UNCALLED" AND WAS
+// DELETED BY S19·U3 (a recorded reversal, not a quiet edit).** Its case spawned
+// a dispatcher with a THROWING `preflightBriefing` and asserted the dispatch
+// still SUCCEEDED — proof-by-verify-by-breaking that nothing called the dep
+// yet. That premise is now FALSE BY DESIGN: the flip's entire point is that
+// `dispatchTask` calls `preflightBriefing` on every spawn attempt, so a
+// throwing preflight now correctly FAILS the dispatch (A4 proves exactly that,
+// end-to-end, above). What replaces it is the positive-path mirror: a
+// SUCCEEDING preflight's `composed` string is what actually gets sent, through
+// a REAL `dispatchTask`, with no compiled fallback anywhere left to fall to.
+describe('S19·U3 — the preflight governs a REAL spawn, end-to-end', () => {
+  it('a dispatch sends the DECLARED path’s composed bytes — no compiled fallback exists any more', async () => {
     const task = taskRecord({ stage: 'implementing', ...WORK_ORDER });
     const store = planStore();
     const spawnCalls: RecordedSpawn[] = [];
@@ -979,10 +922,7 @@ describe('S19·U2 — the preflight is WIRED and DELIBERATELY UNCALLED', () => {
           return { ok: true };
         },
       },
-      composeStageInstruction,
-      preflightBriefing: () => {
-        throw new Error('S19·U2: the preflight must NOT be called until U3 flips it');
-      },
+      preflightBriefing: (candidate) => declaredRun(candidate, store),
       emit: () => {},
       readTasks: () => tasksState,
       readMeters: () => ({ meters: {}, history: {} }),
@@ -997,10 +937,19 @@ describe('S19·U2 — the preflight is WIRED and DELIBERATELY UNCALLED', () => {
     expect(result).toMatchObject({ outcome: 'spawned', instructionDelivery: { status: 'sent' } });
     expect(spawnCalls).toHaveLength(1);
     expect(sendCalls).toHaveLength(1);
-    // …and the bytes are the COMPILED ones, identical to a dispatcher with no
-    // preflight dep at all.
-    const withoutTheDep = await compiledRun(task, planStore());
-    expect(sendCalls[0]!.text).toBe(withoutTheDep.briefing);
+    // …and the sent bytes are EXACTLY the declared path's `composed` string —
+    // the same one the A2 differential proves byte-identical to the (now
+    // LIVE-derived, not frozen) `compiledBriefingFor`.
+    const declared = declaredRun(task, planStore());
+    expect(declared.ok).toBe(true);
+    if (!declared.ok) return;
+    expect(sendCalls[0]!.text).toBe(declared.composed);
+    // §3.4/§3.6/§3.7: the spawn options carry the declaration's footing and
+    // tool ids too — not just the words.
+    expect(spawnCalls[0]).toMatchObject({
+      permissionMode: FROZEN_PERMISSION_FOOTING_BY_STAGE.implementing,
+      reportToolIds: FROZEN_TOOL_IDS_BY_STAGE.implementing,
+    });
   });
 });
 
@@ -1053,7 +1002,7 @@ describe('S19·U2 — the reads adapter carries today’s degrade semantics', ()
   // still compose byte-identically on both paths — which is what "mirror
   // `deliverStageInstruction`'s exact behaviour" buys, and where a differently
   // shaped degrade would show up.
-  it('a throwing store still composes declared ≡ compiled', async () => {
+  it('a throwing store still composes declared ≡ compiled', () => {
     const task = taskRecord({ stage: 'implementing', ...WORK_ORDER, planArtifactHash: PLAN_HASH });
     const angryStore = (): ArtifactStore => {
       const store = new MemoryArtifactStore();
@@ -1062,11 +1011,11 @@ describe('S19·U2 — the reads adapter carries today’s degrade semantics', ()
       };
       return store;
     };
-    const compiled = await compiledRun(task, angryStore());
+    const compiled = compiledBriefingFor(task, angryStore());
     const declared = declaredRun(task, angryStore());
     expect(declared.ok).toBe(true);
     if (!declared.ok) return;
-    expect(declared.composed).toBe(compiled.briefing);
+    expect(declared.composed).toBe(compiled);
   });
 });
 

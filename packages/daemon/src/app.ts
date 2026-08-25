@@ -39,7 +39,12 @@ import {
 // S18·U2 (Move 4) — the dispatcher's instruction seam is TENANT policy and lives
 // in the task extension now; the engine still owns WHETHER and WHO. Root barrel
 // only: the boundary checker refuses a deep import into an ext-* package.
-import { composeStageInstruction, briefingComposers } from '@vimes/ext-tasks';
+//
+// ⚠ S19·U3: `composeStageInstruction` is NOT imported here any more.
+// `TaskDispatcher` stopped calling it (composition moved to the preflight,
+// below) — the tenant's real composer table is `briefingComposers`, reached
+// through `preflightBriefing`.
+import { briefingComposers } from '@vimes/ext-tasks';
 import Database from 'better-sqlite3';
 import { SqliteEventStore } from './sqliteEventStore.js';
 import { SqliteSnapshotStore } from './sqliteSnapshotStore.js';
@@ -605,20 +610,18 @@ export function createDaemon(deps: DaemonDeps): Daemon {
       // no second session authority.
       sendMessage: (appSessionId, text) => sessionHost.sendMessage(appSessionId, text),
     },
-    // The minimal, stage-generic instruction Wes signed off 2026-07-24 (see
-    // packages/ext-tasks/src/stageInstruction.ts) — a dispatched worker is now
-    // told what task/stage/directory it's in and how to behave mid-run, instead
-    // of nothing. Per-stage specialisation (planning/implementing/review wording)
-    // is deliberately deferred — D43/D44, slice 7.
-    composeStageInstruction,
-    // ─── S19·U2 (slice-19 §3.5/§3.6/§3.7): the DECLARATION path, wired BESIDE ──
+    // ─── S19·U3 (slice-19 §3.5/§3.6/§3.7): the DECLARATION path — THE ONLY PATH ─
     //
-    // ⚠ **NOTHING CALLS THIS YET, SO THIS WIRING CHANGES NO BEHAVIOUR.** The
-    // dispatcher takes `preflightBriefing` as an optional dep and never invokes
-    // it in this unit; the compiled path above (`composeStageInstruction`,
-    // composed POST-spawn in `deliverStageInstruction`) is still the whole of
-    // production. U3 flips the call site, and it can be a one-line flip because
-    // the composition is already standing here.
+    // ⚠ **THIS IS WHAT A STAGE RUN'S WORDS COME FROM NOW.** Through S19·U2 this
+    // dep was wired but never called (the compiled path — `composeStageInstruction`,
+    // composed POST-spawn — was still the whole of production). S19·U3 flipped the
+    // call site: `dispatchTask` now calls this BEFORE `spawnStageRun` (before any
+    // worktree or spawn exists), and the compiled composing path it replaced is
+    // deleted, not merely superseded. Per-stage specialisation
+    // (planning/implementing/review wording) is the tenant composer table's
+    // business (`briefingComposers`, `@vimes/ext-tasks`) — deliberately deferred
+    // beyond the minimal, stage-generic prose Wes signed off 2026-07-24 (see
+    // packages/ext-tasks/src/stageInstruction.ts) — D43/D44, slice 7.
     //
     // THREE injections, and each is the SAME object something else already uses:
     //
