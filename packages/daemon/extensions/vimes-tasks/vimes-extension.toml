@@ -196,6 +196,15 @@ attaches_session  = false
 terminal          = true
 
 # ── the workflow ────────────────────────────────────────────────────────────
+#
+# ⚠ **THE THREE `doctrine/*.md` INPUT ROWS WERE REMOVED 2026-08-25 (slice-19
+# §3.8).** `doctrine/planning.md`, `doctrine/implementing.md` and
+# `doctrine/review.md` named files that do not exist anywhere in this
+# extension's tree — a declared input the engine could never assemble. The
+# briefing prose they gestured at is still compiled into the composers
+# (`@vimes/ext-tasks`), which is where it lives until doctrine actually
+# externalizes. THE ROWS RETURN when it does, and only under that signing —
+# doctrine externalization is explicitly out of slice 19 (§2).
 [[workflows]]
 id      = "software"
 title   = "Software task"
@@ -256,7 +265,7 @@ kind = "work"
 permission_mode = "plan"                    # D48
   [workflows.nodes.briefing]
   composer = "briefings/planning"
-  inputs   = ["instance.record", "doctrine/planning.md"]
+  inputs   = ["instance.record"]
   tools    = []                             # D55: planning is offered NOTHING
   capture  = ["plan"]                       # deny-and-harvest at the plan boundary
   [workflows.nodes.acceptance]
@@ -274,8 +283,7 @@ kind = "work"
   [workflows.nodes.briefing]
   composer = "briefings/implementing"
   inputs   = ["instance.record", "artifact:plan",
-              "report:last-review", "report:last-completion",
-              "doctrine/implementing.md"]
+              "report:last-review", "report:last-completion"]
   tools    = ["vimes_report.report_completion"]
   [workflows.nodes.acceptance]
   kind    = "report"                        # the report IS the outcome (D53)
@@ -287,7 +295,7 @@ id = "review"
 kind = "review"
   [workflows.nodes.briefing]
   composer = "briefings/review"
-  inputs   = ["instance.record", "doctrine/review.md"]
+  inputs   = ["instance.record"]
   tools    = ["vimes_report.report_review"]
   [workflows.nodes.acceptance]
   kind          = "rubric"
