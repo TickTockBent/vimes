@@ -1,7 +1,8 @@
 # Slice 18 — Move 4: the tasks extension leaves the engine
 
-**STATUS: SIGNED ⟨Wes⟩ 2026-08-25 — rev 3, with §3.7 BRANCH (b)
-(amend Move 4 whole). Building. Rev history: rev 1 rebuilt after
+**STATUS: CLOSED 2026-08-25 — shipped, machine gate PASSED, deployed
+(restart taken, boot clean). Signed ⟨Wes⟩ 2026-08-25 (rev 3, §3.7
+branch (b)); two rule-0.1 findings found, ruled, fixed (§5b). Rev history: rev 1 rebuilt after
 outside review (Sol, round 1 — §7); rev 2 reclassified from the
 migration map's SYMBOL-level ownership table; rev 3 closed round 2's
 laundering/coverage gaps and widened §3.7 into the full Move-4
@@ -287,7 +288,13 @@ seams, not a relocation. Branches:
   expectation-by-expectation.
 - **A3** The grep gate: the moved names are absent from
   `packages/core/src` except §3.4's enumerated c1–c5; the exemption
-  test names each and fails on any new hit.
+  test names each and fails on any new hit. **AMENDED per S18-F1
+  ruling (⟨Wes⟩ 2026-08-25):** comment-level mentions of the moved
+  names are governed by a NAMED ALLOWED-HITS list beside c1–c5 —
+  per-file, per-identifier, each with its reason (tombstone / signed
+  stub / c3 reference). The test asserts every listed hit still
+  exists (a stale list fails) and any unlisted hit fails. Same
+  S14-F1 doctrine as the rest of the slice.
 - **A4** ext-tasks declares no `@vimes/core` dependency; the checker
   passes on the shipped tree; core imports no `@vimes/ext-*`.
 - **A5 (sabotage matrix — the exit gate's "a boundary that has never
@@ -327,7 +334,73 @@ seams, not a relocation. Branches:
   branch is signed. A1/A2/A6/A7 green.
 - **U3 (sonnet, the gate):** A3 exemption-enumeration test, A8 surface
   pin, the A5 sabotage evidence run recorded, ci-gate all profiles.
+- **U4 (sonnet, added in-slice per U2's judgment call 2):** comment
+  truth sweep — five stale path-claims updated, stageInstruction's
+  header edit proven harmless by a 37-golden re-run. Folded into the
+  post-F1/F2 fixes unit below.
+- **U3-fix (sonnet, NEW agent per the fix discipline):** the F2
+  checker fix + regression case; the F1 allowed-hits list wired into
+  the A3 test (built AFTER the U4 sweep inside the same unit, so the
+  list matches swept reality); the U4 sweep itself.
 - Fixes to NEW agents; one agent at a time.
+
+## §5b. Unit ledger + findings record (running)
+
+- **U1 `5da9c90`** (sonnet) — both packages, wiring, eight-rule
+  checker + 11 fixture-driven tests, vitest scripts-glob extension,
+  ci-gate fail-fast wiring. 3638/150 → 3650/152. Orchestrator gate:
+  typecheck/checker/suite re-run personally; two REAL-TREE sabotages
+  (bare core import in ext-tasks → `undeclared-dependency`; alias
+  re-export in ext-host → `alias-export`) observed refusing, restored
+  byte-identical. Judgment call accepted: the eight restated rules are
+  the normative set; A4's dep-absence proven by grep, not a ninth rule.
+- **U2 `6de75b8`** (opus) — the moves. 37/37 A6 goldens byte-identical
+  through the moved module; below-imports file diffs EMPTY
+  (independently re-derived at the orchestrator gate); workOrder split
+  at describe-block granularity (44 → 25 + 19); worktreePaths whole-
+  file byte-identical into `git/`; daemon re-points import-lines-only;
+  sessionIdentity.test.ts frozen-fixture swap with ZERO `expect(`
+  changes (the one pre-authorized core test edit, c3 doctrine);
+  legacyTasksView header re-dated per branch (b). 3650/152 →
+  3650/153. Judgment calls accepted: (1) section-7 comment block moved
+  whole with a positional stub (the file's own S7·7b precedent);
+  (2) stale path comments left for a comment-truth sweep (U4).
+- **U3 (uncommitted at halt)** (sonnet) — both pin tests built as
+  specified, sabotage-verified (planted comment hit caught at
+  `ids.ts:34`; fake surface row caught 3 ways), then the unit
+  HALTED itself on two findings per rule 0.1 — no local
+  reconciliation. 3650/153 → 3661/155 with the two findings as the
+  only reds.
+- **U3-fix `a74e55b`** (sonnet, NEW agent per the fix discipline) —
+  F2 checker fix (rule 6 scoped to the barrel; `non-index-reexport`
+  for every other ext-host file; +2 regression cases); the U4 comment
+  sweep (5 sites, comment lines only — independently re-proven at the
+  orchestrator gate — with 37/37 goldens still byte-identical after
+  the A6-pinned header edit); the F1 allowed-hits list per the ruling
+  (7 entries covering 11 hits: 2 tombstones, 1 signed-stub, 1
+  c3-reference, 3 historical-notes), both failure directions
+  sabotage-verified. 3661/155 → 3664/155, all green. U3's two test
+  files committed with it.
+
+**S18-F1 (found by U3's A3 test, 2026-08-25).** The signed A3 letter
+("moved names absent except c1–c5") collides with 10 comment-level
+hits that are TRUTHFUL doc: the barrel's own "GONE FROM THIS BARREL"
+tombstone (added by U2's signed Part D), workOrder's signed positional
+stub, c3-adjacent references. c1–c5 exempt symbols that STAY; nothing
+governed mentions of symbols that LEFT. **RULED ⟨Wes⟩ 2026-08-25:
+option (c)** — comments still count; a named allowed-hits list
+(file × identifier × reason) joins the exemption structure; unlisted
+hits and stale listings both fail. A3 amended above.
+
+**S18-F2 (found by U3's A8 file's mere existence, 2026-08-25).**
+Checker rule 6 looped surface-equality over EVERY `ext-host/src` file
+— latent U1 bug that only passed while the directory held one file;
+any second file (U3's test exports nothing) produced 5 false
+violations. Verified first-hand at the orchestrator gate.
+Classification: mis-implementation of signed §3.3, not a design
+contradiction — fix in-mandate, recorded here: surface-equality scoped
+to the barrel `index.ts`; every OTHER ext-host file forbidden from
+re-exporting anything; regression case added to the checker tests.
 
 ## §6. Gates, kill criterion, deploy
 
@@ -346,6 +419,36 @@ re-decided rather than quietly weakened.
 **Deploy note:** core + daemon change ⇒ restart REQUIRED (CLAUDE.md
 diff rule); standing dev-phase clearance applies; ci-gate ships the
 (unchanged) UI as a side effect as always.
+
+## §6b. Machine gate RESULTS (2026-08-25, orchestrator-run)
+
+- Suite ×2: **3664/155 green both runs** (runs at the U3-fix gate and
+  the close; deterministic).
+- `scripts/ci-gate.sh`: **exit 0, all profiles** (boundary check →
+  typecheck → unit tests → ui build → CM6 lazy-chunk → scenario
+  double-run byte-compare → nondeterminism grep). Known side effect:
+  the UI shipped (sessionLabel comment byte only).
+- A1: `tasksFixtureReplay.test.ts` green and byte-untouched through
+  the whole slice.
+- **A5, ALL EIGHT on the REAL tree** (fixture-driven checker tests
+  pass separately): s1 `undeclared-dependency`, s2 `relative-escape`,
+  s3 `deep-package-import`, s4 dynamic → `undeclared-dependency`,
+  s5 `surface-mismatch (not in surface.json)`, s6 `alias-export`,
+  s7 `core-imports-tenant` (relative), s8 `daemon-deep-tenant-import`
+  — each observed refusing with the correct rule name, each restored
+  `cmp` byte-identical, checker clean after.
+- A6: 37/37 goldens byte-identical after every touch of
+  `stageInstruction` (U2 move, U3-fix header edit).
+- Grep gate: A3 green under the ruled allowed-hits list; c1–c5
+  enumerated and pinned.
+- **Deploy:** core+daemon diff non-empty ⇒ restart taken 2026-08-25
+  (recursion-hazard ancestry check: clean); boot line healthy
+  (`listening on 127.0.0.1:4600 … auth=configured`, no drift warning).
+
+**Move 4 is COMPLETE under its 2026-08-25 amendment:** both packages
+exist; the boundary is mechanical and eight-way sabotage-proven; every
+tenant symbol movable under the dependency knot has moved; every
+stay-behind is named with its death trigger.
 
 ## §7. Outside-review triage record (Sol)
 
