@@ -22,6 +22,9 @@ import {
 // S18·U2 (Move 4) — the composer's out-of-band context type travels with the
 // composer itself, which is tenant code now. Root barrel only.
 import type { StageInstructionContext } from '@vimes/ext-tasks';
+// S19·U2: the declaration path's preflight (slice-19 §3.5). TYPE-ONLY here — the
+// dep below is wired and never called until U3's flip.
+import type { BriefingPreflightResult } from './briefingPreflight.js';
 import type { SessionHost } from './sessionHost.js';
 import type { InstanceWriter } from './instanceWriter.js';
 import type { CheckoutCoordinator, CheckoutRefusal } from './checkoutCoordinator.js';
@@ -241,6 +244,33 @@ export interface TaskDispatcherDeps {
     plan: StageRunnerPlan,
     context?: StageInstructionContext,
   ) => string | null;
+
+  // ── S19·U2: THE DECLARATION PATH'S SEAM — WIRED, AND DELIBERATELY UNCALLED ──
+  //
+  // ⚠ **NOTHING IN THIS CLASS CALLS THIS DEP IN THIS UNIT, AND THAT IS THE
+  // UNIT.** slice-19 is a Move-3 choreography — differential BESIDE, then flip,
+  // then delete-and-freeze — and U2 is the "beside" half: the preflight exists,
+  // is fully tested, and is proven byte-for-byte equivalent to the compiled path
+  // it will replace, while the compiled path keeps running production untouched.
+  // U3 is the flip, and because the dep lands here first, that flip is a CALL-SITE
+  // change rather than a rebuild of the plumbing under a live daemon.
+  //
+  // WHAT IT WILL DO, when U3 calls it (slice-19 §3.5): run BEFORE
+  // `spawnStageRun` — before a worktree is created and before a session exists —
+  // resolving the composer entry point, validating the declared tool ids and the
+  // §3.7 capture combo, assembling the declared input set and INVOKING the
+  // composer, retaining the composed string for post-spawn delivery. A refusal at
+  // any of those steps returns `{ outcome: 'spawn-failed', reason:
+  // 'briefing-unresolvable:<sub-reason>' }` with NO worktree, NO spawn and NO
+  // event — the same "returned, not recorded" shape `worktree-failed` already
+  // has, and NOT a new member of `DispatchAttemptResult` (the routes serialize
+  // that union verbatim, so growing it would be the wire change §2 forbids).
+  //
+  // OPTIONAL, exactly like `composeStageInstruction` above and for the same
+  // reason: every construction that predates this line — app.ts before the flip,
+  // and every test written before it — keeps the behaviour it had without naming
+  // the field. The safe value is the one you get by saying nothing.
+  preflightBriefing?: (task: TaskRecord) => BriefingPreflightResult;
 
   // ── S7·5b-i: the native plan-capture seam (D48, I10) ─────────────────────────
   //
