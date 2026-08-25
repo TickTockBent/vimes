@@ -603,7 +603,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
       sendMessage: (appSessionId, text) => sessionHost.sendMessage(appSessionId, text),
     },
     // The minimal, stage-generic instruction Wes signed off 2026-07-24 (see
-    // packages/core/src/tasks/stageInstruction.ts) — a dispatched worker is now
+    // packages/ext-tasks/src/stageInstruction.ts) — a dispatched worker is now
     // told what task/stage/directory it's in and how to behave mid-run, instead
     // of nothing. Per-stage specialisation (planning/implementing/review wording)
     // is deliberately deferred — D43/D44, slice 7.

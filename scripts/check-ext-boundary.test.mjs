@@ -263,3 +263,33 @@ describe('checkExtBoundary — sabotage matrix', () => {
     expect(rulesFor(violations)).toContain('daemon-deep-tenant-import');
   });
 });
+
+// ─── S18-F2 regression: rule 6 scoped to index.ts, not every ext-host file ──
+
+describe('checkExtBoundary — ext-host non-index files (S18-F2 regression)', () => {
+  it('r1: index.ts + a benign second file that exports nothing passes clean', () => {
+    const dir = makeTempDir();
+    buildCleanFixture(dir);
+    writeFile(
+      dir,
+      'packages/ext-host/src/helpers.test.ts',
+      "import { describe, expect, it } from 'vitest';\n\n" +
+        "describe('helpers', () => {\n" +
+        "  it('is real', () => {\n" +
+        '    expect(true).toBe(true);\n' +
+        '  });\n' +
+        '});\n',
+    );
+    const result = checkExtBoundary(dir);
+    expect(result.violations).toEqual([]);
+    expect(result.ok).toBe(true);
+  });
+
+  it('r2: a second file that re-exports from @vimes/core fails with non-index-reexport', () => {
+    const dir = makeTempDir();
+    buildCleanFixture(dir);
+    writeFile(dir, 'packages/ext-host/src/helpers.ts', "export { doIt } from '@vimes/core';\n");
+    const { violations } = checkExtBoundary(dir);
+    expect(rulesFor(violations)).toContain('non-index-reexport');
+  });
+});

@@ -58,7 +58,7 @@ const FALLBACK_LABEL_SEPARATOR = ' · ';
 
 // ─── D91 prong (ii): stripping dispatched-worker briefing boilerplate ────────
 //
-// `packages/core/src/tasks/stageInstruction.ts` builds four dispatch-briefing
+// `packages/ext-tasks/src/stageInstruction.ts` builds four dispatch-briefing
 // variants (generic/implement, plan, review, progress), and ALL FOUR open
 // with this exact stem before diverging. Restated rather than imported —
 // `@vimes/core` is deliberately NOT a dependency of packages/ui (see this

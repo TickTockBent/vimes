@@ -28,19 +28,27 @@
 //   relative-escape              ext-*/src: a relative specifier that,
 //                                 resolved from its file, lands outside that
 //                                 package's own root directory (rule 5)
-//   export-star                  ext-host/src only: `export * from …` (rule 6)
-//   alias-export                 ext-host/src only: any exported name that
-//                                 differs from its upstream original — the
-//                                 `as` laundering closed by §3.2 (rule 6)
-//   local-declaration-export     ext-host/src only: an exported name that is
-//                                 NOT a direct re-export from an allowlisted
-//                                 upstream (a local const/function/class/type/
-//                                 interface/default, or a brace re-export of a
-//                                 local name) (rule 6)
-//   surface-mismatch              ext-host/src only: the set of clean direct
-//                                 re-exports does not equal surface.json's
-//                                 rows (name+kind+origin), either direction
+//   export-star                  ext-host/src/index.ts ONLY: `export * from …`
 //                                 (rule 6)
+//   alias-export                 ext-host/src/index.ts ONLY: any exported
+//                                 name that differs from its upstream
+//                                 original — the `as` laundering closed by
+//                                 §3.2 (rule 6)
+//   local-declaration-export     ext-host/src/index.ts ONLY: an exported
+//                                 name that is NOT a direct re-export from an
+//                                 allowlisted upstream (a local const/
+//                                 function/class/type/interface/default, or a
+//                                 brace re-export of a local name) (rule 6)
+//   surface-mismatch              ext-host/src/index.ts ONLY: the set of
+//                                 clean direct re-exports does not equal
+//                                 surface.json's rows (name+kind+origin),
+//                                 either direction (rule 6)
+//   non-index-reexport           ext-host/src, every file EXCEPT index.ts
+//                                 (AMENDED per S18-F2, docs/slice-18.md §5b):
+//                                 any `export … from` statement, star or
+//                                 named — only the barrel re-exports; local
+//                                 declarations (test-only helpers included)
+//                                 are unrestricted here (rule 6)
 //   core-imports-tenant          packages/core/src: any specifier — bare,
 //                                 deep, or relative-resolved — reaching
 //                                 `@vimes/ext-*` or a `packages/ext-*` path
@@ -462,8 +470,27 @@ export function checkExtBoundary(rootDir) {
         }
       }
 
-      // rule 6: ext-host's export surface, direct-re-export-only
+      // rule 6: ext-host's export surface, direct-re-export-only.
+      // AMENDED per S18-F2 (docs/slice-18.md §5b): surface-equality only
+      // makes sense against the ONE barrel file — index.ts. Every OTHER file
+      // under ext-host/src (test files, future helpers) is instead forbidden
+      // from re-exporting anything at all; local declarations are fine there
+      // (e.g. a test-only const), so the checks below diverge by file.
       if (isExtHost) {
+        const isIndexFile = path.relative(srcDir, file) === 'index.ts';
+
+        if (!isIndexFile) {
+          for (const st of fromStatements) {
+            if (st.keyword !== 'export') continue;
+            violations.push({
+              file: relPath(file),
+              rule: 'non-index-reexport',
+              specifier: st.isStar ? `* from ${st.specifier}` : st.specifier,
+            });
+          }
+          continue;
+        }
+
         const validExports = [];
         for (const st of fromStatements) {
           if (st.keyword !== 'export') continue;
