@@ -173,6 +173,30 @@ all three cells beyond the shipped manifest's correlated corner.
 lean unchanged): rows naming nonexistent files leave, dated comment,
 return only under a future externalization signing.
 
+## §3b. The projection table (U1 deliverable — ⟨Wes⟩ signs before U2)
+
+**STATUS: SIGNED ⟨Wes⟩ 2026-08-25.** Derived by U1 from the live
+`taskRecordSchema` (19 fields), compile-guarded both directions (a new
+record field breaks the build until classified here).
+
+**EXCLUDED (3)** — each IS another input kind's content:
+`planArtifactHash` (→ `artifact:plan`), `lastReview`
+(→ `report:last-review`), `lastCompletion` (→ `report:last-completion`).
+All three optional upstream, so the tenant twin
+(`Omit<TaskRecord, …>`) needs no surface change.
+
+**KEPT (16):** `taskId`, `projectRoot`, `title` — identity/placement;
+`scope`, `explicitlyOut`, `acceptanceCriteria`, `killCriterion`,
+`workOrderRev` — the work-order payload at its current rev; `stage`,
+`manualReviewRequired`, `isolation`, `gates`, `sessionRefs`,
+`createdBy` — engine core state; `lastHeartbeatAt`, `staleRetries` —
+retired-but-retained (D34), kept because no other input kind owns
+them, reclassify on deletion.
+
+**Proven free:** the composer prose reads none of the three excluded
+fields, so projection costs the briefing zero bytes (U1's
+byte-identity pairs pass full-record vs projected-record).
+
 ## §4. Assertions (S19-A#)
 
 - **A1** 37 goldens byte-identical through the declaration path.
