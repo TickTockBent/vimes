@@ -1,7 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import type { TaskRecord } from './schemas.js';
-import type { StageRunnerPlan } from './tasks/stageRunner.js';
-import { composeStageInstruction } from './tasks/stageInstruction.js';
 import {
   deriveSessionTitle,
   extractMessageText,
@@ -290,7 +288,100 @@ function dispatchedTask(overrides: Partial<TaskRecord> = {}): TaskRecord {
   };
 }
 
-const SPAWN: StageRunnerPlan = { mode: 'spawn' };
+// ── S18·U2: THE BRIEFINGS ARE FROZEN FIXTURES NOW, NOT LIVE COMPOSITIONS ─────
+//
+// Every string below is the RECORDED OUTPUT of `composeStageInstruction` as of
+// S18·U2, captured from the pre-move build against the exact `dispatchedTask()`
+// population this file uses. `composeStageInstruction` left for
+// `@vimes/ext-tasks` in Move 4 (`docs/slice-18.md` §3.4) and core may not import
+// a tenant — the boundary checker refuses it — so the live call could not stay.
+// sessionIdentity's contract is recorded BYTES (slice-18.md §3.4 c3), so a
+// frozen briefing is the honest input: what `deriveSessionTitle` must handle is
+// the bytes a dispatch briefing HAS, not the function that produced them.
+//
+// ⚠ **THE COST, NAMED RATHER THAN HIDDEN.** The S16-F1 note below argues these
+// must be composed through the real function precisely so a hand-written fixture
+// cannot prove a mechanism no real briefing could reach. That argument still
+// holds, and what now carries it is the composer's OWN suite
+// (`packages/ext-tasks/src/stageInstruction.test.ts`), which pins every one of
+// these four briefings byte-for-byte at its source. If the composer's opening
+// sentence drifts, THAT suite reddens loudly; this file would go quietly stale,
+// so re-record the constants below from it rather than editing them by hand.
+// `DISPATCH_BRIEFING_STEM` in sessionIdentity.ts is the coupling those tests
+// exist to protect, and it is unchanged.
+const FROZEN_GENERIC_BRIEFING = `You are a worker session that VIMES dispatched to make progress on one task. This is real work.
+
+  Task:      getMany(ids) — batch the session lookups
+  Stage:     implementing
+  Directory: /home/ticktockbent/projects/infrastructure/vimes — work in this directory; do not guess or invent a different path name.
+
+Do the work this stage calls for, and stay within the task's scope.
+
+If a message arrives while you're working, it's a human steering you mid-run — read it and adjust. It's a correction to THIS task, not a new task.
+
+When you believe the stage is done, briefly summarize what you did and what (if anything) remains, then stop. You do not advance the task yourself — a human reviews and moves it forward on the board.`;
+
+const FROZEN_IMPLEMENTING_BRIEFING = `You are a worker session that VIMES dispatched to implement one task. This is real work. The plan below has already been reviewed and approved — carry it out; do not re-plan it.
+
+  Task:      getMany(ids) — batch the session lookups
+  Stage:     implementing
+  Directory: /home/ticktockbent/projects/infrastructure/vimes — work in this directory; do not guess or invent a different path name.
+
+Scope — what this task is:
+Batch the per-id lookups behind one call.
+
+Implement the plan, staying within scope. If a message arrives while you're working, it's a human steering you mid-run — read it and adjust. It's a correction to THIS task, not a new task.
+
+When the work is done, report it using the report_completion tool — a worklog with decisionsMade (the calls you made and why) and pathsRejected (dead ends you tried or considered and abandoned; the next attempt must not re-explore them). That report is how you finish and is your ENTIRE deliverable: VIMES records it and moves the task to review. You do not advance the task yourself.`;
+
+const FROZEN_PLANNING_BRIEFING = `You are a worker session that VIMES dispatched to PLAN one task. You are in plan mode: investigate directly and produce a plan — do not implement anything yet.
+
+  Task:      getMany(ids) — batch the session lookups
+  Stage:     planning
+  Directory: /home/ticktockbent/projects/infrastructure/vimes — work in this directory; do not guess or invent a different path name.
+
+Investigate the codebase directly with your own tools — read files, search, run read-only commands. Sub-agents are NOT authorized for this task; do the exploration yourself. Do not wait for anything or anyone.
+
+When you have a plan, present it by exiting plan mode — that is how you finish. The plan is your ENTIRE deliverable: VIMES captures it and hands it to a fresh session that will implement it without your context, so make it complete and self-contained enough for a stranger to execute.`;
+
+const FROZEN_REVIEW_BRIEFING = `You are a worker session that VIMES dispatched to REVIEW one task's implementation independently. You did not write this code — judge it fresh against the acceptance criteria below.
+
+  Task:      getMany(ids) — batch the session lookups
+  Stage:     review
+  Directory: /home/ticktockbent/projects/infrastructure/vimes — the implementation is here; review it in place.
+
+Acceptance criteria — judge EACH as pass or fail:
+  - [ac1] One query, not N.
+
+Inspect the implementation directly with your own tools — read the changed files, run git diff and the tests, search as needed. Sub-agents are NOT authorized for this task; do the review yourself.
+
+When you have judged every criterion, report your verdict using the report_review tool — one entry per criterion (its id, pass or fail, a short note). That report is how you finish and is your ENTIRE deliverable: VIMES reads it to decide whether the task is done or goes back for fixes. You do not advance the task yourself.`;
+
+// `dispatchedTask({ title: 'Task: surf the wave' })` — the FIRST-marker case.
+const FROZEN_SELF_REFERENTIAL_TITLE_BRIEFING = `You are a worker session that VIMES dispatched to make progress on one task. This is real work.
+
+  Task:      Task: surf the wave
+  Stage:     implementing
+  Directory: /home/ticktockbent/projects/infrastructure/vimes — work in this directory; do not guess or invent a different path name.
+
+Do the work this stage calls for, and stay within the task's scope.
+
+If a message arrives while you're working, it's a human steering you mid-run — read it and adjust. It's a correction to THIS task, not a new task.
+
+When you believe the stage is done, briefly summarize what you did and what (if anything) remains, then stop. You do not advance the task yourself — a human reviews and moves it forward on the board.`;
+
+// `dispatchedTask({ title: 'q'.repeat(300) })` — the label-longer-than-the-cap case.
+const FROZEN_LONG_LABEL_BRIEFING = `You are a worker session that VIMES dispatched to make progress on one task. This is real work.
+
+  Task:      qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq
+  Stage:     implementing
+  Directory: /home/ticktockbent/projects/infrastructure/vimes — work in this directory; do not guess or invent a different path name.
+
+Do the work this stage calls for, and stay within the task's scope.
+
+If a message arrives while you're working, it's a human steering you mid-run — read it and adjust. It's a correction to THIS task, not a new task.
+
+When you believe the stage is done, briefly summarize what you did and what (if anything) remains, then stop. You do not advance the task yourself — a human reviews and moves it forward on the board.`;
 
 // EVERY variant `composeStageInstruction` can reach, composed through the real
 // exported function. `markerBeyondCap` records the measurement that IS S16-F1:
@@ -308,31 +399,22 @@ const DISPATCH_BRIEFING_VARIANTS: readonly {
 }[] = [
   {
     variant: 'generic make-progress (a bare implementing task degrades to it)',
-    compose: (task) => composeStageInstruction(task, SPAWN),
+    compose: () => FROZEN_GENERIC_BRIEFING,
     markerBeyondCap: false,
   },
   {
     variant: 'implementing, rich (a work-order section earns the fuller briefing)',
-    compose: (task) =>
-      composeStageInstruction({ ...task, scope: 'Batch the per-id lookups behind one call.' }, SPAWN),
+    compose: () => FROZEN_IMPLEMENTING_BRIEFING,
     markerBeyondCap: true,
   },
   {
     variant: 'planning',
-    compose: (task) => composeStageInstruction({ ...task, stage: 'planning' }, SPAWN),
+    compose: () => FROZEN_PLANNING_BRIEFING,
     markerBeyondCap: true,
   },
   {
     variant: 'review',
-    compose: (task) =>
-      composeStageInstruction(
-        {
-          ...task,
-          stage: 'review',
-          acceptanceCriteria: [{ id: 'ac1', text: 'One query, not N.' }],
-        },
-        SPAWN,
-      ),
+    compose: () => FROZEN_REVIEW_BRIEFING,
     markerBeyondCap: true,
   },
 ];
@@ -381,7 +463,7 @@ describe('deriveSessionTitle: the dispatch briefing is titled by its TASK LINE (
 
   // ── the LINE bound (why core does not copy the UI's everything-after slice) ──
   it('takes the Task LINE only — Stage: and Directory: never reach the title', () => {
-    const title = deriveSessionTitle(composeStageInstruction(dispatchedTask(), SPAWN))!;
+    const title = deriveSessionTitle(FROZEN_GENERIC_BRIEFING)!;
     expect(title).toBe(DISPATCH_TASK_LABEL);
     expect(title).not.toContain('Stage:');
     expect(title).not.toContain('Directory:');
@@ -391,17 +473,14 @@ describe('deriveSessionTitle: the dispatch briefing is titled by its TASK LINE (
   // ── the FIRST-marker rule ────────────────────────────────────────────────────
   it('a label that itself begins "Task:" survives whole — the FIRST marker is the briefing\'s own', () => {
     const selfReferentialLabel = 'Task: surf the wave';
-    const briefing = composeStageInstruction(dispatchedTask({ title: selfReferentialLabel }), SPAWN);
+    const briefing = FROZEN_SELF_REFERENTIAL_TITLE_BRIEFING;
     expect(briefing).toContain(`  Task:      ${selfReferentialLabel}`);
     expect(deriveSessionTitle(briefing)).toBe(selfReferentialLabel);
   });
 
   // ── the cap still applies, to the LABEL rather than to the boilerplate ───────
   it(`a label longer than the bound truncates at ${SESSION_TITLE_MAX_LENGTH}`, () => {
-    const longLabel = 'q'.repeat(300);
-    const title = deriveSessionTitle(
-      composeStageInstruction(dispatchedTask({ title: longLabel }), SPAWN),
-    )!;
+    const title = deriveSessionTitle(FROZEN_LONG_LABEL_BRIEFING)!;
     expect(title).toHaveLength(SESSION_TITLE_MAX_LENGTH);
     expect(title).toBe('q'.repeat(SESSION_TITLE_MAX_LENGTH));
   });
@@ -424,7 +503,7 @@ describe('deriveSessionTitle: the dispatch briefing is titled by its TASK LINE (
   // The briefing arrives as a string in the live log, but `content` is LOOSE by
   // schema — a single text block must take the same branch.
   it('recognizes the briefing inside a text block, not only as a bare string', () => {
-    const briefing = composeStageInstruction(dispatchedTask(), SPAWN);
+    const briefing = FROZEN_GENERIC_BRIEFING;
     expect(deriveSessionTitle([{ type: 'text', text: briefing }])).toBe(DISPATCH_TASK_LABEL);
   });
 });

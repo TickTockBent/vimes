@@ -1,9 +1,9 @@
 import type {
   ReportCompletionPayload,
   ReportReviewPayload,
+  StageRunnerPlan,
   TaskRecord,
-} from '../schemas.js';
-import type { StageRunnerPlan } from './stageRunner.js';
+} from '@vimes/ext-host';
 
 // ─── the dispatcher's instruction seam — the WORDS (pure, packages/core) ──────
 //

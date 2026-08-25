@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { createTaskToolPayloadSchema, type CreateTaskToolPayload } from '@vimes/core';
+import { createTaskToolPayloadSchema, type CreateTaskToolPayload } from '@vimes/ext-tasks';
 import type { SdkReportToolSpec } from './sessionHost.js';
 import type { CreateInstanceInput } from './instanceWriter.js';
 

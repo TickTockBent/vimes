@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { TaskRecord } from '../schemas.js';
-import type { StageRunnerPlan } from './stageRunner.js';
+import type { StageRunnerPlan, TaskRecord } from '@vimes/ext-host';
 import { composeStageInstruction, type StageInstructionContext } from './stageInstruction.js';
 
 // ─── the dispatcher's instruction seam — the WORDS ────────────────────────────

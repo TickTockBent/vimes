@@ -15,7 +15,6 @@ import {
   runtimeDriftObserved,
   snapshotAfter,
   cacheObservabilityProjection,
-  composeStageInstruction,
   evaluateMeterAlerts,
   meterAlert,
   meterSample,
@@ -37,6 +36,10 @@ import {
   type UsageBackoffConfig,
   type UsageBackoffState,
 } from '@vimes/core';
+// S18·U2 (Move 4) — the dispatcher's instruction seam is TENANT policy and lives
+// in the task extension now; the engine still owns WHETHER and WHO. Root barrel
+// only: the boundary checker refuses a deep import into an ext-* package.
+import { composeStageInstruction } from '@vimes/ext-tasks';
 import Database from 'better-sqlite3';
 import { SqliteEventStore } from './sqliteEventStore.js';
 import { SqliteSnapshotStore } from './sqliteSnapshotStore.js';
