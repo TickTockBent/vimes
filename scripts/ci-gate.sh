@@ -14,6 +14,13 @@ if [[ "${nodeMajorVersion}" != "24" ]]; then
   exit 1
 fi
 
+# --- extension boundary gate (S18·U1) -----------------------------------------
+# Fail fast, before any build: walks packages/ext-*/src, packages/core/src, and
+# packages/daemon/src for boundary crossings (docs/slice-18.md §3.3). Needs no
+# build output — it's a source scanner — so it runs first.
+echo "ci-gate: extension boundary check"
+node scripts/check-ext-boundary.mjs
+
 # --- typecheck ---------------------------------------------------------------
 echo "ci-gate: typecheck"
 npm run typecheck

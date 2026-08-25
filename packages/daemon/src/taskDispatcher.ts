@@ -14,12 +14,14 @@ import {
   type ProjectsState,
   type ReportCompletionPayload,
   type ReportReviewPayload,
-  type StageInstructionContext,
   type StageRunnerPlan,
   type TaskRecord,
   type TaskStage,
   type TasksState,
 } from '@vimes/core';
+// S18·U2 (Move 4) — the composer's out-of-band context type travels with the
+// composer itself, which is tenant code now. Root barrel only.
+import type { StageInstructionContext } from '@vimes/ext-tasks';
 import type { SessionHost } from './sessionHost.js';
 import type { InstanceWriter } from './instanceWriter.js';
 import type { CheckoutCoordinator, CheckoutRefusal } from './checkoutCoordinator.js';

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { validateRefName } from '../git/refValidation.js';
+import { validateRefName } from './refValidation.js';
 import {
   NODE_CHECKOUT_BRANCH_PREFIX,
   NODE_CHECKOUT_DIR_PREFIX,

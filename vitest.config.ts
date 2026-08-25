@@ -39,6 +39,15 @@ import vue from '@vitejs/plugin-vue';
 // `exclude` restates vitest's defaults because supplying `include` does not
 // change them, and a future CLI `--exclude` would override them wholesale.
 
+// ─── `scripts/**` joins the allow-list (S18·U1, 2026-08-25) ─────────────────
+//
+// scripts/check-ext-boundary.mjs is a gate script, not a workspace package —
+// it has no `packages/*/src` home and never will (it SCANS packages/*/src).
+// Its tests earn the same allow-list discipline as everything else here: the
+// line below names exactly `scripts/**/*.{test,spec}.?(c|m)[jt]s?(x)`, so a
+// future stray script test is admitted only if someone deliberately widens
+// this pattern — the same fail-closed posture the block above argues for.
+
 // ─── The `.vue` transform (S15·U5, 2026-08-14) ───────────────────────────────
 //
 // Added so the suite can MOUNT a component. Until S15-F5 nothing in any gate
@@ -55,7 +64,10 @@ import vue from '@vitejs/plugin-vue';
 export default defineConfig({
   plugins: [vue()],
   test: {
-    include: ['packages/*/src/**/*.{test,spec}.?(c|m)[jt]s?(x)'],
+    include: [
+      'packages/*/src/**/*.{test,spec}.?(c|m)[jt]s?(x)',
+      'scripts/**/*.{test,spec}.?(c|m)[jt]s?(x)',
+    ],
     exclude: ['**/node_modules/**', '**/dist/**'],
   },
 });

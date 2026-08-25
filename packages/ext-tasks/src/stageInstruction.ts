@@ -1,11 +1,12 @@
 import type {
   ReportCompletionPayload,
   ReportReviewPayload,
+  StageRunnerPlan,
   TaskRecord,
-} from '../schemas.js';
-import type { StageRunnerPlan } from './stageRunner.js';
+} from '@vimes/ext-host';
 
-// ─── the dispatcher's instruction seam — the WORDS (pure, packages/core) ──────
+// ─── the dispatcher's instruction seam — the WORDS (pure; packages/ext-tasks, ─
+// tenant code behind the Tier-1 boundary since S18·U2's move out of core) ────
 //
 // Pure, deterministic, no clock/IO (rule 0.3). The minimal stage-instruction
 // seam-fill Wes signed off 2026-07-24 — see docs/open-questions.md D43/D44 for the

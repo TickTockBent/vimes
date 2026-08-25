@@ -55,15 +55,24 @@ const BARE_SLASH_COMMAND_PATTERN = /^\/[a-z][a-z-]*$/;
 //
 // ⚠ **A SECOND FRAGILE-ADAPTER BOUNDARY (rule 0.6) — but this one is OURS, and
 // that is why it is machine-checked rather than merely commented.** Every
-// briefing VIMES dispatches is composed by `tasks/stageInstruction.ts`, whose
-// four variants (implementing-rich, PLAN, REVIEW, generic make-progress) all
+// briefing VIMES dispatches is composed by `packages/ext-tasks/src/stageInstruction.ts`
+// — tenant code across the package boundary since S18, which is exactly why
+// this coupling is machine-checked as recorded bytes rather than trusted by
+// proximity — whose four variants (implementing-rich, PLAN, REVIEW, generic make-progress) all
 // open with this exact sentence stem before diverging, then all emit a line
 // shaped `  Task:      ${label}`. The stem is RESTATED here rather than
 // imported so this module stays a leaf (nothing in the identity ladder should
-// depend on the task subsystem) — the coupling is held by a test in
-// `sessionIdentity.test.ts` that composes REAL briefings through
-// `composeStageInstruction` and asserts both halves. If the composer's opening
-// ever changes, that test reddens; it cannot go quietly inert.
+// depend on the task subsystem). The coupling is held by a machine check in
+// `packages/daemon/src/dispatchBriefingStem.test.ts` — the daemon is the one
+// package that legally imports BOTH sides since S18, so it can compose REAL
+// briefings through the real `composeStageInstruction` and assert that every
+// variant still derives its task label through this branch. If the composer's
+// opening sentence ever changes, THAT file reddens; it cannot go quietly inert.
+//
+// ⚠ It used to live next door. S18·U2's signed fixture swap froze those
+// briefings into `sessionIdentity.test.ts` as recorded constants (core may not
+// import a tenant), which SEVERED the live coupling — caught by the post-close
+// cold review and re-homed to the daemon (docs/slice-18.md §6c, S18-F4).
 //
 // ⚠ **WHY THIS BRANCH RUNS BEFORE THE CAP, NOT AFTER (the whole of S16-F1).**
 // D91's first attempt stripped this boilerplate DOWNSTREAM, off the finished

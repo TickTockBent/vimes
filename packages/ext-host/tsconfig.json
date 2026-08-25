@@ -5,8 +5,7 @@
     "rootDir": "./src"
   },
   "references": [
-    { "path": "../core" },
-    { "path": "../ext-tasks" }
+    { "path": "../core" }
   ],
   "include": ["src"]
 }

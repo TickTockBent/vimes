@@ -3,6 +3,8 @@
   "references": [
     { "path": "packages/core" },
     { "path": "packages/daemon" },
+    { "path": "packages/ext-host" },
+    { "path": "packages/ext-tasks" },
     { "path": "packages/ui" }
   ]
 }

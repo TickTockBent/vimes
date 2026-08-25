@@ -15,7 +15,6 @@ import {
   runtimeDriftObserved,
   snapshotAfter,
   cacheObservabilityProjection,
-  composeStageInstruction,
   evaluateMeterAlerts,
   meterAlert,
   meterSample,
@@ -37,6 +36,10 @@ import {
   type UsageBackoffConfig,
   type UsageBackoffState,
 } from '@vimes/core';
+// S18·U2 (Move 4) — the dispatcher's instruction seam is TENANT policy and lives
+// in the task extension now; the engine still owns WHETHER and WHO. Root barrel
+// only: the boundary checker refuses a deep import into an ext-* package.
+import { composeStageInstruction } from '@vimes/ext-tasks';
 import Database from 'better-sqlite3';
 import { SqliteEventStore } from './sqliteEventStore.js';
 import { SqliteSnapshotStore } from './sqliteSnapshotStore.js';
@@ -600,7 +603,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
       sendMessage: (appSessionId, text) => sessionHost.sendMessage(appSessionId, text),
     },
     // The minimal, stage-generic instruction Wes signed off 2026-07-24 (see
-    // packages/core/src/tasks/stageInstruction.ts) — a dispatched worker is now
+    // packages/ext-tasks/src/stageInstruction.ts) — a dispatched worker is now
     // told what task/stage/directory it's in and how to behave mid-run, instead
     // of nothing. Per-stage specialisation (planning/implementing/review wording)
     // is deliberately deferred — D43/D44, slice 7.

@@ -873,7 +873,7 @@ export const taskSessionAttachedPayloadSchema = z.object({
 
 // task_worktree_created — one isolated worker directory, recorded at the moment it
 // came into existence (slice-6 step 8). Both names are DERIVED from the taskId by
-// `tasks/worktreePaths.ts`, so they are re-derivable rather than remembered; they
+// `git/worktreePaths.ts`, so they are re-derivable rather than remembered; they
 // are carried anyway because the log is the audit trail for "which directory did
 // this worker actually edit?", and a fact you have to re-run a function to recover
 // is a fact an operator reading the log does not have.

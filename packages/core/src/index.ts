@@ -247,14 +247,14 @@ export {
 // Step 7 — WHO runs a stage, kept a separate export (and a separate module) from
 // WHETHER it runs. See stageRunner.ts for why the two questions never merge.
 export { resolveStageRunner, type StageRunnerPlan } from './tasks/stageRunner.js';
-// The dispatcher's instruction seam — WHAT a dispatched worker is told. Kept a
-// separate export (and a separate module) from stageRunner.ts for the same
-// reason WHO and WHETHER stay apart: this only composes words from a
-// (task, plan) pair and never decides who runs the stage or whether it runs.
-export { composeStageInstruction } from './tasks/stageInstruction.js';
-// S7·7a — the OPTIONAL out-of-band context the composer needs but cannot read
-// (the daemon-fetched plan blob). Reserved to grow with S7·7b's fix-seed.
-export type { StageInstructionContext } from './tasks/stageInstruction.js';
+// ⚠ **`composeStageInstruction` / `StageInstructionContext` ARE GONE FROM THIS
+// BARREL (S18·U2, Move 4).** The dispatcher's instruction seam — WHAT a
+// dispatched worker is TOLD — is tenant policy, not engine truth, so it moved to
+// `@vimes/ext-tasks` verbatim (`docs/slice-18.md` §3.4). The engine keeps the two
+// questions it does own and which never merge with it: WHETHER a stage runs
+// (`dispatchDecision`) and WHO runs it (`resolveStageRunner`, just above). Core
+// exports no tenant name and imports no `@vimes/ext-*` — the boundary checker
+// refuses both.
 // S7·6a — the pure review verdict → proposed-stage function. Kept a separate export
 // (and module) like the other task decisions: it decides WHERE a reported review
 // sends the task, and S7·6b's dispatcher reads the result to propose the transition
@@ -283,7 +283,7 @@ export {
   NODE_CHECKOUT_DIR_PREFIX,
   nodeCheckoutBranch,
   nodeCheckoutDirName,
-} from './tasks/worktreePaths.js';
+} from './git/worktreePaths.js';
 // S17·U1 — the §3.9 ref-name grammar (core's first `git/` tenant). Pure, total,
 // never throws; the adapter's `check-ref-format` half is the daemon's.
 export {
@@ -311,14 +311,12 @@ export {
   reportReviewPayloadSchema,
   reportCompletionPayloadSchema,
   scopedTokenBindingSchema,
-  createTaskToolPayloadSchema,
   type StageRunIdentity,
   type ArtifactEnvelope,
   type SubmitPlanPayload,
   type ReportReviewPayload,
   type ReportCompletionPayload,
   type ScopedTokenBinding,
-  type CreateTaskToolPayload,
 } from './tasks/workOrder.js';
 export {
   WATCHDOG_GOVERNED_LIVENESS,

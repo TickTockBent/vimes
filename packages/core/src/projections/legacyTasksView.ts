@@ -23,12 +23,28 @@ import type { InstanceRecord, InstancesState } from './instances.js';
 // `InstanceWriter`, `TaskDispatcher`, `registerOrchestratorApi`,
 // `TaskWatchdog` — none of which the alias tail was scheduled to touch.
 //
-// **ITS ONE REMAINING CONSUMER: `app.ts`'s `readTasksAsLegacyView`.** Its NEW
-// DEATH TRIGGER: Move 4 (`packages/ext-tasks/`), when the writer's legacy
-// `TaskRecord` narrowing is retired and `InstanceWriterDeps.readTasks` (and its
-// three siblings) stop asking for this shape at all. Do not grow a fourth
-// consumer in the meantime: every new reader of this shape is another thing
-// that has to be migrated before Move 4 can delete it.
+// **ITS ONE REMAINING CONSUMER: `app.ts`'s `readTasksAsLegacyView`.**
+//
+// ─── S18·U2 — THE DEATH TRIGGER IS RE-DATED, AND THIS IS WHY ─────────────────
+//
+// S13·U4 named Move 4 (`packages/ext-tasks/`) above. Move 4 landed in slice 18
+// and did NOT kill this file, because the trigger was verified one level deeper
+// than S13·U4 could see: retiring the `readTasks` narrowing means
+// `InstanceWriter`, `TaskDispatcher`, `registerOrchestratorApi` and
+// `TaskWatchdog` stop asking for `TaskRecord[]` — but they FEED that type into
+// ENGINE signatures (`decideDispatch` is `TaskRecord`-typed), so the honest
+// retirement is per-declaration generalisation of those engine seams, not the
+// relocation Move 4 performs.
+//
+// ITS ACTUAL DEATH TRIGGER, then: **the instance-store per-declaration move that
+// genericizes the writer seam** — when `InstanceWriterDeps.readTasks` and its
+// three siblings speak the generic instance shape and stop asking for this one
+// at all. Recorded in `docs/slice-18.md` §3.7 branch (b), Wes-signed 2026-08-25,
+// and in `docs/migration-map.md` Move 4's 2026-08-25 amendment (deviation iii),
+// which is the ONE place all three of Move 4's narrowings are written down.
+//
+// Do not grow a fourth consumer in the meantime: every new reader of this shape
+// is another thing that has to be migrated before Move 4 can delete it.
 //
 // ⚠ **IT IS A NARROWING, AND THE DROPPED FIELDS ARE THE POINT.** `nodeHistory`,
 // `edgeTraversalCounts`, `attemptsPerNode` and `workflow` have no legacy

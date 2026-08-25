@@ -5,7 +5,7 @@ import { isWithinProjectRoot } from '../projections/projects.js';
 // ─── D56 — the standing orchestrator's WORDS (pure, packages/core) ────────────
 //
 // Pure, deterministic, no clock/IO (rule 0.3), golden-tested — the same seam
-// `tasks/stageInstruction.ts` occupies for dispatched workers, and written to the
+// `packages/ext-tasks/src/stageInstruction.ts` occupies for dispatched workers, and written to the
 // same discipline. The daemon does the reading (the standing-notes file, the
 // projections) and passes the results IN; nothing here touches disk.
 //
