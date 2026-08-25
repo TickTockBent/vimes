@@ -1,6 +1,8 @@
 # Slice 19 — the briefing declaration goes LIVE (first per-declaration move)
 
-**STATUS: SIGNED ⟨Wes⟩ 2026-08-25 — rev 3. Building. Rev 1 rebuilt after outside review round 1 (all eight
+**STATUS: CLOSED 2026-08-25 — shipped, machine gate PASSED, deployed
+(restart taken, boot clean). Signed ⟨Wes⟩ 2026-08-25 (rev 3 + §3b
+table); built same day under standing keep-rolling clearance. Rev 1 rebuilt after outside review round 1 (all eight
 sustained); rev 3 closes round 2's four implementation-contract issues
 (§7) — the preflight now composes, the seam carries ids not specs, and
 the refusal stays wire-stable.**
@@ -257,6 +259,61 @@ STOP, back to the pass (rule 0.1).
 
 **Deploy note:** daemon + core + ext-tasks change ⇒ restart at close;
 standing clearance applies.
+
+## §5b. Unit ledger + judgment record
+
+- **U1 `36786b0`** (opus) — projection (16/3, compile-guarded both
+  directions — orchestrator re-sabotaged the schema guard personally),
+  assembly (classify-then-read, fail-closed, spy-proven), composer
+  table (4 entries, zero prose bytes, byte-identity vs direct calls),
+  §3.4 parser rule, §3.8 manifest edit. 3693/156 → 3738/158; BOTH
+  licensed reddenings unused (proven by stash-and-rerun). In-mandate
+  accepted: dead `ParsedBriefing.permissionMode` removed;
+  no-instance.record wrapper throws (preflight turns it into a
+  refusal); tenant-word comment hygiene. §3b table derived here,
+  signed by ⟨Wes⟩ before U2.
+- **U2 `105b5ea`** (opus) — declaration reader + composing preflight
+  BESIDE the compiled path, wired-and-uncalled (tripwire-proven). A2:
+  15 byte cells + tools/footing/capture, every compiled expectation
+  DERIVED from the compiled code at runtime (specs bucketed through
+  the real `buildReportMcpServers`). A3 accessor-counter spies (0
+  reads on undeclared kinds). A4: 7 sub-reasons total-mapped,
+  wire-stability compile-asserted. A5 perturbation cells. 3738 →
+  3844/160, all additive. In-mandate accepted: absence distinction
+  kept off-wire; refusal detail to daemon log not wire.
+- **U3 `d52c595`** (sonnet) — freeze-first flip: compiled
+  expectations frozen with provenance (S12·U3 idiom, suite green
+  with compiled code still present), then the flip, then deletion at
+  BOTH homes — the dispatcher's mode switch and the host's
+  stage→ids derivation + mode-keyed capture arming; the fail-open
+  no-stage→both-tools fallback died fail-closed. `not-delivered`
+  shrank to send-time. 3844 → 3837/160 — net −7 by consolidation:
+  deleted tests covered DELETED compiled behavior, each named with
+  its replacement coverage; route pass-through tests untouched.
+  Accepted deviation: `instanceApi.test.ts` harness gained the
+  preflight dep (mechanical flip consequence; ZERO assertion lines
+  changed — verified at the orchestrator gate).
+
+## §6b. Machine gate RESULTS (2026-08-25, orchestrator-run)
+
+- Suite ×2 green (agent's double run + ci-gate's run): 3837/160.
+- `ci-gate.sh` exit 0, all profiles (boundary → typecheck → tests →
+  ui build → CM6 → scenario double-run → nondeterminism grep →
+  advisories).
+- **A1: 37/37 goldens byte-identical** through the post-flip module
+  (orchestrator-run, independent harness invocation).
+- A2 frozen cells green against the deleted code's image; A4
+  end-to-end refusal (no worktree, no spawn, no event); A5 harvest
+  cells real on the host (plan-without-capture unharvested; shipped
+  corner harvested).
+- Boundary checker clean; surface.json byte-untouched all slice.
+- **Deploy:** restart taken (ancestry clean), boot line healthy, no
+  drift warning.
+
+**The briefing declaration GOVERNS dispatch as of this slice**: Move
+1's parser/registry have their first live consumer; D55's matrix and
+D48's plan footing are declaration rows; the compiled switches are
+deleted and their behavior frozen as the differential's reference.
 
 ## §7. Outside-review triage record (Sol)
 
