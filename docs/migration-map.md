@@ -450,6 +450,34 @@ early in the tail rather than the tidy-up at the end.
 *Ordering note:* independent of the alias tail (UI switch → alias death),
 which is q24's business and blocks on the UI, not on this.
 
+> **AMENDED 2026-08-25 (slice 18 §3.7 branch (b); Wes-signed with the
+> slice).** Move 4 ships NARROWER than the text above, deliberately, and
+> this entry is the one place recording all three deviations:
+> **(i)** the residual `packages/core/src/tasks/` directory survives,
+> holding the ENGINE modules §1.2's symbol table rules stay
+> (`dispatchDecision`, `stageRunner`, `reviewOutcome`,
+> `watchdogDecision`, the split residues) — each leaves in its own
+> per-declaration rewrite, and the directory dies with the last of
+> them. **(ii)** The daemon tenant hosts (`taskDispatcher.ts`,
+> `taskWatchdog.ts`, `createTaskTool.ts`) stay until D66's capability
+> interface exists — extracting IO-bearing hosts is interface design,
+> not relocation. **(iii)** `legacyTasksView` survives: S13·U4's header
+> named Move 4 as its death trigger, but retiring the `readTasks`
+> narrowing cascades into ENGINE signatures (`decideDispatch` is
+> `TaskRecord`-typed), so its honest trigger is the instance-store
+> per-declaration move that genericizes the writer seam — the header is
+> re-dated in slice 18 and the "no fourth consumer" guard stays.
+> **What marks Move 4 complete under this amendment:** `ext-host` and
+> `ext-tasks` exist; the Tier-1 boundary is mechanical and
+> sabotage-proven (slice 18 A5, eight cases); every tenant symbol that
+> can move without violating the events-runtime dependency knot
+> (slice-18.md §0.3) has moved (`stageInstruction.ts` verbatim,
+> `createTaskToolPayloadSchema`); and every stay-behind is named with
+> its death trigger (slice-18.md §3.4 c1–c5). Also recorded here:
+> q29(b)'s "fails resolution" rationale was OBSERVED false under npm
+> workspace hoisting (probe 2026-08-25) — the gate-run checker is the
+> boundary's primary enforcement, dependency absence is hygiene.
+
 Everything after move 4 is per-declaration and each carries its own D-record
 from the kit: briefings (`composer` + `inputs`), tool exposure (q14),
 acceptance shapes, auto-dispatch (`by`), isolation, watchdog bands, verbs,

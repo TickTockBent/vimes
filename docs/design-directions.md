@@ -1790,6 +1790,26 @@ its prompt is documentation-shaped belief, not observed truth. One-
 session spike: dispatch a trivial `/command` into a scratch repo, watch
 what the spine records. Cheap, and it gates everything above.
 
+**SPIKE RUN 2026-08-25 — CONFIRMED, with one sharp edge.** Three probes
+(scratch repos, daemon-identical SDK footing: streaming input,
+settingSources `['project']`, D50 clamp, permissionMode `auto`; sentinel
+content non-derivable from the command name; evidence in
+`scratchpad/spike-skillexec-FINDINGS.md`, untracked):
+- A first user message that IS the `/command` invocation → **harness
+  expansion executes the command** (streaming and string modes behave
+  identically). The transcript the spine tails records both the
+  `<command-name>` marker and the expanded body (`isMeta:true` user
+  message); the SDK live stream shows neither.
+- A `/command` EMBEDDED in a composed briefing is **inert at the harness
+  level** — the probe's model happened to read `.claude/commands/`
+  itself and comply, which is a save, not a mechanism.
+- Consequence: Shape A dispatch delivers the invocation as its own user
+  message whose content is the command line — which upgrades the
+  "structured dispatch field" prong below from instinct to requirement.
+  (Briefing-message-then-command-message untested; trigger: Shape A
+  adoption.) Probes ran on the SDK-bundled CLI 2.1.207 — rides the D73
+  drift surface like everything else.
+
 **Shape A leaves exactly the four gaps above unsolved** — sharper, not
 softer: q14 is where headless skill-execution lives or dies (no
 interactive `.mcp.json` trust flow); the xvfb headed-Charlotte launch is
