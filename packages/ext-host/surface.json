@@ -1,0 +1,32 @@
+[
+  {
+    "name": "TaskRecord",
+    "from": "@vimes/core",
+    "original": "TaskRecord",
+    "kind": "type"
+  },
+  {
+    "name": "ReportCompletionPayload",
+    "from": "@vimes/core",
+    "original": "ReportCompletionPayload",
+    "kind": "type"
+  },
+  {
+    "name": "ReportReviewPayload",
+    "from": "@vimes/core",
+    "original": "ReportReviewPayload",
+    "kind": "type"
+  },
+  {
+    "name": "StageRunnerPlan",
+    "from": "@vimes/core",
+    "original": "StageRunnerPlan",
+    "kind": "type"
+  },
+  {
+    "name": "canonicalJson",
+    "from": "@vimes/core",
+    "original": "canonicalJson",
+    "kind": "value"
+  }
+]
