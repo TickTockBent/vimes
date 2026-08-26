@@ -1,7 +1,6 @@
 import {
   captureRecorded,
   decideDispatch,
-  deriveReviewOutcome,
   dispatchRefused,
   instanceRunAttached,
   reportFiled,
@@ -10,6 +9,7 @@ import {
   type DispatchRefuseReason,
   type EventInput,
   type MetersState,
+  type ParsedWorkflow,
   type ProjectsState,
   type ReportCompletionPayload,
   type ReportReviewPayload,
@@ -29,10 +29,33 @@ import {
   type BriefingPreflightResult,
   type BriefingPreflightSuccess,
 } from './briefingPreflight.js';
+// S20·U3 (slice-20 §3.3/§3.4): THE FLIP. The three compiled routings this file
+// used to hard-code are gone; `declaredPlanRouting`/`declaredReviewRouting`/
+// `declaredCompletionRouting` (U2, built and proven equal by the differential
+// this unit freezes) are now the ONLY way `record*` decides a binding, an
+// identity, or a target. See each method for the store→emit→propose /
+// emit→propose ordering the declared path preserves unchanged.
+import {
+  declaredCompletionRouting,
+  declaredPlanRouting,
+  declaredReviewRouting,
+  type DeclaredIdentity,
+  type DeclaredOutcome,
+} from './acceptanceRouting.js';
 import type { SessionHost } from './sessionHost.js';
 import type { InstanceWriter } from './instanceWriter.js';
 import type { CheckoutCoordinator, CheckoutRefusal } from './checkoutCoordinator.js';
 import type { NodeWriter } from './nodeWriter.js';
+
+// The two catalogue verb ids the review/completion report tools file through
+// (`reportVerbs.ts`'s `vimes_report.<tool>` spelling). NOT part of §0.5's
+// four-class deletion inventory — those were STAGE/NODE literals the binding
+// used to be keyed on; these are the REPORT VERB the binding is keyed FROM, and
+// resolving the node from them is exactly what `nodeDeclaringReportVerb`
+// (`acceptanceDeclarations.ts`) does now instead of a hard-coded
+// `sessionRef.stage === 'review'`.
+const REVIEW_REPORT_VERB_ID = 'vimes_report.report_review';
+const COMPLETION_REPORT_VERB_ID = 'vimes_report.report_completion';
 
 // ─── slice 6 step 4a — the dispatcher EXECUTOR (daemon I/O) ──────────────────
 //
@@ -259,6 +282,43 @@ export interface TaskDispatcherDeps {
   // rather than a silent fallback to compiled behaviour that no longer exists —
   // there is nothing left to fall back TO.
   preflightBriefing?: (task: TaskRecord) => BriefingPreflightResult;
+
+  // ── S20·U3 (slice-20 §3.3/§3.4): THE DECLARATION THAT GOVERNS OUTCOME ROUTING ─
+  //
+  // The boot-resolved workflow — literally the SAME object `app.ts` hands the
+  // `InstanceWriter` (adjudication) and `preflightBriefing` above (composition):
+  // F2's one-boot-declaration law (Move 3, restated at slice-20 §0.6) means this
+  // is the FOURTH reading of ONE resolved object, never a second parse and never
+  // a per-call re-resolution. `recordPlan`/`recordReview`/`recordCompletion` each
+  // read it fresh off THIS field — not off a module-level `loadShippedWorkflow()`
+  // call of their own — so a test that swaps this field swaps what every report
+  // and every capture routes against.
+  //
+  // ⚠ **REQUIRED, NOT OPTIONAL, AND THAT ASYMMETRY WITH `preflightBriefing` IS
+  // DELIBERATE.** An absent preflight is fine because most constructions never
+  // reach `spawn`; there is no equivalent quiet path here — EVERY construction
+  // reaches `record*` the moment anything calls it, since the compiled fallback
+  // this field replaces no longer exists (§0.5's four-class inventory is GONE).
+  // An optional field defaulting to "silently no-op every report" would be
+  // exactly the fail-open this slice exists to delete, so a construction that
+  // omits it is a compile error, not a runtime surprise.
+  declaredWorkflow: ParsedWorkflow;
+
+  // The unevaluable-warning seam. A `record*` call whose declared routing comes
+  // back `{ kind: 'unevaluable' }` (a path-form `requires`, or — see U3's own A4
+  // addition — a node that arms a capture but declares no acceptance table at
+  // all) still records the fact (fact before consequence) and proposes nothing;
+  // this is the ONE place that surfaces the reason, exactly once per event, so
+  // an operator watching daemon logs sees a table that cannot be judged rather
+  // than a report that silently went nowhere.
+  //
+  // OPTIONAL ON THE TYPE so a construction that never reaches an unevaluable
+  // cell (most of this file's own test harness) need not supply one; `app.ts`
+  // wires it to `console.warn` explicitly at the boundary (rule 0.3 — no module
+  // reaches for a global logger on its own), and a test that cares injects a
+  // spy. An absent `warn` is a silent drop, never a throw — the same "never
+  // throws on its own paths" contract every `record*` method has always kept.
+  warn?: (message: string) => void;
 
   // ── S7·5b-i: the native plan-capture seam (D48, I10) ─────────────────────────
   //
@@ -857,282 +917,257 @@ export class TaskDispatcher {
   }
 
   /**
+   * S20·U3 — apply a declared routing's `DeclaredOutcome` (§3.4). ONE place, so
+   * `record*`'s three callers cannot each half-implement "propose → the choke
+   * point, rest → nothing, unevaluable → warn once", which is exactly the kind
+   * of partial derivation slice-20 §3.3 forbids for the identity classes.
+   *
+   *   • `propose`     — through `instanceWriter.proposeMove` (I7's choke point),
+   *                     NEVER a hand-rolled `instance_moved`. The writer
+   *                     adjudicates and records either the move or an evented
+   *                     rejection (e.g. the task already left the node) — both
+   *                     correct, both the writer's to make.
+   *   • `rest`        — nothing. §3.4: an unset target, or genuinely incomplete
+   *                     evidence, proposes nothing; the fact already recorded
+   *                     (by the caller, BEFORE this runs) stands on its own.
+   *   • `unevaluable` — EXACTLY ONE `warn(...)`, naming the task, the node, and
+   *                     the typed reason — and no proposal. `this.deps.warn` is
+   *                     optional (a construction that never reaches this cell
+   *                     need not supply one); an absent seam is a silent drop,
+   *                     never a throw, matching every `record*` method's
+   *                     "never throws on its own paths" contract.
+   *
+   * TOTAL and NEVER THROWS — the exhaustive switch over `DeclaredOutcome['kind']`
+   * has no default arm to fall through, so a widened union reddens the typecheck
+   * here rather than silently doing nothing for the new case.
+   */
+  private applyOutcome(identity: DeclaredIdentity, outcome: DeclaredOutcome): void {
+    switch (outcome.kind) {
+      case 'propose':
+        // `outcome.toStage` is the ENGINE evaluator's generic node id (`string`
+        // — acceptance.ts has no notion of `TaskStage`'s closed vocabulary); the
+        // parser's edge-legality table already refuses a manifest whose
+        // `on_pass`/`on_fail` names anything but a real node of the workflow
+        // (slice-20 §0.7/A3, manifest.ts `unknown-node-reference`), so by the
+        // time a declaration boots this string IS one of `TaskStage`'s members.
+        // The writer is still the one that adjudicates whether the MOVE is
+        // legal (I7) — this cast only asserts that the STRING is a stage.
+        this.deps.instanceWriter.proposeMove(identity.instanceId, {
+          toStage: outcome.toStage as TaskStage,
+          proposedBy: 'dispatcher',
+        });
+        return;
+      case 'rest':
+        return;
+      case 'unevaluable':
+        this.deps.warn?.(
+          `acceptance unevaluable: task ${identity.instanceId} at node "${identity.node}" — ${outcome.reason}`,
+        );
+        return;
+    }
+  }
+
+  /**
    * Record a captured plan — the DETERMINISTIC I10 core of native plan capture
    * (D48, S7·5b-i). Called with the planner's app-session id and the plan text a
-   * plan-mode run produced; NOTHING calls it yet (the SDK-adapter trigger is
-   * 5b-ii), so this method changes no live behaviour on its own.
+   * plan-mode run produced.
    *
-   * The dispatcher owns three writes here, IN THIS ORDER, and the order is the
-   * contract: store the blob → emit `capture_recorded` → propose the move. The
-   * hash the event carries must name a blob that already exists, and the move
-   * must follow the fact it depends on.
+   * S20·U3 (the flip): the binding (which node's acceptance this capture
+   * satisfies), the identity (§0.5's four literal classes — lookup key, attempt
+   * filter, emitted `node:`, envelope `taskRef.stage`), and the target now all
+   * come from `declaredPlanRouting` (`acceptanceRouting.ts`), reading
+   * `this.deps.declaredWorkflow` — the boot-resolved declaration, never a
+   * literal `'planning'` or `'plan-ready'` hard-coded here. The compiled halves
+   * this replaced are DELETED, not merely superseded (slice-20 §0.5); the
+   * differential that proved the two agreed cell-for-cell is frozen at
+   * `acceptanceRouting.differential.test.ts`.
    *
-   * TOTAL and NEVER THROWS on its own paths — like `dispatchTask`, it is called from
-   * an adapter (5b-ii) and a method that throws is a capture that silently stopped.
-   * Two paths are deliberate NO-OPS:
+   * The dispatcher still owns three writes here, IN THIS ORDER, and the order
+   * is still the contract: store the blob → emit `capture_recorded` → apply the
+   * outcome (propose / rest / warn-once). The hash the event carries must name a
+   * blob that already exists, and the move must follow the fact it depends on.
    *
-   *   • EMPTY PLAN → nothing. A plan-mode run that emitted only whitespace captured
-   *     nothing; storing an empty-hash artifact and evening a `capture_recorded`
-   *     for it would be a false fact in an append-only log — the plan that never
-   *     was.
+   * TOTAL and NEVER THROWS on its own paths — like `dispatchTask`, it is called
+   * from an adapter (5b-ii) and a method that throws is a capture that silently
+   * stopped. Two paths are still deliberate NO-OPS, preserved verbatim:
    *
-   *   • UNKNOWN / NON-PLANNING SESSION → nothing. If no task carries a
-   *     `{ stage: 'planning', appSessionId }` ref for this planner, there is no task
-   *     to record against, and fabricating one would put a plan on a task the log
-   *     never tied to this session — the same "unknown → nothing" discipline
-   *     `dispatchTask` and `InstanceWriter` already keep.
+   *   • EMPTY PLAN → nothing. A plan-mode run that emitted only whitespace
+   *     captured nothing; storing an empty-hash artifact and eventing a
+   *     `capture_recorded` for it would be a false fact in an append-only log —
+   *     the plan that never was.
    *
-   * ⚠ THE MOVE GOES THROUGH `instanceWriter.proposeMove` (I7's choke point), NEVER
-   * an `instance_moved` this module emits. The writer adjudicates
-   * planning→plan-ready and records EITHER an `instance_moved` or an evented
-   * rejection (e.g. the task already left `planning`) — both of which are correct
-   * and both of which are the writer's to make, not the dispatcher's. Emitting the
-   * move here would make this a second writer of task state and break I10/I7.
+   *   • UNKNOWN SESSION, OR NO NODE ARMS THIS CAPTURE → nothing. If no task
+   *     carries a session ref at a node whose `briefing.capture` names `'plan'`,
+   *     there is no task to record against, and fabricating one would put a plan
+   *     on a task the log never tied to this session — the same
+   *     "unknown → nothing" discipline `dispatchTask` and `InstanceWriter`
+   *     already keep.
+   *
+   * ⚠ A PROPOSED MOVE STILL GOES THROUGH `instanceWriter.proposeMove` (I7's
+   * choke point), NEVER an `instance_moved` this module emits — `applyOutcome`
+   * is where that contract lives now, and it is the same contract, not a new
+   * one.
    */
   recordPlan(plannerAppSessionId: string, planText: string): void {
-    // 1. EMPTY GUARD — a whitespace-only plan captured nothing; see the no-op note.
-    if (planText.trim() === '') {
+    const routing = declaredPlanRouting({
+      workflow: this.deps.declaredWorkflow,
+      tasks: this.deps.readTasks(),
+      appSessionId: plannerAppSessionId,
+      captureName: 'plan',
+      captureText: planText,
+    });
+    if (routing.kind === 'no-op') {
       return;
     }
 
-    // 2. REVERSE-LOOKUP the owning task from its OWN planning refs. Fresh read, like
-    // every other read in this module — a stale board is a board that no longer
-    // reflects which session is planning what. No task claims this planner → NO-OP.
-    const owningTask = Object.values(this.deps.readTasks().tasks).find((task) =>
-      task.sessionRefs.some(
-        (sessionRef) =>
-          sessionRef.stage === 'planning' && sessionRef.appSessionId === plannerAppSessionId,
-      ),
-    );
-    if (owningTask === undefined) {
-      return;
-    }
-
-    // 3. THE FORWARD-PATH IDENTITY (full attempt tracking is S7·7b). `attempt` is
-    // the count of planning refs on this task — the Nth planning run, ≥1 because we
-    // just matched one, which satisfies `submitPlanPayloadSchema`'s positive-int
-    // rule. `workOrderRev` defaults to 0 until the first amendment (S7·2b), matching
-    // the record's absent-until-amended field.
-    const planningAttempt = owningTask.sessionRefs.filter(
-      (sessionRef) => sessionRef.stage === 'planning',
-    ).length;
-    const workOrderRev = owningTask.workOrderRev ?? 0;
-
-    // 4. STORE THE BLOB first — the plan CONTENT lives in the artifact store, the
-    // event carries only its hash. The dispatcher is the writer (I10); the injected
-    // `nowIso` is the only clock (rule 0.3).
+    // STORE THE BLOB first — the plan CONTENT lives in the artifact store, the
+    // event carries only its hash. The dispatcher is the writer (I10); the
+    // injected `nowIso` is the only clock (rule 0.3). `routing.envelope` carries
+    // every DECLARED field (kind, taskRef, rev, createdBy); `createdAt` is the
+    // caller's clock, completed here.
     const planEnvelope = this.deps.artifactStore.put(planText, {
-      kind: 'plan',
-      taskRef: { taskId: owningTask.taskId, stage: 'planning' },
-      rev: workOrderRev,
-      createdBy: { appSessionId: plannerAppSessionId },
+      ...routing.envelope,
       createdAt: this.deps.nowIso(),
     });
 
-    // 5. EMIT `capture_recorded` (S7·5a's `plan_submitted`, generalised S11·U2) —
-    // AFTER the blob exists, so the hash it carries always names stored content.
-    // The fold augments the record with `planArtifactHash`; the rest of the payload
-    // stays on the event for audit. `captureKind: 'plan'` is the catalogue's one
-    // entry, and this is the alias adapter's mapping written FORWARD.
+    // EMIT `capture_recorded` — AFTER the blob exists, so the hash it carries
+    // always names stored content. `routing.capture` is the declared payload
+    // minus the hash (`acceptanceRouting.ts`'s `DeclaredCapturePayload`);
+    // completed with the hash the `put` above just produced.
     this.deps.emit([
       captureRecorded({
-        instanceId: owningTask.taskId,
-        captureKind: 'plan',
+        ...routing.capture,
         artifactHash: planEnvelope.hash,
-        node: 'planning',
-        attempt: planningAttempt,
-        payloadRev: workOrderRev,
-        capturedFrom: { appSessionId: plannerAppSessionId },
       }),
     ]);
 
-    // 6. PROPOSE planning→plan-ready through I7's choke point — LAST, and never a
-    // hand-rolled emit. The writer emits `instance_moved` (or an evented
-    // rejection if the task is not in `planning`, which is correct and recorded).
-    this.deps.instanceWriter.proposeMove(owningTask.taskId, {
-      toStage: 'plan-ready',
-      proposedBy: 'dispatcher',
-    });
+    // APPLY THE OUTCOME — LAST, per §3.4's ordering.
+    this.applyOutcome(routing.identity, routing.outcome);
   }
 
   /**
    * Record a reported review — the DETERMINISTIC I10 core of the review path
    * (S7·6b), the exact mirror of `recordPlan`. Called with the reviewer's
    * app-session id and the per-criterion verdicts a dispatched review session
-   * reported through the `report_review` tool (S7·6b's SDK-adapter trigger).
+   * reported through the `report_review` tool.
    *
-   * The dispatcher owns two writes here, IN THIS ORDER, and the order is the
-   * contract (mirroring recordPlan's store→emit→propose): emit `report_filed`
-   * (`reportKind: 'review'` — the durable record) → propose the review→done /
-   * review→implementing move through `instanceWriter.proposeMove` (I7's choke
-   * point). Unlike a plan, the review payload is small structured data carried
-   * inline — NO artifact store.
+   * S20·U3 (the flip): which node this verb's report satisfies, the identity,
+   * the verdict, and the target all come from `declaredReviewRouting`, reading
+   * `this.deps.declaredWorkflow`. `deriveReviewOutcome` (the pure rubric
+   * deriver this method used to call directly) is DELETED — its row-for-row
+   * behaviour lives on inside the acceptance evaluator now (core's
+   * `extensions/acceptance.ts`, U1), reached through the declared routing rather
+   * than called here. `reviewOutcome.ts` is gone from the tree (§3.2).
    *
-   * TOTAL and NEVER THROWS on its own paths — like `recordPlan`, it is called from an
-   * adapter and a method that throws is a capture that silently stopped. One path is
-   * a deliberate NO-OP:
+   * The dispatcher still owns two writes here, IN THIS ORDER, and the order is
+   * still the contract (mirroring recordPlan's store→emit→propose, minus the
+   * store): emit `report_filed` (the durable record) → apply the outcome
+   * (propose / rest / warn-once). Unlike a plan, the review payload is small
+   * structured data carried inline — NO artifact store.
    *
-   *   • UNKNOWN / NON-REVIEW SESSION → nothing. If no task carries a
-   *     `{ stage: 'review', appSessionId }` ref for this reviewer, there is no task
-   *     to record against. THIS GUARD IS WHY EXPOSING `report_review` TO EVERY
-   *     DISPATCHED SESSION IS SAFE: an implementing session that never calls it is a
-   *     no-op, and one that spuriously calls it is guarded here.
+   * TOTAL and NEVER THROWS on its own paths — like `recordPlan`, it is called
+   * from an adapter and a method that throws is a capture that silently
+   * stopped. One path is still a deliberate NO-OP:
    *
-   * ⚠ THE MOVE GOES THROUGH `instanceWriter.proposeMove` (I7's choke point), NEVER
-   * an `instance_moved` this module emits — the same contract
-   * recordPlan keeps. The writer adjudicates the move and records EITHER an
-   * `instance_moved` or an evented rejection (e.g. the task already left
-   * `review`). Emitting the move here would make this a second writer of task
-   * state and break I10/I7.
+   *   • NO NODE DECLARES THIS VERB, OR NO TASK CARRIES A SESSION REF AT THE NODE
+   *     THAT DOES → nothing. THIS GUARD IS WHY EXPOSING `report_review` TO EVERY
+   *     DISPATCHED SESSION IS SAFE: a session that never calls it is a no-op,
+   *     and one that spuriously calls it is guarded here — the same total
+   *     runtime no-op slice-20 A5 keeps, not a guard the declaration dissolved.
+   *
+   * ⚠ A PROPOSED MOVE STILL GOES THROUGH `instanceWriter.proposeMove` (I7's
+   * choke point) via `applyOutcome` — never a hand-rolled emit.
    */
   recordReview(reviewerAppSessionId: string, criteria: ReportReviewPayload['criteria']): void {
-    // 1. REVERSE-LOOKUP the owning task from its OWN review refs (recordPlan keys on
-    // 'planning'; this keys on 'review'). Fresh read, like every other read here. No
-    // task claims this reviewer with a review ref → NO-OP (the safety guard above).
-    const owningTask = Object.values(this.deps.readTasks().tasks).find((task) =>
-      task.sessionRefs.some(
-        (sessionRef) =>
-          sessionRef.stage === 'review' && sessionRef.appSessionId === reviewerAppSessionId,
-      ),
-    );
-    if (owningTask === undefined) {
+    const routing = declaredReviewRouting({
+      workflow: this.deps.declaredWorkflow,
+      tasks: this.deps.readTasks(),
+      appSessionId: reviewerAppSessionId,
+      verbId: REVIEW_REPORT_VERB_ID,
+      criteria,
+    });
+    if (routing.kind === 'no-op') {
       return;
     }
 
-    // 2. IDENTITY (mirrors recordPlan). `attempt` = count of this task's review refs
-    // (≥1, we just matched one); `workOrderRev` defaults to 0 until the first
-    // amendment, matching the record's absent-until-amended field.
-    const reviewAttempt = owningTask.sessionRefs.filter(
-      (sessionRef) => sessionRef.stage === 'review',
-    ).length;
-    const workOrderRev = owningTask.workOrderRev ?? 0;
+    // EMIT `report_filed` — the durable record, FIRST, so the fact is written
+    // before the consequence is applied. `routing.event` is the COMPLETE
+    // `EventInput` (the factories stamp nothing), carrying the D46 identity
+    // tuple and the reviewer's `criteria` both.
+    this.deps.emit([routing.event]);
 
-    // 3. EMIT `report_filed` with `reportKind: 'review'` (S7·6a's
-    // `review_reported`, generalised S11·U2) — the durable record, FIRST, so the
-    // fact is written before the consequence is proposed (recordPlan's
-    // store→emit→propose ordering, minus the store). The D46 identity tuple
-    // `(instanceId, node, attempt, payloadRev)` is HOISTED out of the body; only
-    // `criteria` is review-specific. The alias adapter's mapping, forward.
-    this.deps.emit([
-      reportFiled({
-        instanceId: owningTask.taskId,
-        node: 'review',
-        attempt: reviewAttempt,
-        payloadRev: workOrderRev,
-        reportKind: 'review',
-        body: { criteria },
-      }),
-    ]);
-
-    // 4. DERIVE the outcome (S7·6a's pure function) and PROPOSE the transition
-    // through I7's choke point — LAST, and never a hand-rolled emit. `done` when
-    // every task criterion has a reported pass; `implementing` on any fail or
-    // incomplete coverage. The writer emits `instance_moved` (or an evented
-    // rejection if the task is not in `review`, which is correct and recorded).
-    const toStage = deriveReviewOutcome(
-      criteria,
-      owningTask.acceptanceCriteria?.map((criterion) => criterion.id) ?? [],
-    );
-    this.deps.instanceWriter.proposeMove(owningTask.taskId, {
-      toStage,
-      proposedBy: 'dispatcher',
-    });
+    // APPLY THE OUTCOME — LAST, per §3.4's ordering.
+    this.applyOutcome(routing.identity, routing.outcome);
   }
 
   /**
    * Record a reported completion — the DETERMINISTIC I10 core of the FIX side
    * (S7·7b), the exact mirror of `recordReview`. Called with the implementer's
    * app-session id and the worklog a dispatched implementing session reported
-   * through the `report_completion` tool (S7·7b's SDK-adapter trigger).
+   * through the `report_completion` tool.
    *
-   * Two writes, IN THIS ORDER, and the order is the contract (recordReview's, and
-   * recordPlan's before it): emit `report_filed` with `reportKind: 'completion'`
-   * (the durable record, and the source of the `lastCompletion` fold that seeds the
-   * NEXT attempt's briefing) → propose the move through
-   * `instanceWriter.proposeMove`. Record the FACT before the CONSEQUENCE. No artifact store: the worklog is small structured
-   * data carried inline, like the review verdict and unlike a plan.
+   * S20·U3 (the flip): which node this verb's report satisfies, the identity,
+   * and the target all come from `declaredCompletionRouting`, reading
+   * `this.deps.declaredWorkflow`. `kind = "report"` is EXISTENCE-ONLY
+   * (node-kit §1.8.4 (e)) — the worklog's contents are never read by the
+   * evaluator, which is why there was never a `deriveCompletionOutcome` to
+   * delete: the compiled half's one hard-coded target is now the declared
+   * table's `on_pass`, nothing more.
    *
-   * ⚠ **THE TRANSITION IS `implementing → review`, AND THAT IS D53's OUTCOME RULE
-   * MADE REAL.** D53's taxonomy: promotions are DECISIONS (a human/orchestrator
-   * call), reports are OUTCOMES — the work reporting its own state — and this is
-   * the second outcome edge, alongside `planning → plan-ready` on plan capture and
-   * `review → done/implementing` on the verdict. There is deliberately NO CHAINING:
-   * `review` is a HOLDING PEN, not an active stage, so landing there dispatches
-   * NOTHING. Whether an independent reviewer is spawned, or the task is bounced
-   * straight back with specific fixes, is the orchestrator's judgement — and if a
-   * future unit makes this auto-dispatch a reviewer, it has reversed D53 and needs
-   * its own decision record.
+   * Two writes, IN THIS ORDER, and the order is still the contract
+   * (recordReview's, and recordPlan's before it): emit `report_filed` (the
+   * durable record, and the source of the `lastCompletion` fold that seeds the
+   * NEXT attempt's briefing) → apply the outcome. No artifact store: the
+   * worklog is small structured data carried inline, like the review verdict
+   * and unlike a plan.
    *
-   * TOTAL and NEVER THROWS on its own paths — like `recordReview`, it is called from
-   * an adapter and a method that throws is a capture that silently stopped. One path
-   * is a deliberate NO-OP:
+   * ⚠ **THE TRANSITION IS `implementing → review` TODAY BECAUSE THAT IS WHAT THE
+   * SHIPPED DECLARATION NAMES, AND D53'S OUTCOME RULE STILL HOLDS.** D53's
+   * taxonomy: promotions are DECISIONS (a human/orchestrator call), reports are
+   * OUTCOMES — the work reporting its own state — and this is the second
+   * outcome edge, alongside `planning → plan-ready` on plan capture and
+   * `review → done/implementing` on the verdict. There is still deliberately NO
+   * CHAINING: `review` is a HOLDING PEN, not an active stage, so landing there
+   * dispatches NOTHING. Whether an independent reviewer is spawned, or the task
+   * is bounced straight back with specific fixes, is the orchestrator's
+   * judgement.
    *
-   *   • UNKNOWN / NON-IMPLEMENTING SESSION → nothing. If no task carries a
-   *     `{ stage: 'implementing', appSessionId }` ref for this author, there is no
-   *     task to record against. THIS GUARD IS WHY EXPOSING `report_completion` TO
-   *     EVERY DISPATCHED SESSION IS SAFE: a review session that never calls it is a
+   * TOTAL and NEVER THROWS on its own paths — like `recordReview`, it is called
+   * from an adapter and a method that throws is a capture that silently
+   * stopped. One path is still a deliberate NO-OP:
+   *
+   *   • NO NODE DECLARES THIS VERB, OR NO TASK CARRIES A SESSION REF AT THE NODE
+   *     THAT DOES → nothing. THIS GUARD IS WHY EXPOSING `report_completion` TO
+   *     EVERY DISPATCHED SESSION IS SAFE: a session that never calls it is a
    *     no-op, and one that spuriously calls it is guarded here.
    *
-   * ⚠ NEVER an `instance_moved` this module emits — same I7 contract as its two
-   * siblings. The writer adjudicates; a task that has already left `implementing`
-   * gets the writer's EVENTED REJECTION, not a throw and not a silent success.
+   * ⚠ A PROPOSED MOVE STILL GOES THROUGH `instanceWriter.proposeMove` (I7's
+   * choke point) via `applyOutcome` — same contract as its two siblings. The
+   * writer adjudicates; a task that has already left `implementing` gets the
+   * writer's EVENTED REJECTION, not a throw and not a silent success.
    */
   recordCompletion(
     implementerAppSessionId: string,
     worklog: ReportCompletionPayload['worklog'],
   ): void {
-    // 1. REVERSE-LOOKUP the owning task from its OWN implementing refs (recordPlan
-    // keys on 'planning', recordReview on 'review'; this keys on 'implementing').
-    // Fresh read, like every other read here. No task claims this author with an
-    // implementing ref → NO-OP (the safety guard above).
-    const owningTask = Object.values(this.deps.readTasks().tasks).find((task) =>
-      task.sessionRefs.some(
-        (sessionRef) =>
-          sessionRef.stage === 'implementing' &&
-          sessionRef.appSessionId === implementerAppSessionId,
-      ),
-    );
-    if (owningTask === undefined) {
+    const routing = declaredCompletionRouting({
+      workflow: this.deps.declaredWorkflow,
+      tasks: this.deps.readTasks(),
+      appSessionId: implementerAppSessionId,
+      verbId: COMPLETION_REPORT_VERB_ID,
+      worklog,
+    });
+    if (routing.kind === 'no-op') {
       return;
     }
 
-    // 2. IDENTITY (mirrors recordReview). `attempt` = count of this task's
-    // implementing refs (≥1, we just matched one) — and since D46 every fix SPAWNS
-    // a fresh session, that count is exactly the number of implementation attempts
-    // rather than an approximation of it. `workOrderRev` defaults to 0 until the
-    // first amendment, matching the record's absent-until-amended field.
-    const implementingAttempt = owningTask.sessionRefs.filter(
-      (sessionRef) => sessionRef.stage === 'implementing',
-    ).length;
-    const workOrderRev = owningTask.workOrderRev ?? 0;
+    // EMIT `report_filed` — the durable record, FIRST, so the fact is written
+    // before the consequence is applied. `routing.event` is the COMPLETE
+    // `EventInput`, carrying the D46 identity tuple and the worklog both.
+    this.deps.emit([routing.event]);
 
-    // 3. EMIT `report_filed` with `reportKind: 'completion'` (S7·7b-core's
-    // `completion_reported`, generalised S11·U2) — the durable record, FIRST, so
-    // the fact is written before the consequence is proposed. The fold puts the
-    // body on `TaskRecord.lastCompletion` (latest-wins), which is what
-    // `deliverStageInstruction` reads back as the next attempt's fix-seed. Same
-    // hoisted D46 identity tuple as the review case; only `worklog` differs.
-    this.deps.emit([
-      reportFiled({
-        instanceId: owningTask.taskId,
-        node: 'implementing',
-        attempt: implementingAttempt,
-        payloadRev: workOrderRev,
-        reportKind: 'completion',
-        body: { worklog },
-      }),
-    ]);
-
-    // 4. PROPOSE `implementing → review` through I7's choke point — LAST, and never
-    // a hand-rolled emit. Unlike recordReview there is NOTHING TO DERIVE: a reported
-    // completion has exactly one meaning (D53), so there is no `deriveCompletion-
-    // Outcome` and no pure function to call. If a rule ever makes the target depend
-    // on the worklog's content, THAT is when a pure deriver earns its place in core
-    // — not before.
-    this.deps.instanceWriter.proposeMove(owningTask.taskId, {
-      toStage: 'review',
-      proposedBy: 'dispatcher',
-    });
+    // APPLY THE OUTCOME — LAST, per §3.4's ordering.
+    this.applyOutcome(routing.identity, routing.outcome);
   }
 
   /**

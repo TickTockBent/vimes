@@ -10,67 +10,46 @@ import {
   type ReportReviewPayload,
   type TaskRecord,
   type TasksState,
-  type TransitionProposal,
 } from '@vimes/core';
 import type { SendResult, SpawnResult } from './sessionHost.js';
 import type { ProposeMoveResult } from './instanceWriter.js';
 import { TaskDispatcher, type TaskDispatcherDeps } from './taskDispatcher.js';
 import { SHIPPED_MANIFEST_PATH, SHIPPED_WORKFLOW_ID, loadShippedWorkflow } from './shippedManifest.js';
-import {
-  declaredCompletionRouting,
-  declaredPlanRouting,
-  declaredReviewRouting,
-  type DeclaredCaptureRouting,
-  type DeclaredOutcome,
-  type DeclaredReportRouting,
-} from './acceptanceRouting.js';
+import { declaredCompletionRouting, declaredPlanRouting, declaredReviewRouting } from './acceptanceRouting.js';
 
-// ─── S20·U2 — THE A2 DIFFERENTIAL: declared ≡ compiled, cell for cell ─────────
+// ─── S20·U3 — THE DIFFERENTIAL, FROZEN AND FLIPPED (slice-20 §3.7, A2–A5) ────
 //
-// **The slice's central instrument** (slice-20 §3.7, A2), and Move-3's middle
-// beat: the declared routing path is built BESIDE the compiled one, and this file
-// drives BOTH over the SAME inputs and asserts they agree — the proposal, the
-// full emitted payload, and (plan only) the artifact envelope's identity.
+// ⚠ **WHAT THIS FILE WAS, AND WHAT IT IS NOW.** Through U2, every `describe`
+// below drove TWO paths over the same snapshot — a REAL `TaskDispatcher`
+// (compiled: three hard-coded routings) and `declared*Routing` (U2's module,
+// built beside it but wired to nothing) — and asserted they agreed cell for
+// cell. U3 is the flip: the dispatcher's `record*` methods now call
+// `declared*Routing` THEMSELVES (`taskDispatcher.ts`), so "compiled vs
+// declared" no longer names two things — it collapsed the moment the compiled
+// half was deleted. Comparing a dispatcher against itself would prove nothing.
 //
-// ⚠ **BOTH PATHS RUN FROM ONE CASE DEFINITION.** Every cell below builds one
-// harness, calls the REAL `TaskDispatcher.record*` (the compiled half, still
-// governing production), calls the D1 function over the same task snapshot, and
-// compares. That structure is what makes the U3 freeze a small edit: when the
-// compiled half is deleted, its side of each comparison becomes a LITERAL and the
-// declared side keeps running — the same shape S19's differential froze into.
+// Move-3's precedent (S19·U3, `briefingPreflight.test.ts`'s FROZEN IMAGES) is
+// the idiom this file follows: capture the compiled side's answer ONE LAST
+// TIME, freeze it as a literal with its provenance stated, and let the guard
+// survive its reference's death. Every frozen literal below (`frozenReview-
+// Filed`, `frozenCompletionFiled`, the plan envelope/capture shapes, the A3/A4
+// expected outcomes) is exactly what U2's differential observed the COMPILED
+// half produce, transcribed rather than re-derived — a red against one of them
+// is a finding about the DECLARED path (now the only path), never license to
+// "update the freeze to match".
 //
-// ⚠ **NOTHING IN THIS FILE FLIPS ANYTHING.** `taskDispatcher.ts` is byte-untouched
-// this unit (D4); the declared path has no production caller yet. What is being
-// proved is that it is SAFE to give it one.
+// Two sections stay GENUINELY comparative, not frozen, because they never
+// compared against the compiled dispatcher in the first place:
 //
-// ── what "declared ≡ compiled" means precisely, and where it deliberately stops ─
-//
-//   • the PROPOSAL  — the target the declaration names must equal the target the
-//     compiled literal / `deriveReviewOutcome` produced. `proposedBy` is NOT a
-//     declaration fact: it is I7's constant, supplied by the caller at the choke
-//     point and untouched by this slice (§0.3), so it is pinned as a literal on
-//     the compiled side rather than expected off the declared one.
-//   • the EVENT     — the whole `report_filed` `EventInput`, stream and type
-//     included. The factories stamp nothing (events.ts), so this is an exact
-//     comparison, not a field-by-field approximation.
-//   • the ENVELOPE  — plan only. §0.5(d)'s fourth literal class, and Sol round-2's
-//     point: an identity that derives three of its four occurrences and hard-codes
-//     the fourth is internally inconsistent under perturbation.
-//   • the HASH and `createdAt` — NOT compared as declared facts, because they are
-//     not declared facts. One is the store's (content-addressed, produced by the
-//     `put` the caller runs) and one is the injected clock's. The differential
-//     asserts the declared payload equals the emitted one MINUS the hash, and
-//     separately that the hash names stored content — which is the compiled half's
-//     own store→emit contract, not a routing claim.
-
-// ── PART A — the harness: `record*`-only, and nothing else ──────────────────
-//
-// A deliberately smaller harness than `taskDispatcher.test.ts`'s. The three
-// methods under test never spawn, never resolve a working directory, never
-// consult the checkout coordinator and never read the meters — so the fakes for
-// all of that are inert, and the session-host stub THROWS rather than recording:
-// a differential cell that reached the host would be exercising something other
-// than the routing, and should fail loudly rather than pass quietly.
+//   • PART D (A3) is now GOVERNANCE, not divergence: a perturbed declaration,
+//     driven through the REAL (now declaration-governed) dispatcher, must
+//     route per the perturbation. This is the STRONGEST assertion this file
+//     makes post-flip — proof that the declaration is what decides, not an
+//     agreement between two things that both hard-code the same answer.
+//   • PART F (A5) calls `declared*Routing` directly, unmediated by the
+//     dispatcher — it was never part of the compiled/declared comparison, and
+//     stays exactly as it was: a white-box check that the binding guard
+//     resolves (or refuses to resolve) the way §3.3 requires.
 
 const PROJECT_ROOT = '/home/ticktockbent/projects/infrastructure/vimes';
 const TASK_ID = 'task-acceptance-0001';
@@ -90,10 +69,8 @@ const WORKLOG: ReportCompletionPayload['worklog'] = {
 };
 
 // The verb ids the SDK adapter observes and hands to the seam. Spelled as
-// LITERALS on purpose: they are the differential's INPUT, not something derived
-// from the declaration under test — deriving them from the same workflow the
-// declared path resolves against would make the binding assert itself. A5's
-// positive control below is what ties these two strings to the two nodes.
+// LITERALS on purpose, the same as `taskDispatcher.ts`'s own module constants —
+// this file asserts the SHIPPED BINDING, not a derivation of it.
 const REVIEW_VERB = 'vimes_report.report_review';
 const COMPLETION_VERB = 'vimes_report.report_completion';
 /** §1.8.3's capture catalogue, v1: exactly one entry. */
@@ -119,17 +96,23 @@ interface Harness {
   readonly emitted: EventInput[];
   readonly proposeMoveCalls: Array<{
     taskId: string;
-    proposal: TransitionProposal;
-    emittedCountBefore: number;
+    toStage: string;
+    proposedBy: string;
   }>;
   readonly artifactStore: MemoryArtifactStore;
-  /** The EXACT snapshot the dispatcher read — handed to the declared path too. */
+  /** The EXACT snapshot the dispatcher reads. */
   readonly tasks: TasksState;
+  /** Every message `applyOutcome`'s warn seam received, in call order. */
+  readonly warnCalls: string[];
 }
 
-function buildHarness(tasks: readonly TaskRecord[]): Harness {
+function buildHarness(
+  tasks: readonly TaskRecord[],
+  options: { declaredWorkflow?: ParsedWorkflow } = {},
+): Harness {
   const emitted: EventInput[] = [];
   const proposeMoveCalls: Harness['proposeMoveCalls'] = [];
+  const warnCalls: string[] = [];
   const artifactStore = new MemoryArtifactStore();
   const tasksById: Record<string, TaskRecord> = {};
   for (const task of tasks) {
@@ -150,9 +133,25 @@ function buildHarness(tasks: readonly TaskRecord[]): Harness {
     artifactStore,
     instanceWriter: {
       proposeMove: (taskId, proposal): ProposeMoveResult => {
-        proposeMoveCalls.push({ taskId, proposal, emittedCountBefore: emitted.length });
+        proposeMoveCalls.push({
+          taskId,
+          toStage: proposal.toStage,
+          proposedBy: proposal.proposedBy,
+        });
+        // Narrowed to the two fields this file compares — `TransitionProposal`
+        // also carries `manualReviewRequired`/`note`, which no `record*` path
+        // sets and which slice 20 does not touch.
+        expect(proposal.manualReviewRequired).toBeUndefined();
+        expect(proposal.note).toBeUndefined();
         return { outcome: 'unknown-task', taskId };
       },
+    },
+    // S20·U3 (the flip): `record*` reads THIS to decide everything — defaults
+    // to the shipped declaration; a governance cell (Part D) overrides it with
+    // a perturbed copy.
+    declaredWorkflow: options.declaredWorkflow ?? SHIPPED_WORKFLOW,
+    warn: (message) => {
+      warnCalls.push(message);
     },
   };
 
@@ -162,6 +161,7 @@ function buildHarness(tasks: readonly TaskRecord[]): Harness {
     proposeMoveCalls,
     artifactStore,
     tasks: tasksState,
+    warnCalls,
   };
 }
 
@@ -209,63 +209,66 @@ function implementingTask(overrides: Partial<TaskRecord> = {}): TaskRecord {
   });
 }
 
-// ── the two sides of every comparison, named once ───────────────────────────
+// ── the shared observations, named once ─────────────────────────────────────
 
-/**
- * The declared path's proposal, in the shape the CALLER will hand
- * `instanceWriter.proposeMove`. `proposedBy` is I7's constant — see the header —
- * so it is added here rather than expected off the declaration.
- */
-interface ProposalShape {
-  readonly toStage: string;
-  readonly proposedBy: string;
-}
-
-function declaredProposal(routing: DeclaredReportRouting | DeclaredCaptureRouting): ProposalShape {
-  const outcome = declaredOutcome(routing);
-  expect(outcome.kind).toBe('propose');
-  if (outcome.kind !== 'propose') throw new Error('unreachable');
-  return { toStage: outcome.toStage, proposedBy: 'dispatcher' };
-}
-
-/**
- * The compiled path's ONE proposal, with the "exactly one" claim asserted.
- *
- * Narrowed to the two fields under comparison — `TransitionProposal` also carries
- * `manualReviewRequired` and `note`, neither of which any `record*` path sets and
- * neither of which slice 20 touches; comparing the whole object would silently
- * make this differential a guard on fields it has nothing to say about.
- */
-function compiledProposal(harness: Harness): ProposalShape {
+/** The dispatcher's ONE proposal, with the "exactly one" claim asserted. */
+function soleProposal(harness: Harness): { taskId: string; toStage: string; proposedBy: string } {
   expect(harness.proposeMoveCalls).toHaveLength(1);
-  const call = harness.proposeMoveCalls[0]!;
-  expect(call.taskId).toBe(TASK_ID);
-  const proposal: TransitionProposal = call.proposal;
-  expect(proposal.manualReviewRequired).toBeUndefined();
-  expect(proposal.note).toBeUndefined();
-  return { toStage: proposal.toStage, proposedBy: proposal.proposedBy };
+  return harness.proposeMoveCalls[0]!;
 }
 
-/** The declared path's routing decision, with the "it recorded at all" claim asserted. */
-function declaredOutcome(routing: DeclaredReportRouting | DeclaredCaptureRouting): DeclaredOutcome {
-  expect(routing.kind).toBe('record');
-  if (routing.kind !== 'record') throw new Error('unreachable');
-  return routing.outcome;
-}
-
-/** The compiled path's ONE event, with the "exactly one" claim asserted. */
-function compiledEvent(harness: Harness): EventInput {
+/** The dispatcher's ONE emitted event, with the "exactly one" claim asserted. */
+function soleEvent(harness: Harness): EventInput {
   expect(harness.emitted).toHaveLength(1);
   return harness.emitted[0]!;
 }
 
-function recordedEvent(routing: DeclaredReportRouting): EventInput {
-  expect(routing.kind).toBe('record');
-  if (routing.kind !== 'record') throw new Error('unreachable');
-  return routing.event;
+// ── FROZEN IMAGES — the review/completion report_filed shape ────────────────
+//
+// ⚠ **THIS IS WHAT THE COMPILED `recordReview`/`recordCompletion` PRODUCED,**
+// captured by U2's differential before U3 deleted the compiled half: the exact
+// `report_filed` envelope (stream, type, and every payload field), for the
+// exact shipped node ids. A red here is a finding about the emitted event, not
+// license to "update the freeze".
+function frozenReviewFiled(params: {
+  criteria: ReportReviewPayload['criteria'];
+  attempt?: number;
+  payloadRev?: number;
+}): EventInput {
+  return {
+    stream: 'tasks',
+    type: 'report_filed',
+    payload: {
+      instanceId: TASK_ID,
+      node: 'review',
+      attempt: params.attempt ?? 1,
+      payloadRev: params.payloadRev ?? 0,
+      reportKind: 'review',
+      body: { criteria: params.criteria },
+    },
+  };
 }
 
-// ── PART B — A2: the outcome matrix (slice-20 §3.7) ─────────────────────────
+function frozenCompletionFiled(params: {
+  worklog: ReportCompletionPayload['worklog'];
+  attempt?: number;
+  payloadRev?: number;
+}): EventInput {
+  return {
+    stream: 'tasks',
+    type: 'report_filed',
+    payload: {
+      instanceId: TASK_ID,
+      node: 'implementing',
+      attempt: params.attempt ?? 1,
+      payloadRev: params.payloadRev ?? 0,
+      reportKind: 'completion',
+      body: { worklog: params.worklog },
+    },
+  };
+}
+
+// ── PART B — A2: the outcome matrix, FROZEN (slice-20 §3.7) ─────────────────
 
 const pass = (criterionId: string): ReportReviewPayload['criteria'][number] => ({
   criterionId,
@@ -277,14 +280,13 @@ const fail = (criterionId: string): ReportReviewPayload['criteria'][number] => (
 });
 
 /**
- * The five REVIEW cells, in §3.7's order. The shape is U1's equivalence table
- * (`core/src/extensions/acceptance.test.ts`) deliberately reused: the same five
- * rows, driven here through the whole dispatcher rather than the pure arm.
+ * The five REVIEW cells, in §3.7's order — the same case table
+ * `core/src/extensions/acceptance.test.ts`'s equivalence suite uses, driven
+ * here through the whole dispatcher rather than the pure arm.
  *
- * `expectedStage` is the COMPILED answer, restated as a literal — so a cell that
- * agreed with the compiled path because BOTH regressed the same way still fails.
- * That is the reason a differential with no independent expectation is weaker
- * than it looks.
+ * `expectedStage` is the FROZEN answer — `deriveReviewOutcome`'s image, the
+ * same literal `acceptance.test.ts` now checks the evaluator against — so a
+ * cell that "agreed" because both regressed the same way still fails.
  */
 const REVIEW_CELLS: readonly {
   readonly name: string;
@@ -336,28 +338,19 @@ const REVIEW_CELLS: readonly {
   },
 ];
 
-describe('S20-A2 differential — REVIEW: declared ≡ compiled over the outcome matrix', () => {
+describe('S20-A2 frozen — REVIEW: the declared path reproduces the deleted compiled routing', () => {
   it.each(REVIEW_CELLS)('$name', (cell) => {
     const task = reviewTask({ acceptanceCriteria: [...cell.instanceCriteria] });
     const harness = buildHarness([task]);
 
-    // ── the COMPILED path: the real dispatcher, unchanged this unit ──────────
     harness.dispatcher.recordReview(REVIEWER_SESSION_ID, cell.criteria);
 
-    // ── the DECLARED path, over the SAME snapshot ────────────────────────────
-    const declared = declaredReviewRouting({
-      workflow: SHIPPED_WORKFLOW,
-      tasks: harness.tasks,
-      appSessionId: REVIEWER_SESSION_ID,
-      verbId: REVIEW_VERB,
-      criteria: cell.criteria,
+    expect(soleEvent(harness)).toEqual(frozenReviewFiled({ criteria: cell.criteria }));
+    expect(soleProposal(harness)).toEqual({
+      taskId: TASK_ID,
+      toStage: cell.expectedStage,
+      proposedBy: 'dispatcher',
     });
-
-    // the independent expectation (see the table's note)
-    expect(compiledProposal(harness).toStage).toBe(cell.expectedStage);
-    // the differential proper
-    expect(declaredProposal(declared)).toEqual(compiledProposal(harness));
-    expect(recordedEvent(declared)).toEqual(compiledEvent(harness));
   });
 
   it('the matrix really does exercise BOTH outcomes', () => {
@@ -369,62 +362,64 @@ describe('S20-A2 differential — REVIEW: declared ≡ compiled over the outcome
   });
 });
 
-describe('S20-A2 differential — COMPLETION: declared ≡ compiled', () => {
-  it('a valid worklog files the report and routes to the declared target', () => {
+describe('S20-A2 frozen — COMPLETION: the declared path reproduces the deleted compiled routing', () => {
+  it('a valid worklog files the report and routes to the frozen target', () => {
     const harness = buildHarness([implementingTask()]);
 
     harness.dispatcher.recordCompletion(IMPLEMENTER_SESSION_ID, WORKLOG);
 
-    const declared = declaredCompletionRouting({
-      workflow: SHIPPED_WORKFLOW,
-      tasks: harness.tasks,
-      appSessionId: IMPLEMENTER_SESSION_ID,
-      verbId: COMPLETION_VERB,
-      worklog: WORKLOG,
+    expect(soleEvent(harness)).toEqual(frozenCompletionFiled({ worklog: WORKLOG }));
+    expect(soleProposal(harness)).toEqual({
+      taskId: TASK_ID,
+      toStage: 'review',
+      proposedBy: 'dispatcher',
     });
-
-    expect(compiledProposal(harness).toStage).toBe('review');
-    expect(declaredProposal(declared)).toEqual(compiledProposal(harness));
-    expect(recordedEvent(declared)).toEqual(compiledEvent(harness));
   });
 });
 
-describe('S20-A2 differential — PLAN: declared ≡ compiled, ENVELOPE INCLUDED', () => {
+describe('S20-A2 frozen — PLAN: the declared path reproduces the deleted compiled routing, ENVELOPE INCLUDED', () => {
   it('a captured plan records the same fact, the same envelope identity, and the same move', () => {
     const harness = buildHarness([planningTask()]);
 
     harness.dispatcher.recordPlan(PLANNER_SESSION_ID, PLAN_TEXT);
 
-    const declared = declaredPlanRouting({
-      workflow: SHIPPED_WORKFLOW,
-      tasks: harness.tasks,
-      appSessionId: PLANNER_SESSION_ID,
-      captureName: PLAN_CAPTURE,
-      captureText: PLAN_TEXT,
-    });
-    expect(declared.kind).toBe('record');
-    if (declared.kind !== 'record') throw new Error('unreachable');
-
     // 1. the MOVE
-    expect(compiledProposal(harness).toStage).toBe('plan-ready');
-    expect(declaredProposal(declared)).toEqual(compiledProposal(harness));
+    expect(soleProposal(harness)).toEqual({
+      taskId: TASK_ID,
+      toStage: 'plan-ready',
+      proposedBy: 'dispatcher',
+    });
 
     // 2. the FACT — everything but the hash, which is the store's (see the header).
-    const emitted = compiledEvent(harness);
-    const emittedPayload = emitted.payload as Record<string, unknown> & { artifactHash: string };
-    const { artifactHash, ...emittedWithoutHash } = emittedPayload;
-    expect(declared.capture).toEqual(emittedWithoutHash);
-    // …and the hash the compiled half emitted really does name stored content,
-    // which is its own store→emit ordering contract rather than a routing claim.
+    const event = soleEvent(harness);
+    const payload = event.payload as Record<string, unknown> & { artifactHash: string };
+    const { artifactHash, ...payloadWithoutHash } = payload;
+    expect(event.stream).toBe('tasks');
+    expect(event.type).toBe('capture_recorded');
+    expect(payloadWithoutHash).toEqual({
+      instanceId: TASK_ID,
+      captureKind: 'plan',
+      node: 'planning',
+      attempt: 1,
+      payloadRev: 0,
+      capturedFrom: { appSessionId: PLANNER_SESSION_ID },
+    });
+    // …and the hash really does name stored content (the store's own
+    // ordering contract, not a routing claim).
     expect(harness.artifactStore.getBlob(artifactHash)).toBe(PLAN_TEXT);
 
-    // 3. the ENVELOPE (§0.5(d), A2's Sol round-2 addition) — kind, taskId,
-    // taskRef.stage and rev. `createdAt` and `hash` are the clock's and the
-    // store's, so they are stripped rather than declared.
+    // 3. the ENVELOPE (§0.5(d)) — kind, taskId, taskRef.stage and rev.
+    // `createdAt` and `hash` are the clock's and the store's, so they are
+    // stripped rather than declared.
     const envelopes = harness.artifactStore.listByTask(TASK_ID);
     expect(envelopes).toHaveLength(1);
     const { hash, createdAt, ...envelopeIdentity } = envelopes[0]!;
-    expect(declared.envelope).toEqual(envelopeIdentity);
+    expect(envelopeIdentity).toEqual({
+      kind: 'plan',
+      taskRef: { taskId: TASK_ID, stage: 'planning' },
+      rev: 0,
+      createdBy: { appSessionId: PLANNER_SESSION_ID },
+    });
     expect(hash).toBe(artifactHash);
     expect(createdAt).toBe(FIXED_NOW);
   });
@@ -438,7 +433,7 @@ describe('S20-A2 differential — PLAN: declared ≡ compiled, ENVELOPE INCLUDED
 // the node, and a `workOrderRev` that is not the default. §0.5(b)'s uncounted
 // twin is exactly what it pins.
 
-describe('S20-A2 differential — the D46 identity tuple, where it actually counts', () => {
+describe('S20-A2 frozen — the D46 identity tuple, where it actually counts', () => {
   it('attempt counts the refs AT THE RESOLVED NODE and payloadRev is the record’s', () => {
     const task = reviewTask({
       workOrderRev: 3,
@@ -453,17 +448,10 @@ describe('S20-A2 differential — the D46 identity tuple, where it actually coun
 
     harness.dispatcher.recordReview(REVIEWER_SESSION_ID, criteria);
 
-    const declared = declaredReviewRouting({
-      workflow: SHIPPED_WORKFLOW,
-      tasks: harness.tasks,
-      appSessionId: REVIEWER_SESSION_ID,
-      verbId: REVIEW_VERB,
-      criteria,
-    });
-
     // The independent expectation: two review refs, rev 3 — NOT 1 and NOT 0.
-    expect(compiledEvent(harness).payload).toMatchObject({ attempt: 2, payloadRev: 3 });
-    expect(recordedEvent(declared)).toEqual(compiledEvent(harness));
+    expect(soleEvent(harness)).toEqual(
+      frozenReviewFiled({ criteria, attempt: 2, payloadRev: 3 }),
+    );
   });
 
   it('the plan path counts the same way, and the envelope carries the same rev', () => {
@@ -479,113 +467,73 @@ describe('S20-A2 differential — the D46 identity tuple, where it actually coun
 
     harness.dispatcher.recordPlan(PLANNER_SESSION_ID, PLAN_TEXT);
 
-    const declared = declaredPlanRouting({
-      workflow: SHIPPED_WORKFLOW,
-      tasks: harness.tasks,
-      appSessionId: PLANNER_SESSION_ID,
-      captureName: PLAN_CAPTURE,
-      captureText: PLAN_TEXT,
+    const event = soleEvent(harness);
+    const payload = event.payload as Record<string, unknown> & { artifactHash: string };
+    expect(payload).toMatchObject({ attempt: 2, payloadRev: 2 });
+    const { artifactHash: _hash, ...payloadWithoutHash } = payload;
+    expect(payloadWithoutHash).toEqual({
+      instanceId: TASK_ID,
+      captureKind: 'plan',
+      node: 'planning',
+      attempt: 2,
+      payloadRev: 2,
+      capturedFrom: { appSessionId: PLANNER_SESSION_ID },
     });
-    expect(declared.kind).toBe('record');
-    if (declared.kind !== 'record') throw new Error('unreachable');
-
-    const emittedPayload = compiledEvent(harness).payload as Record<string, unknown> & {
-      artifactHash: string;
-    };
-    expect(emittedPayload).toMatchObject({ attempt: 2, payloadRev: 2 });
-    const { artifactHash: _hash, ...emittedWithoutHash } = emittedPayload;
-    expect(declared.capture).toEqual(emittedWithoutHash);
-    expect(declared.envelope.rev).toBe(2);
-    const { hash: _envHash, createdAt: _createdAt, ...envelopeIdentity } =
-      harness.artifactStore.listByTask(TASK_ID)[0]!;
-    expect(declared.envelope).toEqual(envelopeIdentity);
+    const envelopes = harness.artifactStore.listByTask(TASK_ID);
+    expect(envelopes[0]!.rev).toBe(2);
   });
 });
 
-// ── PART C — the NO-OP cells: both paths do nothing, for the same reason ────
+// ── PART C — the NO-OP cells: nothing recorded, nothing proposed ────────────
 
-describe('S20-A2 differential — the NO-OP cells: an unknown session records nothing', () => {
-  it('review: compiled emits and proposes nothing; declared says `no-owning-task`', () => {
+describe('S20-A2 frozen — the NO-OP cells: an unknown session records nothing', () => {
+  it('review: an unclaimed reviewer session emits and proposes nothing', () => {
     const harness = buildHarness([reviewTask()]);
 
     expect(() => harness.dispatcher.recordReview(UNKNOWN_SESSION_ID, [pass('c1')])).not.toThrow();
 
     expect(harness.emitted).toEqual([]);
     expect(harness.proposeMoveCalls).toEqual([]);
-    expect(
-      declaredReviewRouting({
-        workflow: SHIPPED_WORKFLOW,
-        tasks: harness.tasks,
-        appSessionId: UNKNOWN_SESSION_ID,
-        verbId: REVIEW_VERB,
-        criteria: [pass('c1')],
-      }),
-    ).toEqual({ kind: 'no-op', reason: 'no-owning-task' });
   });
 
-  it('completion: same, both sides', () => {
+  it('completion: same', () => {
     const harness = buildHarness([implementingTask()]);
 
     expect(() => harness.dispatcher.recordCompletion(UNKNOWN_SESSION_ID, WORKLOG)).not.toThrow();
 
     expect(harness.emitted).toEqual([]);
     expect(harness.proposeMoveCalls).toEqual([]);
-    expect(
-      declaredCompletionRouting({
-        workflow: SHIPPED_WORKFLOW,
-        tasks: harness.tasks,
-        appSessionId: UNKNOWN_SESSION_ID,
-        verbId: COMPLETION_VERB,
-        worklog: WORKLOG,
-      }),
-    ).toEqual({ kind: 'no-op', reason: 'no-owning-task' });
   });
 
-  it('plan: same, both sides — and the EMPTY capture is the compiled guard, preserved', () => {
+  it('plan: an unclaimed planner session emits and proposes nothing — and the EMPTY capture is the compiled guard, preserved', () => {
     const harness = buildHarness([planningTask()]);
 
     expect(() => harness.dispatcher.recordPlan(UNKNOWN_SESSION_ID, PLAN_TEXT)).not.toThrow();
     expect(harness.emitted).toEqual([]);
     expect(harness.proposeMoveCalls).toEqual([]);
     expect(harness.artifactStore.listByTask(TASK_ID)).toEqual([]);
-    expect(
-      declaredPlanRouting({
-        workflow: SHIPPED_WORKFLOW,
-        tasks: harness.tasks,
-        appSessionId: UNKNOWN_SESSION_ID,
-        captureName: PLAN_CAPTURE,
-        captureText: PLAN_TEXT,
-      }),
-    ).toEqual({ kind: 'no-op', reason: 'no-owning-task' });
 
-    // …and the whitespace-only plan, which the compiled half refuses BEFORE the
-    // lookup — so the declared half must too, or the two disagree about whether
-    // an unknown session with an empty plan is one no-op or two.
-    const emptyHarness = buildHarness([planningTask()]);
-    emptyHarness.dispatcher.recordPlan(PLANNER_SESSION_ID, '   \n\t  ');
-    expect(emptyHarness.emitted).toEqual([]);
-    expect(emptyHarness.proposeMoveCalls).toEqual([]);
-    expect(
-      declaredPlanRouting({
-        workflow: SHIPPED_WORKFLOW,
-        tasks: emptyHarness.tasks,
-        appSessionId: PLANNER_SESSION_ID,
-        captureName: PLAN_CAPTURE,
-        captureText: '   \n\t  ',
-      }),
-    ).toEqual({ kind: 'no-op', reason: 'empty-capture' });
+    // …and the whitespace-only plan, which the (former) compiled half refused
+    // BEFORE the lookup — so the declared path must too, or a claimed session
+    // with an empty plan silently stores an empty-hash artifact.
+    const claimedHarness = buildHarness([planningTask()]);
+    claimedHarness.dispatcher.recordPlan(PLANNER_SESSION_ID, '   \n\t  ');
+    expect(claimedHarness.emitted).toEqual([]);
+    expect(claimedHarness.proposeMoveCalls).toEqual([]);
+    expect(claimedHarness.artifactStore.listByTask(TASK_ID)).toEqual([]);
   });
 });
 
-// ── PART D — A3: THE DECLARATION GOVERNS (perturbation) ─────────────────────
+// ── PART D — A3: THE DECLARATION GOVERNS (now GOVERNANCE, not divergence) ───
 //
-// S19's lesson, restated: a differential run against a manifest that AGREES with
-// the compiled literals proves only that two paths agree, never that the
-// declaration is what decided. The perturbation is the evidence. A copy of the
-// shipped manifest is edited IN MEMORY (the shipped file is never touched — it is
-// the 37-golden reference and §2-out), re-parsed through the real parser, and the
-// declared path is driven against it while the compiled path — which cannot read
-// a manifest at all — keeps emitting its literals. **THE DIFFERENCE IS THE POINT.**
+// Pre-flip, this section drove the SAME perturbed workflow through
+// `declaredReviewRouting` alone while the compiled dispatcher — which could not
+// read a manifest — kept emitting its literals, and the DIFFERENCE was the
+// evidence that the declaration decided anything at all. Post-flip there is no
+// second implementation left to contrast with: the dispatcher itself is
+// declaration-governed now, so the strongest available proof is that swapping
+// its `declaredWorkflow` dependency swaps its behaviour — a manifest edit
+// changing a REAL dispatcher's real output, with nothing else touched.
 
 /**
  * Parse a PERTURBED copy of the shipped manifest.
@@ -632,56 +580,41 @@ function perturbedWorkflow(edits: readonly (readonly [string, string])[]): Parse
  * ⚠ Whether the WRITER would accept the resulting proposal is a different
  * question and deliberately not this file's: legality, `max_traversals` and
  * evented rejection are the writer's and are untouched by slice 20 (§2). What is
- * asserted here is which target the DECLARATION produced.
+ * asserted here is which target the DECLARATION-GOVERNED DISPATCHER produced.
  */
 const PERTURBED_REVIEW_TARGETS = perturbedWorkflow([
   ['on_pass       = "done"', 'on_pass       = "manual-review"'],
   ['on_fail       = "implementing"', 'on_fail       = "backlog"'],
 ]);
 
-describe('S20-A3 — the DECLARATION governs the targets, not the deleted literals', () => {
-  it('a passing review routes to the PERTURBED on_pass while the compiled half still says `done`', () => {
-    const harness = buildHarness([reviewTask()]);
+describe('S20-A3 — a PERTURBED declaration governs a REAL dispatcher’s real output', () => {
+  it('a passing review routes to the PERTURBED on_pass', () => {
+    const harness = buildHarness([reviewTask()], { declaredWorkflow: PERTURBED_REVIEW_TARGETS });
     const criteria = [pass('c1'), pass('c2')];
 
     harness.dispatcher.recordReview(REVIEWER_SESSION_ID, criteria);
 
-    const declared = declaredReviewRouting({
-      workflow: PERTURBED_REVIEW_TARGETS,
-      tasks: harness.tasks,
-      appSessionId: REVIEWER_SESSION_ID,
-      verbId: REVIEW_VERB,
-      criteria,
-    });
-
-    // The compiled half cannot read a manifest: it still proposes its literal.
-    expect(compiledProposal(harness).toStage).toBe('done');
-    // The declared half followed the declaration. THE DIFFERENCE IS THE EVIDENCE.
-    expect(declaredProposal(declared)).toEqual({
+    expect(soleProposal(harness)).toEqual({
+      taskId: TASK_ID,
       toStage: 'manual-review',
       proposedBy: 'dispatcher',
     });
     // …and the FACT is unchanged by the perturbation: only the routing moved.
-    expect(recordedEvent(declared)).toEqual(compiledEvent(harness));
+    expect(soleEvent(harness)).toEqual(frozenReviewFiled({ criteria }));
   });
 
-  it('a failing review routes to the PERTURBED on_fail while the compiled half still says `implementing`', () => {
-    const harness = buildHarness([reviewTask()]);
+  it('a failing review routes to the PERTURBED on_fail', () => {
+    const harness = buildHarness([reviewTask()], { declaredWorkflow: PERTURBED_REVIEW_TARGETS });
     const criteria = [pass('c1'), fail('c2')];
 
     harness.dispatcher.recordReview(REVIEWER_SESSION_ID, criteria);
 
-    const declared = declaredReviewRouting({
-      workflow: PERTURBED_REVIEW_TARGETS,
-      tasks: harness.tasks,
-      appSessionId: REVIEWER_SESSION_ID,
-      verbId: REVIEW_VERB,
-      criteria,
+    expect(soleProposal(harness)).toEqual({
+      taskId: TASK_ID,
+      toStage: 'backlog',
+      proposedBy: 'dispatcher',
     });
-
-    expect(compiledProposal(harness).toStage).toBe('implementing');
-    expect(declaredProposal(declared)).toEqual({ toStage: 'backlog', proposedBy: 'dispatcher' });
-    expect(recordedEvent(declared)).toEqual(compiledEvent(harness));
+    expect(soleEvent(harness)).toEqual(frozenReviewFiled({ criteria }));
   });
 
   it('the perturbation is REAL — the shipped workflow still declares the original targets', () => {
@@ -695,77 +628,130 @@ describe('S20-A3 — the DECLARATION governs the targets, not the deleted litera
       onFail: 'backlog',
     });
   });
+
+  it('the SAME dispatcher, unperturbed, still produces the shipped targets — the perturbation moved ONE thing', () => {
+    const harness = buildHarness([reviewTask()]);
+    harness.dispatcher.recordReview(REVIEWER_SESSION_ID, [pass('c1'), pass('c2')]);
+    expect(soleProposal(harness).toStage).toBe('done');
+  });
 });
 
-// ── PART E — A4: UNSET MEANS REST (§3.4) ────────────────────────────────────
+// ── PART E — A4: UNSET MEANS REST (§3.4), and the reachable UNEVALUABLE ─────
 //
-// Two perturbations that REMOVE a target rather than move one. Both assert the
-// same two things, in this order, because the order is the contract: the report
-// is still FILED (fact before consequence), and NOTHING is proposed.
+// Three perturbations. The first two REMOVE a target rather than move one, and
+// both assert the same two things in this order, because the order is the
+// contract: the report is still FILED (fact before consequence), and NOTHING is
+// proposed. The third removes an ENTIRE acceptance table from a node that still
+// arms a capture — the reachable `unevaluable` this file could not exercise
+// before the warn seam existed (U3's own addition).
 
 /** implementing's `on_pass` removed — the `report` kind with nowhere to go. */
 const NO_ON_PASS = perturbedWorkflow([['\n  on_pass = "review"', '']]);
 /** review's `on_fail` removed — a FAILING rubric with nowhere to go. */
 const NO_ON_FAIL = perturbedWorkflow([['\n  on_fail       = "implementing"', '']]);
+/**
+ * planning's ENTIRE `[workflows.nodes.acceptance]` table removed — the node
+ * still arms `briefing.capture = ["plan"]` (the reverse-lookup still resolves
+ * it), but `acceptanceFor` now answers `node-declares-no-acceptance`
+ * (node-kit §1.8.4 (f) NONE is the ORDINARY case for most nodes; here it is
+ * forced onto a node that captures something, which is what makes the
+ * resulting `unevaluable` REACHABLE through a real report/capture path rather
+ * than merely constructible).
+ */
+const NO_ACCEPTANCE_ON_PLANNING = perturbedWorkflow([
+  [
+    '  [workflows.nodes.acceptance]\n' +
+      '  kind     = "artifact"                     # the captured plan IS the deliverable\n' +
+      '  requires = ["capture:plan"]               # satisfied by §1.8.3\'s interception\n' +
+      '  on_pass  = "plan-ready"\n',
+    '',
+  ],
+]);
 
 describe('S20-A4 — an UNSET target files the fact and proposes nothing', () => {
   it('unset `on_pass` on a completion → the report still files, the node RESTS', () => {
-    const harness = buildHarness([implementingTask()]);
+    const harness = buildHarness([implementingTask()], { declaredWorkflow: NO_ON_PASS });
 
     harness.dispatcher.recordCompletion(IMPLEMENTER_SESSION_ID, WORKLOG);
 
-    const declared = declaredCompletionRouting({
-      workflow: NO_ON_PASS,
-      tasks: harness.tasks,
-      appSessionId: IMPLEMENTER_SESSION_ID,
-      verbId: COMPLETION_VERB,
-      worklog: WORKLOG,
-    });
-
-    // FACT BEFORE CONSEQUENCE: the event is identical to the compiled one…
-    expect(recordedEvent(declared)).toEqual(compiledEvent(harness));
-    // …and the declaration named no target, so nothing routes.
-    expect(declaredOutcome(declared)).toEqual({ kind: 'rest' });
-    // The compiled half, which still has its literal, is the contrast.
-    expect(compiledProposal(harness).toStage).toBe('review');
+    // FACT BEFORE CONSEQUENCE: the event is unchanged by the perturbation…
+    expect(soleEvent(harness)).toEqual(frozenCompletionFiled({ worklog: WORKLOG }));
+    // …and nothing routes.
+    expect(harness.proposeMoveCalls).toEqual([]);
   });
 
   it('unset `on_fail` on a FAILING rubric → the report still files, the node RESTS', () => {
-    const harness = buildHarness([reviewTask()]);
+    const harness = buildHarness([reviewTask()], { declaredWorkflow: NO_ON_FAIL });
     const criteria = [pass('c1'), fail('c2')];
 
     harness.dispatcher.recordReview(REVIEWER_SESSION_ID, criteria);
 
-    const declared = declaredReviewRouting({
-      workflow: NO_ON_FAIL,
-      tasks: harness.tasks,
-      appSessionId: REVIEWER_SESSION_ID,
-      verbId: REVIEW_VERB,
-      criteria,
-    });
-
-    expect(recordedEvent(declared)).toEqual(compiledEvent(harness));
-    expect(declaredOutcome(declared)).toEqual({ kind: 'rest' });
-    expect(compiledProposal(harness).toStage).toBe('implementing');
+    expect(soleEvent(harness)).toEqual(frozenReviewFiled({ criteria }));
+    expect(harness.proposeMoveCalls).toEqual([]);
   });
 
   it('…and the same rubric PASSING still routes — rest is the unset arm, not the whole table', () => {
     // Without this control, an implementation that rested on EVERYTHING would
     // pass both cases above.
-    const harness = buildHarness([reviewTask()]);
-    const criteria = [pass('c1'), pass('c2')];
-    const declared = declaredReviewRouting({
-      workflow: NO_ON_FAIL,
-      tasks: harness.tasks,
-      appSessionId: REVIEWER_SESSION_ID,
-      verbId: REVIEW_VERB,
-      criteria,
+    const harness = buildHarness([reviewTask()], { declaredWorkflow: NO_ON_FAIL });
+    harness.dispatcher.recordReview(REVIEWER_SESSION_ID, [pass('c1'), pass('c2')]);
+    expect(soleProposal(harness)).toEqual({
+      taskId: TASK_ID,
+      toStage: 'done',
+      proposedBy: 'dispatcher',
     });
-    expect(declaredProposal(declared)).toEqual({ toStage: 'done', proposedBy: 'dispatcher' });
+  });
+
+  it('a capture arming node with NO acceptance table → the capture still records, UNEVALUABLE, warned EXACTLY ONCE, no proposal', () => {
+    const harness = buildHarness([planningTask()], { declaredWorkflow: NO_ACCEPTANCE_ON_PLANNING });
+
+    harness.dispatcher.recordPlan(PLANNER_SESSION_ID, PLAN_TEXT);
+
+    // FACT BEFORE CONSEQUENCE: the capture is recorded exactly as it would be
+    // on the shipped declaration — the missing acceptance table only affects
+    // ROUTING, never whether the fact gets written.
+    const event = soleEvent(harness);
+    const payload = event.payload as Record<string, unknown> & { artifactHash: string };
+    const { artifactHash, ...payloadWithoutHash } = payload;
+    expect(event.type).toBe('capture_recorded');
+    expect(payloadWithoutHash).toEqual({
+      instanceId: TASK_ID,
+      captureKind: 'plan',
+      node: 'planning',
+      attempt: 1,
+      payloadRev: 0,
+      capturedFrom: { appSessionId: PLANNER_SESSION_ID },
+    });
+    expect(harness.artifactStore.getBlob(artifactHash)).toBe(PLAN_TEXT);
+
+    // NO PROPOSAL — the table could not be judged, so nothing routes.
+    expect(harness.proposeMoveCalls).toEqual([]);
+
+    // EXACTLY ONE WARNING, naming the task, the node, and the typed reason —
+    // S19-F1's lesson (assert the count is exactly 1, not just ≥1).
+    expect(harness.warnCalls).toHaveLength(1);
+    expect(harness.warnCalls[0]).toContain(TASK_ID);
+    expect(harness.warnCalls[0]).toContain('planning');
+    expect(harness.warnCalls[0]).toContain('node-declares-no-acceptance');
+  });
+
+  it('the missing-acceptance perturbation is REAL — the shipped planning node declares one', () => {
+    const shippedPlanning = SHIPPED_WORKFLOW.nodes.find((node) => node.id === 'planning');
+    const perturbedPlanning = NO_ACCEPTANCE_ON_PLANNING.nodes.find((node) => node.id === 'planning');
+    expect(shippedPlanning?.acceptance).toBeDefined();
+    expect(perturbedPlanning?.acceptance).toBeUndefined();
+    // …and the capture arming survived the edit — this is the whole point of
+    // the perturbation: a node that still captures but no longer accepts.
+    expect(perturbedPlanning?.briefing?.capture).toEqual(['plan']);
   });
 });
 
-// ── PART F — A5: the runtime binding guard, preserved ───────────────────────
+// ── PART F — A5: the runtime binding guard, preserved (unmediated by the dispatcher) ─
+//
+// These cells call `declared*Routing` directly — they were never part of the
+// compiled/declared comparison (there was never a compiled equivalent of
+// "resolve a spurious verb"), so the flip does not change their shape. They
+// stay a white-box check on `acceptanceDeclarations.ts`'s binding guard.
 
 describe('S20-A5 — a verb no node declares is a total runtime NO-OP', () => {
   it('an undeclared verb resolves nothing — no fact, no route', () => {

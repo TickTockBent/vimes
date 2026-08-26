@@ -266,6 +266,11 @@ function buildApiHarness(
     // instanceWriter instance, so the move would go through I7's one writer.
     artifactStore: new MemoryArtifactStore(),
     instanceWriter,
+    // S20·U3: REQUIRED on the type now. This file never calls `record*`
+    // directly, but the constructor field is structural, not conditional on
+    // use — the SAME shipped declaration `instanceWriter` above adjudicates
+    // against.
+    declaredWorkflow: SHIPPED_WORKFLOW.workflow,
     // S19·U3: the ONLY path a spawn takes now. This file's cases that "want the
     // whole stack" reach a REAL `dispatchTask`, which calls `preflightBriefing`
     // on the spawn path — a mechanical consequence of the flip, not a routes

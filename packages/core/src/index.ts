@@ -255,13 +255,13 @@ export { resolveStageRunner, type StageRunnerPlan } from './tasks/stageRunner.js
 // (`dispatchDecision`) and WHO runs it (`resolveStageRunner`, just above). Core
 // exports no tenant name and imports no `@vimes/ext-*` — the boundary checker
 // refuses both.
-// S7·6a — the pure review verdict → proposed-stage function. Kept a separate export
-// (and module) like the other task decisions: it decides WHERE a reported review
-// sends the task, and S7·6b's dispatcher reads the result to propose the transition
-// through the state machine (I7). The `reviewReported` / `completionReported` event
-// constructors already flow through `export * from './events.js'` below, so nothing
-// redundant is re-exported here.
-export { deriveReviewOutcome } from './tasks/reviewOutcome.js';
+// S7·6a's `deriveReviewOutcome` (`./tasks/reviewOutcome.js`) stood here as the
+// pure review verdict → proposed-stage function — DELETED at S20·U3 (slice-20
+// §3.2): the declared rubric arm (`extensions/acceptance.ts`'s
+// `evaluateAcceptance`, S20·U1) reproduces it row-for-row now, reached through
+// the daemon's `declaredReviewRouting` (`acceptanceRouting.ts`) rather than
+// called directly. `core/src/tasks/reviewOutcome.ts` is gone from the tree —
+// the `core/src/tasks/` directory's first per-declaration death.
 // S17·U1 — the NODE-derived checkout names (§3.6). Pure and total, and in core
 // (not beside the daemon's coordinator) because a checkout's identity must be
 // re-derivable by the board, a future GC and any replay without a daemon running.

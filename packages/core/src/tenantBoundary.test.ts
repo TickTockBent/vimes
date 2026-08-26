@@ -259,9 +259,13 @@ describe('S18 §3.4/A3 — moved-vocabulary grep gate', () => {
     it('c5: tasks/ survives holding ONLY the engine stayers — no quiet additions', () => {
       const tasksDir = path.join(CORE_SRC, 'tasks');
       const entries = fs.readdirSync(tasksDir).sort();
+      // S20·U3: `reviewOutcome` is GONE — the directory's first per-declaration
+      // death (slice-20 §3.2/migration-map §(i)). The declared rubric arm
+      // (`extensions/acceptance.ts`'s `evaluateAcceptance`) reproduces it
+      // row-for-row now; there is nothing left in `tasks/` to derive a review
+      // verdict.
       const expectedStems = [
         'dispatchDecision',
-        'reviewOutcome',
         'stageRunner',
         'taskStateMachine',
         'watchdogDecision',

@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest';
-import { deriveReviewOutcome } from '../tasks/reviewOutcome.js';
 import type { ReportReviewPayload } from '../tasks/workOrder.js';
 import {
   ENGINE_REPORT_TOOL_IDS,
@@ -11,14 +10,19 @@ import {
 import { evaluateAcceptance, type AcceptanceEvaluation } from './acceptance.js';
 import type { ParsedAcceptance } from './manifest.js';
 
-// ─── S20·U1 — the acceptance evaluator's assertions (slice-20 A2 / A4) ───────
+// ─── S20·U1/U3 — the acceptance evaluator's assertions (slice-20 A2 / A4) ────
 //
 // Two halves, and they are different KINDS of claim:
 //
-//   • the EQUIVALENCE suite — the declared rubric arm and the compiled
-//     `deriveReviewOutcome` are the same function under the shipped declaration
-//     values. It feeds A2 (the U2 differential) and is written so that U3's
-//     re-point is ONE EDIT: one case table, driven through both paths.
+//   • the EQUIVALENCE suite — through U2, the declared rubric arm was compared
+//     LIVE against the compiled `deriveReviewOutcome`, the same case table
+//     driven through both paths. U3 is the flip: `reviewOutcome.ts` is DELETED
+//     (slice-20 §3.2 — the `core/src/tasks/` directory's first per-declaration
+//     death), so the "compiled" side of each case is now a FROZEN LITERAL —
+//     `deriveReviewOutcome`'s IMAGE at the moment it was deleted, not a second
+//     implementation. The suite still proves the same thing (the declared
+//     rubric reproduces the historical row-for-row rule), it just no longer has
+//     a second function to prove it against.
 //   • the PURE CELLS — rest, dormancy, inertness and unevaluability (A4), each
 //     with its positive control beside its negative one. The house rule the
 //     whole file obeys: assert ABSENCE as well as presence; one probe is not a
@@ -66,70 +70,79 @@ function routedTo(evaluation: AcceptanceEvaluation): string {
 
 // ── A2 — THE EQUIVALENCE SUITE ──────────────────────────────────────────────
 //
-// ⚠ **ONE CASE TABLE, TWO IMPLEMENTATIONS.** `deriveReviewOutcome` returns the
-// STAGE LITERALS the dispatcher compiled in; the evaluator returns whatever the
-// declaration named. Under the shipped table those are the same two node ids, so
-// the comparison is direct — which is exactly the claim slice-20 §3.2 makes
-// ("row-for-row under the declared vocabulary").
+// ⚠ **ONE CASE TABLE, ONE LIVE IMPLEMENTATION AGAINST A FROZEN IMAGE (post-U3).**
+// Through U2 this was two implementations compared live: `deriveReviewOutcome`
+// returned the STAGE LITERALS the dispatcher compiled in, the evaluator
+// returned whatever the declaration named, and under the shipped table those
+// were the same two node ids — the claim slice-20 §3.2 makes ("row-for-row
+// under the declared vocabulary"). U3 deleted the compiled side, so the
+// comparison is now against that side's frozen answer, restated as a literal.
 //
-// At the U3 flip `deriveReviewOutcome` DELETES and this suite re-points at the
-// evaluator alone — one edit, because the compiled call appears in exactly one
-// place below.
+// `expectedStage` is `deriveReviewOutcome`'s FROZEN IMAGE — the answer the
+// deleted function produced for this exact case, at the moment it was deleted
+// (Move-3/S19 precedent: a differential freezes against the deleted code's
+// image, not a re-derivation of it). It is restated as a literal rather than
+// computed, so a case that "agreed" because the evaluator regressed the same
+// way the deleted function would have still fails.
 const EQUIVALENCE_CASES: readonly {
   readonly name: string;
   readonly reported: ReportedCriteria;
   readonly instanceCriterionIds: readonly string[];
+  readonly expectedStage: 'done' | 'implementing';
 }[] = [
   {
     name: 'any-fail — one explicit fail sends it back regardless of the passes beside it',
     reported: [pass('c1'), fail('c2'), pass('c3')],
     instanceCriterionIds: ['c1', 'c2', 'c3'],
+    expectedStage: 'implementing',
   },
   {
     name: 'coverage-miss — every reported verdict passes, but a criterion went unmentioned',
     reported: [pass('c1')],
     instanceCriterionIds: ['c1', 'c2'],
+    expectedStage: 'implementing',
   },
   {
     name: 'all-pass — every instance criterion covered by a pass',
     reported: [pass('c1'), pass('c2')],
     instanceCriterionIds: ['c1', 'c2'],
+    expectedStage: 'done',
   },
   {
     name: 'extra-id-ignored — an id off the list neither blocks nor forces the pass (A-17)',
     reported: [pass('c1'), pass('c2'), pass('not-on-the-list')],
     instanceCriterionIds: ['c1', 'c2'],
+    expectedStage: 'done',
   },
   {
     name: 'bare-task — an empty criterion list is vacuously covered',
     reported: [],
     instanceCriterionIds: [],
+    expectedStage: 'done',
   },
 ];
 
-describe('S20-A2 equivalence — the declared rubric arm IS `deriveReviewOutcome`', () => {
+describe('S20-A2 equivalence — the declared rubric arm reproduces `deriveReviewOutcome`’s frozen image', () => {
   it.each(EQUIVALENCE_CASES)('routes identically — $name', (testCase) => {
-    // The COMPILED path (deletes at U3; this is its one call site here).
-    const compiled = deriveReviewOutcome(testCase.reported, testCase.instanceCriterionIds);
-    // The DECLARED path.
+    // The DECLARED path — the ONLY implementation left after the U3 flip.
     const declared = evaluateAcceptance(
       SHIPPED_REVIEW_RUBRIC,
       reviewEvidence(testCase.reported),
       { instanceCriterionIds: testCase.instanceCriterionIds },
     );
     expect(declared.outcome).toBe('route');
-    expect(routedTo(declared)).toBe(compiled);
+    // …against the FROZEN literal, `deriveReviewOutcome`'s image — see the
+    // table's own note.
+    expect(routedTo(declared)).toBe(testCase.expectedStage);
   });
 
   // Verify-by-breaking: if the table only ever produced ONE outcome, five
   // identical comparisons would pass while proving nothing about the rule.
   it('the case table really does exercise BOTH outcomes', () => {
-    const compiledOutcomes = new Set(
-      EQUIVALENCE_CASES.map((testCase) =>
-        deriveReviewOutcome(testCase.reported, testCase.instanceCriterionIds),
-      ),
-    );
-    expect([...compiledOutcomes].sort()).toEqual(['done', 'implementing']);
+    expect([...new Set(EQUIVALENCE_CASES.map((testCase) => testCase.expectedStage))].sort()).toEqual([
+      'done',
+      'implementing',
+    ]);
   });
 
   // …and the equivalence is not an artefact of both functions ignoring their

@@ -263,8 +263,11 @@ export type TaskStage = z.infer<typeof taskStageSchema>;
 // criterion, keyed by `criterionId` back to `acceptanceCriterionSchema.id` on
 // the task record. A review that could only say "pass" or "fail" for the whole
 // task would make the list's individual addressability pointless. Consumers:
-// S7·6 (`review_reported` + `deriveReviewOutcome` + the daemon's `report_review`
-// tool) and S7·7b (`lastReview` below + the fix-seed briefing).
+// S7·6's `review_reported` + the daemon's `report_review` tool, S20·U3's
+// declared rubric arm (`extensions/acceptance.ts`'s `evaluateAcceptance`,
+// reached through `acceptanceRouting.ts`'s `declaredReviewRouting` — the
+// `deriveReviewOutcome` this line used to name is deleted), and S7·7b
+// (`lastReview` below + the fix-seed briefing).
 export const reportReviewPayloadSchema = z.object({
   taskId: z.string(),
   stage: taskStageSchema,

@@ -748,6 +748,7 @@ describe('S19-A4 — preflight refusals: named, wire-stable, and side-effect-fre
         staleAfterMs: 90_000,
         artifactStore: store,
         instanceWriter: { proposeMove: (taskId) => ({ outcome: 'unknown-task', taskId }) },
+        declaredWorkflow: SHIPPED,
         checkoutCoordinator: {
           create: (request) => {
             checkoutCreateCalls.push(request);
@@ -930,6 +931,7 @@ describe('S19·U3 — the preflight governs a REAL spawn, end-to-end', () => {
       staleAfterMs: 90_000,
       artifactStore: store,
       instanceWriter: { proposeMove: (taskId) => ({ outcome: 'unknown-task', taskId }) },
+      declaredWorkflow: SHIPPED,
     });
 
     const result = await dispatcher.dispatchTask(task.taskId);
@@ -1040,6 +1042,7 @@ describe('S19-A7 — the domain claim cannot rot silently', () => {
       staleAfterMs: 90_000,
       artifactStore: new MemoryArtifactStore(),
       instanceWriter: { proposeMove: (taskId) => ({ outcome: 'unknown-task', taskId }) },
+      declaredWorkflow: SHIPPED,
     });
 
     expect(await dispatcher.dispatchTask(task.taskId)).toEqual({

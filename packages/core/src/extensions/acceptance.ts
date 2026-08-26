@@ -12,9 +12,10 @@ import type { ReportReviewPayload } from '../tasks/workOrder.js';
 // turns that into a warning and proposes nothing, and a throw at this depth
 // would surface as an unhandled rejection inside a report-filing callback.
 //
-// ⚠ **IT DECIDES, IT DOES NOT ACT.** Like `deriveReviewOutcome` before it (which
-// stays alive beside this until the U3 flip — slice-20 §3.2), this returns a
-// DECISION. The dispatcher reads it and proposes the move through the state
+// ⚠ **IT DECIDES, IT DOES NOT ACT.** Like `deriveReviewOutcome` before it
+// (deleted at the S20·U3 flip — slice-20 §3.2 — once this evaluator was proven
+// to reproduce it row-for-row), this returns a DECISION. The dispatcher reads
+// it and proposes the move through the state
 // machine (I7); the writer keeps everything it owns — legality, `max_traversals`
 // exhaustion → manual-review, evented rejections. Nothing here proposes, and
 // nothing here can bypass the writer.
@@ -156,9 +157,11 @@ export function evaluateAcceptance(
 
 // ── §3.2 — the RUBRIC arm: `deriveReviewOutcome`, row for row ───────────────
 //
-// The compiled function this reproduces is `tasks/reviewOutcome.ts:22`, and it
-// stays alive beside this one until the U3 flip so the equivalence suite can
-// drive BOTH over the same case table. The rows, in the compiled order:
+// The compiled function this reproduced was `tasks/reviewOutcome.ts:22`
+// (DELETED at the S20·U3 flip, once `acceptance.test.ts`'s equivalence suite
+// proved this arm agreed with it cell for cell — the suite now checks this
+// arm against that function's frozen image instead of a live second
+// implementation). The rows, in that function's order:
 //
 //   • any reported 'fail'                      -> on_fail   (the fix loop)
 //   • a context criterion NOT covered by a pass -> on_fail  (incomplete review)
