@@ -513,3 +513,30 @@ export {
   type BriefingInputAssembly,
   type BriefingInputRefusalReason,
 } from './extensions/briefingInputs.js';
+
+// S20·U1 (slice-20 §3.5) — the ENGINE REPORT-VERB CATALOGUE, re-homed from
+// `packages/daemon/src/briefingDeclarations.ts` (S19·U1) so the manifest parser
+// can read the one set core already owned the body schemas for. The daemon
+// RE-EXPORTS these names, so every S19 consumer keeps its import path; the A2
+// host differential in `briefingPreflight.test.ts` is the machine check that
+// this was a MOVE and not a copy. Named, not wildcarded, per the lists above.
+export {
+  ENGINE_REPORT_TOOL_SERVER,
+  ENGINE_REPORT_TOOL_NAMES,
+  ENGINE_REPORT_TOOL_IDS,
+  ENGINE_REPORT_VERB_BODIES,
+  isEngineKnownToolId,
+  type EngineReportBodyKind,
+} from './extensions/reportVerbs.js';
+
+// S20·U1 (slice-20 §3.1) — the ACCEPTANCE EVALUATOR: pure, total, engine-side.
+// Its consumer is the daemon dispatcher (U2), so it goes on the barrel now, with
+// the named-list discipline the parser's exports above set.
+export {
+  evaluateAcceptance,
+  type AcceptanceEvidence,
+  type AcceptanceContext,
+  type AcceptanceEvaluation,
+  type AcceptanceUnevaluableReason,
+  type ReportedCriteria,
+} from './extensions/acceptance.js';
