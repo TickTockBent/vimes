@@ -1,8 +1,10 @@
 # Slice 20 — the acceptance declaration goes LIVE (second per-declaration move)
 
-**STATUS: rev 5 SIGNED ⟨Wes⟩ 2026-08-26 — build clear to dispatch.
-Skeleton rebuilt through four Sol rounds (5/5, 4/4, 3/3 + a test cell,
-1/1 — thirteen findings, thirteen CONFIRMED, §7).**
+**STATUS: CLOSED 2026-08-26 — shipped same day, machine gate PASSED
+(§6b), deployed. Rev 5 signed ⟨Wes⟩ 2026-08-26 after four Sol rounds
+(13/13 findings confirmed, §7); built under standing keep-rolling
+clearance; awaiting ⟨Wes⟩'s post-close cold review (the third
+instrument) and branch push/PR (push is ⟨Wes⟩'s alone).**
 
 The second post-Move-4 per-declaration move, in the migration map's kit
 order (migration-map.md:492). `[workflows.nodes.acceptance]` stops being
@@ -510,3 +512,63 @@ rev 5 is the (surgical) rebuild. Everything else declared coherent.**
   accepts any catalogue body; scalar borrows nothing), and A5 gains
   the `report`-naming-`report_review` positive control alongside the
   retained scalar mismatch refusals.
+
+## §5b. Unit ledger + judgment record
+
+- **U1 `203b6b3`** (opus) — evaluator (five-kind exhaustive, pure) +
+  six parse refusals + catalogue re-homed core←daemon (S19 host
+  differential byte-unmodified as the relocation guard) + seam reads.
+  Agent improvement accepted: `ENGINE_REPORT_BODY_BY_TOOL_NAME` as
+  the single catalogue root (a tool name spelled exactly once).
+  8 agent sabotages + orchestrator's (live-kinds demotion → shipped
+  manifest refused, correctly). 3890 green.
+- **U2 `ee197a4`** (opus) — declared routing beside compiled; all four
+  §0.5 literal classes off one resolved node id; fact-before-
+  consequence made STRUCTURAL (the event is a field of the record
+  result, not a sibling arm — accepted improvement); A2 differential
+  (proposals + full events + plan envelope), A3 divergence, A4/A5.
+  taskDispatcher byte-untouched (proven). 6 agent sabotages +
+  orchestrator's (binding hard-coded → 3 red). 3913 green.
+- **U3 `73ba2a4`** (sonnet) — the flip: `declaredWorkflow` REQUIRED
+  dep (fail-closed) + `warn` seam (exactly-one, wired to console.warn
+  at app.ts); 13-item deletion inventory checked off with grep proof;
+  `reviewOutcome.ts` + test deleted, barrel narrowed, equivalence
+  suite re-pointed to the frozen image (one edit, as designed);
+  differential frozen Move-3 style, A3 became governance cells
+  through the REAL dispatcher; new A4 unevaluable runtime cell
+  (capture-arming node with no acceptance → records, no proposal,
+  ONE warning). 3 agent sabotages + orchestrator's (verb ids
+  cross-wired → 29 red across differential + dispatcher suites).
+  3906 green (reviewOutcome's 10 retired, differential +3).
+- Judgment notes: the `as TaskStage` cast at `applyOutcome`'s propose
+  arm is the generic-string/tenant-type seam — same residue family as
+  the `legacyTasksView` narrowing, dies with the instance-store
+  writer-seam genericization (migration-map Move-4 amendment (iii)).
+  The two verb-id literals in the dispatcher are the callback-seam
+  facts (which tool fired), machine-pinned by the frozen cells (the
+  cross-wire sabotage proves it); the CATALOGUE spelling stays single
+  in reportVerbs.ts.
+
+## §6b. Machine gate RESULTS (2026-08-26, orchestrator-run)
+
+- Suite ×2 (agent) + ×1 (orchestrator, independent): **3906/162**,
+  no flakes. `npm run typecheck` clean.
+- `ci-gate.sh` exit 0, ALL profiles: boundary → typecheck → tests →
+  ui build → CM6 → scenario double-run (7 profiles byte-identical) →
+  nondeterminism grep → advisories (0 blocking).
+- A1: 37 goldens byte-identical; S19 frozen differential green; S18
+  stem test green; `stageInstruction.ts` diff comment-only; ext-host
+  surface.json byte-untouched all slice; boundary checker clean.
+- A2: differential frozen at the flip against the deleted code's
+  image (26 cells). A3: governance cells green through the real
+  dispatcher, both perturbation directions. A4/A5/A6: all cells
+  green incl. exactly-one-warning and both dormancy-preserving parse
+  controls. A7: zero behavioral pins changed.
+- Byte census: every touched file 0 control bytes, all three units.
+- **Deploy:** restart + boot-line verification recorded below.
+
+**The acceptance declaration GOVERNS outcome routing as of this
+slice**: the second per-declaration move, Move 1's parser vocabulary
+has its second live consumer, D53's outcome edges are declaration
+rows, and `core/src/tasks/` lost its first module to the
+per-declaration rewrite.
