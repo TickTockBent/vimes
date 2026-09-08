@@ -1,179 +1,150 @@
 # Design principles
 
-The project's design constitution — standing principles, banked as they are
-established. When a proposal touches one's territory, check it against the
-principle before recommending. Seeded at kickoff from the spec's ground rules
-(§0) and pillars (§1); added to as review passes and findings establish more.
+The project's design constitution. When a proposal touches one's territory,
+check it against the principle before recommending. Opened 2026-09-08 at
+the pivot (D1): the ground rules carry from Vimes **unchanged**; the
+pillars are Ranks's own, seeded from the founding note; the established
+principles that survive the cut are carried with their provenance, and the
+ones that do not are listed as retired so nobody re-derives them.
 
 ## Ground rules (0.x — non-negotiable; violating one is wrong, not a judgment call)
 
-- **0 (umbrella).** No behavior-shaping change ships without **evidence + Wes's
-  sign-off.**
+- **0 (umbrella).** No behavior-shaping change ships without **evidence +
+  ⟨Wes⟩'s sign-off.**
 - **0.1 — Findings, not patches.** Any structural flaw discovered by tests,
-  spikes, or scenario runs — a race, an unstable identity, a dependency
-  behaving differently than designed-for — is a *finding*. It halts the slice
-  and earns a dated decision record before work continues. Never quietly
-  patched or tuned away.
+  spikes, or runs is a *finding*: it halts the slice and earns a dated
+  decision record before work continues. Never quietly patched or tuned.
 - **0.2 — Gate-D.** ⟨tune⟩ numbers are placeholders. They may not become
-  FAIL-able assertions until calibrate-then-pin (spec §8) has run and Wes has
-  priced them against measurements. Never pin and pass in one unreviewed step.
+  FAIL-able assertions until calibrate-then-pin has run and ⟨Wes⟩ has
+  priced them against measurements. Never pin and pass in one unreviewed
+  step.
 - **0.3 — Deterministic headless core.** Pure logic with clocks, randomness,
-  and I/O injected at the boundary. UIs, agents, and external callers consume
-  state and propose transitions — never own either. The dispatcher owns the
-  task state machine; orchestrator agents propose, they never transition.
-- **0.4 — Green stays green.** Every slice ships its assertion set green with
-  all prior assertions still green. A regression is a finding.
-- **0.5 — Reserve schema early.** Slices may stub systems but must land data
-  shapes, event schemas, and API contracts. Data shapes, not tooling —
-  machinery with no live consumer waits for its first consumer (D11 is the
-  worked example).
+  and I/O injected at the boundary. Performers, UIs, and external callers
+  consume state and propose transitions — never own either. The engine
+  owns the graph's state; rooms and orchestrators propose.
+- **0.4 — Green stays green.** Every slice ships its assertion set green
+  with all prior assertions still green. A regression is a finding.
+- **0.5 — Reserve schema early.** Slices may stub systems but must land
+  data shapes, event schemas, and contracts. Data shapes, not tooling —
+  machinery with no live consumer waits for its first consumer. **Applied
+  to the product as well as the code from D1 on** (pillar 7).
 - **0.6 — External surfaces drift.** Every uncontrolled surface gets a
-  risk-register entry (spec §6) and a fragile-adapter boundary; nothing outside
-  the adapter depends on the surface's specifics. Anthropic surfaces get double
-  suspicion (the March TTL regression and June billing split both happened
-  mid-design). Verify-rows are spikes, front-loaded — never built against
-  documentation alone.
-- **0.7 — Observed truth over declared truth.** Wherever Anthropic behavior
-  matters (TTL tiers, billing buckets, session ID semantics), classify by
-  runtime observation of usage fields and transcript data, never by
-  documentation. Tags record what a session *did*.
-- **0.8 — Never parse the screen.** Structured data comes from JSONL
-  transcripts and SDK streams only. Raw PTY bytes are relayed verbatim to
-  terminal renderers and never regexed for meaning.
+  risk-register entry and a fragile-adapter boundary; nothing outside the
+  adapter depends on the surface's specifics. Verify-rows are spikes,
+  front-loaded — never built against documentation alone. Every performer
+  harness is such a surface (D1 ruling 4).
+- **0.7 — Observed truth over declared truth.** Wherever a harness's or
+  provider's behavior matters, classify by runtime observation, never by
+  documentation. This now spans Anthropic, OpenAI, and any OpenRouter
+  model alike.
+- **0.8 — Never parse the screen.** Structured data comes from typed
+  channels only — report tool calls, SDK streams, JSONL transcripts. A
+  transcript is evidence, stored and inspectable; it is never regexed for
+  meaning.
 
-## Design pillars
+## Pillars (Ranks)
 
-1. **The session list is the home screen.** Sessions are the primary object;
-   files, editors, and terminals are views opened from a session's context.
-   Every feature is judged by whether it works from the session list on a phone.
-2. **Reconnecting is not resuming.** A browser is a viewport on a server-owned
-   process, never the process's owner. Closing every tab changes nothing about
-   any running session; "resume" only means waking a dormant transcript, and it
-   never forks.
-3. **The agent is the refactor engine.** Editing intelligence beyond CM6
-   basics + ripgrep is delegated to Claude, not an embedded language service.
-   No LSP, no TS server in the browser, no Monaco.
-4. **Budgets gate work, not surprise it.** Usage windows, credits, and cache
-   economics are first-class domain objects readable by anything that schedules
-   work. The dispatcher can decline or defer; the human sees headroom before
-   committing.
-5. **Attention is the scarce resource.** When a session needs a human, say so
-   within seconds, to a device that can answer in one tap. Attention state is
-   its own dimension, survives restarts, and is cleared only by deliberate
-   action — never lost by a reboot or a glance.
-6. **Deterministic harness, replaceable actors.** State machines and reducers
-   are authoritative and testable without Claude, network, or UI. A green
-   harness means the core is correct even if Anthropic changed everything
-   overnight.
-7. **Escape hatches beside abstractions.** Every structured pathway keeps a raw
-   sibling: the PTY terminal next to the SDK stream, direct file paths next to
-   the upload dialog. The day the abstraction fails, work continues.
+1. **The product is the graph, not the agents.** A room is a pure function
+   from a brief to a report, executed by a fresh session, with its walls
+   enforced by the engine rather than by the agent's cooperation. What a
+   human sees is the graph, the reports crossing its edges, and the
+   verdicts at its checkpoints. *(Note §0–§1.)*
+2. **The declaration is the authority; everything else is a view.** The
+   graph is data the engine validates; a canvas, a CLI, or an orchestrator
+   authors only through the same tool surface and never through its own
+   semantics. The moment a view is a second source of truth, a room's
+   walls have a hole. *(Note §5; V-D76 carried.)*
+3. **Rebuild, never steer.** A room cannot be injected into, resumed, or
+   nudged. The only correction is rebuilding the room and running it
+   again. One attempt = one fresh session, identity
+   `(workflowRev, roomId, attempt)`. *(V-D46 promoted from a rule about
+   stages to the definition of a room.)*
+4. **Shape is enforced; the limit on truth is stated.** The engine
+   validates that a report exists and covers every criterion by id; it
+   cannot know the reviewer read the diff. `command` acceptance is
+   preferred wherever a criterion is decidable by an exit code; `rubric`
+   acceptance is a review room with its own performer. What the engine
+   cannot decide it isolates, structures, and bounds — and says so.
+   *(V-S9·4's boundary, carried.)*
+5. **The human is a room.** A structured brief (what must be decided, with
+   evidence attached) and a structured report (the decision, in a declared
+   shape). It is the only place a human enters the graph during a run.
+   *(V-D53 and V-D78 collapse into this.)*
+6. **Attention has three words.** A room failed terminally; a human room
+   awaits a report; the graph completed (or its verification recipe
+   failed). No gates, no permission prompts, no seen/unseen. *(Note §6.)*
+7. **Real use is the gate.** The exit gate for slice 1 is ⟨Wes⟩ using it
+   for a real task and wanting to again; no slice after it earns its build
+   without a real run pulling for it. The MVP line is slice 1. *(D1
+   ruling 2 — the discipline change that would have saved Vimes.)*
+8. **No vocabulary churn.** A rename, re-shape, or migration earns its
+   build only when a real run asks for it; until then the old word stays
+   (`node`, not `room`, in code). *(D1 ruling 6; ⟨Wes⟩: "we kept changing
+   things.")*
+9. **Performer-blind above the adapter.** Nothing above the `Performer`
+   interface knows which harness ran a room. Grants are declared once and
+   enforced per harness; a grant a harness cannot enforce is refused at
+   validation, never downgraded. *(D1 ruling 4.)*
 
-## Established in use (added as they're banked)
+## Established in use — carried from Vimes
 
-8. **Tunnel to any depth; live at the top.** *(Wes, 2026-07-14, first live
-   smoke night.)* The user must be able to drop to any layer — orchestration
-   → task board → dispatcher → live session → raw PTY — when needed, but the
-   product is judged by how rarely that's necessary. Consequence: every layer
-   must be independently solid (the layer you tunnel into is load-bearing
-   exactly when things are going wrong), and no layer may assume a
-   supervising human at the layer above.
+*(Numbering continues from the pillars; each carries its Vimes provenance.
+Anything not listed here was retired at the pivot — see the retired list.)*
 
-## Established in use (continued)
-
-*(9–10 instituted as night-shift defaults 2026-07-19; ratified by Wes
-2026-07-20.)*
-
-9. **One source of record per fact.** *(codor decomp §5.1; default
-   2026-07-19.)* Content facts come from the JSONL tail; lifecycle facts
-   from hooks/SDK stream; no fact is ingested from two sources without an
-   explicit dedupe boundary (the D7 mapping dedupe and the tailer's
-   SDK-file skip are the worked examples). Being accidentally *both* is the
-   only losing position.
-10. **The MCP server is a thin client of the daemon's API — never a second
-    writer to the store.** *(ata decomp §3.1; default 2026-07-19.)* Two
-    writers is how file locks happen. Binding on slice 6–7 design.
-11. **Real estate to content, not chrome.** *(Wes, 2026-07-20; promoted from
-    design-direction after holding across the terminal AND editor on mobile.)*
-    In an agentic dev environment the human reviews and steers — they don't
-    need IDE furniture (file rails, tab strips, panels) competing for space.
-    Give screen real estate to the content: terminal, diff, editor, stream.
-    This is *why* vimes beat code-server on Wes's phone (both surfaces): no
-    chrome tax. It compounds hardest on mobile where columns are scarce, but
-    it governs the desktop layout too — the multi-pane desktop view earns its
-    panes by showing content, not by mimicking VSCode's furniture.
-
-*(12–14 from the agentswarms decomposition; ratified by Wes 2026-07-29.)*
-
+10. **One source of record per fact.** *(V-#9, codor decomp.)* No fact is
+    ingested from two sources without an explicit dedupe boundary. Being
+    accidentally *both* is the only losing position.
+11. **An MCP server is a thin client of the engine's API — never a second
+    writer to the store.** *(V-#10, ata decomp.)* Two writers is how file
+    locks happen. The report tools and any future stdio bridge for an
+    external Claude Code session obey this.
 12. **Completion is an explicit event, never inferred from output.**
-    *(agentswarms decomp §2.1.)* A stage/step is done when a completion
-    record says so — never because output exists, and never NOT-done because
-    the output was empty (an empty result is still a result). Already true by
-    construction (`report_completion`, the D53 outcome events); this rule
-    pins it against regression, and it is what makes derived resume-state
-    safe if D51's graph ever lands.
-13. **No tool or API parameter may assert a decision the daemon should read
-    from the record.** *(agentswarms decomp §2.2 — their stated reason kept:
-    accepting an `approved` flag from the caller lets anyone who can reach
-    the function approve anything.)* Authority derives from persisted state —
-    the task's stage, the filed review, the gate's own decision — never from
-    a payload field claiming the decision happened. Embodied today
-    (`deriveReviewOutcome` reads the filed report; `create_task`'s forced
-    fields); BINDING on every future tool surface, and checked in every
-    drive-verb work order (S8·6+), which is exactly where a convenience
-    parameter would erode it.
-14. **Meter/budget gates fail OPEN attended, fail CLOSED unattended —
-    selected by session class.** *(agentswarms fail-open guard × AgenC
-    fail-closed kernel; the synthesis is ours because VIMES is both and
-    knows which at runtime.)* A stale meter must never block the human's own
-    interactive work (worst case: overspend, and a human is watching); a
-    stale meter in an unattended dispatched run means STOP (worst case:
-    the 5-hour window is the human's tomorrow). One branch, when unattended
-    operation lands.
-15. **The daemon's public API (HTTP/WS + MCP) IS the extension API.**
-    *(herdr 2.1.1, Wes-ratified 2026-08-04: "there is no separate plugin
-    SDK; the entire CLI is the plugin API.")* No second SDK to design,
-    version, document, or keep honest. First-party consumers — the UI, the
-    MCP verb-family servers, the future CLI client — dogfood the same
-    surface, so the contract cannot silently rot and third-party extensions
-    are never second-class. Compounds #10 (MCP server = thin client of the
-    daemon API). Consequence: a capability an extension will someday need is
-    a capability the public API must carry — "internal-only" API surface is
-    a smell, and the D66 two-tier boundary decides which tier gets what, not
-    whether a second interface exists.
+    *(V-#12, agentswarms decomp.)* A room is done when a report says so —
+    never because output exists, and never not-done because output was
+    empty.
+13. **No tool or API parameter may assert a decision the engine should
+    read from the record.** *(V-#13, agentswarms decomp.)* Authority
+    derives from persisted state — the filed report, the evaluated
+    verdict, the human room's decision — never from a payload field
+    claiming the decision happened. Embodied by `evaluateAcceptance`
+    reading the filed report; binding on every future tool surface.
+14. **Unattended means fail closed.** *(V-#14 narrowed.)* Vimes selected
+    fail-open vs fail-closed by session class; Ranks rooms are always
+    unattended, so a stale meter, a missing grant table, or an
+    unevaluable acceptance means STOP, never proceed.
+15. **The engine's public API is the extension API.** *(V-#15, herdr.)*
+    No second SDK. The CLI, the report tools, and any future view dogfood
+    the same surface, so the contract cannot silently rot.
 16. **The engine makes zero assumptions about how people work.**
-    *(D70's mandate, ratified with the slice-9 pass, 2026-08-06.)* Custody,
-    the spine, the session tree, gates and questions, blobs, dispatch, and
-    the instance store are the whole engine; every workflow noun — task,
-    stage, review, chapter, phase — reaches the engine as a declaration it
-    validates, an id it stores, or a payload it fans out unread. The
-    assertable form (node-kit §1.10): **the engine's source may not contain
-    a tenant's word** — a grep of `packages/core` post-migration is the
-    test. Proven at signature on two tenants (the task machine and Book
-    Genesis, zero carve-outs); one tenant proves nothing about generality.
-17. **Engine session states describe the PROCESS; overlays describe the
-    WORK.** *(D82, promoted by Wes 2026-08-11.)* This is the admission test
-    for every proposed session state, present and future: `queued` passes
-    (a dispatch-queue fact any workflow produces); `review` fails (one
-    tenant's node name — it reaches clients only as an `[[overlays]]`
-    decoration). The three-way decomposition that proved it load-bearing:
-    a session blocked on a permission gate is a *process* fact (engine
-    state), why it is blocked is the *attention* model, and what the gate
-    means for the work is *overlay*. A proposed state that cannot be
-    decomposed this way is smuggling workflow into the engine, and #16's
-    grep will not catch it — this principle is the test at the vocabulary
-    layer, above the source layer.
+    *(V-#16, V-D70.)* Every workflow noun reaches the engine as a
+    declaration it validates, an id it stores, or a payload it fans out
+    unread. Assertable form: the engine's source may not contain a
+    tenant's word (the tenant-boundary grep gate carries).
+17. **Engine states describe the PROCESS; overlays describe the WORK.**
+    *(V-#17, V-D82.)* Attempt status is engine state; what an attempt
+    means for the work is the report and the verdict. A proposed state
+    that cannot be decomposed this way is smuggling workflow into the
+    engine.
 
-## Standing consequences worth restating
+## Retired at the pivot (D1) — listed so they are not re-derived
 
-- **Security is core, not product** (finding A): the PTY endpoint is RCE as
-  designed; the auth choke point (spec §3.11, I14) is MVP-blocking and live
-  from slice 1. Hostile-input probes it every CI run.
-- **The event log is the replay buffer** (findings B/E): persist-before-
-  broadcast (I13) + replay-from-log (I2) is one path for every gap length. No
-  in-memory ring buffers for spine events (the per-terminal PTY byte buffer is
-  the sole, deliberate exception).
-- **Precision policy:** counted quantities assert exact; measured quantities
-  assert within stated tolerance — relative-epsilon, never exact equality.
-- **The MVP line is slice 3.** Everything after it must survive contact with
-  real daily use before it earns its build.
+- V-pillar 1 (the session list is the home screen), V-pillar 2
+  (reconnecting is not resuming), V-pillar 3 (the agent is the refactor
+  engine — no editor exists to refactor in), V-pillar 7's PTY half
+  (escape hatches beside abstractions — the raw sibling was the terminal),
+  V-#8 (tunnel to any depth), V-#11 (real estate to content, not chrome).
+- The standing consequence "security is core, not product — the PTY
+  endpoint is RCE as designed": void with the PTY channel. The auth choke
+  point survives S1·0 unexamined and is priced at S1·5.
+- "The MVP line is slice 3" → **the MVP line is slice 1** (pillar 7).
+
+## Standing consequences that carry
+
+- **The event log is the replay buffer**: persist-before-broadcast (V-I13)
+  + replay-from-log (V-I2) is one path for every gap length.
+- **Precision policy:** counted quantities assert exact; measured
+  quantities assert within stated tolerance — relative-epsilon, never
+  exact equality.
+- **Pure core, deterministic harness:** the scenario harness and its
+  byte-identical twice-run gate survive the cut and gate every slice's
+  *code* (0.4) — they are not the *product's* gate (pillar 7).

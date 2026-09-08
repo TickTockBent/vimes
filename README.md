@@ -1,5 +1,18 @@
 # VIMES
 
+> **Pivot, 2026-09-08.** After eight weeks Vimes never hosted a unit of real
+> work — it was two products stapled together, and the session-manager half
+> never finished. It is being cut to **Ranks**: the verification loop alone
+> (rooms as pure functions from a brief to a report, typed edges, verdicts
+> that cannot be talked around), layered on Claude Code rather than beside
+> it, designed for more than one performer harness. The reasoning is public
+> in [`docs/decisions.md`](docs/decisions.md) D1 and the founding note
+> [`docs/ranks-design-note.md`](docs/ranks-design-note.md); the whole Vimes
+> design record is archived, history intact, under
+> [`docs/vimes/`](docs/vimes/README.md). The description below is the
+> pre-cut system and stays accurate until slice 1 removes the UI and PTY
+> channel.
+
 **An agent-first remote IDE for Claude Code.** A daemon owns every Claude Code
 process on a dev box and streams structured state to any browser — so a phone is
 a full peer of the desk, not a degraded view of it.
