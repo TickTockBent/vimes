@@ -255,13 +255,13 @@ export { resolveStageRunner, type StageRunnerPlan } from './tasks/stageRunner.js
 // (`dispatchDecision`) and WHO runs it (`resolveStageRunner`, just above). Core
 // exports no tenant name and imports no `@vimes/ext-*` — the boundary checker
 // refuses both.
-// S7·6a — the pure review verdict → proposed-stage function. Kept a separate export
-// (and module) like the other task decisions: it decides WHERE a reported review
-// sends the task, and S7·6b's dispatcher reads the result to propose the transition
-// through the state machine (I7). The `reviewReported` / `completionReported` event
-// constructors already flow through `export * from './events.js'` below, so nothing
-// redundant is re-exported here.
-export { deriveReviewOutcome } from './tasks/reviewOutcome.js';
+// S7·6a's `deriveReviewOutcome` (`./tasks/reviewOutcome.js`) stood here as the
+// pure review verdict → proposed-stage function — DELETED at S20·U3 (slice-20
+// §3.2): the declared rubric arm (`extensions/acceptance.ts`'s
+// `evaluateAcceptance`, S20·U1) reproduces it row-for-row now, reached through
+// the daemon's `declaredReviewRouting` (`acceptanceRouting.ts`) rather than
+// called directly. `core/src/tasks/reviewOutcome.ts` is gone from the tree —
+// the `core/src/tasks/` directory's first per-declaration death.
 // S17·U1 — the NODE-derived checkout names (§3.6). Pure and total, and in core
 // (not beside the daemon's coordinator) because a checkout's identity must be
 // re-derivable by the board, a future GC and any replay without a daemon running.
@@ -513,3 +513,30 @@ export {
   type BriefingInputAssembly,
   type BriefingInputRefusalReason,
 } from './extensions/briefingInputs.js';
+
+// S20·U1 (slice-20 §3.5) — the ENGINE REPORT-VERB CATALOGUE, re-homed from
+// `packages/daemon/src/briefingDeclarations.ts` (S19·U1) so the manifest parser
+// can read the one set core already owned the body schemas for. The daemon
+// RE-EXPORTS these names, so every S19 consumer keeps its import path; the A2
+// host differential in `briefingPreflight.test.ts` is the machine check that
+// this was a MOVE and not a copy. Named, not wildcarded, per the lists above.
+export {
+  ENGINE_REPORT_TOOL_SERVER,
+  ENGINE_REPORT_TOOL_NAMES,
+  ENGINE_REPORT_TOOL_IDS,
+  ENGINE_REPORT_VERB_BODIES,
+  isEngineKnownToolId,
+  type EngineReportBodyKind,
+} from './extensions/reportVerbs.js';
+
+// S20·U1 (slice-20 §3.1) — the ACCEPTANCE EVALUATOR: pure, total, engine-side.
+// Its consumer is the daemon dispatcher (U2), so it goes on the barrel now, with
+// the named-list discipline the parser's exports above set.
+export {
+  evaluateAcceptance,
+  type AcceptanceEvidence,
+  type AcceptanceContext,
+  type AcceptanceEvaluation,
+  type AcceptanceUnevaluableReason,
+  type ReportedCriteria,
+} from './extensions/acceptance.js';

@@ -11,7 +11,15 @@ reason `slice-6-test-plan.md` lives here. Delete an entry when it ships.
 cleanup, dispatch-on-promotion, briefing prose pass, session trail — deleted per
 the header rule; see slice-7.md S7·7c–7g and decisions D53/D54/D55.)*
 
-## ▶ NEXT SESSION STARTS HERE (updated 2026-07-29 — read `scratchpad/HANDOFF.md` first)
+## ▶ NEXT SESSION STARTS HERE (updated 2026-08-26 — read `scratchpad/HANDOFF.md` first)
+
+**SLICE 20 — CLOSED 2026-08-26** (acceptance shapes, second
+per-declaration move; branch `slice-20-acceptance` awaits ⟨Wes⟩'s
+push/PR + cold review). **RESUME AT: auto-dispatch (`by`)** — the
+migration map's next kit-order candidate; slice-19/20 are the worked
+templates. Full state + loose ends: `scratchpad/HANDOFF.md`.
+
+--- (historical, slice 7 close, 2026-07-29) ---
 
 **SLICE 7 — CLOSED 2026-07-29.** Gate 1 passed (2026-07-26); full loop live-verified
 by the bounce-path test (2026-07-28, task `2f83c29a`); behind-gate machinery complete

@@ -27,6 +27,7 @@
 import { parse as parseToml, TomlError } from 'smol-toml';
 import { z } from 'zod';
 import { EVENT_TYPES, RETIRED_EVENT_KINDS } from '../events.js';
+import { ENGINE_REPORT_VERB_BODIES, type EngineReportBodyKind } from './reportVerbs.js';
 
 // ── the host's own versions and vocabularies ─────────────────────────────────
 
@@ -400,6 +401,17 @@ export interface ParseManifestOptions {
   readonly fieldVocabulary?: Readonly<Record<string, number>>;
   /** Defaults to `DEPRECATED_CAPABILITIES` (empty in v1). Injected so §5.3 rule 3 is testable. */
   readonly deprecatedCapabilities?: Readonly<Record<string, string>>;
+  /**
+   * slice-20 §3.5 — the ENGINE REPORT-VERB CATALOGUE an `acceptance.report` is
+   * checked against: `{ verb id → body kind }`. Defaults to
+   * `ENGINE_REPORT_VERB_BODIES` (`extensions/reportVerbs.ts`, the one home).
+   *
+   * INJECTED for the same reason `fieldVocabulary` is: every catalogue refusal
+   * must be assertable against a SYNTHETIC catalogue, so the tests pin the RULE
+   * rather than today's two verbs — and a third verb tomorrow does not silently
+   * rewrite what the negative controls mean.
+   */
+  readonly reportVerbCatalogue?: Readonly<Record<string, EngineReportBodyKind>>;
 }
 
 // ── grammar helpers (extension-model §2.2, herdr's `normalize_identifier`) ───
@@ -1714,10 +1726,97 @@ const ACCEPTANCE_KEYS_BY_KIND: Readonly<Record<AcceptanceKind, readonly string[]
   report: ['kind', 'report', 'on_pass', 'on_fail'],
 };
 
+/**
+ * slice-20 §3.2 — the CLOSED vocabulary `criteria_from` names. Exactly one
+ * member, and a LOOKUP KEY rather than a path language (new vocabulary is
+ * §2-out). It was a bare `readString` until S20·U1, which meant an unsupported
+ * value parsed clean and surfaced only after a report had already been filed.
+ */
+const RUBRIC_CRITERIA_SOURCES: readonly string[] = ['instance.acceptanceCriteria'];
+
+/**
+ * slice-20 §3.5 — the acceptance kinds with a LIVE Tier-1 evaluation path.
+ *
+ * `scalar` and `human-gate` are DORMANT vocabulary: `report_filed` is a closed
+ * review/completion union, so a scalar could only ever file a mis-shaped body
+ * through a borrowed verb, and a human-gate is answered through `on_answer`, not
+ * by a report. Both still PARSE (refusing the kind outright would make the
+ * parser lie about the kit) — the rules below are what keep their dormancy
+ * honest rather than merely asserted.
+ */
+const LIVE_ACCEPTANCE_KINDS: readonly AcceptanceKind[] = ['rubric', 'report'];
+
+/** Own-property read of an injected catalogue — never a prototype hit. */
+function catalogueBodyKind(
+  catalogue: Readonly<Record<string, EngineReportBodyKind>>,
+  verbId: string,
+): EngineReportBodyKind | undefined {
+  return Object.prototype.hasOwnProperty.call(catalogue, verbId) ? catalogue[verbId] : undefined;
+}
+
+/**
+ * slice-20 §3.5 — the KIND-AWARE, ASYMMETRIC catalogue rule for
+ * `acceptance.report`. Three rows, and the asymmetry is the whole point:
+ *
+ *   • `rubric` DERIVES a verdict from the report's contents, so it needs a
+ *     CRITERIA-capable body. A rubric on `report_completion` is a table that
+ *     could never reach a verdict — refused.
+ *   • `report` is EXISTENCE-ONLY (node-kit §1.8.4 (e): "no verdict is derived
+ *     from its contents" — rubric's degenerate case), so ANY catalogue body
+ *     satisfies it. `report` + `report_review` is LEGAL (Sol round-4 P1‴; rev 4
+ *     wrongly refused it under a symmetric mapping).
+ *   • A LIVE kind naming a verb the engine cannot mount is refused up front —
+ *     the earliest-refusal property, before any report is ever filed.
+ *   • A DORMANT kind naming a CATALOGUE verb is refused (the borrowed-verb
+ *     mis-shape is exactly the thing being prevented: no current body carries
+ *     dimensions). A dormant kind naming a catalogue-UNKNOWN verb PARSES —
+ *     dormancy by construction, since that verb has no filing channel and S19's
+ *     preflight fail-closes any attempt to mount it. `scalar`'s `report` key is
+ *     REQUIRED, so a blanket unknown-verb refusal would make the kind
+ *     syntactically unparseable while §3.5 claims it parses (Sol round-3 P1a).
+ */
+function checkReportVerbAgainstCatalogue(
+  collector: IssueCollector,
+  kind: AcceptanceKind,
+  reportVerb: string | undefined,
+  acceptancePath: string,
+  catalogue: Readonly<Record<string, EngineReportBodyKind>>,
+): void {
+  if (reportVerb === undefined) return;
+  const bodyKind = catalogueBodyKind(catalogue, reportVerb);
+  const kindIsLive = LIVE_ACCEPTANCE_KINDS.includes(kind);
+  const known = Object.keys(catalogue);
+  if (bodyKind === undefined) {
+    if (!kindIsLive) return;
+    collector.error(
+      'acceptance-report-verb-unknown',
+      `${acceptancePath}.report`,
+      `\`kind = "${kind}"\` is EVALUATED at runtime, so its \`report\` must name a verb this engine can actually mount; "${reportVerb}" is not one of ${known.map((verb) => `"${verb}"`).join(', ')}. A live acceptance bound to an unmountable verb would wait for a report that can never be filed (slice-20 §3.5).`,
+    );
+    return;
+  }
+  if (kind === 'rubric' && bodyKind !== 'criteria') {
+    collector.error(
+      'acceptance-report-body-incompatible',
+      `${acceptancePath}.report`,
+      `\`kind = "rubric"\` DERIVES its verdict from the report's per-criterion contents, but "${reportVerb}" files a "${bodyKind}" body that carries none — the table could never reach a verdict. Use a criteria-capable verb, or \`kind = "report"\` if existence is the whole test (slice-20 §3.5).`,
+    );
+    return;
+  }
+  if (!kindIsLive) {
+    collector.error(
+      'acceptance-report-body-incompatible',
+      `${acceptancePath}.report`,
+      `\`kind = "${kind}"\` may not BORROW the engine verb "${reportVerb}": it files a "${bodyKind}" body that was never validated against this table's own shape, which is the mis-shaped-report hazard node-kit property 2 forbids ("the report is validated, never trusted"). This kind is dormant vocabulary until its own filing channel lands (slice-20 §3.5, rule 0.5).`,
+    );
+  }
+}
+
 function parseAcceptance(
   collector: IssueCollector,
   element: Record<string, unknown>,
   path: string,
+  reportVerbCatalogue: Readonly<Record<string, EngineReportBodyKind>>,
 ): ParsedAcceptance | undefined {
   const raw = element.acceptance;
   // node-kit §1.8.4 (f) NONE: the table is absent entirely — the node rests and
@@ -1777,6 +1876,20 @@ function parseAcceptance(
       `${acceptancePath}.criteria_from`,
       { required: true },
     );
+    // slice-20 §3.2: a CLOSED vocabulary, refused HERE rather than at evaluation
+    // time. The value is manifest-known, so an unsupported one must fail before
+    // any report is ever filed — not after a reviewer has already done the work
+    // against a criteria source the engine cannot resolve (Sol round-1 P2b).
+    if (
+      acceptance.criteriaFrom !== undefined &&
+      !RUBRIC_CRITERIA_SOURCES.includes(acceptance.criteriaFrom)
+    ) {
+      collector.error(
+        'unknown-criteria-source',
+        `${acceptancePath}.criteria_from`,
+        `\`criteria_from\` must be one of ${RUBRIC_CRITERIA_SOURCES.map((source) => `"${source}"`).join(', ')}; got "${acceptance.criteriaFrom}". It is a LOOKUP KEY into a closed vocabulary, not a path language (slice-20 §3.2).`,
+      );
+    }
     acceptance.coverage = readEnum(
       collector,
       raw,
@@ -1891,6 +2004,16 @@ function parseAcceptance(
       required: true,
     });
   }
+
+  // slice-20 §3.5 — the catalogue rule runs LAST, over whichever branch above
+  // read a `report` key, so there is exactly one call site for it.
+  checkReportVerbAgainstCatalogue(
+    collector,
+    kind,
+    acceptance.report,
+    acceptancePath,
+    reportVerbCatalogue,
+  );
 
   return acceptance;
 }
@@ -2105,6 +2228,7 @@ function parseWorkflows(
   collector: IssueCollector,
   document: Record<string, unknown>,
   nodeKinds: readonly ParsedNodeKind[],
+  reportVerbCatalogue: Readonly<Record<string, EngineReportBodyKind>>,
 ): ParsedWorkflow[] {
   const raw = document.workflows;
   if (raw === undefined) return [];
@@ -2141,7 +2265,7 @@ function parseWorkflows(
     // NAMED, never read — the registry validates instance payloads against it.
     const record = readString(collector, element, 'record', `${path}.record`, { required: false });
 
-    const nodes = parseWorkflowNodes(collector, element, path, kindsById);
+    const nodes = parseWorkflowNodes(collector, element, path, kindsById, reportVerbCatalogue);
     const nodeIds = nodes.map((node) => node.id);
     const nodeIdSet = new Set(nodeIds);
 
@@ -2220,6 +2344,8 @@ function parseWorkflows(
       }
     }
 
+    checkAcceptanceReportBindings(collector, path, nodes, reportVerbCatalogue);
+
     if (initial !== undefined && nodeIdSet.has(initial)) {
       checkReachability(collector, path, initial, nodes, edges, declaredEdges);
     }
@@ -2233,11 +2359,98 @@ function parseWorkflows(
   return workflows;
 }
 
+/**
+ * slice-20 §3.3 — THE REPORT→NODE BINDING INVARIANTS, checked at parse.
+ *
+ * Under declaration-governed routing a filed report satisfies the acceptance of
+ * the node whose `acceptance.report` equals the verb id. Three rules make that
+ * reverse lookup TOTAL — one binding, one node, one mount:
+ *
+ *   **(a) uniqueness** — two nodes may not declare the same report verb. The
+ *   lookup would be ambiguous and one of the two nodes could never be satisfied.
+ *
+ *   **(b) must-mount** — a CATALOGUE verb named by a LIVE-kind node's
+ *   `acceptance.report` must appear in THAT node's own `briefing.tools`. The
+ *   split-manifest case (mounted on X, declared on Y) parsed clean before S20
+ *   and produced a silent no-op: the session at X files a report that resolves
+ *   node Y, which it never attached to.
+ *
+ *   ⚠ Scoped to LIVE kinds deliberately (Sol round-3 coherence fix). A dormant
+ *   kind's non-catalogue verb has no channel to mount and S19's preflight
+ *   fail-closes any attempt to mount an unknown id — requiring it mounted would
+ *   refuse the very manifests §3.5 declares parseable.
+ *
+ *   **(c) no-extra-mount** — no OTHER node may mount a catalogue verb some node
+ *   declared. This half binds every catalogue verb regardless of the declaring
+ *   kind: a session at the extra node could file against a node it never
+ *   attached to, and q14's property is "mounted only into the node that declared
+ *   it" (migration-map:178).
+ *
+ * The rejected alternative was deriving tool mounting FROM acceptance: it would
+ * reopen slice-19's signed §3.6 seam, and `briefing.tools` legitimately carries
+ * non-report tools.
+ */
+function checkAcceptanceReportBindings(
+  collector: IssueCollector,
+  workflowPath: string,
+  nodes: readonly ParsedWorkflowNode[],
+  reportVerbCatalogue: Readonly<Record<string, EngineReportBodyKind>>,
+): void {
+  const acceptancePathFor = (index: number) => `${workflowPath}.nodes[${index}].acceptance`;
+
+  // (a) uniqueness — first declaration wins the map; a second one refuses.
+  const declarationsByVerb = new Map<
+    string,
+    { readonly node: ParsedWorkflowNode; readonly index: number; readonly kind: AcceptanceKind }
+  >();
+  nodes.forEach((node, index) => {
+    const acceptance = node.acceptance;
+    if (acceptance?.report === undefined) return;
+    const verb = acceptance.report;
+    const first = declarationsByVerb.get(verb);
+    if (first !== undefined) {
+      collector.error(
+        'acceptance-report-not-unique',
+        `${acceptancePathFor(index)}.report`,
+        `"${verb}" is already the acceptance report of node "${first.node.id}". A filed report resolves the node that declared its verb, so two declarations make that lookup ambiguous and leave one of the two nodes unsatisfiable (slice-20 §3.3a).`,
+      );
+      return;
+    }
+    declarationsByVerb.set(verb, { node, index, kind: acceptance.kind });
+  });
+
+  // (b)/(c) the mount invariants — CATALOGUE verbs only (a verb the engine
+  // cannot mount cannot be mis-mounted).
+  for (const [verb, declaration] of declarationsByVerb) {
+    if (catalogueBodyKind(reportVerbCatalogue, verb) === undefined) continue;
+    if (
+      LIVE_ACCEPTANCE_KINDS.includes(declaration.kind) &&
+      !(declaration.node.briefing?.tools ?? []).includes(verb)
+    ) {
+      collector.error(
+        'acceptance-report-not-mounted',
+        `${acceptancePathFor(declaration.index)}.report`,
+        `node "${declaration.node.id}" declares its acceptance on "${verb}" but does not MOUNT it in its own \`briefing.tools\`. A session at this node could never file the report its acceptance waits for (slice-20 §3.3b).`,
+      );
+    }
+    nodes.forEach((other, otherIndex) => {
+      if (other.id === declaration.node.id) return;
+      if (!(other.briefing?.tools ?? []).includes(verb)) return;
+      collector.error(
+        'acceptance-report-extra-mount',
+        `${workflowPath}.nodes[${otherIndex}].briefing.tools`,
+        `node "${other.id}" mounts "${verb}", but node "${declaration.node.id}" is the node that DECLARES its acceptance. A report filed from "${other.id}" would resolve a node its session never attached to — a silent no-op. A report verb is mounted only into the node that declared it (slice-20 §3.3b, q14).`,
+      );
+    });
+  }
+}
+
 function parseWorkflowNodes(
   collector: IssueCollector,
   workflowTable: Record<string, unknown>,
   workflowPath: string,
   kindsById: ReadonlyMap<string, ParsedNodeKind>,
+  reportVerbCatalogue: Readonly<Record<string, EngineReportBodyKind>>,
 ): ParsedWorkflowNode[] {
   const raw = workflowTable.nodes;
   if (raw === undefined) {
@@ -2301,7 +2514,7 @@ function parseWorkflowNodes(
     const title = readString(collector, element, 'title', `${path}.title`, { required: false });
     const properties = readNodeProperties(collector, element, path, base);
     const briefing = parseBriefing(collector, element, path);
-    const acceptance = parseAcceptance(collector, element, path);
+    const acceptance = parseAcceptance(collector, element, path, reportVerbCatalogue);
 
     // ⚠ THE ONE CROSS-DECLARATION RULE IN THE KIT (node-kit §2's migration
     // hazard, q16). D55 exists BECAUSE plan mode gates MCP tools: an offered
@@ -2496,6 +2709,7 @@ export function parseExtensionManifest(
   const hostApiVersion = options.hostApiVersion ?? API_VERSION;
   const fieldVocabulary = options.fieldVocabulary ?? FIELD_VOCABULARY;
   const deprecatedCapabilities = options.deprecatedCapabilities ?? DEPRECATED_CAPABILITIES;
+  const reportVerbCatalogue = options.reportVerbCatalogue ?? ENGINE_REPORT_VERB_BODIES;
 
   // §2.3 property 1 — BEFORE the document is deserialized, so a too-new
   // manifest fails with "upgrade vimes" and not with parse noise.
@@ -2627,7 +2841,7 @@ export function parseExtensionManifest(
   const panes = parsePanes(collector, document);
   const events = parseEvents(collector, document, runtime);
   const nodeKinds = parseNodeKinds(collector, document);
-  const workflows = parseWorkflows(collector, document, nodeKinds);
+  const workflows = parseWorkflows(collector, document, nodeKinds, reportVerbCatalogue);
 
   if (collector.errors.length > 0) {
     return { ok: false, errors: collector.errors, warnings: collector.warnings };

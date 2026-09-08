@@ -544,6 +544,12 @@ function buildHarness(options: {
   omitCheckoutCoordinator?: boolean;
   omitReadProjects?: boolean;
   omitNodeWriter?: boolean;
+  // S20·U3: defaults to `SHIPPED_WORKFLOW.workflow`; a case exercising A3-style
+  // perturbation supplies its own parsed copy.
+  declaredWorkflow?: TaskDispatcherDeps['declaredWorkflow'];
+  // S20·U3: the unevaluable-warning spy. Undefined by default (most cases never
+  // reach that cell).
+  warn?: TaskDispatcherDeps['warn'];
 } = {}): Harness {
   const emitted: EventInput[] = [];
   const sessionHost = new RecordingSessionHost(() => emitted.length);
@@ -625,6 +631,16 @@ function buildHarness(options: {
     // recordPlan), so no prior assertion moves.
     artifactStore,
     instanceWriter: recordingInstanceWriter,
+    // S20·U3: REQUIRED on the type now — the flip deleted the compiled halves,
+    // so every construction needs the declaration `record*` routes against.
+    // `SHIPPED_WORKFLOW` (module top) is the same object this file's
+    // `InstanceWriter`-driven cases already use, and `options.declaredWorkflow`
+    // lets a case swap in a perturbed copy (S20-A3-style) without a second
+    // helper.
+    declaredWorkflow: options.declaredWorkflow ?? SHIPPED_WORKFLOW.workflow,
+    // Undefined unless a case wants to observe the unevaluable warning — an
+    // absent seam is a silent drop, per the type's own optionality.
+    ...(options.warn === undefined ? {} : { warn: options.warn }),
   };
   return {
     dispatcher: new TaskDispatcher(deps),
@@ -2573,6 +2589,7 @@ describe('TaskDispatcher — recordPlan: the native plan-capture seam (S7·5b-i)
       // The transition is the writer's business and irrelevant here; the fake keeps
       // it out of the log so the only events below are the amendment and the plan.
       instanceWriter: new RecordingInstanceWriter(),
+      declaredWorkflow: SHIPPED_WORKFLOW.workflow,
     }).recordPlan(PLANNER_SESSION_ID, PLAN_TEXT);
 
     const planEvent = store.read('tasks', 1).find((record) => record.type === EVENT_TYPES.captureRecorded)!;
@@ -2626,6 +2643,7 @@ describe('TaskDispatcher — recordPlan: the native plan-capture seam (S7·5b-i)
       // The transition's own event is the writer's business; the fake keeps it out
       // of the log so this test isolates the capture_recorded fold.
       instanceWriter: new RecordingInstanceWriter(),
+      declaredWorkflow: SHIPPED_WORKFLOW.workflow,
     });
 
     dispatcher.recordPlan(PLANNER_SESSION_ID, PLAN_TEXT);
@@ -2842,6 +2860,7 @@ describe('TaskDispatcher — recordReview: the review path seam (S7·6b)', () =>
       staleAfterMs: STALE_AFTER_MS,
       artifactStore: new MemoryArtifactStore(),
       instanceWriter: new RecordingInstanceWriter(),
+      declaredWorkflow: SHIPPED_WORKFLOW.workflow,
     });
 
     dispatcher.recordReview(REVIEWER_SESSION_ID, [{ criterionId: 'c1', verdict: 'pass' }]);
@@ -3058,6 +3077,7 @@ describe('TaskDispatcher — recordCompletion: the completion path seam (S7·7b)
       staleAfterMs: STALE_AFTER_MS,
       artifactStore: new MemoryArtifactStore(),
       instanceWriter: new RecordingInstanceWriter(),
+      declaredWorkflow: SHIPPED_WORKFLOW.workflow,
     });
 
     dispatcher.recordCompletion(IMPLEMENTER_SESSION_ID, SAMPLE_WORKLOG);

@@ -149,8 +149,9 @@ const REVIEW_BRIEFING_OPENING =
 // server `vimes_report`, tool `report_review`; model-facing name
 // `mcp__vimes_report__report_review`, which the model resolves from this plain name).
 // It is load-bearing prose (spike-proven, mirroring planning's ExitPlanMode line):
-// the report tool call is how the reviewer finishes, and deriveReviewOutcome reads
-// the per-criterion verdicts it produces.
+// the report tool call is how the reviewer finishes, and (S20·U3) the declared
+// rubric arm (`evaluateAcceptance`, `@vimes/core`'s `extensions/acceptance.ts`)
+// reads the per-criterion verdicts it produces.
 const REVIEW_BRIEFING_CLOSING =
   `Inspect the implementation directly with your own tools — read the changed files, run git diff and the tests, search as needed. Sub-agents are NOT authorized for this task; do the review yourself.
 
@@ -401,7 +402,9 @@ export function composeStageInstruction(
   //
   // A dispatched review session judges an implementation it did NOT write, fresh,
   // against the acceptance criteria, and reports per-criterion pass/fail via the
-  // `report_review` tool (S7·6b registers it; deriveReviewOutcome reads the verdicts).
+  // `report_review` tool (S7·6b registers it; S20·U3's declared rubric arm —
+  // `evaluateAcceptance`, `@vimes/core`'s `extensions/acceptance.ts` — reads the
+  // verdicts now).
   // Work-order sections are conditional on presence (I8 totality), like the branches
   // above.
   //
@@ -436,7 +439,9 @@ export function composeStageInstruction(
       // report_review. This is the deliberate DIFFERENCE from S7·5c/S7·7a, which
       // hide the id. DEGENERATE case: a task with NO acceptance criteria omits this
       // whole section (never an empty bulleted list) but STILL returns the review
-      // briefing — deriveReviewOutcome sends an empty-criteria task to `done`.
+      // briefing — S20·U3's declared rubric arm (`evaluateAcceptance`) sends an
+      // empty-criteria task to `done`, exactly as `deriveReviewOutcome` (deleted)
+      // used to.
       const criterionBullets = task.acceptanceCriteria!
         .map((criterion) => `  - [${criterion.id}] ${criterion.text}`)
         .join('\n');
@@ -451,7 +456,8 @@ export function composeStageInstruction(
       // dispatched against a bare task with no acceptance criteria improvised 9
       // sensible criteria of its own and reported each one through report_review —
       // this blesses that OBSERVED-GOOD behaviour explicitly rather than changing
-      // the mechanism. `deriveReviewOutcome` is UNTOUCHED: an empty-task-criteria
+      // the mechanism. S20·U3's declared rubric arm reproduces
+      // `deriveReviewOutcome` (deleted) row-for-row: an empty-task-criteria
       // review still resolves the same way regardless of this prose.
       briefingBlocks.push(
         'This task enumerates no acceptance criteria. Derive sensible criteria yourself from the scope and the implementation, and report each one through report_review — mint a short id per criterion so each verdict is keyed.',

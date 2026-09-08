@@ -1108,3 +1108,415 @@ sparkles = true
     expect(result.warnings[0]?.path).toBe('panes[0].sparkles');
   });
 });
+
+// ─── S20·U1 — acceptance's parse-time refusals (slice-20 A3 / A5 / A6) ───────
+//
+// Five rules land here, plus DIRECT coverage for one that already existed. The
+// shape of every cell below is the shape the rest of this file uses: the minimal
+// workflow that makes its defect the ONLY thing wrong, and — the house rule that
+// bit us twice — a PASSING SIBLING beside it, so a green refusal cannot be an
+// accident of the scaffolding and a green parse cannot be the rule not firing.
+
+/**
+ * A one-workflow document with two nodes, `a` (the declaring node) and `b`.
+ * Every acceptance cell below is this document plus exactly one difference.
+ */
+function acceptanceWorkflow(parts: {
+  aBriefing?: string;
+  aAcceptance?: string;
+  bKind?: string;
+  bBriefing?: string;
+  bAcceptance?: string;
+}): string {
+  return `${KIT_PREAMBLE}
+[[workflows]]
+id = "w"
+title = "W"
+initial = "a"
+edges = [ { from = "a", to = "b", by = ["dispatcher"] } ]
+
+[[workflows.nodes]]
+id = "a"
+kind = "work"
+${parts.aBriefing ?? ''}${parts.aAcceptance ?? ''}
+[[workflows.nodes]]
+id = "b"
+kind = "${parts.bKind ?? 'hold'}"
+${parts.bBriefing ?? ''}${parts.bAcceptance ?? ''}`;
+}
+
+const REVIEW_VERB_ID = 'vimes_report.report_review';
+const COMPLETION_VERB_ID = 'vimes_report.report_completion';
+
+/** `a` mounts the review verb — the mount half of a well-formed live binding. */
+const MOUNTS_REVIEW = `  [workflows.nodes.briefing]
+  composer = "briefings/a"
+  tools = ["${REVIEW_VERB_ID}"]
+`;
+const MOUNTS_NOTHING = `  [workflows.nodes.briefing]
+  composer = "briefings/a"
+  tools = []
+`;
+
+/** The shipped rubric shape, retargeted at this fixture's nodes. */
+function rubricAcceptance(overrides: { report?: string; criteriaFrom?: string } = {}): string {
+  return `  [workflows.nodes.acceptance]
+  kind = "rubric"
+  report = "${overrides.report ?? REVIEW_VERB_ID}"
+  criteria_from = "${overrides.criteriaFrom ?? 'instance.acceptanceCriteria'}"
+  coverage = "all-criteria-pass"
+  on_pass = "b"
+  on_fail = "a"
+`;
+}
+
+/** A scalar table — the DORMANT kind, whose `report` key is REQUIRED. */
+function scalarAcceptance(reportVerb: string): string {
+  return `  [workflows.nodes.acceptance]
+  kind = "scalar"
+  report = "${reportVerb}"
+  dimensions = ["clarity"]
+  aggregate = "min"
+  threshold = 3.0
+  on_pass = "b"
+`;
+}
+
+function expectParses(text: string, options: Parameters<typeof parseExtensionManifest>[1] = {}): void {
+  const result = parseExtensionManifest(text, options);
+  if (!result.ok) {
+    throw new Error(`expected a clean parse; got ${JSON.stringify(codes(result.errors))}`);
+  }
+}
+
+describe('S20-A6 — `criteria_from` is a CLOSED vocabulary (slice-20 §3.2)', () => {
+  it('refuses an unsupported criteria source, and the SHIPPED value parses', () => {
+    const issue = expectRefusal(
+      acceptanceWorkflow({
+        aBriefing: MOUNTS_REVIEW,
+        aAcceptance: rubricAcceptance({ criteriaFrom: 'instance.somethingElse' }),
+      }),
+      'unknown-criteria-source',
+    );
+    expect(issue.path).toBe('workflows[0].nodes[0].acceptance.criteria_from');
+    expect(issue.message).toContain('instance.acceptanceCriteria');
+    // POSITIVE CONTROL — the identical document with the shipped value parses,
+    // so the refusal is the VALUE and not the surrounding table.
+    expectParses(
+      acceptanceWorkflow({ aBriefing: MOUNTS_REVIEW, aAcceptance: rubricAcceptance() }),
+    );
+  });
+
+  it('refuses before any report could be filed — it is a PARSE error, not a runtime one', () => {
+    // The whole point of Sol P2b: an unsupported source used to parse clean and
+    // surface only after a reviewer had done the work. Assert the refusal is on
+    // the ERROR channel (which stops the manifest) and not a warning.
+    const result = parseExtensionManifest(
+      acceptanceWorkflow({
+        aBriefing: MOUNTS_REVIEW,
+        aAcceptance: rubricAcceptance({ criteriaFrom: 'nope' }),
+      }),
+    );
+    expect(result.ok).toBe(false);
+    expect(codes(result.warnings)).not.toContain('unknown-criteria-source');
+  });
+});
+
+describe('S20-A5 — the report→node binding invariants (slice-20 §3.3)', () => {
+  it('refuses the SAME verb declared on two nodes (§3.3a uniqueness)', () => {
+    // Isolated with a DORMANT kind and a catalogue-unknown verb, so uniqueness
+    // is the only rule that can fire: no catalogue check, no mount check.
+    const issue = expectRefusal(
+      acceptanceWorkflow({
+        aAcceptance: scalarAcceptance('tenant.some_verb'),
+        bKind: 'work',
+        bAcceptance: scalarAcceptance('tenant.some_verb'),
+      }),
+      'acceptance-report-not-unique',
+    );
+    expect(issue.message).toContain('ambiguous');
+    // POSITIVE CONTROL — two DIFFERENT verbs on the same two nodes parse.
+    expectParses(
+      acceptanceWorkflow({
+        aAcceptance: scalarAcceptance('tenant.some_verb'),
+        bKind: 'work',
+        bAcceptance: scalarAcceptance('tenant.other_verb'),
+      }),
+    );
+  });
+
+  it('refuses a LIVE node that declares a catalogue verb it does not MOUNT (§3.3b must-mount)', () => {
+    const issue = expectRefusal(
+      acceptanceWorkflow({ aBriefing: MOUNTS_NOTHING, aAcceptance: rubricAcceptance() }),
+      'acceptance-report-not-mounted',
+    );
+    expect(issue.message).toContain('never file');
+    // POSITIVE CONTROL — the identical document that mounts the verb parses.
+    expectParses(
+      acceptanceWorkflow({ aBriefing: MOUNTS_REVIEW, aAcceptance: rubricAcceptance() }),
+    );
+    // …and the SPLIT-MANIFEST case (mounted on `b`, declared on `a`) refuses on
+    // BOTH halves — it is the silent no-op Sol round-1 P1a named.
+    const split = parseExtensionManifest(
+      acceptanceWorkflow({
+        aBriefing: MOUNTS_NOTHING,
+        aAcceptance: rubricAcceptance(),
+        bKind: 'work',
+        bBriefing: `  [workflows.nodes.briefing]
+  composer = "briefings/b"
+  tools = ["${REVIEW_VERB_ID}"]
+`,
+      }),
+    );
+    expect(split.ok).toBe(false);
+    if (split.ok) return;
+    expect(codes(split.errors)).toContain('acceptance-report-not-mounted');
+    expect(codes(split.errors)).toContain('acceptance-report-extra-mount');
+  });
+
+  it('refuses a SECOND node mounting a declared catalogue verb (§3.3b no-extra-mount)', () => {
+    const issue = expectRefusal(
+      acceptanceWorkflow({
+        aBriefing: MOUNTS_REVIEW,
+        aAcceptance: rubricAcceptance(),
+        bKind: 'work',
+        bBriefing: `  [workflows.nodes.briefing]
+  composer = "briefings/b"
+  tools = ["${REVIEW_VERB_ID}"]
+`,
+      }),
+      'acceptance-report-extra-mount',
+    );
+    expect(issue.path).toBe('workflows[0].nodes[1].briefing.tools');
+    expect(issue.message).toContain('silent no-op');
+    // POSITIVE CONTROL — the same second node mounting a DIFFERENT verb parses,
+    // so `briefing.tools` on a second node is not itself the defect.
+    expectParses(
+      acceptanceWorkflow({
+        aBriefing: MOUNTS_REVIEW,
+        aAcceptance: rubricAcceptance(),
+        bKind: 'work',
+        bBriefing: `  [workflows.nodes.briefing]
+  composer = "briefings/b"
+  tools = ["${COMPLETION_VERB_ID}"]
+`,
+      }),
+    );
+  });
+
+  it('a DORMANT kind is EXEMPT from must-mount (round-3 coherence)', () => {
+    // A scalar naming a catalogue-unknown verb has no channel to mount it, and
+    // S19's preflight already fail-closes any attempt. Requiring it mounted
+    // would refuse the very manifests §3.5 declares parseable.
+    expectParses(
+      acceptanceWorkflow({
+        aBriefing: MOUNTS_NOTHING,
+        aAcceptance: scalarAcceptance('tenant.some_verb'),
+      }),
+    );
+  });
+});
+
+describe('S20-A5 — the catalogue rule is KIND-AWARE and ASYMMETRIC (slice-20 §3.5)', () => {
+  it('refuses a LIVE kind naming a verb the engine cannot mount', () => {
+    const issue = expectRefusal(
+      acceptanceWorkflow({
+        aBriefing: MOUNTS_NOTHING,
+        aAcceptance: rubricAcceptance({ report: 'vimes_report.report_invented' }),
+      }),
+      'acceptance-report-verb-unknown',
+    );
+    expect(issue.message).toContain('report_invented');
+    // POSITIVE CONTROL, AND THE INJECTION PROOF — the identical document parses
+    // against a SYNTHETIC catalogue that knows the verb. The rule is the
+    // catalogue, not the spelling of the string.
+    expectParses(
+      acceptanceWorkflow({
+        aBriefing: `  [workflows.nodes.briefing]
+  composer = "briefings/a"
+  tools = ["vimes_report.report_invented"]
+`,
+        aAcceptance: rubricAcceptance({ report: 'vimes_report.report_invented' }),
+      }),
+      { reportVerbCatalogue: { 'vimes_report.report_invented': 'criteria' } },
+    );
+    // …and the converse: the SHIPPED verb refuses against a catalogue that has
+    // never heard of it, which is what makes the injection real.
+    expectRefusal(
+      acceptanceWorkflow({ aBriefing: MOUNTS_REVIEW, aAcceptance: rubricAcceptance() }),
+      'acceptance-report-verb-unknown',
+      { reportVerbCatalogue: { 'vimes_report.report_invented': 'criteria' } },
+    );
+  });
+
+  it('refuses `rubric` bound to a NON-CRITERIA body (a rubric that could never reach a verdict)', () => {
+    const issue = expectRefusal(
+      acceptanceWorkflow({
+        aBriefing: `  [workflows.nodes.briefing]
+  composer = "briefings/a"
+  tools = ["${COMPLETION_VERB_ID}"]
+`,
+        aAcceptance: rubricAcceptance({ report: COMPLETION_VERB_ID }),
+      }),
+      'acceptance-report-body-incompatible',
+    );
+    expect(issue.message).toContain('worklog');
+    // POSITIVE CONTROL — the same rubric on the CRITERIA body parses.
+    expectParses(
+      acceptanceWorkflow({ aBriefing: MOUNTS_REVIEW, aAcceptance: rubricAcceptance() }),
+    );
+  });
+
+  it('`report` accepts ANY catalogue body — including `report_review` (the ASYMMETRY, Sol round-4)', () => {
+    // node-kit §1.8.4 (e): existence-only, contents never read. rev 4's
+    // symmetric verb↔kind mapping wrongly refused this exact document.
+    expectParses(
+      acceptanceWorkflow({
+        aBriefing: MOUNTS_REVIEW,
+        aAcceptance: `  [workflows.nodes.acceptance]
+  kind = "report"
+  report = "${REVIEW_VERB_ID}"
+  on_pass = "b"
+`,
+      }),
+    );
+    // …and its sibling on the completion body parses too, so the cell above is
+    // the asymmetry and not a rule that accepts everything by accident.
+    expectParses(
+      acceptanceWorkflow({
+        aBriefing: `  [workflows.nodes.briefing]
+  composer = "briefings/a"
+  tools = ["${COMPLETION_VERB_ID}"]
+`,
+        aAcceptance: `  [workflows.nodes.acceptance]
+  kind = "report"
+  report = "${COMPLETION_VERB_ID}"
+  on_pass = "b"
+`,
+      }),
+    );
+  });
+
+  it('refuses a DORMANT kind BORROWING either current catalogue verb', () => {
+    for (const borrowedVerb of [REVIEW_VERB_ID, COMPLETION_VERB_ID]) {
+      const issue = expectRefusal(
+        acceptanceWorkflow({ aAcceptance: scalarAcceptance(borrowedVerb) }),
+        'acceptance-report-body-incompatible',
+      );
+      expect(issue.message).toContain('BORROW');
+    }
+  });
+
+  it('a DORMANT kind naming a catalogue-UNKNOWN verb PARSES (dormancy by construction)', () => {
+    // The cell Sol round-3 P1a earned: `scalar`'s `report` key is REQUIRED, so a
+    // blanket unknown-verb refusal would make the kind syntactically
+    // unparseable while §3.5 claims it parses.
+    expectParses(acceptanceWorkflow({ aAcceptance: scalarAcceptance('tenant.some_verb') }));
+  });
+});
+
+describe('S20-A3 — ghost acceptance TARGETS refuse (direct coverage for manifest.ts:2196)', () => {
+  // BASELINE behavior (§0.8a): the validation has existed since S10; what was
+  // missing was a test that pointed AT it. Rev 1 claimed the refusal did not
+  // exist at all, from a truncated grep — one probe is not a refutation.
+  it('`on_pass` naming a non-node refuses', () => {
+    const issue = expectRefusal(
+      acceptanceWorkflow({
+        aBriefing: MOUNTS_REVIEW,
+        aAcceptance: `  [workflows.nodes.acceptance]
+  kind = "report"
+  report = "${REVIEW_VERB_ID}"
+  on_pass = "nowhere"
+`,
+      }),
+      'unknown-node-reference',
+    );
+    expect(issue.path).toBe('workflows[0].nodes[0].acceptance.on_pass');
+    expect(issue.message).toContain('nowhere');
+  });
+
+  it('`on_fail` naming a non-node refuses', () => {
+    const issue = expectRefusal(
+      acceptanceWorkflow({
+        aBriefing: MOUNTS_REVIEW,
+        aAcceptance: rubricAcceptance().replace('on_fail = "a"', 'on_fail = "nowhere"'),
+      }),
+      'unknown-node-reference',
+    );
+    expect(issue.path).toBe('workflows[0].nodes[0].acceptance.on_fail');
+  });
+
+  it('`on_answer` naming a non-node refuses', () => {
+    const issue = expectRefusal(
+      acceptanceWorkflow({
+        aAcceptance: `  [workflows.nodes.acceptance]
+  kind = "human-gate"
+  prompt = "Ship it?"
+  [workflows.nodes.acceptance.on_answer]
+  yes = "b"
+  no = "nowhere"
+`,
+      }),
+      'unknown-node-reference',
+    );
+    expect(issue.path).toBe('workflows[0].nodes[0].acceptance.on_answer.no');
+  });
+
+  it('the same three tables parse when their targets name declared nodes', () => {
+    expectParses(
+      acceptanceWorkflow({
+        aBriefing: MOUNTS_REVIEW,
+        aAcceptance: `  [workflows.nodes.acceptance]
+  kind = "report"
+  report = "${REVIEW_VERB_ID}"
+  on_pass = "b"
+`,
+      }),
+    );
+    expectParses(
+      acceptanceWorkflow({ aBriefing: MOUNTS_REVIEW, aAcceptance: rubricAcceptance() }),
+    );
+    expectParses(
+      acceptanceWorkflow({
+        aAcceptance: `  [workflows.nodes.acceptance]
+  kind = "human-gate"
+  prompt = "Ship it?"
+  [workflows.nodes.acceptance.on_answer]
+  yes = "b"
+  no = "a"
+`,
+      }),
+    );
+  });
+});
+
+describe('S20-A5 — THE POSITIVE CONTROL: the shipped manifest parses under all five rules', () => {
+  it('the vimes-tasks manifest still parses clean, warnings unchanged', () => {
+    const result = parseExtensionManifest(readFixture());
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // The one pre-existing warning (the overlapping wildcard rows). The new
+    // rules add NOTHING to this document — if they did, the rule is wrong.
+    expect(codes(result.warnings)).toEqual(['edge-duplicate-expansion']);
+  });
+
+  it('its three acceptance tables are exactly the bindings the new rules expect', () => {
+    const nodes = expectManifest(readFixture()).workflows[0]?.nodes ?? [];
+    const node = (id: string) => nodes.find((candidate) => candidate.id === id);
+    // Declared AND mounted on the SAME node, and nowhere else — §3.3(b) held by
+    // hand before S20 and by the parser after it.
+    expect(node('implementing')?.acceptance?.report).toBe(COMPLETION_VERB_ID);
+    expect(node('implementing')?.briefing?.tools).toEqual([COMPLETION_VERB_ID]);
+    expect(node('review')?.acceptance?.report).toBe(REVIEW_VERB_ID);
+    expect(node('review')?.briefing?.tools).toEqual([REVIEW_VERB_ID]);
+    // ABSENCE — no other node mounts either verb.
+    const mountsElsewhere = nodes.filter(
+      (candidate) =>
+        !['implementing', 'review'].includes(candidate.id) &&
+        (candidate.briefing?.tools ?? []).some((tool) =>
+          [REVIEW_VERB_ID, COMPLETION_VERB_ID].includes(tool),
+        ),
+    );
+    expect(mountsElsewhere).toEqual([]);
+  });
+});

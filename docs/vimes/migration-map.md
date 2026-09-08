@@ -482,7 +482,17 @@ Everything after move 4 is per-declaration and each carries its own D-record
 from the kit: briefings (`composer` + `inputs`), tool exposure (q14),
 acceptance shapes, auto-dispatch (`by`), isolation, watchdog bands, verbs,
 overlays, panes.
-*Status:* **briefings DONE 2026-08-25** (slice 19, merged PR #3):
+*Status:* **acceptance shapes DONE 2026-08-26** (slice 20, branch
+slice-20-acceptance): the acceptance evaluator is engine
+(`core/extensions/acceptance.ts`, §1.8.4 kinds rubric/report/artifact-
+capture-form live, scalar/human-gate dormant by construction); the
+report-verb catalogue re-homed to core with the kind-aware ASYMMETRIC
+compatibility matrix and the exactly-one-mount binding invariants at
+parse; `deriveReviewOutcome` and all 13 compiled routing literals
+deleted (`core/src/tasks/reviewOutcome.ts` is the directory's first
+per-declaration death); differential frozen at the flip. Remaining
+kit-order candidate: **auto-dispatch (`by`)**.
+**briefings DONE 2026-08-25** (slice 19, merged PR #3):
 composer + inputs + tools + permission_mode + capture all govern
 dispatch off the boot declaration; D55's matrix and D48's footing are
 declaration rows; compiled switches deleted, behavior frozen as the

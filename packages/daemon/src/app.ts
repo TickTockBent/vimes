@@ -680,6 +680,18 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     // trigger is 5b-ii, so wiring these two changes no live behaviour.
     artifactStore,
     instanceWriter,
+    // ─── S20·U3 (slice-20 §3.3/§3.4): THE FLIP — the declaration governs outcome
+    // routing now. `shippedWorkflow.workflow` — the SAME object the
+    // `InstanceWriter` above adjudicates against and `preflightBriefing` above
+    // composes from — is the FOURTH reading of the one boot-resolved
+    // declaration (F2's law). REQUIRED: an absent value would silently no-op
+    // every `record*` call, which is exactly the fail-open this slice deletes.
+    declaredWorkflow: shippedWorkflow.workflow,
+    // The unevaluable-warning seam (§3.4/§3.6): wired to `console.warn` HERE, at
+    // the boundary (rule 0.3 — no module reaches for a global logger on its
+    // own), so an operator watching daemon logs sees a table that could not be
+    // judged rather than a report that silently went nowhere.
+    warn: (message) => console.warn(message),
   });
 
   // S11·U3 (D72 Move 2): the generic instance routes ARE the contract. Through

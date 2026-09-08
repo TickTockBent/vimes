@@ -89,50 +89,31 @@ export function dispatchedFootingFor(mode: DeclaredPermissionMode): DispatchedPe
   }
 }
 
-// ── §3.6: the ENGINE-KNOWN report tool ids ──────────────────────────────────
-
-/**
- * The in-process MCP server the stage-run report tools mount under (D65). The
- * model sees `mcp__vimes_report__<tool>`; the manifest spells the same fact
- * `vimes_report.<tool>`.
- */
-export const ENGINE_REPORT_TOOL_SERVER = 'vimes_report';
-
-/**
- * The report tools this engine knows how to build, by their bare spec names.
- *
- * ⚠ **AUTHORED HERE BECAUSE THERE IS NOWHERE ELSE TO READ IT FROM — AND PINNED
- * BY A DIFFERENTIAL RATHER THAN BY HOPE.** The names are spelled inside
- * `sessionHost.ts`'s `buildReviewSpec` / `buildCompletionSpec`, both of which
- * are PRIVATE METHODS on `SessionHost`; the server name is its module-local
- * `DEFAULT_TOOL_SERVER`. Neither is exported, the specs cannot even be
- * constructed before `spawnSession` allocates the session id they close over
- * (§3.6's whole reason for carrying IDS across the seam instead of specs), and
- * `sessionHost.ts` is outside this unit's touch list.
- *
- * So this is the ONE place the id set is written in the declaration path — every
- * consumer (the preflight's validation, the tests' expectations) reads THIS
- * constant and never a second copy. The tie to the host is a MACHINE CHECK, not
- * a comment: `briefingPreflight.test.ts`'s A2 differential spawns a REAL
- * `SessionHost` per dispatchable stage and compares the ids it actually mounts
- * against this set, so renaming a tool in `sessionHost.ts` reddens the
- * differential instead of quietly refusing a declaration that used to be legal.
- */
-export const ENGINE_REPORT_TOOL_NAMES: readonly string[] = ['report_review', 'report_completion'];
-
-/**
- * The engine-known report tool IDS, in the spelling a manifest uses:
- * `<server>.<tool>`. DERIVED from the two constants above rather than listed
- * again, so the server name and the tool names each have exactly one home.
- */
-export const ENGINE_REPORT_TOOL_IDS: readonly string[] = ENGINE_REPORT_TOOL_NAMES.map(
-  (toolName) => `${ENGINE_REPORT_TOOL_SERVER}.${toolName}`,
-);
-
-/** Is this declared tool id one the engine can actually mount? Fail-closed. */
-export function isEngineKnownToolId(toolId: string): boolean {
-  return ENGINE_REPORT_TOOL_IDS.includes(toolId);
-}
+// ── §3.6: the ENGINE-KNOWN report tool ids — RE-EXPORTED FROM CORE ──────────
+//
+// ⚠ **THE CONSTANTS MOVED; THE "ONE PLACE" CONTRACT DID NOT.** S19·U1 authored
+// `ENGINE_REPORT_TOOL_SERVER` / `_NAMES` / `_IDS` / `isEngineKnownToolId` right
+// here, under a documented contract that this is the ONE place the id set is
+// written in the declaration path. Slice-20 §3.5 needs the SAME set inside
+// core's manifest parser (the `acceptance.report` catalogue rules) and core
+// cannot import from the daemon — so the constants RE-HOMED to
+// `packages/core/src/extensions/reportVerbs.ts`, beside the body schemas they
+// map to, and this module re-exports them unchanged.
+//
+// The contract is re-pointed, not weakened: `reportVerbs.ts` is now the one
+// place, every daemon consumer here keeps importing from
+// `briefingDeclarations.ts` exactly as before, and the machine check that ties
+// the set to the session host — `briefingPreflight.test.ts`'s A2 differential —
+// passes UNCHANGED across the relocation. That differential is what makes this a
+// move rather than a copy: a second spelling anywhere would redden it.
+export {
+  ENGINE_REPORT_TOOL_SERVER,
+  ENGINE_REPORT_TOOL_NAMES,
+  ENGINE_REPORT_TOOL_IDS,
+  ENGINE_REPORT_VERB_BODIES,
+  isEngineKnownToolId,
+  type EngineReportBodyKind,
+} from '@vimes/core';
 
 // ── the answer this module gives ─────────────────────────────────────────────
 

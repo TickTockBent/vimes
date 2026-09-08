@@ -251,7 +251,8 @@ export const EVENT_TYPES = {
   // deliberately NOT a stage transition: the review -> done / review -> implementing
   // move is a SEPARATE `task_transitioned` the dispatcher emits (S7·6b) after
   // deriving the target via `deriveReviewOutcome` (tasks/reviewOutcome.ts) directly
-  // from this event's payload. Folding a stage change in here too would give the
+  // from this event's payload (deleted S20·U3, see extensions/acceptance.ts).
+  // Folding a stage change in here too would give the
   // record two authorities over its own stage (principle 9). It DOES fold as of
   // S7·7b: the fold writes the payload onto `lastReview` (latest-wins), which is
   // the fix-seed the next implementer's briefing renders.
@@ -1797,7 +1798,8 @@ export function planSubmitted(payload: SubmitPlanPayload): EventInput {
 // after capturing a `report_review` tool call) is the emitter. It is the durable
 // record of the verdict and is not a stage transition; the dispatcher's own
 // `task_transitioned` handles review -> done / review -> implementing separately,
-// deriving the target via `deriveReviewOutcome` from this payload. S7·7b added the
+// deriving the target via `deriveReviewOutcome` from this payload (deleted
+// S20·U3, see extensions/acceptance.ts). S7·7b added the
 // projection fold: the payload lands on `TaskRecord.lastReview` (latest-wins).
 export function reviewReported(payload: ReportReviewPayload): EventInput {
   return { stream: 'tasks', type: EVENT_TYPES.reviewReported, payload };

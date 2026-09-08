@@ -446,7 +446,8 @@ export const instancesProjection: Projection<InstancesState> = {
       // ABOUT the instance (the verdict that judged it / the worklog of the
       // attempt that just ended) without moving `currentNode`. The node moves
       // are SEPARATE `instance_moved` events the dispatcher emits after deriving
-      // the target (`deriveReviewOutcome` for a review; implementing → review for
+      // the target (S20·U3: `evaluateAcceptance`'s rubric arm,
+      // `extensions/acceptance.ts`, for a review; implementing → review for
       // a completion, D53); folding a node change in here too would give the
       // record two authorities over its own node (principle 9).
       //
